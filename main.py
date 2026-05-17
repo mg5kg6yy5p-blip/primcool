@@ -103,7 +103,9 @@ async def submit_consult(req: ConsultRequest):
             msg["To"]      = notify_email
             msg.attach(MIMEText(html, "html"))
 
-            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            with smtplib.SMTP("smtp.gmail.com", 587, timeout=15) as server:
+                server.ehlo()
+                server.starttls()
                 server.login(gmail_user, gmail_password)
                 server.sendmail(gmail_user, notify_email, msg.as_string())
         except Exception as e:
