@@ -101,8 +101,8 @@ async def submit_consult(req: ConsultRequest):
                 "subject": f"New Consultation Request — {req.fname} {req.lname} ({tier_label})",
                 "html":    html,
             })
-        except Exception:
-            pass  # don't fail the request if email delivery fails
+        except Exception as e:
+            print(f"EMAIL ERROR: {e}")
 
     return {"ok": True}
 
