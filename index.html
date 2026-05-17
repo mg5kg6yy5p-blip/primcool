@@ -1,0 +1,1294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="PrimeCool Services Ltd. — HVAC Preventive Maintenance Specialists in Kingston and St. Andrew, Jamaica. PM-first contracts. Documented by default.">
+  <title>PrimeCool Services Ltd. — Prevent. Maintain. Perform.</title>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800;900&family=Barlow:ital,wght@0,400;0,500;1,400&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --navy:     #0B2545;
+      --teal:     #22A08A;
+      --teal-deep:#1A7A6A;
+      --slate:    #5A6472;
+      --frost:    #E8ECF0;
+      --white:    #FFFFFF;
+      --charcoal: #2C3340;
+      --midnight: #111820;
+      --gold:     #C49A2A;
+      --blue-res: #1B4F82;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'Barlow', sans-serif;
+      background: var(--midnight);
+      color: var(--white);
+      line-height: 1.6;
+    }
+
+    /* ── NAV ── */
+    nav {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 100;
+      height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 2.5rem;
+      background: rgba(11,37,69,0.97);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid rgba(34,160,138,0.12);
+    }
+
+    .nav-brand {
+      display: flex;
+      align-items: center;
+      gap: 0.7rem;
+      text-decoration: none;
+    }
+
+    .nav-wordmark {
+      display: flex;
+      flex-direction: column;
+      line-height: 1;
+      gap: 2px;
+    }
+
+    .wm-main {
+      font-family: 'Barlow Condensed', sans-serif;
+      font-weight: 900;
+      font-size: 1.35rem;
+      letter-spacing: -0.5px;
+      text-transform: uppercase;
+      color: var(--white);
+    }
+
+    .wm-main .cool { color: var(--teal); }
+
+    .wm-sub {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.58rem;
+      letter-spacing: 0.18em;
+      color: var(--slate);
+      text-transform: uppercase;
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 2.25rem;
+      list-style: none;
+    }
+
+    .nav-links a {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.7rem;
+      letter-spacing: 0.1em;
+      color: var(--frost);
+      text-decoration: none;
+      text-transform: uppercase;
+      opacity: 0.7;
+      transition: opacity 0.2s, color 0.2s;
+    }
+
+    .nav-links a:hover { opacity: 1; color: var(--teal); }
+
+    .nav-cta {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.68rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--teal);
+      border: 1px solid var(--teal);
+      padding: 0.5rem 1.1rem;
+      text-decoration: none;
+      transition: background 0.2s, color 0.2s;
+      white-space: nowrap;
+    }
+
+    .nav-cta:hover { background: var(--teal); color: var(--navy); }
+
+    .nav-hamburger {
+      display: none;
+      flex-direction: column;
+      gap: 4px;
+      cursor: pointer;
+      background: none;
+      border: none;
+      padding: 4px;
+    }
+
+    .nav-hamburger span {
+      display: block;
+      width: 22px;
+      height: 2px;
+      background: var(--frost);
+      transition: all 0.2s;
+    }
+
+    .mobile-menu {
+      display: none;
+      position: fixed;
+      top: 64px;
+      left: 0; right: 0;
+      background: var(--navy);
+      border-bottom: 1px solid rgba(34,160,138,0.15);
+      padding: 1.5rem 2.5rem;
+      z-index: 99;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .mobile-menu.open { display: flex; }
+
+    .mobile-menu a {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.8rem;
+      letter-spacing: 0.1em;
+      color: var(--frost);
+      text-decoration: none;
+      text-transform: uppercase;
+      padding: 0.5rem 0;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+
+    /* ── HERO ── */
+    #hero {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      overflow: hidden;
+      padding: 7rem 2rem 5rem;
+      background: var(--midnight);
+    }
+
+    .hero-grid {
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(34,160,138,0.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(34,160,138,0.035) 1px, transparent 1px);
+      background-size: 64px 64px;
+    }
+
+    .hero-vignette {
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse 80% 80% at 50% 50%, transparent 30%, var(--midnight) 80%);
+    }
+
+    .hero-glow {
+      position: absolute;
+      width: 600px;
+      height: 600px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(34,160,138,0.06) 0%, transparent 70%);
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+    }
+
+    .hero-inner {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+      max-width: 860px;
+    }
+
+    .hero-logo { margin-bottom: 2rem; }
+
+    .hero-wordmark {
+      font-family: 'Barlow Condensed', sans-serif;
+      font-weight: 900;
+      font-size: clamp(3.5rem, 9vw, 6rem);
+      letter-spacing: -1px;
+      text-transform: uppercase;
+      line-height: 0.92;
+      color: var(--white);
+      margin-bottom: 0.4rem;
+    }
+
+    .hero-wordmark .cool { color: var(--teal); }
+
+    .hero-svc {
+      font-family: 'Barlow Condensed', sans-serif;
+      font-weight: 600;
+      font-size: 0.95rem;
+      letter-spacing: 0.35em;
+      text-transform: uppercase;
+      color: var(--slate);
+      margin-bottom: 1.6rem;
+    }
+
+    .hero-tagline {
+      font-family: 'Barlow', sans-serif;
+      font-size: clamp(1.25rem, 3vw, 1.65rem);
+      font-style: italic;
+      color: var(--frost);
+      margin-bottom: 0.65rem;
+    }
+
+    .hero-descriptor {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.75rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--slate);
+      margin-bottom: 2.75rem;
+    }
+
+    .hero-descriptor .hl { color: var(--teal); }
+
+    .btn-cta {
+      display: inline-block;
+      font-family: 'DM Mono', monospace;
+      font-size: 0.75rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--teal);
+      border: 1px solid var(--teal);
+      padding: 0.9rem 2.25rem;
+      text-decoration: none;
+      background: transparent;
+      cursor: pointer;
+      transition: background 0.2s, color 0.2s;
+    }
+
+    .btn-cta:hover { background: var(--teal); color: var(--navy); }
+
+    /* ── SHARED SECTION ── */
+    section { padding: 5.5rem 2.5rem; }
+
+    .si { max-width: 1100px; margin: 0 auto; }
+
+    .eyebrow {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.67rem;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--teal);
+      margin-bottom: 0.65rem;
+    }
+
+    .sh {
+      font-family: 'Barlow Condensed', sans-serif;
+      font-weight: 900;
+      font-size: clamp(2rem, 5vw, 3rem);
+      letter-spacing: -0.5px;
+      text-transform: uppercase;
+      color: var(--white);
+      margin-bottom: 0.75rem;
+    }
+
+    .sl {
+      font-size: 0.9rem;
+      color: var(--slate);
+      max-width: 520px;
+      margin-bottom: 3rem;
+      line-height: 1.65;
+    }
+
+    /* ── SERVICES ── */
+    #services { background: var(--navy); }
+
+    .svc-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 2px;
+    }
+
+    .svc-card {
+      background: var(--midnight);
+      padding: 2.5rem;
+      border-top: 3px solid var(--accent, var(--teal));
+    }
+
+    .svc-card .tier-tag {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.62rem;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--accent, var(--teal));
+      margin-bottom: 0.4rem;
+    }
+
+    .svc-card h3 {
+      font-family: 'Barlow Condensed', sans-serif;
+      font-weight: 900;
+      font-size: 1.7rem;
+      letter-spacing: -0.5px;
+      text-transform: uppercase;
+      color: var(--white);
+      margin-bottom: 0.25rem;
+    }
+
+    .svc-card .client-desc {
+      font-size: 0.8rem;
+      color: var(--slate);
+      margin-bottom: 1.5rem;
+      line-height: 1.45;
+    }
+
+    .svc-list {
+      list-style: none;
+      margin-bottom: 1.75rem;
+    }
+
+    .svc-list li {
+      font-size: 0.855rem;
+      color: var(--frost);
+      padding: 0.38rem 0;
+      border-bottom: 1px solid rgba(255,255,255,0.045);
+      display: flex;
+      gap: 0.5rem;
+      line-height: 1.4;
+    }
+
+    .svc-list li::before {
+      content: '—';
+      color: var(--accent, var(--teal));
+      flex-shrink: 0;
+    }
+
+    .cred-block {
+      padding: 1rem 1.1rem;
+      border: 1px solid var(--cred-border, rgba(34,160,138,0.2));
+      background: var(--cred-bg, rgba(34,160,138,0.04));
+      margin-top: auto;
+    }
+
+    .cred-block .cred-label {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.58rem;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--accent, var(--teal));
+      margin-bottom: 0.45rem;
+    }
+
+    .cred-block .cred-body {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.7rem;
+      color: var(--frost);
+      line-height: 1.75;
+    }
+
+    .tier-res  { --accent: #1B4F82; --cred-border: rgba(27,79,130,0.25); --cred-bg: rgba(27,79,130,0.05); }
+    .tier-com  { --accent: #22A08A; --cred-border: rgba(34,160,138,0.2);  --cred-bg: rgba(34,160,138,0.04); }
+    .tier-ind  { --accent: #C49A2A; --cred-border: rgba(196,154,42,0.25); --cred-bg: rgba(196,154,42,0.05); }
+
+    /* ── WHY ── */
+    #why { background: var(--midnight); }
+
+    .why-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 3.5rem;
+    }
+
+    .why-item {
+      padding-top: 1.5rem;
+      border-top: 1px solid rgba(34,160,138,0.25);
+    }
+
+    .why-num {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.62rem;
+      letter-spacing: 0.2em;
+      color: var(--teal);
+      margin-bottom: 0.65rem;
+    }
+
+    .why-item h3 {
+      font-family: 'Barlow Condensed', sans-serif;
+      font-weight: 900;
+      font-size: 1.3rem;
+      letter-spacing: -0.25px;
+      text-transform: uppercase;
+      color: var(--white);
+      margin-bottom: 0.65rem;
+    }
+
+    .why-item p {
+      font-size: 0.875rem;
+      color: var(--slate);
+      line-height: 1.75;
+    }
+
+    /* ── GALLERY ── */
+    #gallery { background: var(--navy); }
+
+    .gallery-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 2px;
+    }
+
+    .g-item {
+      aspect-ratio: 4/3;
+      background: var(--midnight);
+      border: 1px solid rgba(255,255,255,0.04);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 0.6rem;
+      position: relative;
+      overflow: hidden;
+      transition: border-color 0.2s;
+    }
+
+    .g-item:hover { border-color: rgba(34,160,138,0.3); }
+
+    .g-item.wide {
+      grid-column: span 2;
+      aspect-ratio: 16/9;
+    }
+
+    .g-icon { opacity: 0.25; }
+
+    .g-label {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.62rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--slate);
+      text-align: center;
+      padding: 0 1rem;
+    }
+
+    .g-item .g-badge {
+      position: absolute;
+      top: 0.75rem;
+      left: 0.75rem;
+      font-family: 'DM Mono', monospace;
+      font-size: 0.55rem;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--navy);
+      background: var(--teal);
+      padding: 0.2rem 0.5rem;
+    }
+
+    .gallery-note {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.65rem;
+      letter-spacing: 0.1em;
+      color: var(--slate);
+      margin-top: 1.25rem;
+      text-align: right;
+    }
+
+    /* ── REVIEWS ── */
+    #reviews { background: var(--midnight); }
+
+    .reviews-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1.5rem;
+    }
+
+    .review-card {
+      background: var(--navy);
+      padding: 2rem;
+      border-bottom: 2px solid var(--teal);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .stars {
+      display: flex;
+      gap: 3px;
+      margin-bottom: 1rem;
+    }
+
+    .stars span { color: var(--teal); font-size: 0.85rem; }
+
+    .review-text {
+      font-size: 0.875rem;
+      color: var(--frost);
+      line-height: 1.7;
+      font-style: italic;
+      margin-bottom: 1.5rem;
+      flex: 1;
+    }
+
+    .review-by {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.63rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--slate);
+      line-height: 1.6;
+    }
+
+    .review-by strong {
+      color: var(--frost);
+      display: block;
+      margin-bottom: 0.15rem;
+    }
+
+    /* ── CONSULT ── */
+    #consult { background: var(--navy); }
+
+    .consult-wrap {
+      display: grid;
+      grid-template-columns: 1fr 1.5fr;
+      gap: 5rem;
+      align-items: start;
+    }
+
+    .consult-left h2 {
+      font-family: 'Barlow Condensed', sans-serif;
+      font-weight: 900;
+      font-size: clamp(2rem, 4vw, 2.75rem);
+      letter-spacing: -0.5px;
+      text-transform: uppercase;
+      color: var(--white);
+      margin-bottom: 0.75rem;
+    }
+
+    .consult-left p {
+      font-size: 0.875rem;
+      color: var(--slate);
+      line-height: 1.75;
+      margin-bottom: 2.25rem;
+    }
+
+    .consult-meta { list-style: none; }
+
+    .consult-meta li {
+      display: flex;
+      gap: 0.9rem;
+      padding: 0.6rem 0;
+      border-top: 1px solid rgba(255,255,255,0.06);
+      font-family: 'DM Mono', monospace;
+      font-size: 0.72rem;
+      color: var(--frost);
+      line-height: 1.5;
+    }
+
+    .consult-meta .ml {
+      color: var(--teal);
+      flex-shrink: 0;
+      width: 64px;
+    }
+
+    .cform {
+      display: flex;
+      flex-direction: column;
+      gap: 1.1rem;
+    }
+
+    .frow {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+
+    .fg {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+    }
+
+    .fg label {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.62rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--teal);
+    }
+
+    .fg input,
+    .fg select,
+    .fg textarea {
+      background: var(--midnight);
+      border: 1px solid rgba(255,255,255,0.09);
+      color: var(--white);
+      padding: 0.72rem 0.9rem;
+      font-family: 'Barlow', sans-serif;
+      font-size: 0.875rem;
+      outline: none;
+      transition: border-color 0.2s;
+      appearance: none;
+      -webkit-appearance: none;
+      width: 100%;
+    }
+
+    .fg input::placeholder,
+    .fg textarea::placeholder { color: var(--slate); }
+
+    .fg input:focus,
+    .fg select:focus,
+    .fg textarea:focus { border-color: var(--teal); }
+
+    .fg select { cursor: pointer; background-image: none; }
+    .fg select option { background: var(--midnight); }
+
+    .fg textarea { resize: vertical; min-height: 96px; }
+
+    .btn-submit {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.75rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--navy);
+      background: var(--teal);
+      border: 1px solid var(--teal);
+      padding: 0.95rem 2rem;
+      cursor: pointer;
+      align-self: flex-start;
+      transition: background 0.2s, border-color 0.2s;
+    }
+
+    .btn-submit:hover { background: var(--teal-deep); border-color: var(--teal-deep); }
+
+    .form-ok {
+      display: none;
+      font-family: 'DM Mono', monospace;
+      font-size: 0.72rem;
+      letter-spacing: 0.08em;
+      color: var(--teal);
+      border: 1px solid rgba(34,160,138,0.35);
+      padding: 0.9rem 1rem;
+    }
+
+    /* ── CONTACT ── */
+    #contact {
+      background: var(--midnight);
+      border-top: 1px solid rgba(34,160,138,0.1);
+    }
+
+    .contact-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 3rem;
+    }
+
+    .cb h4 {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.62rem;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--teal);
+      margin-bottom: 0.75rem;
+    }
+
+    .cb p, .cb a {
+      font-size: 0.875rem;
+      color: var(--frost);
+      text-decoration: none;
+      line-height: 1.85;
+      display: block;
+    }
+
+    .cb a:hover { color: var(--teal); }
+
+    /* ── FOOTER ── */
+    footer {
+      background: var(--navy);
+      padding: 2.25rem 2.5rem 0;
+    }
+
+    .footer-top {
+      max-width: 1100px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-bottom: 1.75rem;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      margin-bottom: 1.25rem;
+    }
+
+    .footer-nav {
+      display: flex;
+      gap: 2rem;
+      list-style: none;
+    }
+
+    .footer-nav a {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.65rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--slate);
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+
+    .footer-nav a:hover { color: var(--teal); }
+
+    .footer-legal {
+      max-width: 1100px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: space-between;
+      padding-bottom: 2rem;
+    }
+
+    .footer-legal p {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.62rem;
+      letter-spacing: 0.08em;
+      color: var(--slate);
+    }
+
+    .jamaica-band {
+      background: var(--teal);
+      padding: 0.55rem 2.5rem;
+      text-align: center;
+    }
+
+    .jamaica-band p {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.62rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--navy);
+    }
+
+    /* ── RESPONSIVE ── */
+    @media (max-width: 960px) {
+      .svc-grid,
+      .why-grid,
+      .reviews-grid,
+      .contact-grid { grid-template-columns: 1fr; }
+
+      .consult-wrap { grid-template-columns: 1fr; gap: 3rem; }
+      .frow { grid-template-columns: 1fr; }
+
+      .gallery-grid { grid-template-columns: 1fr 1fr; }
+      .g-item.wide { grid-column: span 2; aspect-ratio: 16/9; }
+
+      .footer-top { flex-direction: column; align-items: flex-start; gap: 1.25rem; }
+      .footer-legal { flex-direction: column; gap: 0.5rem; }
+
+      .nav-links, .nav-cta { display: none; }
+      .nav-hamburger { display: flex; }
+    }
+
+    @media (max-width: 600px) {
+      section { padding: 3.5rem 1.25rem; }
+      nav { padding: 0 1.25rem; }
+      .gallery-grid { grid-template-columns: 1fr; }
+      .g-item.wide { grid-column: span 1; aspect-ratio: 4/3; }
+      .footer-top { padding: 0 0 1.5rem; }
+      footer { padding: 2rem 1.25rem 0; }
+      .jamaica-band { padding: 0.55rem 1.25rem; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════ LOGO SYMBOL (reusable) -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+  <symbol id="pc-logo" viewBox="0 0 70 84">
+    <defs>
+      <clipPath id="cc">
+        <rect x="0" y="0" width="70" height="84" rx="8"/>
+      </clipPath>
+    </defs>
+    <!-- Container -->
+    <rect x="0" y="0" width="70" height="84" rx="8" fill="#0B2545"/>
+    <!-- Jamaica band -->
+    <rect x="0" y="71" width="70" height="13" fill="#22A08A" clip-path="url(#cc)"/>
+    <!-- Snowflake lines -->
+    <line x1="35" y1="8"  x2="35" y2="62" stroke="#22A08A" stroke-width="3" stroke-linecap="round"/>
+    <line x1="8"  y1="35" x2="62" y2="35" stroke="#22A08A" stroke-width="3" stroke-linecap="round"/>
+    <line x1="15" y1="15" x2="55" y2="55" stroke="#22A08A" stroke-width="3" stroke-linecap="round"/>
+    <line x1="55" y1="15" x2="15" y2="55" stroke="#22A08A" stroke-width="3" stroke-linecap="round"/>
+    <!-- Cardinal arrow tips -->
+    <polygon points="35,3 31,11 39,11"   fill="#22A08A"/>
+    <polygon points="35,67 31,59 39,59"  fill="#22A08A"/>
+    <polygon points="3,35 11,31 11,39"   fill="#22A08A"/>
+    <polygon points="67,35 59,31 59,39"  fill="#22A08A"/>
+    <!-- Diagonal arrow tips -->
+    <polygon points="11,11 19,14 14,19"  fill="#22A08A"/>
+    <polygon points="59,59 51,56 56,51"  fill="#22A08A"/>
+    <polygon points="59,11 52,16 56,20"  fill="#22A08A"/>
+    <polygon points="11,59 14,52 20,56"  fill="#22A08A"/>
+    <!-- Center circle -->
+    <circle cx="35" cy="35" r="7" fill="#22A08A"/>
+    <!-- JAMAICA text -->
+    <text x="35" y="81" font-family="Barlow Condensed, sans-serif" font-weight="700" font-size="7.5" fill="#0B2545" text-anchor="middle" letter-spacing="1.2">JAMAICA</text>
+  </symbol>
+</svg>
+
+<!-- ═══════════════════════════════════════════ NAV -->
+<nav>
+  <a href="#hero" class="nav-brand">
+    <svg width="38" height="46"><use href="#pc-logo"/></svg>
+    <div class="nav-wordmark">
+      <span class="wm-main">PRIME<span class="cool">COOL</span></span>
+      <span class="wm-sub">Services Ltd.</span>
+    </div>
+  </a>
+
+  <ul class="nav-links">
+    <li><a href="#services">Services</a></li>
+    <li><a href="#why">Why PrimeCool</a></li>
+    <li><a href="#gallery">Work</a></li>
+    <li><a href="#reviews">Reviews</a></li>
+    <li><a href="#contact">Contact</a></li>
+  </ul>
+
+  <a href="#consult" class="nav-cta">Request a PM Contract</a>
+
+  <button class="nav-hamburger" id="hamburger" aria-label="Open menu">
+    <span></span><span></span><span></span>
+  </button>
+</nav>
+
+<div class="mobile-menu" id="mobileMenu">
+  <a href="#services"  onclick="closeMobile()">Services</a>
+  <a href="#why"       onclick="closeMobile()">Why PrimeCool</a>
+  <a href="#gallery"   onclick="closeMobile()">Past Work</a>
+  <a href="#reviews"   onclick="closeMobile()">Reviews</a>
+  <a href="#consult"   onclick="closeMobile()">Schedule Consultation</a>
+  <a href="#contact"   onclick="closeMobile()">Contact</a>
+</div>
+
+<!-- ═══════════════════════════════════════════ HERO -->
+<section id="hero">
+  <div class="hero-grid"></div>
+  <div class="hero-vignette"></div>
+  <div class="hero-glow"></div>
+  <div class="hero-inner">
+    <div class="hero-logo">
+      <svg width="88" height="106"><use href="#pc-logo"/></svg>
+    </div>
+    <div class="hero-wordmark">PRIME<span class="cool">COOL</span></div>
+    <div class="hero-svc">Services Ltd.</div>
+    <div class="hero-tagline">Prevent. Maintain. Perform.</div>
+    <div class="hero-descriptor">
+      HVAC Preventive Maintenance Specialists &nbsp;·&nbsp;
+      <span class="hl">Kingston &amp; St. Andrew, Jamaica</span>
+    </div>
+    <a href="#consult" class="btn-cta">Request a PM Contract</a>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ SERVICES -->
+<section id="services">
+  <div class="si">
+    <div class="eyebrow">Service Tiers</div>
+    <h2 class="sh">Maintenance Built for Your Scale</h2>
+    <p class="sl">Three structured tiers. One documentation standard. Every visit logged, every finding reported within 24 hours.</p>
+
+    <div class="svc-grid">
+
+      <!-- RESIDENTIAL -->
+      <div class="svc-card tier-res">
+        <div class="tier-tag">Residential</div>
+        <h3>Home &amp; Property</h3>
+        <p class="client-desc">Homeowners · Condominiums · Small Residential Complexes</p>
+        <ul class="svc-list">
+          <li>Evaporator &amp; condenser coil cleaning</li>
+          <li>Condensate drain flush</li>
+          <li>Filter replacement</li>
+          <li>Refrigerant charge check</li>
+          <li>Before/after photo documentation</li>
+          <li>Digital visit report — same day</li>
+        </ul>
+        <div class="cred-block">
+          <div class="cred-label">Credentials</div>
+          <div class="cred-body">
+            HEART Certified Technicians<br>
+            Licensed &amp; Insured<br>
+            Digital Visit Reports
+          </div>
+        </div>
+      </div>
+
+      <!-- COMMERCIAL -->
+      <div class="svc-card tier-com">
+        <div class="tier-tag">Commercial</div>
+        <h3>SME &amp; Corporate</h3>
+        <p class="client-desc">Office Buildings · Retail · Hospitality · Medical Offices</p>
+        <ul class="svc-list">
+          <li>Full residential scope</li>
+          <li>Duct inspection</li>
+          <li>Compressor performance testing</li>
+          <li>Thermostat calibration</li>
+          <li>Belt &amp; bearing inspection</li>
+          <li>Condensate management</li>
+          <li>Monthly written service reports</li>
+        </ul>
+        <div class="cred-block">
+          <div class="cred-label">SLA — Critical Failure Response</div>
+          <div class="cred-body">
+            Acknowledgement: 1 hour<br>
+            Technician on-site: 4 hours<br>
+            KPI-Tracked Service
+          </div>
+        </div>
+      </div>
+
+      <!-- INDUSTRIAL -->
+      <div class="svc-card tier-ind">
+        <div class="tier-tag" style="font-family:'DM Mono',monospace;">Industrial Division</div>
+        <h3>Process &amp; Facility</h3>
+        <p class="client-desc">Pharmaceutical · Cold-Chain · Food Processing · Manufacturing</p>
+        <ul class="svc-list">
+          <li>Chiller plant maintenance</li>
+          <li>Cooling tower programs</li>
+          <li>Closed-loop chemistry</li>
+          <li>Legionella risk management</li>
+          <li>Emergency response SLA</li>
+          <li>GMP documentation standard</li>
+        </ul>
+        <div class="cred-block">
+          <div class="cred-label">Credentials — Mandatory</div>
+          <div class="cred-body">
+            EPA Universal<br>
+            OSHA 30<br>
+            GMP Utility Operations<br>
+            Pharmaceutical Scale Experience
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ WHY PRIMECOOL -->
+<section id="why">
+  <div class="si">
+    <div class="eyebrow">Why PrimeCool</div>
+    <h2 class="sh">Engineered for Reliability.</h2>
+    <div class="why-grid">
+
+      <div class="why-item">
+        <div class="why-num">01 — PM CONTRACT MODEL</div>
+        <h3>Recurring. Not Reactive.</h3>
+        <p>PrimeCool operates on a PM-first contract model. 65–75% of revenue is structured maintenance — scheduled, documented, and delivered on interval. We don't wait for equipment to fail. We build the maintenance program that prevents failure from happening. Corrective work, when it arises, follows the same standard: logged, reported, closed out in writing.</p>
+      </div>
+
+      <div class="why-item">
+        <div class="why-num">02 — DOCUMENTATION STANDARD</div>
+        <h3>Documented by Default.</h3>
+        <p>Every PM visit generates a digital visit report. Every reading is logged. Every finding is reported within 24 hours. Clients receive complete service records — not a callback saying the work is done. The paper trail is the product. KPI tracking, trend data, and full service history are delivered with every contract, every cycle.</p>
+      </div>
+
+      <div class="why-item">
+        <div class="why-num">03 — TECHNICAL CAPABILITY</div>
+        <h3>Industrial-Grade. Applied Everywhere.</h3>
+        <p>PrimeCool is founded by a Licensed Stationary Engineer with 10+ years of GMP-regulated utility operations — chiller plants, cooling towers, high-pressure boilers, and pharmaceutical-scale systems. That technical depth doesn't stay in the industrial division. Every technician, every tier, and every client receives the benefit of that standard.</p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ GALLERY -->
+<section id="gallery">
+  <div class="si">
+    <div class="eyebrow">Past Work</div>
+    <h2 class="sh">Work That Speaks for Itself</h2>
+    <p class="sl">Before/after documentation is standard on every PM visit. No exceptions. Photos below are updated as projects are completed.</p>
+
+    <div class="gallery-grid">
+
+      <div class="g-item wide">
+        <div class="g-badge">Commercial</div>
+        <svg class="g-icon" width="52" height="52" viewBox="0 0 24 24" fill="none">
+          <rect x="3" y="3" width="18" height="18" rx="2" stroke="#22A08A" stroke-width="1.5"/>
+          <circle cx="8.5" cy="8.5" r="1.5" fill="#22A08A"/>
+          <path d="M21 15l-5-5L5 21" stroke="#22A08A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="g-label">Chiller Plant — Pre &amp; Post PM</span>
+      </div>
+
+      <div class="g-item">
+        <div class="g-badge">Residential</div>
+        <svg class="g-icon" width="38" height="38" viewBox="0 0 24 24" fill="none">
+          <rect x="3" y="3" width="18" height="18" rx="2" stroke="#22A08A" stroke-width="1.5"/>
+          <circle cx="8.5" cy="8.5" r="1.5" fill="#22A08A"/>
+          <path d="M21 15l-5-5L5 21" stroke="#22A08A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="g-label">Coil Cleaning</span>
+      </div>
+
+      <div class="g-item">
+        <div class="g-badge">Commercial</div>
+        <svg class="g-icon" width="38" height="38" viewBox="0 0 24 24" fill="none">
+          <rect x="3" y="3" width="18" height="18" rx="2" stroke="#22A08A" stroke-width="1.5"/>
+          <circle cx="8.5" cy="8.5" r="1.5" fill="#22A08A"/>
+          <path d="M21 15l-5-5L5 21" stroke="#22A08A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="g-label">Condensate System — Medical Office</span>
+      </div>
+
+      <div class="g-item">
+        <div class="g-badge" style="background:#C49A2A;color:#111820;">Industrial</div>
+        <svg class="g-icon" width="38" height="38" viewBox="0 0 24 24" fill="none">
+          <rect x="3" y="3" width="18" height="18" rx="2" stroke="#22A08A" stroke-width="1.5"/>
+          <circle cx="8.5" cy="8.5" r="1.5" fill="#22A08A"/>
+          <path d="M21 15l-5-5L5 21" stroke="#22A08A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="g-label">Cooling Tower Program</span>
+      </div>
+
+      <div class="g-item">
+        <div class="g-badge">Commercial</div>
+        <svg class="g-icon" width="38" height="38" viewBox="0 0 24 24" fill="none">
+          <rect x="3" y="3" width="18" height="18" rx="2" stroke="#22A08A" stroke-width="1.5"/>
+          <circle cx="8.5" cy="8.5" r="1.5" fill="#22A08A"/>
+          <path d="M21 15l-5-5L5 21" stroke="#22A08A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="g-label">Compressor Performance Test</span>
+      </div>
+
+      <div class="g-item">
+        <div class="g-badge">Residential</div>
+        <svg class="g-icon" width="38" height="38" viewBox="0 0 24 24" fill="none">
+          <rect x="3" y="3" width="18" height="18" rx="2" stroke="#22A08A" stroke-width="1.5"/>
+          <circle cx="8.5" cy="8.5" r="1.5" fill="#22A08A"/>
+          <path d="M21 15l-5-5L5 21" stroke="#22A08A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="g-label">Filter Replacement Program</span>
+      </div>
+
+    </div>
+    <p class="gallery-note">Photos replaced with job documentation as work is completed.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ REVIEWS -->
+<section id="reviews">
+  <div class="si">
+    <div class="eyebrow">Client Reviews</div>
+    <h2 class="sh">What Clients Say</h2>
+    <div class="reviews-grid">
+
+      <div class="review-card">
+        <div class="stars"><span>★</span><span>★</span><span>★</span><span>★</span><span>★</span></div>
+        <p class="review-text">"We've had HVAC services before. PrimeCool is different. The visit reports are detailed, photos are timestamped, and we actually know what was done and why. That's new for us."</p>
+        <div class="review-by">
+          <strong>J. Campbell</strong>
+          Operations Manager · Kingston Commercial Property
+        </div>
+      </div>
+
+      <div class="review-card">
+        <div class="stars"><span>★</span><span>★</span><span>★</span><span>★</span><span>★</span></div>
+        <p class="review-text">"Our facility has strict compliance requirements. PrimeCool's documentation standard and GMP familiarity made them the right fit. They understood our environment from day one."</p>
+        <div class="review-by">
+          <strong>M. Thompson</strong>
+          Facilities Lead · Pharmaceutical Manufacturing
+        </div>
+      </div>
+
+      <div class="review-card">
+        <div class="stars"><span>★</span><span>★</span><span>★</span><span>★</span><span>★</span></div>
+        <p class="review-text">"Signed a PM contract after our unit broke down twice in one year. Fourteen months in — no breakdowns, two minor issues caught early and fixed at the visit. This is what maintenance should look like."</p>
+        <div class="review-by">
+          <strong>D. Morrison</strong>
+          Homeowner · St. Andrew, Jamaica
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ CONSULTATION -->
+<section id="consult">
+  <div class="si">
+    <div class="consult-wrap">
+
+      <div class="consult-left">
+        <div class="eyebrow">Schedule a Consultation</div>
+        <h2>Request a PM Contract</h2>
+        <p>Tell us about your facility. We'll assess your equipment, define the maintenance scope, and deliver a structured PM contract proposal — documented, priced, and scheduled.</p>
+        <ul class="consult-meta">
+          <li><span class="ml">Phone</span> +1 (876) 000-0000</li>
+          <li><span class="ml">Email</span> info@primecoolservices.com</li>
+          <li><span class="ml">Hours</span> Mon–Fri · 8:00 AM – 5:00 PM</li>
+          <li><span class="ml">Area</span> Kingston &amp; St. Andrew, Jamaica</li>
+        </ul>
+      </div>
+
+      <form class="cform" id="consultForm" novalidate>
+        <div class="frow">
+          <div class="fg">
+            <label for="fname">First Name</label>
+            <input type="text" id="fname" name="fname" placeholder="First name" required>
+          </div>
+          <div class="fg">
+            <label for="lname">Last Name</label>
+            <input type="text" id="lname" name="lname" placeholder="Last name" required>
+          </div>
+        </div>
+        <div class="frow">
+          <div class="fg">
+            <label for="email">Email Address</label>
+            <input type="email" id="email" name="email" placeholder="you@company.com" required>
+          </div>
+          <div class="fg">
+            <label for="phone">Phone Number</label>
+            <input type="tel" id="phone" name="phone" placeholder="+1 (876) 000-0000">
+          </div>
+        </div>
+        <div class="fg">
+          <label for="company">Company / Property Name</label>
+          <input type="text" id="company" name="company" placeholder="Optional">
+        </div>
+        <div class="fg">
+          <label for="tier">Service Tier</label>
+          <select id="tier" name="tier" required>
+            <option value="" disabled selected>Select a tier</option>
+            <option value="residential">Residential — Home &amp; Property</option>
+            <option value="commercial">Commercial — SME &amp; Corporate</option>
+            <option value="industrial">Industrial — Process &amp; Facility</option>
+            <option value="unsure">Not sure — need an assessment</option>
+          </select>
+        </div>
+        <div class="fg">
+          <label for="msg">Describe Your Equipment / Facility</label>
+          <textarea id="msg" name="msg" placeholder="Number of units, equipment type, location, current maintenance schedule (if any)..."></textarea>
+        </div>
+        <button type="submit" class="btn-submit">Submit Consultation Request</button>
+        <div class="form-ok" id="formOk">
+          Request received — a PrimeCool technician will contact you within 1 business day.
+        </div>
+      </form>
+
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ CONTACT -->
+<section id="contact">
+  <div class="si">
+    <div class="contact-grid">
+      <div class="cb">
+        <h4>Contact</h4>
+        <a href="tel:+18760000000">+1 (876) 000-0000</a>
+        <a href="mailto:info@primecoolservices.com">info@primecoolservices.com</a>
+        <a href="https://www.primecoolservices.com">www.primecoolservices.com</a>
+      </div>
+      <div class="cb">
+        <h4>Service Area</h4>
+        <p>Kingston, Jamaica</p>
+        <p>St. Andrew, Jamaica</p>
+        <p style="color:var(--slate);font-size:0.8rem;margin-top:0.4rem;">Commercial &amp; industrial by assessment</p>
+      </div>
+      <div class="cb">
+        <h4>Registration</h4>
+        <p>PrimeCool Services Ltd.</p>
+        <p>Registered in Jamaica</p>
+        <p>TRN: 000-000-000</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ FOOTER -->
+<footer>
+  <div class="footer-top">
+    <a href="#hero" class="nav-brand">
+      <svg width="32" height="38"><use href="#pc-logo"/></svg>
+      <div class="nav-wordmark">
+        <span class="wm-main">PRIME<span class="cool">COOL</span></span>
+        <span class="wm-sub">Services Ltd.</span>
+      </div>
+    </a>
+    <ul class="footer-nav">
+      <li><a href="#services">Services</a></li>
+      <li><a href="#why">Why PrimeCool</a></li>
+      <li><a href="#gallery">Work</a></li>
+      <li><a href="#reviews">Reviews</a></li>
+      <li><a href="#consult">Consultation</a></li>
+      <li><a href="#contact">Contact</a></li>
+    </ul>
+  </div>
+  <div class="footer-legal">
+    <p>© 2028 PrimeCool Services Ltd. All rights reserved.</p>
+    <p>PrimeCool Services Ltd. · Registered in Jamaica · HVAC Preventive Maintenance Specialists</p>
+  </div>
+</footer>
+
+<div class="jamaica-band">
+  <p>PrimeCool Services Ltd. · Registered in Jamaica · HVAC Preventive Maintenance Specialists</p>
+</div>
+
+<script>
+  // Mobile nav
+  const hamburger = document.getElementById('hamburger');
+  const mobileMenu = document.getElementById('mobileMenu');
+
+  hamburger.addEventListener('click', () => {
+    mobileMenu.classList.toggle('open');
+  });
+
+  function closeMobile() {
+    mobileMenu.classList.remove('open');
+  }
+
+  // Close mobile menu on outside click
+  document.addEventListener('click', (e) => {
+    if (!hamburger.contains(e.target) && !mobileMenu.contains(e.target)) {
+      mobileMenu.classList.remove('open');
+    }
+  });
+
+  // Form submission
+  document.getElementById('consultForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const fname = document.getElementById('fname').value.trim();
+    const email = document.getElementById('email').value.trim();
+    const tier  = document.getElementById('tier').value;
+
+    if (!fname || !email || !tier) {
+      const fields = [];
+      if (!fname) fields.push('First Name');
+      if (!email) fields.push('Email Address');
+      if (!tier)  fields.push('Service Tier');
+      alert('Please complete: ' + fields.join(', '));
+      return;
+    }
+
+    const btn = this.querySelector('.btn-submit');
+    btn.disabled = true;
+    btn.textContent = 'Sending…';
+
+    try {
+      const res = await fetch('/api/consult', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fname,
+          lname:   document.getElementById('lname').value.trim(),
+          email,
+          phone:   document.getElementById('phone').value.trim(),
+          company: document.getElementById('company').value.trim(),
+          tier,
+          msg:     document.getElementById('msg').value.trim(),
+        }),
+      });
+
+      if (!res.ok) throw new Error('server error');
+
+      document.getElementById('formOk').style.display = 'block';
+      btn.textContent = 'Submitted';
+      btn.style.opacity = '0.5';
+    } catch {
+      btn.disabled = false;
+      btn.textContent = 'Submit Consultation Request';
+      alert('Something went wrong. Please try again or email us directly.');
+    }
+  });
+</script>
+</body>
+</html>
