@@ -4,9 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import os
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+import resend as resend_lib
 
 from database import init_db, save_submission
 
@@ -53,11 +51,11 @@ def health():
 async def submit_consult(req: ConsultRequest):
     save_submission(req.model_dump())
 
-    gmail_user     = os.environ.get("GMAIL_USER")
-    gmail_password = os.environ.get("GMAIL_APP_PASSWORD")
-    notify_email   = os.environ.get("NOTIFY_EMAIL", "rjuggar@aol.com")
+    api_key      = os.environ.get("RESEND_API_KEY")
+    notify_email = os.environ.get("NOTIFY_EMAIL", "juggarr@gmail.com")
 
-    if gmail_user and gmail_password:
+    if api_key:
+        resend_lib.api_key = api_key
         tier_label = TIER_LABELS.get(req.tier, req.tier)
 
         msg_block = (
@@ -97,17 +95,12 @@ async def submit_consult(req: ConsultRequest):
         """
 
         try:
-            msg = MIMEMultipart("alternative")
-            msg["Subject"] = f"New Consultation Request — {req.fname} {req.lname} ({tier_label})"
-            msg["From"]    = f"PrimeCool Services <{gmail_user}>"
-            msg["To"]      = notify_email
-            msg.attach(MIMEText(html, "html"))
-
-            with smtplib.SMTP("smtp.gmail.com", 587, timeout=15) as server:
-                server.ehlo()
-                server.starttls()
-                server.login(gmail_user, gmail_password)
-                server.sendmail(gmail_user, notify_email, msg.as_string())
+            resend_lib.Emails.send({
+                "from":    "PrimeCool Services <onboarding@resend.dev>",
+                "to":      notify_email,
+                "subject": f"New Consultation Request — {req.fname} {req.lname} ({tier_label})",
+                "html":    html,
+            })
         except Exception as e:
             print(f"EMAIL ERROR: {e}")
 
