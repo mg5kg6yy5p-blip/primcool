@@ -435,11 +435,6 @@
       aspect-ratio: 4/3;
       background: var(--midnight);
       border: 1px solid rgba(255,255,255,0.04);
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 0.6rem;
       position: relative;
       overflow: hidden;
       transition: border-color 0.2s;
@@ -451,6 +446,16 @@
       grid-column: span 2;
       aspect-ratio: 16/9;
     }
+
+    .g-item img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+      transition: transform 0.4s ease;
+    }
+
+    .g-item:hover img { transform: scale(1.03); }
 
     .g-icon { opacity: 0.25; }
 
@@ -475,6 +480,7 @@
       color: var(--navy);
       background: var(--teal);
       padding: 0.2rem 0.5rem;
+      z-index: 1;
     }
 
     .gallery-note {
@@ -998,69 +1004,29 @@
     <p class="sl">Before/after documentation is standard on every PM visit. No exceptions. Photos below are updated as projects are completed.</p>
 
     <div class="gallery-grid">
-
-      <div class="g-item wide">
-        <div class="g-badge">Commercial</div>
-        <svg class="g-icon" width="52" height="52" viewBox="0 0 24 24" fill="none">
-          <rect x="3" y="3" width="18" height="18" rx="2" stroke="#22A08A" stroke-width="1.5"/>
-          <circle cx="8.5" cy="8.5" r="1.5" fill="#22A08A"/>
-          <path d="M21 15l-5-5L5 21" stroke="#22A08A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-        <span class="g-label">Chiller Plant — Pre &amp; Post PM</span>
-      </div>
-
-      <div class="g-item">
-        <div class="g-badge">Residential</div>
-        <svg class="g-icon" width="38" height="38" viewBox="0 0 24 24" fill="none">
-          <rect x="3" y="3" width="18" height="18" rx="2" stroke="#22A08A" stroke-width="1.5"/>
-          <circle cx="8.5" cy="8.5" r="1.5" fill="#22A08A"/>
-          <path d="M21 15l-5-5L5 21" stroke="#22A08A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-        <span class="g-label">Coil Cleaning</span>
-      </div>
-
-      <div class="g-item">
-        <div class="g-badge">Commercial</div>
-        <svg class="g-icon" width="38" height="38" viewBox="0 0 24 24" fill="none">
-          <rect x="3" y="3" width="18" height="18" rx="2" stroke="#22A08A" stroke-width="1.5"/>
-          <circle cx="8.5" cy="8.5" r="1.5" fill="#22A08A"/>
-          <path d="M21 15l-5-5L5 21" stroke="#22A08A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-        <span class="g-label">Condensate System — Medical Office</span>
-      </div>
-
-      <div class="g-item">
-        <div class="g-badge" style="background:#C49A2A;color:#111820;">Industrial</div>
-        <svg class="g-icon" width="38" height="38" viewBox="0 0 24 24" fill="none">
-          <rect x="3" y="3" width="18" height="18" rx="2" stroke="#22A08A" stroke-width="1.5"/>
-          <circle cx="8.5" cy="8.5" r="1.5" fill="#22A08A"/>
-          <path d="M21 15l-5-5L5 21" stroke="#22A08A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-        <span class="g-label">Cooling Tower Program</span>
-      </div>
-
-      <div class="g-item">
-        <div class="g-badge">Commercial</div>
-        <svg class="g-icon" width="38" height="38" viewBox="0 0 24 24" fill="none">
-          <rect x="3" y="3" width="18" height="18" rx="2" stroke="#22A08A" stroke-width="1.5"/>
-          <circle cx="8.5" cy="8.5" r="1.5" fill="#22A08A"/>
-          <path d="M21 15l-5-5L5 21" stroke="#22A08A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-        <span class="g-label">Compressor Performance Test</span>
-      </div>
-
-      <div class="g-item">
-        <div class="g-badge">Residential</div>
-        <svg class="g-icon" width="38" height="38" viewBox="0 0 24 24" fill="none">
-          <rect x="3" y="3" width="18" height="18" rx="2" stroke="#22A08A" stroke-width="1.5"/>
-          <circle cx="8.5" cy="8.5" r="1.5" fill="#22A08A"/>
-          <path d="M21 15l-5-5L5 21" stroke="#22A08A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-        <span class="g-label">Filter Replacement Program</span>
-      </div>
-
+      <div class="g-item wide"><img src="images/IMG_0339.jpg" alt="Job site photo"></div>
+      <div class="g-item"><img src="images/IMG_0340.jpg" alt="Job site photo"></div>
+      <div class="g-item"><img src="images/IMG_0341.jpg" alt="Job site photo"></div>
+      <div class="g-item"><img src="images/IMG_0343.jpg" alt="Job site photo"></div>
+      <div class="g-item wide"><img src="images/IMG_0344.jpg" alt="Job site photo"></div>
+      <div class="g-item"><img src="images/IMG_0345.jpg" alt="Job site photo"></div>
+      <div class="g-item"><img src="images/IMG_0346.jpg" alt="Job site photo"></div>
+      <div class="g-item"><img src="images/IMG_0347.jpg" alt="Job site photo"></div>
+      <div class="g-item wide"><img src="images/IMG_0348.jpg" alt="Job site photo"></div>
+      <div class="g-item"><img src="images/IMG_0349.jpg" alt="Job site photo"></div>
+      <div class="g-item"><img src="images/IMG_0350.jpg" alt="Job site photo"></div>
+      <div class="g-item"><img src="images/IMG_0351.jpg" alt="Job site photo"></div>
+      <div class="g-item"><img src="images/IMG_0352.jpg" alt="Job site photo"></div>
+      <div class="g-item wide"><img src="images/IMG_0353.jpg" alt="Job site photo"></div>
+      <div class="g-item"><img src="images/IMG_0354.jpg" alt="Job site photo"></div>
+      <div class="g-item"><img src="images/IMG_0355.jpg" alt="Job site photo"></div>
+      <div class="g-item"><img src="images/IMG_0356.jpg" alt="Job site photo"></div>
+      <div class="g-item"><img src="images/IMG_0358.jpg" alt="Job site photo"></div>
+      <div class="g-item wide"><img src="images/IMG_0359.jpg" alt="Job site photo"></div>
+      <div class="g-item"><img src="images/IMG_0360.jpg" alt="Job site photo"></div>
+      <div class="g-item"><img src="images/IMG_0361.jpg" alt="Job site photo"></div>
+      <div class="g-item"><img src="images/IMG_0362.jpg" alt="Job site photo"></div>
     </div>
-    <p class="gallery-note">Photos replaced with job documentation as work is completed.</p>
   </div>
 </section>
 
