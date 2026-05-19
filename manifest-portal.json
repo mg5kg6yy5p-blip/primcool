@@ -1,0 +1,17 @@
+{
+  "name": "PrimeCool Customer Portal",
+  "short_name": "PrimeCool",
+  "description": "View your maintenance schedule, service history, and rate visits.",
+  "start_url": "/portal",
+  "scope": "/portal",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0B2545",
+  "theme_color": "#0B2545",
+  "categories": ["business", "utilities"],
+  "icons": [
+    { "src": "/icons/customer-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/customer-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/customer-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

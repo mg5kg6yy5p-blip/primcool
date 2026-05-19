@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0B2545">
+  <title>Reset PIN — PrimeCool Customer Portal</title>
+  <style>
+    :root {
+      --navy: #0B2545;
+      --teal: #22A08A;
+      --teal-deep: #1A7A6A;
+      --bg: #f0f4f8;
+      --text: #1a2533;
+      --muted: #5A6472;
+      --border: #dde3ea;
+      --red: #dc2626;
+      --green: #059669;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex; flex-direction: column;
+    }
+    header {
+      background: var(--navy);
+      padding: 18px 32px;
+      color: white;
+    }
+    .brand { color: white; font-size: 20px; font-weight: 700; }
+    .brand span { color: var(--teal); }
+    main {
+      flex: 1;
+      display: flex; align-items: center; justify-content: center;
+      padding: 24px;
+    }
+    .card {
+      background: white; border-radius: 16px;
+      box-shadow: 0 6px 30px rgba(11,37,69,0.12);
+      padding: 40px 36px; width: 100%; max-width: 400px;
+    }
+    h1 { color: var(--navy); font-size: 22px; margin-bottom: 8px; }
+    .sub { color: var(--muted); font-size: 14px; margin-bottom: 28px; line-height: 1.6; }
+    label {
+      display: block; font-size: 12px; font-weight: 700;
+      letter-spacing: 0.7px; text-transform: uppercase;
+      color: var(--navy); margin-bottom: 6px;
+    }
+    input {
+      width: 100%; padding: 13px 14px;
+      border: 2px solid var(--border); border-radius: 10px;
+      font-size: 22px; color: var(--text);
+      letter-spacing: 12px; text-align: center;
+      font-family: 'Courier New', monospace;
+      outline: none; transition: border-color 0.15s;
+      margin-bottom: 16px;
+    }
+    input:focus { border-color: var(--teal); }
+    .btn {
+      width: 100%; padding: 14px;
+      background: var(--teal); color: white;
+      border: none; border-radius: 10px;
+      font-size: 15px; font-weight: 600;
+      cursor: pointer; transition: background 0.15s;
+    }
+    .btn:hover:not(:disabled) { background: var(--teal-deep); }
+    .btn:disabled { background: #b0bec5; cursor: not-allowed; }
+    .alert {
+      padding: 11px 14px; border-radius: 8px;
+      font-size: 13px; margin-bottom: 14px;
+      display: none; line-height: 1.5;
+    }
+    .alert.error   { background: #fff5f5; color: var(--red); border: 1px solid #fed7d7; }
+    .alert.success { background: #f0fdf4; color: var(--green); border: 1px solid #bbf7d0; }
+    .alert.show { display: block; }
+    .back {
+      text-align: center; margin-top: 18px;
+      font-size: 13px; color: var(--muted);
+    }
+    .back a { color: var(--teal); text-decoration: none; font-weight: 600; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <a href="/" class="brand">Prime<span>Cool</span> Services</a>
+  </header>
+
+  <main>
+    <div class="card">
+      <h1>Reset Your PIN</h1>
+      <p class="sub">Choose a new 4–8 digit PIN. You'll use this with your customer ID to sign in.</p>
+
+      <div class="alert error"   id="alertErr"></div>
+      <div class="alert success" id="alertOk">PIN updated. Redirecting to sign in…</div>
+
+      <div id="form">
+        <label for="pin1">New PIN</label>
+        <input type="password" id="pin1" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="••••" autocomplete="off">
+
+        <label for="pin2">Confirm PIN</label>
+        <input type="password" id="pin2" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="••••" autocomplete="off">
+
+        <button class="btn" id="submitBtn" onclick="doReset()">Set New PIN</button>
+      </div>
+
+      <div class="back"><a href="/portal">← Back to Sign In</a></div>
+    </div>
+  </main>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const token  = params.get('token');
+
+    if (!token) {
+      showErr('Missing reset token. Request a new reset link from the sign-in page.');
+      document.getElementById('form').style.display = 'none';
+    }
+
+    document.getElementById('pin2').addEventListener('keydown', e => {
+      if (e.key === 'Enter') doReset();
+    });
+
+    async function doReset() {
+      const pin1 = document.getElementById('pin1').value.trim();
+      const pin2 = document.getElementById('pin2').value.trim();
+      const btn  = document.getElementById('submitBtn');
+      hideAlerts();
+
+      if (!/^\d{4,8}$/.test(pin1)) { showErr('PIN must be 4–8 digits.'); return; }
+      if (pin1 !== pin2) { showErr('PINs do not match.'); return; }
+
+      btn.disabled = true; btn.textContent = 'Saving…';
+
+      try {
+        const res = await fetch('/api/portal/reset-pin', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ token, pin: pin1, confirm_pin: pin2 }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          showErr(data.detail || 'Could not reset PIN.');
+          btn.disabled = false; btn.textContent = 'Set New PIN';
+          return;
+        }
+        document.getElementById('form').style.display = 'none';
+        document.getElementById('alertOk').classList.add('show');
+        setTimeout(() => { window.location.href = '/portal'; }, 2200);
+      } catch {
+        showErr('Connection error. Please try again.');
+        btn.disabled = false; btn.textContent = 'Set New PIN';
+      }
+    }
+
+    function showErr(msg) {
+      const el = document.getElementById('alertErr');
+      el.textContent = msg;
+      el.classList.add('show');
+    }
+    function hideAlerts() {
+      document.querySelectorAll('.alert').forEach(a => a.classList.remove('show'));
+    }
+  </script>
+</body>
+</html>

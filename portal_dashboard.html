@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>My Dashboard — PrimeCool Services</title>
+  <link rel="manifest" href="/manifest-portal.json">
+  <meta name="theme-color" content="#0B2545">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="PrimeCool">
+  <link rel="apple-touch-icon" href="/icons/customer-apple.png">
+  <style>
+    :root {
+      --navy: #0B2545;
+      --teal: #22A08A;
+      --light: #f0f4f8;
+      --white: #ffffff;
+      --text: #1a2533;
+      --muted: #5A6472;
+      --border: #dde3ea;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: var(--light);
+      min-height: 100vh;
+      color: var(--text);
+    }
+    header {
+      background: var(--navy);
+      padding: 0 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 60px;
+      position: sticky; top: 0; z-index: 100;
+    }
+    .logo { color: white; font-size: 18px; font-weight: 700; text-decoration: none; }
+    .logo span { color: var(--teal); }
+    .header-right { display: flex; align-items: center; gap: 20px; }
+    .customer-name { color: rgba(255,255,255,0.75); font-size: 13px; }
+    .logout-btn {
+      background: rgba(255,255,255,0.1);
+      color: white;
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 6px;
+      padding: 6px 14px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .logout-btn:hover { background: rgba(255,255,255,0.2); }
+
+    .container { max-width: 960px; margin: 0 auto; padding: 32px 20px 60px; }
+
+    .page-title {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--navy);
+      margin-bottom: 4px;
+    }
+    .page-sub { color: var(--muted); font-size: 14px; margin-bottom: 28px; }
+
+    /* Summary grid */
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+    .summary-card {
+      background: var(--white);
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      padding: 20px 22px;
+    }
+    .summary-card .label {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--muted);
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .summary-card .label .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .dot-pm { background: #3b82f6; }
+    .dot-cm { background: #f59e0b; }
+    .summary-card .date-val {
+      font-size: 17px;
+      font-weight: 700;
+      color: var(--navy);
+      margin-bottom: 6px;
+    }
+    .summary-card .date-val.none { color: var(--muted); font-weight: 400; font-size: 14px; }
+    .summary-card .date-sub { font-size: 12px; color: var(--muted); }
+
+    /* Badge */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+    }
+    .badge-scheduled  { background: #fef3c7; color: #92400e; }
+    .badge-confirmed  { background: #d1fae5; color: #065f46; }
+    .badge-completed  { background: #dbeafe; color: #1e40af; }
+
+    /* Section */
+    section { margin-bottom: 32px; }
+    .section-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--navy);
+      margin-bottom: 12px;
+      padding-bottom: 10px;
+      border-bottom: 2px solid var(--border);
+    }
+
+    /* Equipment list */
+    .equipment-list { display: flex; flex-direction: column; gap: 8px; }
+    .eq-card {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .eq-icon {
+      width: 38px; height: 38px;
+      background: rgba(34,160,138,0.1);
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+    .eq-icon svg { width: 20px; height: 20px; color: var(--teal); }
+    .eq-info { flex: 1; }
+    .eq-name { font-weight: 600; font-size: 14px; color: var(--navy); }
+    .eq-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+    /* Visit cards */
+    .visit-list { display: flex; flex-direction: column; gap: 10px; }
+    .visit-card {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .visit-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 18px;
+      cursor: pointer;
+      user-select: none;
+      gap: 12px;
+    }
+    .visit-header:hover { background: #fafbfc; }
+    .visit-left { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
+    .visit-type-pill {
+      flex-shrink: 0;
+      width: 36px; height: 36px;
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+    }
+    .pill-pm { background: #eff6ff; color: #1d4ed8; }
+    .pill-cm { background: #fffbeb; color: #b45309; }
+    .visit-info { min-width: 0; }
+    .visit-date { font-size: 14px; font-weight: 600; color: var(--navy); }
+    .visit-sub  { font-size: 12px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .visit-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+    .chevron {
+      color: var(--muted);
+      transition: transform 0.2s;
+      flex-shrink: 0;
+    }
+    .chevron.open { transform: rotate(180deg); }
+
+    .visit-body {
+      display: none;
+      padding: 0 18px 18px;
+      border-top: 1px solid var(--border);
+    }
+    .visit-body.open { display: block; }
+    .detail-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+      padding-top: 14px;
+    }
+    .detail-item .dl { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.7px; color: var(--muted); margin-bottom: 3px; }
+    .detail-item .dv { font-size: 13px; color: var(--text); }
+    .detail-item.full { grid-column: 1 / -1; }
+
+    .empty-state {
+      text-align: center;
+      padding: 36px 20px;
+      color: var(--muted);
+      background: var(--white);
+      border: 1px dashed var(--border);
+      border-radius: 12px;
+    }
+    .empty-state svg { width: 36px; height: 36px; color: #c8d2dc; margin-bottom: 10px; }
+    .empty-state p { font-size: 14px; }
+
+    /* Loading skeleton */
+    .skeleton { background: #e8ecf0; border-radius: 6px; animation: pulse 1.4s ease-in-out infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+
+    /* Photos */
+    .photo-block { margin-top: 14px; }
+    .photo-block-title {
+      font-size: 11px; font-weight: 700;
+      letter-spacing: 0.7px; text-transform: uppercase;
+      color: var(--muted); margin-bottom: 8px;
+    }
+    .photo-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+      gap: 8px;
+    }
+    .photo-tile {
+      position: relative;
+      aspect-ratio: 1;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #e8ecf0;
+      cursor: zoom-in;
+    }
+    .photo-tile img {
+      width: 100%; height: 100%;
+      object-fit: cover;
+      display: block;
+      transition: transform 0.2s;
+    }
+    .photo-tile:hover img { transform: scale(1.05); }
+    .photo-tile .cat {
+      position: absolute; top: 5px; left: 5px;
+      background: rgba(0,0,0,0.65); color: white;
+      font-size: 9px; font-weight: 700;
+      padding: 2px 7px; border-radius: 4px;
+      letter-spacing: 0.5px; text-transform: uppercase;
+    }
+    .lightbox {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.92); z-index: 1000;
+      align-items: center; justify-content: center;
+      padding: 20px; cursor: zoom-out;
+    }
+    .lightbox.open { display: flex; }
+    .lightbox img { max-width: 100%; max-height: 100%; object-fit: contain; }
+    .lightbox-close {
+      position: absolute; top: 16px; right: 16px;
+      background: rgba(255,255,255,0.15); color: white;
+      border: none; width: 40px; height: 40px;
+      border-radius: 50%; font-size: 22px; cursor: pointer;
+    }
+
+    /* Reviews */
+    .review-cta {
+      background: linear-gradient(135deg, #0B2545 0%, #143264 100%);
+      color: white;
+      border-radius: 12px;
+      padding: 22px 24px;
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+      margin-bottom: 14px;
+    }
+    .review-cta h4 { font-size: 15px; margin-bottom: 4px; color: white; }
+    .review-cta p  { font-size: 13px; color: rgba(255,255,255,0.7); }
+    .review-cta button { flex-shrink: 0; }
+    .btn-leave {
+      background: var(--teal); color: white; border: none;
+      padding: 9px 16px; border-radius: 8px; font-size: 13px; font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-leave:hover { background: #1b8f7a; }
+    .btn-leave-small {
+      background: rgba(34,160,138,0.12); color: var(--teal); border: none;
+      padding: 5px 12px; border-radius: 16px; font-size: 11px; font-weight: 700;
+      letter-spacing: 0.4px; text-transform: uppercase; cursor: pointer; margin-left: 8px;
+    }
+    .btn-leave-small:hover { background: rgba(34,160,138,0.22); }
+    .review-status {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 11px; font-weight: 700; letter-spacing: 0.4px;
+      text-transform: uppercase; padding: 4px 10px; border-radius: 16px; margin-left: 8px;
+    }
+    .review-status.pending  { background: #fef3c7; color: #92400e; }
+    .review-status.approved { background: #d1fae5; color: #065f46; }
+    .review-status.rejected { background: #fee2e2; color: #991b1b; }
+
+    /* Modal */
+    .modal-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.5); z-index: 500;
+      align-items: center; justify-content: center; padding: 20px;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal {
+      background: white; border-radius: 16px;
+      box-shadow: 0 8px 48px rgba(0,0,0,0.2);
+      width: 100%; max-width: 460px; max-height: 90vh; overflow-y: auto;
+    }
+    .modal-h { padding: 20px 24px 14px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+    .modal-h h3 { font-size: 16px; color: var(--navy); }
+    .modal-close { background: none; border: none; font-size: 24px; cursor: pointer; color: var(--muted); line-height: 1; padding: 0 4px; }
+    .modal-b { padding: 18px 24px; }
+    .modal-f { padding: 14px 24px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 10px; }
+
+    .star-input { display: flex; gap: 6px; margin: 10px 0 16px; }
+    .star-input button {
+      background: none; border: none; font-size: 32px; line-height: 1;
+      color: #e0e5eb; cursor: pointer; padding: 0; transition: color 0.15s, transform 0.1s;
+    }
+    .star-input button:hover { transform: scale(1.1); }
+    .star-input button.active { color: #f59e0b; }
+    .modal-label { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--navy); margin-bottom: 6px; }
+    .modal-input, .modal-textarea {
+      width: 100%; padding: 10px 13px; border: 2px solid var(--border); border-radius: 8px;
+      font-size: 14px; color: var(--text); outline: none; font-family: inherit;
+    }
+    .modal-input:focus, .modal-textarea:focus { border-color: var(--teal); }
+    .modal-textarea { min-height: 110px; resize: vertical; }
+    .modal-meta { background: var(--light); border-radius: 8px; padding: 10px 14px; font-size: 12px; color: var(--muted); margin-bottom: 14px; }
+    .modal-error { color: #e53e3e; font-size: 13px; margin-top: 10px; display: none; }
+
+    .btn-ghost {
+      background: var(--light); color: var(--navy); border: 1px solid var(--border);
+      padding: 9px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    .btn-primary {
+      background: var(--teal); color: white; border: none;
+      padding: 9px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    .btn-primary:disabled { background: #b0bec5; cursor: not-allowed; }
+
+    @media (max-width: 600px) {
+      .container { padding: 20px 12px 48px; }
+      header { padding: 0 16px; }
+      .card { padding: 20px 16px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/" class="logo">Prime<span>Cool</span> Services</a>
+    <div class="header-right">
+      <span class="customer-name" id="headerName"></span>
+      <button class="logout-btn" onclick="logout()">Sign out</button>
+    </div>
+  </header>
+
+  <div class="container">
+    <div class="page-title" id="pageTitle">Loading…</div>
+    <div class="page-sub" id="pageSub"></div>
+
+    <!-- Summary cards -->
+    <div class="summary-grid">
+      <div class="summary-card" id="cardNextPM">
+        <div class="label"><span class="dot dot-pm"></span>Next PM Visit</div>
+        <div class="date-val skeleton" style="width:120px;height:20px;"></div>
+        <div class="date-sub skeleton" style="width:80px;height:14px;margin-top:8px;"></div>
+      </div>
+      <div class="summary-card" id="cardNextCM">
+        <div class="label"><span class="dot dot-cm"></span>Next CM Visit</div>
+        <div class="date-val skeleton" style="width:120px;height:20px;"></div>
+        <div class="date-sub skeleton" style="width:80px;height:14px;margin-top:8px;"></div>
+      </div>
+      <div class="summary-card" id="cardLastPM">
+        <div class="label"><span class="dot dot-pm"></span>Last PM Completed</div>
+        <div class="date-val skeleton" style="width:120px;height:20px;"></div>
+        <div class="date-sub skeleton" style="width:80px;height:14px;margin-top:8px;"></div>
+      </div>
+      <div class="summary-card" id="cardLastCM">
+        <div class="label"><span class="dot dot-cm"></span>Last CM Completed</div>
+        <div class="date-val skeleton" style="width:120px;height:20px;"></div>
+        <div class="date-sub skeleton" style="width:80px;height:14px;margin-top:8px;"></div>
+      </div>
+    </div>
+
+    <!-- Equipment -->
+    <section id="equipmentSection" style="display:none;">
+      <div class="section-title">Your Equipment</div>
+      <div class="equipment-list" id="equipmentList"></div>
+    </section>
+
+    <!-- Upcoming visits -->
+    <section id="upcomingSection">
+      <div class="section-title">Upcoming &amp; Scheduled Visits</div>
+      <div class="visit-list" id="upcomingList">
+        <div class="skeleton" style="height:60px;border-radius:12px;"></div>
+        <div class="skeleton" style="height:60px;border-radius:12px;margin-top:8px;"></div>
+      </div>
+    </section>
+
+    <!-- History -->
+    <section id="historySection">
+      <div class="section-title">Service History</div>
+      <div class="visit-list" id="historyList">
+        <div class="skeleton" style="height:60px;border-radius:12px;"></div>
+      </div>
+    </section>
+
+    <!-- Annual company review CTA -->
+    <section id="annualReviewSection" style="display:none;">
+      <div class="section-title">Rate PrimeCool</div>
+      <div class="review-cta">
+        <div>
+          <h4>How are we doing?</h4>
+          <p>You've been a PrimeCool customer for over a year — we'd love your overall feedback.</p>
+        </div>
+        <button class="btn-leave" onclick="openReviewModal('company')">Leave Annual Review</button>
+      </div>
+    </section>
+  </div>
+
+  <!-- Lightbox -->
+  <div class="lightbox" id="lightbox" onclick="closeLightbox()">
+    <button class="lightbox-close" onclick="closeLightbox()">×</button>
+    <img id="lightboxImg" src="" alt="">
+  </div>
+
+  <!-- Review modal -->
+  <div class="modal-overlay" id="reviewModal">
+    <div class="modal">
+      <div class="modal-h">
+        <h3 id="reviewModalTitle">Leave a Review</h3>
+        <button class="modal-close" onclick="closeReviewModal()">×</button>
+      </div>
+      <div class="modal-b">
+        <div class="modal-meta" id="reviewModalMeta"></div>
+
+        <label class="modal-label">Your Rating</label>
+        <div class="star-input" id="starInput">
+          <button type="button" data-v="1">★</button>
+          <button type="button" data-v="2">★</button>
+          <button type="button" data-v="3">★</button>
+          <button type="button" data-v="4">★</button>
+          <button type="button" data-v="5">★</button>
+        </div>
+
+        <label class="modal-label" for="reviewText">Your Review</label>
+        <textarea class="modal-textarea" id="reviewText" placeholder="Tell us about your experience…"></textarea>
+
+        <div style="margin-top:14px;">
+          <label class="modal-label" for="reviewRole">Your Role <span style="text-transform:none;font-weight:400;color:var(--muted);">(optional — shown publicly if approved)</span></label>
+          <input class="modal-input" id="reviewRole" placeholder="e.g. Operations Manager">
+        </div>
+
+        <div class="modal-error" id="reviewError"></div>
+        <p style="font-size:12px;color:var(--muted);margin-top:14px;line-height:1.5;">Reviews are visible to PrimeCool staff immediately and shown publicly only after approval.</p>
+      </div>
+      <div class="modal-f">
+        <button class="btn-ghost" onclick="closeReviewModal()">Cancel</button>
+        <button class="btn-primary" id="reviewSubmit" onclick="submitReview()">Submit Review</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const token = localStorage.getItem('pc_token');
+    if (!token) window.location.replace('/portal');
+
+    let dashboardData = null;
+    let reviewContext = null;
+    let reviewRating  = 0;
+
+    function logout() {
+      localStorage.removeItem('pc_token');
+      localStorage.removeItem('pc_name');
+      window.location.replace('/portal');
+    }
+
+    function fmt(dateStr) {
+      if (!dateStr) return null;
+      const d = new Date(dateStr + (dateStr.includes('T') ? '' : 'T00:00:00'));
+      return d.toLocaleDateString('en-TT', { day: 'numeric', month: 'long', year: 'numeric' });
+    }
+
+    function badge(status) {
+      const map = {
+        scheduled:   '<span class="badge badge-scheduled">Scheduled</span>',
+        confirmed:   '<span class="badge badge-confirmed">Confirmed</span>',
+        in_progress: '<span class="badge" style="background:rgba(34,160,138,0.15);color:#0f766e;">In Progress</span>',
+        completed:   '<span class="badge badge-completed">Completed</span>',
+      };
+      return map[status] || `<span class="badge">${status}</span>`;
+    }
+
+    function renderSummaryCard(el, dateStr, statusStr, fallback) {
+      if (dateStr) {
+        el.innerHTML = `
+          <div class="label">${el.querySelector('.label').innerHTML}</div>
+          <div class="date-val">${fmt(dateStr)}</div>
+          <div class="date-sub">${statusStr || ''}</div>`;
+      } else {
+        el.innerHTML = `
+          <div class="label">${el.querySelector('.label').innerHTML}</div>
+          <div class="date-val none">${fallback}</div>`;
+      }
+    }
+
+    function visitCard(v, idx) {
+      const typeLabel = v.visit_type === 'PM' ? 'Preventive' : 'Corrective';
+      const dateDisplay = v.completed_date
+        ? fmt(v.completed_date)
+        : (v.scheduled_date ? fmt(v.scheduled_date) : 'Date TBC');
+      const sub = [v.equipment_name, v.technician ? `Technician: ${v.technician}` : null].filter(Boolean).join(' · ');
+
+      const review = (dashboardData?.reviews || []).find(r => r.visit_id === v.id);
+      let reviewBtn = '';
+      if (v.status === 'completed') {
+        if (review) {
+          reviewBtn = `<span class="review-status ${review.status}" title="Review ${review.status}">${review.status}</span>`;
+        } else {
+          reviewBtn = `<button class="btn-leave-small" onclick="event.stopPropagation();openReviewModal('visit',${v.id})">★ Rate Tech</button>`;
+        }
+      }
+
+      const details = [
+        v.scheduled_date ? { l: 'Scheduled Date', v: fmt(v.scheduled_date) } : null,
+        v.completed_date ? { l: 'Completed Date', v: fmt(v.completed_date) } : null,
+        v.technician     ? { l: 'Technician',     v: v.technician }          : null,
+        v.equipment_name ? { l: 'Equipment',       v: v.equipment_name }      : null,
+      ].filter(Boolean);
+
+      const longDetails = [
+        v.work_done      ? { l: 'Work Performed',  v: v.work_done,      full: true } : null,
+        v.parts_replaced ? { l: 'Parts Replaced',  v: v.parts_replaced, full: true } : null,
+        v.notes          ? { l: 'Notes',           v: v.notes,          full: true } : null,
+      ].filter(Boolean);
+
+      const allDetails = [...details, ...longDetails];
+
+      return `
+        <div class="visit-card">
+          <div class="visit-header" onclick="toggleVisit(${idx})">
+            <div class="visit-left">
+              <div class="visit-type-pill pill-${v.visit_type.toLowerCase()}">${v.visit_type}</div>
+              <div class="visit-info">
+                <div class="visit-date">${typeLabel} Maintenance — ${dateDisplay}</div>
+                ${sub ? `<div class="visit-sub">${sub}</div>` : ''}
+              </div>
+            </div>
+            <div class="visit-right">
+              ${badge(v.status)}
+              ${reviewBtn}
+              <svg class="chevron" id="chev-${idx}" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
+          </div>
+          <div class="visit-body" id="vbody-${idx}">
+            ${allDetails.length ? `
+              <div class="detail-grid">
+                ${allDetails.map(d => `
+                  <div class="detail-item${d.full ? ' full' : ''}">
+                    <div class="dl">${d.l}</div>
+                    <div class="dv">${d.v}</div>
+                  </div>`).join('')}
+              </div>` : '<p style="padding-top:14px;font-size:13px;color:var(--muted);">No additional details recorded.</p>'}
+            ${photosHtml(v.photos || [])}
+          </div>
+        </div>`;
+    }
+
+    function photosHtml(photos) {
+      if (!photos || !photos.length) return '';
+      const before = photos.filter(p => p.category === 'before');
+      const after  = photos.filter(p => p.category === 'after');
+      const tile = p => `
+        <div class="photo-tile" onclick="event.stopPropagation();openLightbox('/photos/${p.filename}')">
+          <span class="cat">${p.category}</span>
+          <img src="/photos/${p.filename}" alt="${p.category} photo" loading="lazy">
+        </div>`;
+      let html = '<div class="photo-block">';
+      html += '<div class="photo-block-title">Site Photos</div>';
+      if (before.length) html += `<div style="font-size:11px;color:var(--muted);margin:6px 0 4px;">Before</div><div class="photo-grid">${before.map(tile).join('')}</div>`;
+      if (after.length)  html += `<div style="font-size:11px;color:var(--muted);margin:8px 0 4px;">After</div><div class="photo-grid">${after.map(tile).join('')}</div>`;
+      html += '</div>';
+      return html;
+    }
+
+    function openLightbox(src) {
+      document.getElementById('lightboxImg').src = src;
+      document.getElementById('lightbox').classList.add('open');
+    }
+    function closeLightbox() {
+      document.getElementById('lightbox').classList.remove('open');
+      document.getElementById('lightboxImg').src = '';
+    }
+
+    function toggleVisit(idx) {
+      const body = document.getElementById(`vbody-${idx}`);
+      const chev = document.getElementById(`chev-${idx}`);
+      body.classList.toggle('open');
+      chev.classList.toggle('open');
+    }
+
+    async function load() {
+      try {
+        const res = await fetch('/api/portal/me', {
+          headers: { 'Authorization': `Bearer ${token}` },
+        });
+        if (res.status === 401) { logout(); return; }
+        if (!res.ok) throw new Error();
+
+        dashboardData = await res.json();
+        const { customer, equipment, visits, reviews } = dashboardData;
+
+        // Header
+        document.getElementById('headerName').textContent = customer.name;
+        document.getElementById('pageTitle').textContent  = `Welcome, ${customer.name}`;
+        const parts = [customer.company, customer.address].filter(Boolean);
+        document.getElementById('pageSub').textContent = parts.join(' · ');
+
+        // Summary cards
+        const upcoming = visits.filter(v => v.status !== 'completed');
+        const completed = visits.filter(v => v.status === 'completed');
+
+        const nextPM = upcoming.find(v => v.visit_type === 'PM');
+        const nextCM = upcoming.find(v => v.visit_type === 'CM');
+        const lastPM = completed.find(v => v.visit_type === 'PM');
+        const lastCM = completed.find(v => v.visit_type === 'CM');
+
+        const cardNextPM = document.getElementById('cardNextPM');
+        cardNextPM.innerHTML = `
+          <div class="label"><span class="dot dot-pm"></span>Next PM Visit</div>
+          ${nextPM
+            ? `<div class="date-val">${fmt(nextPM.scheduled_date) || 'Date TBC'}</div>
+               <div class="date-sub">${nextPM.status.charAt(0).toUpperCase() + nextPM.status.slice(1)}</div>`
+            : `<div class="date-val none">None scheduled</div>`}`;
+
+        const cardNextCM = document.getElementById('cardNextCM');
+        cardNextCM.innerHTML = `
+          <div class="label"><span class="dot dot-cm"></span>Next CM Visit</div>
+          ${nextCM
+            ? `<div class="date-val">${fmt(nextCM.scheduled_date) || 'Date TBC'}</div>
+               <div class="date-sub">${nextCM.status.charAt(0).toUpperCase() + nextCM.status.slice(1)}</div>`
+            : `<div class="date-val none">None scheduled</div>`}`;
+
+        const cardLastPM = document.getElementById('cardLastPM');
+        cardLastPM.innerHTML = `
+          <div class="label"><span class="dot dot-pm"></span>Last PM Completed</div>
+          ${lastPM
+            ? `<div class="date-val">${fmt(lastPM.completed_date) || fmt(lastPM.scheduled_date) || '—'}</div>
+               <div class="date-sub">${lastPM.technician ? `By ${lastPM.technician}` : ''}</div>`
+            : `<div class="date-val none">No record yet</div>`}`;
+
+        const cardLastCM = document.getElementById('cardLastCM');
+        cardLastCM.innerHTML = `
+          <div class="label"><span class="dot dot-cm"></span>Last CM Completed</div>
+          ${lastCM
+            ? `<div class="date-val">${fmt(lastCM.completed_date) || fmt(lastCM.scheduled_date) || '—'}</div>
+               <div class="date-sub">${lastCM.technician ? `By ${lastCM.technician}` : ''}</div>`
+            : `<div class="date-val none">No record yet</div>`}`;
+
+        // Equipment
+        if (equipment.length > 0) {
+          document.getElementById('equipmentSection').style.display = 'block';
+          document.getElementById('equipmentList').innerHTML = equipment.map(eq => `
+            <div class="eq-card">
+              <div class="eq-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 2a10 10 0 1 0 10 10H12V2z"/><path d="M12 2a10 10 0 0 1 10 10"/>
+                  <circle cx="12" cy="12" r="3"/>
+                </svg>
+              </div>
+              <div class="eq-info">
+                <div class="eq-name">${eq.name}</div>
+                <div class="eq-meta">${[eq.type, eq.model, eq.location].filter(Boolean).join(' · ') || 'No details recorded'}</div>
+              </div>
+            </div>`).join('');
+        }
+
+        // Upcoming visits
+        const upcomingEl = document.getElementById('upcomingList');
+        if (upcoming.length === 0) {
+          upcomingEl.innerHTML = `
+            <div class="empty-state">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
+              </svg>
+              <p>No upcoming visits scheduled.</p>
+            </div>`;
+        } else {
+          upcomingEl.innerHTML = upcoming.map((v, i) => visitCard(v, i)).join('');
+        }
+
+        // History
+        const historyEl = document.getElementById('historyList');
+        const offset = upcoming.length;
+        if (completed.length === 0) {
+          historyEl.innerHTML = `
+            <div class="empty-state">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+              </svg>
+              <p>No completed service visits on record yet.</p>
+            </div>`;
+        } else {
+          historyEl.innerHTML = completed.map((v, i) => visitCard(v, offset + i)).join('');
+        }
+
+        // Annual company review eligibility
+        const oneYearAgo = new Date();
+        oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+        const accountAge = customer.created_at ? new Date(customer.created_at) : null;
+        const thisYear   = new Date().getFullYear();
+        const hasCompanyReviewThisYear = reviews.some(r =>
+          r.review_type === 'company' && new Date(r.created_at).getFullYear() === thisYear
+        );
+        if (accountAge && accountAge < oneYearAgo && !hasCompanyReviewThisYear) {
+          document.getElementById('annualReviewSection').style.display = 'block';
+        }
+
+      } catch {
+        document.getElementById('pageTitle').textContent = 'Error loading data';
+        document.getElementById('pageSub').textContent  = 'Please refresh the page or contact PrimeCool support.';
+      }
+    }
+
+    // ── Review modal ─────────────────────────────────────────────────────────
+    function openReviewModal(type, visitId) {
+      reviewContext = { type, visitId };
+      reviewRating  = 0;
+      document.querySelectorAll('#starInput button').forEach(b => b.classList.remove('active'));
+      document.getElementById('reviewText').value  = '';
+      document.getElementById('reviewRole').value  = '';
+      document.getElementById('reviewError').style.display = 'none';
+      document.getElementById('reviewSubmit').disabled = false;
+      document.getElementById('reviewSubmit').textContent = 'Submit Review';
+
+      if (type === 'visit') {
+        const v = dashboardData.visits.find(x => x.id === visitId);
+        document.getElementById('reviewModalTitle').textContent = 'Rate Your Service Visit';
+        document.getElementById('reviewModalMeta').innerHTML = `
+          <strong>${v.visit_type === 'PM' ? 'Preventive' : 'Corrective'} Maintenance</strong>
+          · ${fmt(v.completed_date || v.scheduled_date) || 'Date unknown'}
+          ${v.technician ? `<br>Technician: <strong>${v.technician}</strong>` : ''}`;
+      } else {
+        document.getElementById('reviewModalTitle').textContent = 'Annual Company Review';
+        document.getElementById('reviewModalMeta').innerHTML = `Your overall experience with PrimeCool Services this year.`;
+      }
+      document.getElementById('reviewModal').classList.add('open');
+    }
+
+    function closeReviewModal() {
+      document.getElementById('reviewModal').classList.remove('open');
+      reviewContext = null;
+    }
+
+    document.querySelectorAll('#starInput button').forEach(btn => {
+      btn.addEventListener('click', () => {
+        reviewRating = parseInt(btn.dataset.v);
+        document.querySelectorAll('#starInput button').forEach(b => {
+          b.classList.toggle('active', parseInt(b.dataset.v) <= reviewRating);
+        });
+      });
+    });
+
+    document.getElementById('reviewModal').addEventListener('click', e => {
+      if (e.target.id === 'reviewModal') closeReviewModal();
+    });
+
+    async function submitReview() {
+      const err  = document.getElementById('reviewError');
+      const btn  = document.getElementById('reviewSubmit');
+      const text = document.getElementById('reviewText').value.trim();
+      const role = document.getElementById('reviewRole').value.trim();
+      err.style.display = 'none';
+
+      if (!reviewRating) { showReviewErr('Please choose a star rating.'); return; }
+      if (!text)         { showReviewErr('Please write a short review.'); return; }
+
+      btn.disabled    = true;
+      btn.textContent = 'Submitting…';
+
+      const body = {
+        review_type: reviewContext.type,
+        visit_id:    reviewContext.visitId || null,
+        rating:      reviewRating,
+        text, role,
+      };
+
+      try {
+        const res = await fetch('/api/portal/reviews', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body:    JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          showReviewErr(data.detail || 'Could not submit review.');
+          btn.disabled    = false;
+          btn.textContent = 'Submit Review';
+          return;
+        }
+        closeReviewModal();
+        await load();
+        alert('Thanks for your review! It will appear publicly once approved by PrimeCool.');
+      } catch {
+        showReviewErr('Connection error. Please try again.');
+        btn.disabled    = false;
+        btn.textContent = 'Submit Review';
+      }
+    }
+
+    function showReviewErr(msg) {
+      const err = document.getElementById('reviewError');
+      err.textContent = msg;
+      err.style.display = 'block';
+    }
+
+    load();
+
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+  </script>
+</body>
+</html>

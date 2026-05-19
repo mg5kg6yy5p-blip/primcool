@@ -1,0 +1,1204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin — PrimeCool Services</title>
+  <style>
+    :root {
+      --navy: #0B2545;
+      --teal: #22A08A;
+      --light: #f0f4f8;
+      --white: #ffffff;
+      --text: #1a2533;
+      --muted: #5A6472;
+      --border: #dde3ea;
+      --danger: #e53e3e;
+      --danger-light: #fff5f5;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: var(--light); min-height: 100vh; color: var(--text); }
+
+    /* ── Header ── */
+    header {
+      background: var(--navy);
+      padding: 0 28px;
+      display: flex; align-items: center; justify-content: space-between;
+      height: 56px; position: sticky; top: 0; z-index: 200;
+    }
+    .logo { color: white; font-size: 17px; font-weight: 700; }
+    .logo span { color: var(--teal); }
+    .admin-tag {
+      background: rgba(34,160,138,0.25); color: var(--teal);
+      font-size: 11px; font-weight: 700; letter-spacing: 1px;
+      padding: 3px 9px; border-radius: 20px; text-transform: uppercase; margin-left: 10px;
+    }
+    .logout-btn {
+      background: rgba(255,255,255,0.1); color: white;
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 6px; padding: 5px 12px; font-size: 12px; cursor: pointer;
+    }
+    .logout-btn:hover { background: rgba(255,255,255,0.2); }
+
+    /* ── Login screen ── */
+    #loginScreen {
+      min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px;
+    }
+    .login-card {
+      background: var(--white); border-radius: 16px;
+      box-shadow: 0 4px 32px rgba(11,37,69,0.12);
+      padding: 44px 40px; width: 100%; max-width: 380px;
+    }
+    .login-card h1 { font-size: 22px; color: var(--navy); margin-bottom: 6px; }
+    .login-card p  { color: var(--muted); font-size: 13px; margin-bottom: 28px; }
+
+    /* ── Layout ── */
+    .layout { display: flex; min-height: calc(100vh - 56px); }
+    .sidebar {
+      width: 220px; flex-shrink: 0;
+      background: var(--white); border-right: 1px solid var(--border);
+      padding: 20px 12px;
+    }
+    .nav-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 14px; border-radius: 8px;
+      font-size: 14px; font-weight: 500; color: var(--muted);
+      cursor: pointer; transition: all 0.15s; margin-bottom: 2px;
+    }
+    .nav-item:hover { background: var(--light); color: var(--navy); }
+    .nav-item.active { background: rgba(34,160,138,0.1); color: var(--teal); font-weight: 600; }
+    .nav-item svg { width: 17px; height: 17px; flex-shrink: 0; }
+    .main { flex: 1; padding: 28px 28px 60px; overflow-y: auto; }
+
+    /* ── Panels ── */
+    .panel { display: none; }
+    .panel.active { display: block; }
+
+    /* ── Top bar ── */
+    .top-bar {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 20px; flex-wrap: wrap; gap: 10px;
+    }
+    .top-bar h2 { font-size: 18px; color: var(--navy); font-weight: 700; }
+
+    /* ── Buttons ── */
+    .btn {
+      padding: 9px 18px; border-radius: 8px; font-size: 13px; font-weight: 600;
+      cursor: pointer; border: none; transition: background 0.15s; display: inline-flex; align-items: center; gap: 6px;
+    }
+    .btn-primary { background: var(--teal); color: white; }
+    .btn-primary:hover { background: #1b8f7a; }
+    .btn-sm { padding: 5px 12px; font-size: 12px; }
+    .btn-danger { background: var(--danger-light); color: var(--danger); border: 1px solid #fed7d7; }
+    .btn-danger:hover { background: #fed7d7; }
+    .btn-ghost { background: var(--light); color: var(--navy); border: 1px solid var(--border); }
+    .btn-ghost:hover { background: var(--border); }
+    .btn-edit { background: #eff6ff; color: #1d4ed8; }
+    .btn-edit:hover { background: #dbeafe; }
+
+    /* ── Table ── */
+    .table-wrap { background: var(--white); border-radius: 12px; border: 1px solid var(--border); overflow: hidden; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { background: #f8fafc; padding: 11px 16px; text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.7px; color: var(--muted); border-bottom: 1px solid var(--border); }
+    td { padding: 12px 16px; border-bottom: 1px solid var(--border); vertical-align: middle; color: var(--text); }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #fafbfc; }
+    .code-pill {
+      font-family: 'Courier New', monospace; font-size: 12px; font-weight: 700;
+      background: #f0f4f8; color: var(--navy); padding: 3px 8px; border-radius: 5px; letter-spacing: 1px;
+    }
+
+    /* ── Badge ── */
+    .badge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; letter-spacing: 0.3px; text-transform: uppercase; }
+    .badge-scheduled   { background: #fef3c7; color: #92400e; }
+    .badge-confirmed   { background: #d1fae5; color: #065f46; }
+    .badge-in_progress { background: rgba(34,160,138,0.15); color: #0f766e; }
+    .badge-completed   { background: #dbeafe; color: #1e40af; }
+    .badge-pm { background: #eff6ff; color: #1d4ed8; }
+    .badge-cm { background: #fffbeb; color: #b45309; }
+
+    /* ── Customer detail ── */
+    .back-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 13px; color: var(--muted); cursor: pointer;
+      margin-bottom: 18px; padding: 6px 0;
+    }
+    .back-btn:hover { color: var(--navy); }
+    .detail-header {
+      background: var(--white); border: 1px solid var(--border);
+      border-radius: 12px; padding: 20px 22px; margin-bottom: 20px;
+    }
+    .detail-header h3 { font-size: 18px; color: var(--navy); margin-bottom: 4px; }
+    .detail-header .meta { font-size: 13px; color: var(--muted); }
+    .detail-sections { display: flex; flex-direction: column; gap: 20px; }
+    .detail-section { background: var(--white); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+    .detail-section-title {
+      padding: 12px 18px; border-bottom: 1px solid var(--border);
+      font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.7px;
+      color: var(--muted); display: flex; align-items: center; justify-content: space-between;
+    }
+
+    /* ── Modal ── */
+    .modal-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.45); z-index: 500;
+      align-items: center; justify-content: center; padding: 20px;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal {
+      background: var(--white); border-radius: 16px;
+      box-shadow: 0 8px 48px rgba(0,0,0,0.18);
+      width: 100%; max-width: 500px; max-height: 90vh; overflow-y: auto;
+    }
+    .modal-header {
+      padding: 20px 24px 16px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .modal-header h3 { font-size: 16px; font-weight: 700; color: var(--navy); }
+    .modal-close { background: none; border: none; font-size: 22px; cursor: pointer; color: var(--muted); line-height: 1; padding: 0 4px; }
+    .modal-close:hover { color: var(--navy); }
+    .modal-body { padding: 20px 24px; display: flex; flex-direction: column; gap: 14px; }
+    .modal-footer { padding: 16px 24px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 10px; }
+
+    /* ── Form elements ── */
+    .field { display: flex; flex-direction: column; gap: 5px; }
+    .field label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.7px; color: var(--navy); }
+    .field input, .field select, .field textarea {
+      padding: 9px 12px; border: 2px solid var(--border); border-radius: 8px;
+      font-size: 13px; color: var(--text); outline: none; transition: border-color 0.15s;
+      font-family: inherit;
+    }
+    .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--teal); }
+    .field textarea { resize: vertical; min-height: 72px; }
+    .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+    /* ── Form error ── */
+    .form-error { color: var(--danger); font-size: 12px; padding: 8px 12px; background: var(--danger-light); border-radius: 6px; border: 1px solid #fed7d7; display: none; }
+
+    /* ── Empty state ── */
+    .empty { text-align: center; padding: 36px; color: var(--muted); font-size: 13px; }
+
+    /* ── Review cards ── */
+    .review-card {
+      background: var(--white); border: 1px solid var(--border); border-radius: 12px;
+      padding: 18px 20px; margin-bottom: 12px;
+    }
+    .review-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+    .review-stars { color: #f59e0b; font-size: 17px; letter-spacing: 2px; }
+    .review-stars .empty { color: #e0e5eb; }
+    .review-meta { font-size: 12px; color: var(--muted); }
+    .review-meta strong { color: var(--navy); }
+    .review-body { font-size: 14px; color: var(--text); line-height: 1.6; padding: 10px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); margin: 10px 0; }
+    .review-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+    .review-type-pill {
+      display: inline-block; padding: 2px 9px; border-radius: 12px;
+      font-size: 10px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase;
+    }
+    .pill-visit   { background: #eff6ff; color: #1d4ed8; }
+    .pill-company { background: #f3e8ff; color: #6b21a8; }
+
+    /* ── Filter bar ── */
+    .filter-bar { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+    .filter-btn { padding: 5px 14px; border-radius: 20px; font-size: 12px; font-weight: 600; border: 1px solid var(--border); background: var(--white); color: var(--muted); cursor: pointer; }
+    .filter-btn.active { background: var(--teal); color: white; border-color: var(--teal); }
+
+    @media (max-width: 640px) {
+      .sidebar { display: none; }
+      .field-row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Login ── -->
+<div id="loginScreen">
+  <div class="login-card">
+    <h1>Admin Panel</h1>
+    <p>PrimeCool Services — staff access only.</p>
+    <div class="field">
+      <label>Password</label>
+      <input type="password" id="adminPw" placeholder="Enter admin password" onkeydown="if(event.key==='Enter')doAdminLogin()">
+    </div>
+    <div class="form-error" id="loginError">Incorrect password.</div>
+    <button class="btn btn-primary" style="width:100%;margin-top:16px;" onclick="doAdminLogin()">Sign In →</button>
+  </div>
+</div>
+
+<!-- ── App (shown after login) ── -->
+<div id="app" style="display:none;">
+  <header>
+    <div style="display:flex;align-items:center;">
+      <span class="logo">Prime<span>Cool</span> Services</span>
+      <span class="admin-tag">Admin</span>
+    </div>
+    <button class="logout-btn" onclick="adminLogout()">Sign out</button>
+  </header>
+
+  <div class="layout">
+    <nav class="sidebar">
+      <div class="nav-item active" onclick="showPanel('customers')" id="nav-customers">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        Customers
+      </div>
+      <div class="nav-item" onclick="showPanel('visits')" id="nav-visits">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+        All Visits
+      </div>
+      <div class="nav-item" onclick="showPanel('techs')" id="nav-techs">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 11h-6"/><path d="M19 8v6"/></svg>
+        Technicians
+      </div>
+      <div class="nav-item" onclick="showPanel('reviews')" id="nav-reviews">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+        Reviews
+        <span id="pendingBadge" style="margin-left:auto;background:var(--danger);color:white;font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px;display:none;"></span>
+      </div>
+    </nav>
+
+    <div class="main">
+
+      <!-- ── Customers panel ── -->
+      <div class="panel active" id="panel-customers">
+        <div id="customerList">
+          <div class="top-bar">
+            <h2>Customers</h2>
+            <button class="btn btn-primary" onclick="openModal('addCustomer')">+ Add Customer</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr>
+                <th>Code</th><th>Name</th><th>Company</th><th>Phone</th><th>Actions</th>
+              </tr></thead>
+              <tbody id="customerTableBody"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Customer detail view -->
+        <div id="customerDetail" style="display:none;">
+          <div class="back-btn" onclick="showCustomerList()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+            Back to Customers
+          </div>
+          <div class="detail-header">
+            <h3 id="detailName"></h3>
+            <div class="meta" id="detailMeta"></div>
+          </div>
+          <div class="detail-sections">
+            <div class="detail-section">
+              <div class="detail-section-title">
+                Equipment
+                <button class="btn btn-primary btn-sm" onclick="openModal('addEquipment')">+ Add</button>
+              </div>
+              <table><tbody id="equipTableBody"><tr><td class="empty">No equipment on record.</td></tr></tbody></table>
+            </div>
+            <div class="detail-section">
+              <div class="detail-section-title">
+                Maintenance Visits
+                <button class="btn btn-primary btn-sm" onclick="openAddVisitFromCustomer()">+ Schedule Visit</button>
+              </div>
+              <table>
+                <thead><tr><th>Type</th><th>Status</th><th>Scheduled</th><th>Completed</th><th>Technician</th><th>Actions</th></tr></thead>
+                <tbody id="customerVisitTableBody"><tr><td colspan="6" class="empty">No visits on record.</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Technicians panel ── -->
+      <div class="panel" id="panel-techs">
+        <div class="top-bar">
+          <h2>Technicians</h2>
+          <button class="btn btn-primary" onclick="openModal('addTech')">+ Add Technician</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Code</th><th>Name</th><th>Phone</th><th>Active Jobs</th><th>Status</th><th>Actions</th>
+            </tr></thead>
+            <tbody id="techTableBody"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ── Reviews panel ── -->
+      <div class="panel" id="panel-reviews">
+        <div class="top-bar">
+          <h2>Customer Reviews</h2>
+        </div>
+        <div class="filter-bar" id="reviewFilters">
+          <button class="filter-btn active" onclick="setReviewFilter('pending',this)">Pending</button>
+          <button class="filter-btn" onclick="setReviewFilter('approved',this)">Approved (Public)</button>
+          <button class="filter-btn" onclick="setReviewFilter('rejected',this)">Rejected</button>
+          <button class="filter-btn" onclick="setReviewFilter('all',this)">All</button>
+        </div>
+        <div id="reviewCards"></div>
+      </div>
+
+      <!-- ── All Visits panel ── -->
+      <div class="panel" id="panel-visits">
+        <div class="top-bar">
+          <h2>All Maintenance Visits</h2>
+          <button class="btn btn-primary" onclick="openModal('addVisit')">+ Schedule Visit</button>
+        </div>
+        <div class="filter-bar" id="visitFilters">
+          <button class="filter-btn active" onclick="setFilter('all',this)">All</button>
+          <button class="filter-btn" onclick="setFilter('PM',this)">PM Only</button>
+          <button class="filter-btn" onclick="setFilter('CM',this)">CM Only</button>
+          <button class="filter-btn" onclick="setFilter('scheduled',this)">Scheduled</button>
+          <button class="filter-btn" onclick="setFilter('confirmed',this)">Confirmed</button>
+          <button class="filter-btn" onclick="setFilter('completed',this)">Completed</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Customer</th><th>Type</th><th>Status</th><th>Scheduled</th><th>Completed</th><th>Assigned Tech</th><th>Equipment</th><th>Actions</th></tr></thead>
+            <tbody id="visitTableBody"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+    </div><!-- /.main -->
+  </div><!-- /.layout -->
+</div><!-- /#app -->
+
+<!-- ── Modals ── -->
+
+<!-- Add Customer -->
+<div class="modal-overlay" id="modal-addCustomer">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>Add Customer</h3>
+      <button class="modal-close" onclick="closeModal('addCustomer')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field-row">
+        <div class="field"><label>Customer ID *</label><input id="f-code" placeholder="PC-0001" style="text-transform:uppercase;letter-spacing:2px;font-family:'Courier New',monospace;"></div>
+        <div class="field"><label>Initial PIN (4–8 digits) *</label><input id="f-pin" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="••••" style="letter-spacing:6px;font-family:'Courier New',monospace;"></div>
+      </div>
+      <div class="field"><label>Full Name *</label><input id="f-name" placeholder="John Smith"></div>
+      <div class="field-row">
+        <div class="field"><label>Company</label><input id="f-company" placeholder="ABC Ltd."></div>
+        <div class="field"><label>Phone</label><input id="f-phone" placeholder="+1 868 123 4567"></div>
+      </div>
+      <div class="field"><label>Email <span style="text-transform:none;font-weight:400;color:var(--muted);">(needed for customer self-service PIN reset)</span></label><input id="f-email" type="email" placeholder="john@example.com"></div>
+      <div class="field"><label>Address</label><input id="f-address" placeholder="123 Main St, Port of Spain"></div>
+      <div class="field"><label>Internal Notes</label><textarea id="f-notes" placeholder="Notes visible only to staff…"></textarea></div>
+      <div class="form-error" id="err-addCustomer"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:2px;line-height:1.5;">Share the Customer ID and PIN privately with the customer. They sign in at <strong>/portal</strong>.</p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('addCustomer')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitAddCustomer()">Create Customer</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Equipment -->
+<div class="modal-overlay" id="modal-addEquipment">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>Add Equipment</h3>
+      <button class="modal-close" onclick="closeModal('addEquipment')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field"><label>Equipment Name *</label><input id="eq-name" placeholder="Server Room AC Unit"></div>
+      <div class="field-row">
+        <div class="field"><label>Type</label><input id="eq-type" placeholder="Split Unit / Chiller / etc."></div>
+        <div class="field"><label>Model</label><input id="eq-model" placeholder="e.g. LG S18ET"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Serial Number</label><input id="eq-serial" placeholder="SN-XXXXXXXX"></div>
+        <div class="field"><label>Location</label><input id="eq-location" placeholder="3rd Floor, East Wing"></div>
+      </div>
+      <div class="field"><label>Notes</label><textarea id="eq-notes" placeholder="Additional notes…"></textarea></div>
+      <div class="form-error" id="err-addEquipment"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('addEquipment')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitAddEquipment()">Add Equipment</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Technician -->
+<div class="modal-overlay" id="modal-addTech">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="techModalTitle">Add Technician</h3>
+      <button class="modal-close" onclick="closeModal('addTech')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field-row">
+        <div class="field"><label>Tech Code *</label><input id="t-code" placeholder="T-001" style="text-transform:uppercase;letter-spacing:2px;font-family:'Courier New',monospace;"></div>
+        <div class="field"><label>PIN (4–8 digits) *</label><input id="t-pin" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="••••" style="letter-spacing:6px;font-family:'Courier New',monospace;"></div>
+      </div>
+      <div class="field"><label>Full Name *</label><input id="t-name" placeholder="Marcus Reid"></div>
+      <div class="field-row">
+        <div class="field"><label>Phone</label><input id="t-phone" placeholder="+1 868 ..."></div>
+        <div class="field"><label>Email</label><input id="t-email" type="email" placeholder="marcus@primecool..."></div>
+      </div>
+      <div class="form-error" id="err-addTech"></div>
+      <p style="font-size:12px;color:var(--muted);">The tech will sign in at <strong>/tech</strong> using this code + PIN.</p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('addTech')">Cancel</button>
+      <button class="btn btn-primary" id="techSubmitBtn" onclick="submitAddTech()">Create Tech</button>
+    </div>
+  </div>
+</div>
+
+<!-- Reset Customer PIN -->
+<div class="modal-overlay" id="modal-resetCustomerPin">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>Set / Reset Customer PIN</h3>
+      <button class="modal-close" onclick="closeModal('resetCustomerPin')">×</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:13px;color:var(--muted);margin-bottom:10px;">Set a new PIN for <strong id="resetCustPinName"></strong>. Share the PIN privately with the customer — it cannot be retrieved later.</p>
+      <div class="field"><label>New PIN (4–8 digits)</label><input id="rcp-pin" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="8" style="letter-spacing:6px;font-family:'Courier New',monospace;"></div>
+      <div class="form-error" id="err-resetCustomerPin"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('resetCustomerPin')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitResetCustomerPin()">Save PIN</button>
+    </div>
+  </div>
+</div>
+
+<!-- Reset Tech PIN -->
+<div class="modal-overlay" id="modal-resetPin">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>Reset PIN</h3>
+      <button class="modal-close" onclick="closeModal('resetPin')">×</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:13px;color:var(--muted);margin-bottom:10px;">Set a new PIN for <strong id="resetPinName"></strong>. Tell them the new PIN — it cannot be retrieved later.</p>
+      <div class="field"><label>New PIN (4–8 digits)</label><input id="rp-pin" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="8" style="letter-spacing:6px;font-family:'Courier New',monospace;"></div>
+      <div class="form-error" id="err-resetPin"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('resetPin')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitResetPin()">Reset PIN</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add / Edit Visit -->
+<div class="modal-overlay" id="modal-addVisit">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="visitModalTitle">Schedule Visit</h3>
+      <button class="modal-close" onclick="closeModal('addVisit')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field" id="visitCustomerField">
+        <label>Customer *</label>
+        <select id="v-customer" onchange="loadEquipmentForVisit()"><option value="">Select customer…</option></select>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>Visit Type *</label>
+          <select id="v-type">
+            <option value="PM">PM — Preventive Maintenance</option>
+            <option value="CM">CM — Corrective Maintenance</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Status</label>
+          <select id="v-status">
+            <option value="scheduled">Scheduled</option>
+            <option value="confirmed">Confirmed</option>
+            <option value="in_progress">In Progress</option>
+            <option value="completed">Completed</option>
+          </select>
+        </div>
+      </div>
+      <div class="field">
+        <label>Equipment</label>
+        <select id="v-equipment"><option value="">— All / Not specific —</option></select>
+      </div>
+      <div class="field">
+        <label>Assigned Technician</label>
+        <select id="v-tech"><option value="">— Unassigned —</option></select>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Scheduled Date</label><input id="v-scheduled-date" type="date"></div>
+        <div class="field"><label>Completed Date</label><input id="v-completed-date" type="date"></div>
+      </div>
+      <div class="field"><label>Technician</label><input id="v-technician" placeholder="Technician name"></div>
+      <div class="field"><label>Work Performed</label><textarea id="v-work-done" placeholder="Describe work carried out…"></textarea></div>
+      <div class="field"><label>Parts Replaced</label><textarea id="v-parts" placeholder="List any parts replaced…"></textarea></div>
+      <div class="field"><label>Notes</label><textarea id="v-notes" placeholder="Additional notes…"></textarea></div>
+      <div class="form-error" id="err-addVisit"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('addVisit')">Cancel</button>
+      <button class="btn btn-primary" id="visitSubmitBtn" onclick="submitVisit()">Save Visit</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ── State ──────────────────────────────────────────────────────────────────
+  let adminToken = localStorage.getItem('pc_admin_token') || null;
+  let allCustomers = [];
+  let allVisits    = [];
+  let currentCustomer = null;
+  let currentVisitId  = null;
+  let visitFilter  = 'all';
+  let allReviews   = [];
+  let reviewFilter = 'pending';
+  let allTechs     = [];
+  let editingTechId = null;
+  let resetPinTechId = null;
+  let resetPinCustomerId = null;
+
+  // ── Auth ───────────────────────────────────────────────────────────────────
+  function init() {
+    if (adminToken) showApp();
+  }
+
+  async function doAdminLogin() {
+    const pw  = document.getElementById('adminPw').value;
+    const err = document.getElementById('loginError');
+    err.style.display = 'none';
+    try {
+      const res = await api('POST', '/api/admin/login', { password: pw });
+      adminToken = res.token;
+      localStorage.setItem('pc_admin_token', adminToken);
+      showApp();
+    } catch {
+      err.style.display = 'block';
+    }
+  }
+
+  function adminLogout() {
+    localStorage.removeItem('pc_admin_token');
+    adminToken = null;
+    document.getElementById('app').style.display = 'none';
+    document.getElementById('loginScreen').style.display = 'flex';
+    document.getElementById('adminPw').value = '';
+  }
+
+  function showApp() {
+    document.getElementById('loginScreen').style.display = 'none';
+    document.getElementById('app').style.display = 'block';
+    loadCustomers();
+    loadAllVisits();
+    loadReviews();
+    loadTechs();
+  }
+
+  // ── API helper ─────────────────────────────────────────────────────────────
+  async function api(method, url, body) {
+    const opts = {
+      method,
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${adminToken}` },
+    };
+    if (body) opts.body = JSON.stringify(body);
+    const res = await fetch(url, opts);
+    if (res.status === 401) { adminLogout(); throw new Error('Unauthorized'); }
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || 'Request failed');
+    }
+    return res.json();
+  }
+
+  // ── Navigation ─────────────────────────────────────────────────────────────
+  function showPanel(name) {
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    document.getElementById(`panel-${name}`).classList.add('active');
+    document.getElementById(`nav-${name}`).classList.add('active');
+  }
+
+  // ── Customers ──────────────────────────────────────────────────────────────
+  async function loadCustomers() {
+    try {
+      allCustomers = await api('GET', '/api/admin/customers');
+      renderCustomerTable();
+    } catch {}
+  }
+
+  function renderCustomerTable() {
+    const tbody = document.getElementById('customerTableBody');
+    if (!allCustomers.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">No customers yet. Add your first one.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = allCustomers.map(c => `
+      <tr>
+        <td><span class="code-pill">${c.customer_code}</span>${c.has_pin ? '' : '<br><span class="badge" style="background:#fee2e2;color:#991b1b;margin-top:4px;display:inline-block;">No PIN</span>'}</td>
+        <td><strong>${c.name}</strong></td>
+        <td>${c.company || '—'}</td>
+        <td>${c.phone || '—'}</td>
+        <td style="white-space:nowrap;">
+          <button class="btn btn-edit btn-sm" onclick="openCustomerDetail(${c.id})">View →</button>
+          <button class="btn btn-edit btn-sm" onclick="openResetCustomerPin(${c.id},'${esc(c.name)}')" style="margin-left:6px;">${c.has_pin ? 'Reset PIN' : 'Set PIN'}</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteCustomer(${c.id},'${esc(c.name)}')" style="margin-left:6px;">Delete</button>
+        </td>
+      </tr>`).join('');
+  }
+
+  function openCustomerDetail(id) {
+    currentCustomer = allCustomers.find(c => c.id === id);
+    if (!currentCustomer) return;
+    document.getElementById('detailName').textContent = currentCustomer.name;
+    document.getElementById('detailMeta').textContent = [
+      currentCustomer.customer_code,
+      currentCustomer.company,
+      currentCustomer.phone,
+      currentCustomer.email,
+      currentCustomer.address,
+    ].filter(Boolean).join(' · ');
+    document.getElementById('customerList').style.display   = 'none';
+    document.getElementById('customerDetail').style.display = 'block';
+    loadCustomerEquipment();
+    loadCustomerVisits();
+  }
+
+  function showCustomerList() {
+    currentCustomer = null;
+    document.getElementById('customerList').style.display   = 'block';
+    document.getElementById('customerDetail').style.display = 'none';
+  }
+
+  async function loadCustomerEquipment() {
+    if (!currentCustomer) return;
+    try {
+      const eq = await api('GET', `/api/admin/customers/${currentCustomer.id}/equipment`);
+      const tbody = document.getElementById('equipTableBody');
+      if (!eq.length) {
+        tbody.innerHTML = '<tr><td class="empty">No equipment on record.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = eq.map(e => `
+        <tr>
+          <td><strong>${e.name}</strong></td>
+          <td>${e.type || '—'}</td>
+          <td>${e.model || '—'}</td>
+          <td>${e.serial_number || '—'}</td>
+          <td>${e.location || '—'}</td>
+          <td>
+            <button class="btn btn-danger btn-sm" onclick="deleteEquipment(${e.id},'${esc(e.name)}')">Remove</button>
+          </td>
+        </tr>`).join('');
+    } catch {}
+  }
+
+  async function loadCustomerVisits() {
+    if (!currentCustomer) return;
+    try {
+      const visits = allVisits.filter(v => v.customer_id === currentCustomer.id);
+      renderCustomerVisitTable(visits);
+    } catch {}
+  }
+
+  function renderCustomerVisitTable(visits) {
+    const tbody = document.getElementById('customerVisitTableBody');
+    if (!visits.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty">No visits on record.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = visits.map(v => `
+      <tr>
+        <td><span class="badge badge-${v.visit_type.toLowerCase()}">${v.visit_type}</span></td>
+        <td><span class="badge badge-${v.status}">${v.status.replace('_',' ')}</span></td>
+        <td>${fmtDate(v.scheduled_date)}</td>
+        <td>${fmtDate(v.completed_date)}</td>
+        <td>${v.technician || '—'}</td>
+        <td style="white-space:nowrap;">
+          <button class="btn btn-edit btn-sm" onclick="openEditVisit(${v.id})">Edit</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteVisit(${v.id})" style="margin-left:6px;">Delete</button>
+        </td>
+      </tr>`).join('');
+  }
+
+  async function submitAddCustomer() {
+    const err = document.getElementById('err-addCustomer');
+    err.style.display = 'none';
+    const body = {
+      customer_code: document.getElementById('f-code').value.trim(),
+      pin:           document.getElementById('f-pin').value.trim(),
+      name:          document.getElementById('f-name').value.trim(),
+      company:       document.getElementById('f-company').value.trim(),
+      phone:         document.getElementById('f-phone').value.trim(),
+      email:         document.getElementById('f-email').value.trim(),
+      address:       document.getElementById('f-address').value.trim(),
+      notes:         document.getElementById('f-notes').value.trim(),
+    };
+    if (!body.customer_code || !body.name) { showErr('err-addCustomer','Customer ID and name are required.'); return; }
+    if (!body.pin) { showErr('err-addCustomer','Initial PIN is required.'); return; }
+    if (!/^\d{4,8}$/.test(body.pin)) { showErr('err-addCustomer','PIN must be 4–8 digits.'); return; }
+    try {
+      await api('POST', '/api/admin/customers', body);
+      closeModal('addCustomer');
+      clearForm(['f-code','f-pin','f-name','f-company','f-phone','f-email','f-address','f-notes']);
+      await loadCustomers();
+    } catch(e) { showErr('err-addCustomer', e.message); }
+  }
+
+  function openResetCustomerPin(id, name) {
+    resetPinCustomerId = id;
+    document.getElementById('resetCustPinName').textContent = name;
+    document.getElementById('rcp-pin').value = '';
+    document.getElementById('err-resetCustomerPin').style.display = 'none';
+    document.getElementById('modal-resetCustomerPin').classList.add('open');
+  }
+
+  async function submitResetCustomerPin() {
+    const pin = document.getElementById('rcp-pin').value.trim();
+    if (!/^\d{4,8}$/.test(pin)) { showErr('err-resetCustomerPin','PIN must be 4–8 digits.'); return; }
+    try {
+      await api('PUT', `/api/admin/customers/${resetPinCustomerId}/pin`, { pin });
+      closeModal('resetCustomerPin');
+      alert('PIN saved. Share the new PIN with the customer privately.');
+      await loadCustomers();
+    } catch(e) { showErr('err-resetCustomerPin', e.message); }
+  }
+
+  async function deleteCustomer(id, name) {
+    if (!confirm(`Delete customer "${name}" and all their data? This cannot be undone.`)) return;
+    try {
+      await api('DELETE', `/api/admin/customers/${id}`);
+      await loadCustomers();
+      await loadAllVisits();
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  // ── Equipment ──────────────────────────────────────────────────────────────
+  async function submitAddEquipment() {
+    const err = document.getElementById('err-addEquipment');
+    err.style.display = 'none';
+    if (!currentCustomer) return;
+    const body = {
+      customer_id:   currentCustomer.id,
+      name:          document.getElementById('eq-name').value.trim(),
+      type:          document.getElementById('eq-type').value.trim(),
+      model:         document.getElementById('eq-model').value.trim(),
+      serial_number: document.getElementById('eq-serial').value.trim(),
+      location:      document.getElementById('eq-location').value.trim(),
+      notes:         document.getElementById('eq-notes').value.trim(),
+    };
+    if (!body.name) { showErr('err-addEquipment','Equipment name is required.'); return; }
+    try {
+      await api('POST', '/api/admin/equipment', body);
+      closeModal('addEquipment');
+      clearForm(['eq-name','eq-type','eq-model','eq-serial','eq-location','eq-notes']);
+      loadCustomerEquipment();
+    } catch(e) { showErr('err-addEquipment', e.message); }
+  }
+
+  async function deleteEquipment(id, name) {
+    if (!confirm(`Remove equipment "${name}"?`)) return;
+    try {
+      await api('DELETE', `/api/admin/equipment/${id}`);
+      loadCustomerEquipment();
+      await loadAllVisits();
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  // ── Visits ─────────────────────────────────────────────────────────────────
+  async function loadAllVisits() {
+    try {
+      allVisits = await api('GET', '/api/admin/visits');
+      renderVisitTable();
+      if (currentCustomer) loadCustomerVisits();
+    } catch {}
+  }
+
+  function renderVisitTable() {
+    const tbody = document.getElementById('visitTableBody');
+    let rows = allVisits;
+    if (visitFilter === 'PM' || visitFilter === 'CM') rows = rows.filter(v => v.visit_type === visitFilter);
+    else if (['scheduled','confirmed','completed'].includes(visitFilter)) rows = rows.filter(v => v.status === visitFilter);
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="empty">No visits match this filter.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map(v => {
+      const tech = allTechs.find(t => t.id === v.assigned_tech_id);
+      const techCell = tech ? `<strong>${escHtml(tech.name)}</strong><br><span class="code-pill">${tech.tech_code}</span>` : '<span style="color:var(--muted);">Unassigned</span>';
+      return `
+      <tr>
+        <td><strong>${v.customer_name}</strong><br><span class="code-pill">${v.customer_code}</span></td>
+        <td><span class="badge badge-${v.visit_type.toLowerCase()}">${v.visit_type}</span></td>
+        <td><span class="badge badge-${v.status}">${v.status.replace('_',' ')}</span></td>
+        <td>${fmtDate(v.scheduled_date)}</td>
+        <td>${fmtDate(v.completed_date)}</td>
+        <td>${techCell}</td>
+        <td>${v.equipment_name || '—'}</td>
+        <td style="white-space:nowrap;">
+          <button class="btn btn-edit btn-sm" onclick="openEditVisit(${v.id})">Edit</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteVisit(${v.id})" style="margin-left:6px;">Delete</button>
+        </td>
+      </tr>`;
+    }).join('');
+  }
+
+  function setFilter(f, btn) {
+    visitFilter = f;
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    renderVisitTable();
+  }
+
+  async function populateCustomerSelect(selectedId) {
+    const sel = document.getElementById('v-customer');
+    sel.innerHTML = '<option value="">Select customer…</option>' +
+      allCustomers.map(c => `<option value="${c.id}" ${c.id == selectedId ? 'selected' : ''}>${c.name} (${c.customer_code})</option>`).join('');
+  }
+
+  async function loadEquipmentForVisit(selectedEqId) {
+    const customerId = document.getElementById('v-customer').value;
+    const sel = document.getElementById('v-equipment');
+    sel.innerHTML = '<option value="">— All / Not specific —</option>';
+    if (!customerId) return;
+    try {
+      const eq = await api('GET', `/api/admin/customers/${customerId}/equipment`);
+      eq.forEach(e => {
+        const opt = document.createElement('option');
+        opt.value = e.id;
+        opt.textContent = e.name;
+        if (e.id == selectedEqId) opt.selected = true;
+        sel.appendChild(opt);
+      });
+    } catch {}
+  }
+
+  async function openModal(name, visitId) {
+    if (name === 'addVisit') {
+      currentVisitId = null;
+      document.getElementById('visitModalTitle').textContent   = 'Schedule Visit';
+      document.getElementById('visitSubmitBtn').textContent    = 'Save Visit';
+      document.getElementById('visitCustomerField').style.display = 'block';
+      clearVisitForm();
+      await populateCustomerSelect(null);
+      await loadEquipmentForVisit(null);
+      populateTechSelect();
+    }
+    document.getElementById(`modal-${name}`).classList.add('open');
+  }
+
+  function openAddVisitFromCustomer() {
+    currentVisitId = null;
+    document.getElementById('visitModalTitle').textContent   = 'Schedule Visit';
+    document.getElementById('visitSubmitBtn').textContent    = 'Save Visit';
+    document.getElementById('visitCustomerField').style.display = 'none';
+    clearVisitForm();
+    loadEquipmentForVisitForCustomer();
+    populateTechSelect();
+    document.getElementById('modal-addVisit').classList.add('open');
+  }
+
+  async function loadEquipmentForVisitForCustomer() {
+    if (!currentCustomer) return;
+    const sel = document.getElementById('v-equipment');
+    sel.innerHTML = '<option value="">— All / Not specific —</option>';
+    try {
+      const eq = await api('GET', `/api/admin/customers/${currentCustomer.id}/equipment`);
+      eq.forEach(e => {
+        const opt = document.createElement('option');
+        opt.value = e.id;
+        opt.textContent = e.name;
+        sel.appendChild(opt);
+      });
+    } catch {}
+  }
+
+  async function openEditVisit(id) {
+    currentVisitId = id;
+    const v = allVisits.find(v => v.id === id);
+    if (!v) return;
+    document.getElementById('visitModalTitle').textContent   = 'Edit Visit';
+    document.getElementById('visitSubmitBtn').textContent    = 'Update Visit';
+    document.getElementById('visitCustomerField').style.display = 'block';
+    await populateCustomerSelect(v.customer_id);
+    await loadEquipmentForVisit(v.equipment_id);
+    populateTechSelect();
+    document.getElementById('v-type').value           = v.visit_type;
+    document.getElementById('v-status').value         = v.status;
+    document.getElementById('v-tech').value           = v.assigned_tech_id || '';
+    document.getElementById('v-scheduled-date').value = v.scheduled_date || '';
+    document.getElementById('v-completed-date').value = v.completed_date || '';
+    document.getElementById('v-technician').value     = v.technician     || '';
+    document.getElementById('v-work-done').value      = v.work_done      || '';
+    document.getElementById('v-parts').value          = v.parts_replaced || '';
+    document.getElementById('v-notes').value          = v.notes          || '';
+    document.getElementById('modal-addVisit').classList.add('open');
+  }
+
+  async function submitVisit() {
+    const err = document.getElementById('err-addVisit');
+    err.style.display = 'none';
+    const customerIdRaw = currentCustomer
+      ? currentCustomer.id
+      : document.getElementById('v-customer').value;
+    if (!customerIdRaw) { showErr('err-addVisit', 'Please select a customer.'); return; }
+    const body = {
+      customer_id:      parseInt(customerIdRaw),
+      equipment_id:     document.getElementById('v-equipment').value ? parseInt(document.getElementById('v-equipment').value) : null,
+      assigned_tech_id: document.getElementById('v-tech').value ? parseInt(document.getElementById('v-tech').value) : null,
+      visit_type:       document.getElementById('v-type').value,
+      status:           document.getElementById('v-status').value,
+      scheduled_date:   document.getElementById('v-scheduled-date').value,
+      completed_date: document.getElementById('v-completed-date').value,
+      technician:     document.getElementById('v-technician').value.trim(),
+      work_done:      document.getElementById('v-work-done').value.trim(),
+      parts_replaced: document.getElementById('v-parts').value.trim(),
+      notes:          document.getElementById('v-notes').value.trim(),
+    };
+    try {
+      if (currentVisitId) {
+        await api('PUT', `/api/admin/visits/${currentVisitId}`, body);
+      } else {
+        await api('POST', '/api/admin/visits', body);
+      }
+      closeModal('addVisit');
+      clearVisitForm();
+      await loadAllVisits();
+    } catch(e) { showErr('err-addVisit', e.message); }
+  }
+
+  async function deleteVisit(id) {
+    if (!confirm('Delete this visit record? This cannot be undone.')) return;
+    try {
+      await api('DELETE', `/api/admin/visits/${id}`);
+      await loadAllVisits();
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  // ── Reviews ────────────────────────────────────────────────────────────────
+  async function loadReviews() {
+    try {
+      allReviews = await api('GET', '/api/admin/reviews');
+      renderReviews();
+      const pending = allReviews.filter(r => r.status === 'pending').length;
+      const badge   = document.getElementById('pendingBadge');
+      if (pending) { badge.textContent = pending; badge.style.display = 'inline-block'; }
+      else         { badge.style.display = 'none'; }
+    } catch {}
+  }
+
+  function setReviewFilter(f, btn) {
+    reviewFilter = f;
+    document.querySelectorAll('#reviewFilters .filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    renderReviews();
+  }
+
+  function renderReviews() {
+    const wrap = document.getElementById('reviewCards');
+    let rows = allReviews;
+    if (reviewFilter !== 'all') rows = rows.filter(r => r.status === reviewFilter);
+    if (!rows.length) {
+      wrap.innerHTML = `<div class="empty" style="background:white;border:1px solid var(--border);border-radius:12px;">No ${reviewFilter === 'all' ? '' : reviewFilter + ' '}reviews.</div>`;
+      return;
+    }
+    wrap.innerHTML = rows.map(r => {
+      const stars = '★'.repeat(r.rating) + `<span class="empty">${'★'.repeat(5 - r.rating)}</span>`;
+      const typePill = r.review_type === 'visit'
+        ? `<span class="review-type-pill pill-visit">Visit Review</span>`
+        : `<span class="review-type-pill pill-company">Annual Review</span>`;
+      const techLine = r.tech_snapshot
+        ? ` · Tech: <strong>${escHtml(r.tech_snapshot)}</strong>`
+        : '';
+      const date = (r.created_at || '').slice(0, 10);
+
+      let actions = '';
+      if (r.status === 'pending') {
+        actions = `
+          <button class="btn btn-primary btn-sm" onclick="approveReview(${r.id})">✓ Approve &amp; Publish</button>
+          <button class="btn btn-ghost btn-sm" onclick="rejectReview(${r.id})">Reject</button>
+          <button class="btn btn-danger btn-sm" onclick="removeReview(${r.id})">Delete</button>`;
+      } else if (r.status === 'approved') {
+        actions = `
+          <span class="badge badge-completed">Public</span>
+          <button class="btn btn-ghost btn-sm" onclick="rejectReview(${r.id})">Unpublish</button>
+          <button class="btn btn-danger btn-sm" onclick="removeReview(${r.id})">Delete</button>`;
+      } else {
+        actions = `
+          <span class="badge" style="background:#fee2e2;color:#991b1b;">Rejected</span>
+          <button class="btn btn-primary btn-sm" onclick="approveReview(${r.id})">Approve Now</button>
+          <button class="btn btn-danger btn-sm" onclick="removeReview(${r.id})">Delete</button>`;
+      }
+
+      return `
+        <div class="review-card">
+          <div class="review-top">
+            <div>
+              <div class="review-stars">${stars}</div>
+              <div class="review-meta" style="margin-top:4px;">
+                <strong>${escHtml(r.customer_name)}</strong>
+                ${r.customer_company ? ` · ${escHtml(r.customer_company)}` : ''}
+                ${r.role ? ` · ${escHtml(r.role)}` : ''}
+              </div>
+            </div>
+            <div style="text-align:right;">
+              ${typePill}
+              <div class="review-meta" style="margin-top:6px;">${date}${techLine}</div>
+            </div>
+          </div>
+          <div class="review-body">${escHtml(r.text).replace(/\n/g, '<br>')}</div>
+          <div class="review-actions">${actions}</div>
+        </div>`;
+    }).join('');
+  }
+
+  async function approveReview(id) {
+    try { await api('PUT', `/api/admin/reviews/${id}/approve`); await loadReviews(); }
+    catch(e) { alert('Error: ' + e.message); }
+  }
+  async function rejectReview(id) {
+    try { await api('PUT', `/api/admin/reviews/${id}/reject`); await loadReviews(); }
+    catch(e) { alert('Error: ' + e.message); }
+  }
+  async function removeReview(id) {
+    if (!confirm('Delete this review permanently?')) return;
+    try { await api('DELETE', `/api/admin/reviews/${id}`); await loadReviews(); }
+    catch(e) { alert('Error: ' + e.message); }
+  }
+
+  function escHtml(s) {
+    return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // ── Technicians ────────────────────────────────────────────────────────────
+  async function loadTechs() {
+    try {
+      allTechs = await api('GET', '/api/admin/techs');
+      renderTechs();
+      populateTechSelect();
+    } catch {}
+  }
+
+  function renderTechs() {
+    const tbody = document.getElementById('techTableBody');
+    if (!allTechs.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty">No technicians yet. Add your first one.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = allTechs.map(t => `
+      <tr style="${t.active ? '' : 'opacity:0.55;'}">
+        <td><span class="code-pill">${t.tech_code}</span></td>
+        <td><strong>${escHtml(t.name)}</strong>${t.email ? `<br><span style="font-size:11px;color:var(--muted);">${escHtml(t.email)}</span>` : ''}</td>
+        <td>${escHtml(t.phone) || '—'}</td>
+        <td>${t.active_jobs > 0 ? `<span class="badge badge-in_progress">${t.active_jobs} active</span>` : '<span style="color:var(--muted);">0</span>'}</td>
+        <td>${t.active ? '<span class="badge badge-confirmed">Active</span>' : '<span class="badge" style="background:#f3f4f6;color:var(--muted);">Inactive</span>'}</td>
+        <td style="white-space:nowrap;">
+          <button class="btn btn-edit btn-sm" onclick="openResetPin(${t.id},'${escHtml(t.name)}')">Reset PIN</button>
+          <button class="btn btn-ghost btn-sm" onclick="toggleTechActive(${t.id},${t.active ? 0 : 1})" style="margin-left:6px;">${t.active ? 'Deactivate' : 'Activate'}</button>
+          <button class="btn btn-danger btn-sm" onclick="removeTech(${t.id},'${escHtml(t.name)}')" style="margin-left:6px;">Delete</button>
+        </td>
+      </tr>`).join('');
+  }
+
+  function populateTechSelect() {
+    const sel = document.getElementById('v-tech');
+    if (!sel) return;
+    const current = sel.value;
+    sel.innerHTML = '<option value="">— Unassigned —</option>' +
+      allTechs.filter(t => t.active).map(t => `<option value="${t.id}">${escHtml(t.name)} (${t.tech_code})</option>`).join('');
+    if (current) sel.value = current;
+  }
+
+  async function submitAddTech() {
+    const err = document.getElementById('err-addTech');
+    err.style.display = 'none';
+    const body = {
+      tech_code: document.getElementById('t-code').value.trim(),
+      pin:       document.getElementById('t-pin').value.trim(),
+      name:      document.getElementById('t-name').value.trim(),
+      phone:     document.getElementById('t-phone').value.trim(),
+      email:     document.getElementById('t-email').value.trim(),
+    };
+    if (!body.tech_code || !body.pin || !body.name) { showErr('err-addTech','Tech code, PIN, and name are required.'); return; }
+    if (!/^\d{4,8}$/.test(body.pin)) { showErr('err-addTech','PIN must be 4–8 digits.'); return; }
+    try {
+      await api('POST', '/api/admin/techs', body);
+      closeModal('addTech');
+      ['t-code','t-pin','t-name','t-phone','t-email'].forEach(id => document.getElementById(id).value = '');
+      await loadTechs();
+    } catch(e) { showErr('err-addTech', e.message); }
+  }
+
+  function openResetPin(id, name) {
+    resetPinTechId = id;
+    document.getElementById('resetPinName').textContent = name;
+    document.getElementById('rp-pin').value = '';
+    document.getElementById('err-resetPin').style.display = 'none';
+    document.getElementById('modal-resetPin').classList.add('open');
+  }
+
+  async function submitResetPin() {
+    const pin = document.getElementById('rp-pin').value.trim();
+    if (!/^\d{4,8}$/.test(pin)) { showErr('err-resetPin','PIN must be 4–8 digits.'); return; }
+    try {
+      await api('PUT', `/api/admin/techs/${resetPinTechId}/pin`, { pin });
+      closeModal('resetPin');
+      alert('PIN reset. Share the new PIN with the technician.');
+    } catch(e) { showErr('err-resetPin', e.message); }
+  }
+
+  async function toggleTechActive(id, active) {
+    const t = allTechs.find(x => x.id === id);
+    try {
+      await api('PUT', `/api/admin/techs/${id}`, {
+        name: t.name, phone: t.phone || '', email: t.email || '', active: !!active,
+      });
+      await loadTechs();
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  async function removeTech(id, name) {
+    if (!confirm(`Delete technician "${name}"? Any assigned jobs will become unassigned.`)) return;
+    try {
+      await api('DELETE', `/api/admin/techs/${id}`);
+      await loadTechs();
+      await loadAllVisits();
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  // ── Modals ─────────────────────────────────────────────────────────────────
+  function closeModal(name) {
+    document.getElementById(`modal-${name}`).classList.remove('open');
+  }
+  document.querySelectorAll('.modal-overlay').forEach(el => {
+    el.addEventListener('click', e => { if (e.target === el) el.classList.remove('open'); });
+  });
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  function clearVisitForm() {
+    ['v-customer','v-type','v-status','v-equipment','v-tech'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el && el.tagName === 'SELECT') el.selectedIndex = 0;
+    });
+    ['v-scheduled-date','v-completed-date','v-technician','v-work-done','v-parts','v-notes']
+      .forEach(id => { document.getElementById(id).value = ''; });
+    document.getElementById('err-addVisit').style.display = 'none';
+  }
+  function clearForm(ids) { ids.forEach(id => { document.getElementById(id).value = ''; }); }
+  function showErr(id, msg) {
+    const el = document.getElementById(id);
+    el.textContent    = msg;
+    el.style.display  = 'block';
+  }
+  function fmtDate(d) {
+    if (!d) return '—';
+    const dt = new Date(d + (d.includes('T') ? '' : 'T00:00:00'));
+    return dt.toLocaleDateString('en-TT', { day: 'numeric', month: 'short', year: 'numeric' });
+  }
+  function esc(s) { return (s || '').replace(/'/g,"\'"); }
+
+  document.getElementById('adminPw').addEventListener('keydown', e => {
+    if (e.key === 'Enter') doAdminLogin();
+  });
+
+  init();
+</script>
+</body>
+</html>

@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Client Reviews — PrimeCool Services</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@300;400;500;600;700&family=Barlow+Condensed:wght@500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --navy:     #0B2545;
+      --teal:     #22A08A;
+      --teal-deep:#1A7A6A;
+      --slate:    #5A6472;
+      --frost:    #E8ECF0;
+      --midnight: #111820;
+      --amber:    #f59e0b;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Barlow', sans-serif;
+      background: var(--midnight);
+      color: var(--frost);
+      min-height: 100vh;
+      line-height: 1.6;
+    }
+    a { color: inherit; text-decoration: none; }
+
+    /* ── Top nav ── */
+    .topnav {
+      background: var(--navy);
+      padding: 1rem 2rem;
+      display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+    .wm-main {
+      font-family: 'Barlow Condensed', sans-serif;
+      font-weight: 700;
+      font-size: 1.3rem;
+      letter-spacing: 0.02em;
+      color: var(--frost);
+    }
+    .wm-main .cool { color: var(--teal); }
+    .back-link {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.72rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--teal);
+      border: 1px solid var(--teal);
+      padding: 0.55rem 1.1rem;
+      transition: background 0.2s, color 0.2s;
+    }
+    .back-link:hover { background: var(--teal); color: var(--navy); }
+
+    /* ── Hero ── */
+    .hero {
+      padding: 5rem 2rem 3rem;
+      text-align: center;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+    .eyebrow {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.72rem;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--teal);
+      margin-bottom: 1rem;
+    }
+    .hero h1 {
+      font-family: 'Barlow Condensed', sans-serif;
+      font-weight: 700;
+      font-size: clamp(2.2rem, 5vw, 3.4rem);
+      line-height: 1.1;
+      color: var(--frost);
+      margin-bottom: 1.3rem;
+    }
+    .hero h1 em { color: var(--teal); font-style: normal; }
+    .hero p {
+      font-size: 1rem;
+      color: var(--slate);
+      max-width: 600px;
+      margin: 0 auto;
+    }
+
+    /* ── Summary ── */
+    .summary-bar {
+      background: var(--navy);
+      max-width: 800px;
+      margin: 0 auto 3rem;
+      padding: 1.5rem 2rem;
+      display: flex;
+      justify-content: space-around;
+      align-items: center;
+      gap: 1rem;
+      border-bottom: 2px solid var(--teal);
+      flex-wrap: wrap;
+    }
+    .stat {
+      text-align: center;
+    }
+    .stat-value {
+      font-family: 'Barlow Condensed', sans-serif;
+      font-weight: 700;
+      font-size: 2.2rem;
+      color: var(--frost);
+      line-height: 1;
+    }
+    .stat-value .small { font-size: 1.1rem; color: var(--slate); }
+    .stat-label {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.62rem;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--slate);
+      margin-top: 0.5rem;
+    }
+    .stat-stars { color: var(--amber); font-size: 1.2rem; letter-spacing: 2px; margin-top: 0.3rem; }
+    .stat-stars .empty { color: rgba(255,255,255,0.15); }
+
+    /* ── Filter pills ── */
+    .filters {
+      max-width: 1100px;
+      margin: 0 auto 2rem;
+      padding: 0 2rem;
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .filter-pill {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.7rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      padding: 0.55rem 1.2rem;
+      border: 1px solid rgba(255,255,255,0.15);
+      background: transparent;
+      color: var(--slate);
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .filter-pill:hover { color: var(--frost); border-color: rgba(255,255,255,0.3); }
+    .filter-pill.active { background: var(--teal); color: var(--navy); border-color: var(--teal); }
+
+    /* ── Reviews grid ── */
+    .reviews-wrap {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 0 2rem 5rem;
+    }
+    .reviews-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 1.5rem;
+    }
+    .review-card {
+      background: var(--navy);
+      padding: 2rem;
+      border-bottom: 2px solid var(--teal);
+      display: flex;
+      flex-direction: column;
+    }
+    .stars { display: flex; gap: 3px; margin-bottom: 1rem; }
+    .stars span { color: var(--teal); font-size: 0.95rem; }
+    .stars .empty { color: rgba(255,255,255,0.15); }
+    .review-text {
+      font-size: 0.92rem;
+      color: var(--frost);
+      line-height: 1.7;
+      font-style: italic;
+      margin-bottom: 1.5rem;
+      flex: 1;
+    }
+    .review-by {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.63rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--slate);
+      line-height: 1.7;
+    }
+    .review-by strong {
+      color: var(--frost);
+      display: block;
+      margin-bottom: 0.2rem;
+      font-weight: 600;
+    }
+    .review-tag {
+      display: inline-block;
+      font-size: 0.55rem;
+      letter-spacing: 0.18em;
+      padding: 0.2rem 0.7rem;
+      background: rgba(34,160,138,0.15);
+      color: var(--teal);
+      margin-top: 0.6rem;
+    }
+
+    /* ── Empty / loading ── */
+    .state {
+      text-align: center;
+      padding: 4rem 2rem;
+      color: var(--slate);
+      font-family: 'DM Mono', monospace;
+      font-size: 0.85rem;
+      letter-spacing: 0.1em;
+    }
+
+    /* ── Footer ── */
+    footer {
+      background: var(--navy);
+      padding: 2rem;
+      text-align: center;
+      font-family: 'DM Mono', monospace;
+      font-size: 0.7rem;
+      letter-spacing: 0.16em;
+      color: var(--slate);
+      text-transform: uppercase;
+    }
+
+    @media (max-width: 600px) {
+      .hero { padding: 3rem 1.5rem 2rem; }
+      .summary-bar { padding: 1.2rem 1.5rem; }
+      .reviews-wrap { padding: 0 1.5rem 3rem; }
+      .reviews-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+  <nav class="topnav">
+    <a href="/" class="wm-main">Prime<span class="cool">Cool</span></a>
+    <a href="/" class="back-link">← Back to Site</a>
+  </nav>
+
+  <section class="hero">
+    <div class="eyebrow">Verified Reviews</div>
+    <h1>What our <em>clients</em> say.</h1>
+    <p>Every review below comes from a verified PrimeCool customer who logged into their service portal after a completed visit or year of service. No paid reviews, no edits.</p>
+  </section>
+
+  <div class="summary-bar" id="summaryBar">
+    <div class="stat">
+      <div class="stat-value" id="avgRating">—</div>
+      <div class="stat-stars" id="avgStars"></div>
+      <div class="stat-label">Average Rating</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value" id="totalCount">—</div>
+      <div class="stat-label">Total Reviews</div>
+    </div>
+  </div>
+
+  <div class="reviews-wrap">
+    <div id="reviewsGrid" class="reviews-grid">
+      <div class="state" style="grid-column:1/-1;">Loading reviews…</div>
+    </div>
+  </div>
+
+  <footer>© 2025 PrimeCool Services Ltd. · Verified Customer Reviews</footer>
+
+  <script>
+    let allReviews = [];
+
+    function escHtml(s) {
+      return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    function stars(n) {
+      return '<span>' + '★'.repeat(n) + '</span><span class="empty">' + '★'.repeat(5-n) + '</span>';
+    }
+
+    function fmtDate(d) {
+      if (!d) return '';
+      try {
+        return new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+      } catch { return ''; }
+    }
+
+    function render() {
+      const grid = document.getElementById('reviewsGrid');
+      const rows = allReviews;
+
+      if (!rows.length) {
+        grid.innerHTML = '<div class="state" style="grid-column:1/-1;">No reviews in this category yet.</div>';
+        return;
+      }
+
+      grid.innerHTML = rows.map(r => `
+        <div class="review-card">
+          <div class="stars">${stars(r.rating)}</div>
+          <p class="review-text">"${escHtml(r.text)}"</p>
+          <div class="review-by">
+            <strong>${escHtml(r.display_name)}</strong>
+            ${r.sub ? escHtml(r.sub) : ''}${r.sub && r.date ? ' · ' : ''}${fmtDate(r.date)}
+          </div>
+        </div>`).join('');
+    }
+
+    function renderSummary() {
+      const total = allReviews.length;
+      if (!total) {
+        document.getElementById('avgRating').textContent  = '—';
+        document.getElementById('totalCount').textContent = '0';
+        return;
+      }
+      const sum = allReviews.reduce((a, r) => a + r.rating, 0);
+      const avg = sum / total;
+      document.getElementById('avgRating').innerHTML = `${avg.toFixed(1)}<span class="small">/5</span>`;
+      document.getElementById('avgStars').innerHTML = stars(Math.round(avg));
+      document.getElementById('totalCount').textContent = total;
+    }
+
+    async function load() {
+      try {
+        const res = await fetch('/api/reviews/public');
+        if (!res.ok) throw new Error();
+        allReviews = await res.json();
+        renderSummary();
+        render();
+      } catch {
+        document.getElementById('reviewsGrid').innerHTML = '<div class="state" style="grid-column:1/-1;">Reviews are temporarily unavailable. Please check back soon.</div>';
+      }
+    }
+
+    load();
+  </script>
+</body>
+</html>

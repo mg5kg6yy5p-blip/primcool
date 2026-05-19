@@ -1,0 +1,987 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#0B2545">
+  <title>Tech Portal — PrimeCool Services</title>
+  <link rel="manifest" href="/manifest-tech.json">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="PrimeCool Tech">
+  <link rel="apple-touch-icon" href="/icons/tech-apple.png">
+  <style>
+    :root {
+      --navy: #0B2545;
+      --navy-2: #143264;
+      --teal: #22A08A;
+      --teal-deep: #1A7A6A;
+      --amber: #f59e0b;
+      --red: #dc2626;
+      --green: #059669;
+      --bg: #f0f4f8;
+      --white: #ffffff;
+      --text: #1a2533;
+      --muted: #5A6472;
+      --border: #dde3ea;
+      --light: #f8fafc;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    body {
+      font-family: -apple-system, system-ui, 'Segoe UI', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      font-size: 15px;
+      line-height: 1.5;
+    }
+    button, input, textarea, select { font: inherit; }
+
+    /* ── Top bar ── */
+    header {
+      background: var(--navy);
+      color: white;
+      padding: 14px 18px;
+      display: flex; align-items: center; justify-content: space-between;
+      position: sticky; top: 0; z-index: 100;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    }
+    .brand { font-size: 17px; font-weight: 700; letter-spacing: 0.3px; }
+    .brand span { color: var(--teal); }
+    .tech-badge {
+      font-size: 11px; font-weight: 700;
+      background: rgba(34,160,138,0.25); color: var(--teal);
+      padding: 3px 9px; border-radius: 14px;
+      text-transform: uppercase; letter-spacing: 0.7px;
+      margin-left: 8px;
+    }
+    .header-right { display: flex; align-items: center; gap: 12px; }
+    .tech-name { font-size: 13px; opacity: 0.8; }
+    .logout {
+      background: rgba(255,255,255,0.1);
+      color: white;
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 6px;
+      padding: 5px 11px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .back-bar {
+      background: var(--navy-2); color: white;
+      padding: 12px 18px; font-size: 14px; font-weight: 500;
+      display: flex; align-items: center; gap: 8px;
+      cursor: pointer;
+      position: sticky; top: 50px; z-index: 99;
+    }
+
+    /* ── Login ── */
+    #loginScreen {
+      min-height: calc(100vh - 50px);
+      display: flex; align-items: center; justify-content: center;
+      padding: 24px;
+    }
+    .login-card {
+      background: white; border-radius: 16px;
+      box-shadow: 0 6px 30px rgba(11,37,69,0.12);
+      padding: 36px 28px; width: 100%; max-width: 360px;
+    }
+    .login-card h1 { color: var(--navy); font-size: 22px; margin-bottom: 6px; }
+    .login-card .sub { color: var(--muted); font-size: 13px; margin-bottom: 28px; }
+    .field { margin-bottom: 16px; }
+    .field label {
+      display: block; font-size: 11px; font-weight: 700;
+      letter-spacing: 0.7px; text-transform: uppercase;
+      color: var(--navy); margin-bottom: 6px;
+    }
+    .field input {
+      width: 100%; padding: 13px 14px;
+      border: 2px solid var(--border); border-radius: 10px;
+      font-size: 17px; color: var(--text);
+      letter-spacing: 2px; text-transform: uppercase;
+      font-family: 'Courier New', monospace;
+      outline: none; transition: border-color 0.15s;
+    }
+    .field input.pin { letter-spacing: 12px; font-size: 22px; text-align: center; }
+    .field input::placeholder { letter-spacing: 1px; font-size: 14px; color: #c0c8d2; text-transform: none; }
+    .field input:focus { border-color: var(--teal); }
+
+    .btn {
+      width: 100%; padding: 15px;
+      background: var(--teal); color: white;
+      border: none; border-radius: 10px;
+      font-size: 15px; font-weight: 600;
+      cursor: pointer; transition: background 0.15s;
+      letter-spacing: 0.3px;
+    }
+    .btn:hover:not(:disabled) { background: var(--teal-deep); }
+    .btn:disabled { background: #b0bec5; cursor: not-allowed; }
+    .err {
+      background: #fff5f5; color: var(--red);
+      padding: 11px 14px; border-radius: 8px;
+      font-size: 13px; margin-bottom: 14px;
+      border: 1px solid #fed7d7;
+      display: none;
+    }
+
+    /* ── Tabs ── */
+    .tabs {
+      display: flex; background: white;
+      border-bottom: 1px solid var(--border);
+      position: sticky; top: 50px; z-index: 99;
+    }
+    .tab {
+      flex: 1; padding: 14px 8px;
+      text-align: center; cursor: pointer;
+      font-size: 13px; font-weight: 600;
+      color: var(--muted);
+      border-bottom: 3px solid transparent;
+    }
+    .tab.active { color: var(--teal); border-bottom-color: var(--teal); }
+    .tab .count {
+      background: var(--bg); color: var(--muted);
+      font-size: 11px; padding: 1px 7px; border-radius: 10px;
+      margin-left: 4px;
+    }
+    .tab.active .count { background: rgba(34,160,138,0.15); color: var(--teal); }
+
+    /* ── Job list ── */
+    .list { padding: 14px 14px 80px; }
+    .job-card {
+      background: white; border-radius: 12px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+      margin-bottom: 12px; padding: 16px;
+      border-left: 4px solid var(--border);
+      cursor: pointer;
+      transition: transform 0.1s;
+    }
+    .job-card:active { transform: scale(0.99); }
+    .job-card.scheduled  { border-left-color: var(--amber); }
+    .job-card.confirmed  { border-left-color: #3b82f6; }
+    .job-card.in_progress{ border-left-color: var(--teal); background: linear-gradient(90deg, rgba(34,160,138,0.06) 0%, white 100%); }
+    .job-card.completed  { border-left-color: var(--green); opacity: 0.78; }
+
+    .job-top {
+      display: flex; justify-content: space-between; align-items: flex-start;
+      gap: 10px; margin-bottom: 8px;
+    }
+    .job-type {
+      font-size: 10px; font-weight: 800;
+      padding: 3px 8px; border-radius: 14px;
+      letter-spacing: 0.6px;
+      flex-shrink: 0;
+    }
+    .pm-pill { background: #dbeafe; color: #1d4ed8; }
+    .cm-pill { background: #fef3c7; color: #92400e; }
+    .job-status {
+      font-size: 10px; font-weight: 700;
+      padding: 3px 9px; border-radius: 14px;
+      letter-spacing: 0.4px; text-transform: uppercase;
+    }
+    .status-scheduled  { background: #fef3c7; color: #92400e; }
+    .status-confirmed  { background: #dbeafe; color: #1e40af; }
+    .status-in_progress{ background: rgba(34,160,138,0.15); color: var(--teal-deep); }
+    .status-completed  { background: #d1fae5; color: #065f46; }
+
+    .job-customer {
+      font-weight: 700; font-size: 16px;
+      color: var(--navy); margin-bottom: 3px;
+    }
+    .job-meta { font-size: 13px; color: var(--muted); }
+    .job-meta .row { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+    .job-meta svg { width: 14px; height: 14px; opacity: 0.7; flex-shrink: 0; }
+
+    .empty {
+      text-align: center; padding: 50px 20px;
+      color: var(--muted); font-size: 14px;
+    }
+    .empty svg { width: 40px; height: 40px; color: #c8d2dc; margin-bottom: 10px; }
+
+    /* ── Job detail ── */
+    .detail { padding: 14px 14px 100px; }
+
+    .detail-card {
+      background: white; border-radius: 12px;
+      padding: 18px; margin-bottom: 14px;
+    }
+    .detail-card h3 {
+      font-size: 11px; font-weight: 700;
+      letter-spacing: 0.8px; text-transform: uppercase;
+      color: var(--muted); margin-bottom: 12px;
+    }
+    .detail-row {
+      display: flex; justify-content: space-between;
+      padding: 9px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 14px;
+    }
+    .detail-row:last-child { border-bottom: none; padding-bottom: 0; }
+    .detail-row .l { color: var(--muted); }
+    .detail-row .v { color: var(--navy); font-weight: 600; text-align: right; }
+    .detail-row .v a { color: var(--teal); text-decoration: none; }
+
+    .status-banner {
+      background: var(--navy);
+      color: white;
+      border-radius: 12px;
+      padding: 16px 18px;
+      margin-bottom: 14px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .status-banner.in_progress { background: linear-gradient(135deg, var(--teal) 0%, var(--teal-deep) 100%); }
+    .status-banner.completed   { background: linear-gradient(135deg, #059669 0%, #047857 100%); }
+    .status-banner .lt {
+      font-size: 11px; opacity: 0.7; letter-spacing: 0.7px;
+      text-transform: uppercase; margin-bottom: 3px;
+    }
+    .status-banner .vt { font-size: 16px; font-weight: 700; }
+    .status-banner .timer { font-family: 'Courier New', monospace; font-size: 13px; opacity: 0.9; margin-top: 4px; }
+
+    .big-btn {
+      width: 100%; padding: 18px;
+      font-size: 16px; font-weight: 700;
+      letter-spacing: 0.4px;
+      border: none; border-radius: 12px;
+      cursor: pointer;
+      margin-bottom: 14px;
+      transition: transform 0.1s;
+    }
+    .big-btn:active { transform: scale(0.98); }
+    .btn-start { background: var(--teal); color: white; }
+    .btn-end   { background: var(--green); color: white; }
+
+    textarea {
+      width: 100%; padding: 12px 14px;
+      border: 2px solid var(--border); border-radius: 10px;
+      font-size: 14px; color: var(--text);
+      outline: none; resize: vertical; min-height: 80px;
+      transition: border-color 0.15s;
+      font-family: inherit;
+    }
+    textarea:focus { border-color: var(--teal); }
+    .field-detail { margin-bottom: 14px; }
+    .field-detail label {
+      display: block; font-size: 11px; font-weight: 700;
+      letter-spacing: 0.7px; text-transform: uppercase;
+      color: var(--navy); margin-bottom: 6px;
+    }
+
+    /* ── Photos ── */
+    .photo-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .photo-item {
+      position: relative;
+      aspect-ratio: 1;
+      border-radius: 8px;
+      overflow: hidden;
+      background: var(--bg);
+    }
+    .photo-item img {
+      width: 100%; height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .photo-cat {
+      position: absolute; top: 4px; left: 4px;
+      background: rgba(0,0,0,0.65); color: white;
+      font-size: 9px; font-weight: 700;
+      padding: 2px 6px; border-radius: 4px;
+      letter-spacing: 0.5px; text-transform: uppercase;
+    }
+    .photo-del {
+      position: absolute; top: 4px; right: 4px;
+      background: rgba(220,38,38,0.85); color: white;
+      width: 22px; height: 22px; border-radius: 50%;
+      border: none; cursor: pointer;
+      font-size: 14px; line-height: 1; padding: 0;
+    }
+    .photo-upload-row {
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: 10px; margin-bottom: 14px;
+    }
+    .upload-btn {
+      background: white; border: 2px dashed var(--border);
+      color: var(--navy); padding: 14px;
+      border-radius: 10px; font-weight: 600; font-size: 13px;
+      cursor: pointer; transition: all 0.15s;
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+    }
+    .upload-btn:hover { border-color: var(--teal); color: var(--teal); }
+    .upload-btn.uploading { opacity: 0.5; cursor: wait; }
+    .upload-btn svg { width: 18px; height: 18px; }
+    .upload-btn input { display: none; }
+
+    /* ── Lightbox ── */
+    .lightbox {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.92); z-index: 1000;
+      align-items: center; justify-content: center;
+      padding: 20px;
+    }
+    .lightbox.open { display: flex; }
+    .lightbox img { max-width: 100%; max-height: 100%; object-fit: contain; }
+    .lightbox-close {
+      position: absolute; top: 16px; right: 16px;
+      background: rgba(255,255,255,0.15); color: white;
+      border: none; width: 40px; height: 40px;
+      border-radius: 50%; font-size: 22px; cursor: pointer;
+    }
+
+    /* ── Toast ── */
+    .toast {
+      position: fixed; bottom: 24px; left: 50%;
+      transform: translateX(-50%) translateY(80px);
+      background: var(--navy); color: white;
+      padding: 12px 22px; border-radius: 50px;
+      box-shadow: 0 6px 24px rgba(0,0,0,0.25);
+      font-size: 14px; z-index: 999;
+      opacity: 0; transition: all 0.3s;
+      pointer-events: none;
+      max-width: 90vw;
+    }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    .toast.error { background: var(--red); }
+    .toast.success { background: var(--green); }
+
+    @media (max-width: 380px) {
+      .photo-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    /* PWA install banner */
+    .install-banner {
+      display: none;
+      background: var(--navy); color: white;
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin: 14px 14px 0;
+      align-items: center; justify-content: space-between; gap: 10px;
+    }
+    .install-banner.show { display: flex; }
+    .install-banner .txt { font-size: 12px; line-height: 1.4; }
+    .install-banner .txt strong { color: var(--teal); }
+    .install-banner button {
+      background: var(--teal); color: white; border: none;
+      padding: 6px 12px; border-radius: 6px;
+      font-size: 12px; font-weight: 600; cursor: pointer;
+    }
+    .install-banner .dismiss {
+      background: rgba(255,255,255,0.12);
+    }
+    #iosHint {
+      display: none;
+      background: var(--light); color: var(--navy);
+      font-size: 12px; line-height: 1.5;
+      padding: 10px 14px;
+      margin: 12px 14px 0;
+      border-radius: 8px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══ LOGIN ═══ -->
+<div id="loginScreen">
+  <div class="login-card">
+    <h1>Tech Portal</h1>
+    <p class="sub">PrimeCool Services — field tech access.</p>
+    <div class="err" id="loginErr"></div>
+    <div class="field">
+      <label>Tech Code</label>
+      <input type="text" id="techCode" placeholder="T-001" maxlength="10" autocomplete="off" inputmode="text">
+    </div>
+    <div class="field">
+      <label>PIN</label>
+      <input type="password" id="techPin" class="pin" placeholder="••••" maxlength="8" autocomplete="off" inputmode="numeric" pattern="[0-9]*">
+    </div>
+    <button class="btn" id="loginBtn" onclick="doLogin()">Sign In</button>
+    <p style="text-align:center;margin-top:16px;font-size:13px;">
+      <a href="#" onclick="event.preventDefault();openForgot()" style="color:var(--teal);text-decoration:none;font-weight:600;">Forgot PIN?</a>
+    </p>
+  </div>
+</div>
+
+<!-- Forgot PIN modal -->
+<div id="forgotModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:500;align-items:center;justify-content:center;padding:20px;">
+  <div style="background:white;border-radius:16px;width:100%;max-width:380px;padding:28px 24px;">
+    <h2 style="color:var(--navy);font-size:20px;margin-bottom:6px;">Reset Your PIN</h2>
+    <p style="color:var(--muted);font-size:13px;margin-bottom:20px;line-height:1.5;">Enter your tech code and the email PrimeCool has on file. If they match, we'll send you a reset link.</p>
+
+    <div class="err" id="forgotErr"></div>
+    <div id="forgotOk" style="display:none;background:#f0fdf4;color:#059669;border:1px solid #bbf7d0;padding:11px 14px;border-radius:8px;font-size:13px;line-height:1.5;margin-bottom:14px;">
+      If a matching account exists, a reset link has been sent. Check your email (and spam folder) within a few minutes.
+    </div>
+
+    <div class="field">
+      <label>Tech Code</label>
+      <input type="text" id="forgotCode" placeholder="T-001" maxlength="10" autocomplete="off">
+    </div>
+    <div class="field">
+      <label>Email on File</label>
+      <input type="email" id="forgotEmail" placeholder="you@example.com" style="letter-spacing:0;text-transform:none;font-family:inherit;font-size:15px;" autocomplete="email">
+    </div>
+    <button class="btn" id="forgotBtn" onclick="submitForgot()">Send Reset Link</button>
+    <p style="text-align:center;margin-top:14px;font-size:13px;">
+      <a href="#" onclick="event.preventDefault();closeForgot()" style="color:var(--muted);text-decoration:none;">← Back to Sign In</a>
+    </p>
+    <p style="text-align:center;margin-top:16px;font-size:11px;color:var(--muted);line-height:1.5;">
+      No email on file? Ask your admin to reset your PIN.
+    </p>
+  </div>
+</div>
+
+<!-- ═══ APP ═══ -->
+<div id="app" style="display:none;">
+  <header>
+    <div>
+      <span class="brand">Prime<span>Cool</span></span>
+      <span class="tech-badge">Tech</span>
+    </div>
+    <div class="header-right">
+      <span class="tech-name" id="hdrName"></span>
+      <button class="logout" onclick="doLogout()">Sign out</button>
+    </div>
+  </header>
+
+  <!-- Back bar (only on detail view) -->
+  <div class="back-bar" id="backBar" style="display:none;" onclick="showList()">
+    ← Back to Jobs
+  </div>
+
+  <!-- PWA install banner -->
+  <div class="install-banner" id="installBanner">
+    <div class="txt">
+      <strong>📲 Install PrimeCool Tech</strong><br>
+      Add to your home screen for one-tap access.
+    </div>
+    <button onclick="doInstall()">Install</button>
+    <button class="dismiss" onclick="dismissInstall()">×</button>
+  </div>
+  <div id="iosHint">
+    📱 To install: tap <strong>Share</strong> in Safari, then <strong>"Add to Home Screen"</strong>.
+  </div>
+
+  <!-- LIST VIEW -->
+  <div id="listView">
+    <div class="tabs">
+      <div class="tab active" data-tab="today" onclick="setTab('today')">Today <span class="count" id="cnt-today">0</span></div>
+      <div class="tab" data-tab="upcoming" onclick="setTab('upcoming')">Upcoming <span class="count" id="cnt-upcoming">0</span></div>
+      <div class="tab" data-tab="done" onclick="setTab('done')">Done <span class="count" id="cnt-done">0</span></div>
+    </div>
+    <div class="list" id="jobList"></div>
+  </div>
+
+  <!-- DETAIL VIEW -->
+  <div id="detailView" style="display:none;"></div>
+</div>
+
+<!-- Lightbox -->
+<div class="lightbox" id="lightbox" onclick="closeLightbox()">
+  <button class="lightbox-close" onclick="closeLightbox()">×</button>
+  <img id="lightboxImg" src="" alt="">
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+  // ── State ───────────────────────────────────────────────────────────────
+  let token       = localStorage.getItem('pc_tech_token') || null;
+  let techInfo    = null;
+  let allJobs     = [];
+  let currentTab  = 'today';
+  let currentJob  = null;
+  let timerInterval = null;
+
+  // ── Init ────────────────────────────────────────────────────────────────
+  if (token) showApp();
+
+  // ── Auth ────────────────────────────────────────────────────────────────
+  async function doLogin() {
+    const code = document.getElementById('techCode').value.trim().toUpperCase();
+    const pin  = document.getElementById('techPin').value.trim();
+    const err  = document.getElementById('loginErr');
+    const btn  = document.getElementById('loginBtn');
+    err.style.display = 'none';
+
+    if (!code || !pin) { showErr('Enter your tech code and PIN.'); return; }
+
+    btn.disabled = true; btn.textContent = 'Signing in…';
+    try {
+      const res = await fetch('/api/tech/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tech_code: code, pin }),
+      });
+      if (!res.ok) { showErr('Incorrect tech code or PIN.'); return; }
+      const data = await res.json();
+      token = data.token;
+      localStorage.setItem('pc_tech_token', token);
+      showApp();
+    } catch {
+      showErr('Connection error. Try again.');
+    } finally {
+      btn.disabled = false; btn.textContent = 'Sign In';
+    }
+  }
+
+  function showErr(msg) {
+    const err = document.getElementById('loginErr');
+    err.textContent = msg; err.style.display = 'block';
+  }
+
+  function doLogout() {
+    localStorage.removeItem('pc_tech_token');
+    token = null;
+    document.getElementById('app').style.display = 'none';
+    document.getElementById('loginScreen').style.display = 'flex';
+    document.getElementById('techCode').value = '';
+    document.getElementById('techPin').value  = '';
+  }
+
+  async function showApp() {
+    document.getElementById('loginScreen').style.display = 'none';
+    document.getElementById('app').style.display = 'block';
+    await loadJobs();
+  }
+
+  // ── API helper ──────────────────────────────────────────────────────────
+  async function api(method, url, body) {
+    const opts = { method, headers: { 'Authorization': `Bearer ${token}` } };
+    if (body && !(body instanceof FormData)) {
+      opts.headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify(body);
+    } else if (body instanceof FormData) {
+      opts.body = body;
+    }
+    const res = await fetch(url, opts);
+    if (res.status === 401) { doLogout(); throw new Error('auth'); }
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      throw new Error(d.detail || 'Request failed');
+    }
+    return res.json();
+  }
+
+  // ── Load jobs ───────────────────────────────────────────────────────────
+  async function loadJobs() {
+    try {
+      const data = await api('GET', '/api/tech/me');
+      techInfo = data.tech;
+      allJobs  = data.jobs;
+      document.getElementById('hdrName').textContent = techInfo.name;
+      renderList();
+    } catch {}
+  }
+
+  // ── List view ───────────────────────────────────────────────────────────
+  function setTab(t) {
+    currentTab = t;
+    document.querySelectorAll('.tab').forEach(el => el.classList.toggle('active', el.dataset.tab === t));
+    renderList();
+  }
+
+  function isToday(dateStr) {
+    if (!dateStr) return false;
+    const today = new Date(); today.setHours(0,0,0,0);
+    const d = new Date(dateStr + (dateStr.includes('T') ? '' : 'T00:00:00'));
+    d.setHours(0,0,0,0);
+    return d.getTime() === today.getTime();
+  }
+
+  function bucketize(j) {
+    if (j.status === 'completed') return 'done';
+    if (j.status === 'in_progress' || isToday(j.scheduled_date)) return 'today';
+    return 'upcoming';
+  }
+
+  function renderList() {
+    const buckets = { today: [], upcoming: [], done: [] };
+    for (const j of allJobs) buckets[bucketize(j)].push(j);
+    document.getElementById('cnt-today').textContent    = buckets.today.length;
+    document.getElementById('cnt-upcoming').textContent = buckets.upcoming.length;
+    document.getElementById('cnt-done').textContent     = buckets.done.length;
+
+    const rows = buckets[currentTab];
+    const wrap = document.getElementById('jobList');
+    if (!rows.length) {
+      wrap.innerHTML = `
+        <div class="empty">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          <div>${currentTab === 'today' ? 'No jobs scheduled for today.' : currentTab === 'upcoming' ? 'No upcoming jobs.' : 'No completed jobs yet.'}</div>
+        </div>`;
+      return;
+    }
+    wrap.innerHTML = rows.map(j => `
+      <div class="job-card ${j.status}" onclick="openJob(${j.id})">
+        <div class="job-top">
+          <span class="job-type ${j.visit_type === 'PM' ? 'pm-pill' : 'cm-pill'}">${j.visit_type}</span>
+          <span class="job-status status-${j.status}">${j.status.replace('_',' ')}</span>
+        </div>
+        <div class="job-customer">${esc(j.customer_name)}</div>
+        <div class="job-meta">
+          ${j.customer_company ? `<div>${esc(j.customer_company)}</div>` : ''}
+          ${j.equipment_name ? `<div class="row">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            ${esc(j.equipment_name)}</div>` : ''}
+          ${j.customer_address ? `<div class="row">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+            ${esc(j.customer_address)}</div>` : ''}
+          ${j.scheduled_date ? `<div class="row">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+            ${fmtDate(j.scheduled_date)}</div>` : ''}
+        </div>
+      </div>`).join('');
+    document.getElementById('listView').style.display   = 'block';
+    document.getElementById('detailView').style.display = 'none';
+    document.getElementById('backBar').style.display    = 'none';
+    if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+  }
+
+  // ── Detail view ─────────────────────────────────────────────────────────
+  async function openJob(id) {
+    try {
+      currentJob = await api('GET', `/api/tech/jobs/${id}`);
+      renderDetail();
+    } catch (e) { toast('Could not load job: ' + e.message, 'error'); }
+  }
+
+  function showList() {
+    currentJob = null;
+    if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+    document.getElementById('listView').style.display   = 'block';
+    document.getElementById('detailView').style.display = 'none';
+    document.getElementById('backBar').style.display    = 'none';
+    loadJobs();
+  }
+
+  function renderDetail() {
+    const j = currentJob;
+    const view = document.getElementById('detailView');
+    document.getElementById('listView').style.display   = 'none';
+    document.getElementById('detailView').style.display = 'block';
+    document.getElementById('backBar').style.display    = 'flex';
+
+    const photosBefore = (j.photos || []).filter(p => p.category === 'before');
+    const photosAfter  = (j.photos || []).filter(p => p.category === 'after');
+
+    const phoneClean = (j.customer_phone || '').replace(/[^\d+]/g, '');
+    const mapsLink   = j.customer_address ? `https://maps.google.com/?q=${encodeURIComponent(j.customer_address)}` : null;
+
+    view.innerHTML = `
+      <div class="detail">
+        <!-- Status banner -->
+        <div class="status-banner ${j.status}">
+          <div>
+            <div class="lt">${j.visit_type === 'PM' ? 'Preventive' : 'Corrective'} Maintenance</div>
+            <div class="vt">${j.status === 'in_progress' ? 'In Progress' : j.status.charAt(0).toUpperCase() + j.status.slice(1).replace('_',' ')}</div>
+            ${j.start_time ? `<div class="timer" id="liveTimer">${liveTimerLabel(j)}</div>` : ''}
+          </div>
+        </div>
+
+        <!-- Customer card -->
+        <div class="detail-card">
+          <h3>Customer</h3>
+          <div class="detail-row"><span class="l">Name</span><span class="v">${esc(j.customer_name)}</span></div>
+          ${j.customer_company ? `<div class="detail-row"><span class="l">Company</span><span class="v">${esc(j.customer_company)}</span></div>` : ''}
+          ${j.customer_phone ? `<div class="detail-row"><span class="l">Phone</span><span class="v"><a href="tel:${phoneClean}">📞 ${esc(j.customer_phone)}</a></span></div>` : ''}
+          ${j.customer_address ? `<div class="detail-row"><span class="l">Address</span><span class="v"><a href="${mapsLink}" target="_blank">📍 ${esc(j.customer_address)}</a></span></div>` : ''}
+        </div>
+
+        <!-- Equipment card -->
+        ${j.equipment_name ? `
+        <div class="detail-card">
+          <h3>Equipment</h3>
+          <div class="detail-row"><span class="l">Unit</span><span class="v">${esc(j.equipment_name)}</span></div>
+          ${j.equipment_type ? `<div class="detail-row"><span class="l">Type</span><span class="v">${esc(j.equipment_type)}</span></div>` : ''}
+          ${j.equipment_model ? `<div class="detail-row"><span class="l">Model</span><span class="v">${esc(j.equipment_model)}</span></div>` : ''}
+          ${j.equipment_location ? `<div class="detail-row"><span class="l">Location</span><span class="v">${esc(j.equipment_location)}</span></div>` : ''}
+        </div>` : ''}
+
+        <!-- Times card if started -->
+        ${j.start_time || j.end_time ? `
+        <div class="detail-card">
+          <h3>Job Time</h3>
+          ${j.start_time ? `<div class="detail-row"><span class="l">Started</span><span class="v">${fmtTimeFull(j.start_time)}</span></div>` : ''}
+          ${j.end_time ? `<div class="detail-row"><span class="l">Ended</span><span class="v">${fmtTimeFull(j.end_time)}</span></div>` : ''}
+          ${j.start_time && j.end_time ? `<div class="detail-row"><span class="l">Duration</span><span class="v">${duration(j.start_time, j.end_time)}</span></div>` : ''}
+        </div>` : ''}
+
+        <!-- Start Job button -->
+        ${j.status !== 'in_progress' && j.status !== 'completed' ? `
+          <button class="big-btn btn-start" onclick="startJob()">▶ Start Job</button>
+        ` : ''}
+
+        <!-- Work form (in_progress only) -->
+        ${j.status === 'in_progress' ? `
+          <div class="detail-card">
+            <h3>Work Performed</h3>
+            <div class="field-detail">
+              <label>What was done?</label>
+              <textarea id="f-work" placeholder="Describe the work carried out…">${esc(j.work_done || '')}</textarea>
+            </div>
+            <div class="field-detail">
+              <label>Parts replaced</label>
+              <textarea id="f-parts" placeholder="List any parts replaced…">${esc(j.parts_replaced || '')}</textarea>
+            </div>
+            <div class="field-detail" style="margin-bottom:0;">
+              <label>Notes</label>
+              <textarea id="f-notes" placeholder="Anything else worth noting…">${esc(j.notes || '')}</textarea>
+            </div>
+          </div>
+
+          <div class="detail-card">
+            <h3>Photos</h3>
+            <div class="photo-upload-row">
+              <label class="upload-btn" id="upload-before">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                Add Before
+                <input type="file" accept="image/*" capture="environment" onchange="uploadPhoto('before', this)">
+              </label>
+              <label class="upload-btn" id="upload-after">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                Add After
+                <input type="file" accept="image/*" capture="environment" onchange="uploadPhoto('after', this)">
+              </label>
+            </div>
+            ${photosBefore.length ? `<div style="font-size:11px;font-weight:700;letter-spacing:0.7px;color:var(--muted);text-transform:uppercase;margin:8px 0 6px;">Before (${photosBefore.length})</div>
+              <div class="photo-grid">${photosBefore.map(p => photoTile(p, true)).join('')}</div>` : ''}
+            ${photosAfter.length ? `<div style="font-size:11px;font-weight:700;letter-spacing:0.7px;color:var(--muted);text-transform:uppercase;margin:8px 0 6px;">After (${photosAfter.length})</div>
+              <div class="photo-grid">${photosAfter.map(p => photoTile(p, true)).join('')}</div>` : ''}
+          </div>
+
+          <button class="big-btn btn-end" onclick="endJob()">✓ End Job &amp; Mark Complete</button>
+        ` : ''}
+
+        <!-- Read-only completed view -->
+        ${j.status === 'completed' ? `
+          ${j.work_done ? `<div class="detail-card"><h3>Work Performed</h3><p style="font-size:14px;line-height:1.6;">${esc(j.work_done).replace(/\n/g,'<br>')}</p></div>` : ''}
+          ${j.parts_replaced ? `<div class="detail-card"><h3>Parts Replaced</h3><p style="font-size:14px;line-height:1.6;">${esc(j.parts_replaced).replace(/\n/g,'<br>')}</p></div>` : ''}
+          ${j.notes ? `<div class="detail-card"><h3>Notes</h3><p style="font-size:14px;line-height:1.6;">${esc(j.notes).replace(/\n/g,'<br>')}</p></div>` : ''}
+          ${(photosBefore.length || photosAfter.length) ? `
+            <div class="detail-card">
+              <h3>Photos</h3>
+              ${photosBefore.length ? `<div style="font-size:11px;font-weight:700;letter-spacing:0.7px;color:var(--muted);text-transform:uppercase;margin-bottom:6px;">Before</div>
+                <div class="photo-grid">${photosBefore.map(p => photoTile(p, false)).join('')}</div>` : ''}
+              ${photosAfter.length ? `<div style="font-size:11px;font-weight:700;letter-spacing:0.7px;color:var(--muted);text-transform:uppercase;margin:10px 0 6px;">After</div>
+                <div class="photo-grid">${photosAfter.map(p => photoTile(p, false)).join('')}</div>` : ''}
+            </div>` : ''}
+        ` : ''}
+
+      </div>`;
+
+    if (j.start_time && j.status === 'in_progress') {
+      timerInterval = setInterval(() => {
+        const el = document.getElementById('liveTimer');
+        if (el) el.textContent = liveTimerLabel(currentJob);
+      }, 1000);
+    }
+  }
+
+  function photoTile(p, canDelete) {
+    return `
+      <div class="photo-item" onclick="event.target.tagName==='BUTTON'||openLightbox('/photos/${p.filename}')">
+        <span class="photo-cat">${p.category}</span>
+        ${canDelete ? `<button class="photo-del" onclick="event.stopPropagation();deletePhoto(${p.id})">×</button>` : ''}
+        <img src="/photos/${p.filename}" alt="${p.category}" loading="lazy">
+      </div>`;
+  }
+
+  // ── Actions ─────────────────────────────────────────────────────────────
+  async function startJob() {
+    if (!confirm('Start this job now? Your start time will be recorded.')) return;
+    try {
+      await api('PUT', `/api/tech/jobs/${currentJob.id}/start`);
+      toast('Job started', 'success');
+      currentJob = await api('GET', `/api/tech/jobs/${currentJob.id}`);
+      renderDetail();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function endJob() {
+    const work  = document.getElementById('f-work').value.trim();
+    const parts = document.getElementById('f-parts').value.trim();
+    const notes = document.getElementById('f-notes').value.trim();
+    if (!work) {
+      if (!confirm('No work description entered. End the job anyway?')) return;
+    } else {
+      if (!confirm('End this job and mark it complete? You cannot edit photos after.')) return;
+    }
+    try {
+      await api('PUT', `/api/tech/jobs/${currentJob.id}/complete`, {
+        work_done: work, parts_replaced: parts, notes
+      });
+      toast('Job completed ✓', 'success');
+      currentJob = await api('GET', `/api/tech/jobs/${currentJob.id}`);
+      renderDetail();
+      loadJobs();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function uploadPhoto(category, inputEl) {
+    const file = inputEl.files[0];
+    if (!file) return;
+    if (file.size > 12 * 1024 * 1024) {
+      toast('Photo is too large (max 12 MB)', 'error');
+      inputEl.value = '';
+      return;
+    }
+    const btn = document.getElementById(`upload-${category}`);
+    btn.classList.add('uploading');
+    const fd = new FormData();
+    fd.append('category', category);
+    fd.append('file', file);
+    try {
+      await api('POST', `/api/tech/jobs/${currentJob.id}/photos`, fd);
+      toast(`${category === 'before' ? 'Before' : 'After'} photo added`, 'success');
+      currentJob = await api('GET', `/api/tech/jobs/${currentJob.id}`);
+      renderDetail();
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      btn.classList.remove('uploading');
+      inputEl.value = '';
+    }
+  }
+
+  async function deletePhoto(id) {
+    if (!confirm('Delete this photo?')) return;
+    try {
+      await api('DELETE', `/api/tech/photos/${id}`);
+      currentJob = await api('GET', `/api/tech/jobs/${currentJob.id}`);
+      renderDetail();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  // ── Lightbox ────────────────────────────────────────────────────────────
+  function openLightbox(src) {
+    document.getElementById('lightboxImg').src = src;
+    document.getElementById('lightbox').classList.add('open');
+  }
+  function closeLightbox() {
+    document.getElementById('lightbox').classList.remove('open');
+    document.getElementById('lightboxImg').src = '';
+  }
+
+  // ── Helpers ─────────────────────────────────────────────────────────────
+  function esc(s) {
+    return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function fmtDate(d) {
+    if (!d) return '';
+    const dt = new Date(d + (d.includes('T') ? '' : 'T00:00:00'));
+    return dt.toLocaleDateString('en-TT', { weekday: 'short', day: 'numeric', month: 'short' });
+  }
+  function fmtTimeFull(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    return d.toLocaleString('en-TT', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  }
+  function duration(startIso, endIso) {
+    const ms = new Date(endIso) - new Date(startIso);
+    const h = Math.floor(ms / 3600000);
+    const m = Math.floor((ms % 3600000) / 60000);
+    return h ? `${h}h ${m}m` : `${m}m`;
+  }
+  function liveTimerLabel(j) {
+    if (j.status === 'completed' && j.end_time) {
+      return `Total: ${duration(j.start_time, j.end_time)}`;
+    }
+    const ms = new Date() - new Date(j.start_time);
+    const h = Math.floor(ms / 3600000);
+    const m = Math.floor((ms % 3600000) / 60000);
+    const s = Math.floor((ms % 60000) / 1000);
+    return `⏱  ${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  }
+
+  function toast(msg, type) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className = 'toast show' + (type ? ' ' + type : '');
+    setTimeout(() => { t.className = 'toast' + (type ? ' ' + type : ''); }, 2500);
+  }
+
+  document.getElementById('techCode').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+  document.getElementById('techPin').addEventListener('keydown',  e => { if (e.key === 'Enter') doLogin(); });
+
+  // ── Forgot PIN ──
+  function openForgot() {
+    document.getElementById('forgotModal').style.display = 'flex';
+    document.getElementById('forgotErr').style.display = 'none';
+    document.getElementById('forgotOk').style.display  = 'none';
+    document.getElementById('forgotCode').value  = document.getElementById('techCode').value || '';
+    document.getElementById('forgotEmail').value = '';
+  }
+  function closeForgot() {
+    document.getElementById('forgotModal').style.display = 'none';
+  }
+  async function submitForgot() {
+    const code  = document.getElementById('forgotCode').value.trim().toUpperCase();
+    const email = document.getElementById('forgotEmail').value.trim();
+    const err   = document.getElementById('forgotErr');
+    const ok    = document.getElementById('forgotOk');
+    const btn   = document.getElementById('forgotBtn');
+    err.style.display = 'none'; ok.style.display = 'none';
+
+    if (!code || !email) {
+      err.textContent = 'Enter your tech code and email.';
+      err.style.display = 'block';
+      return;
+    }
+
+    btn.disabled = true; btn.textContent = 'Sending…';
+    try {
+      await fetch('/api/tech/forgot-pin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tech_code: code, email }),
+      });
+      ok.style.display = 'block';
+      document.getElementById('forgotCode').value = '';
+      document.getElementById('forgotEmail').value = '';
+    } catch {
+      err.textContent = 'Connection error. Try again.';
+      err.style.display = 'block';
+    } finally {
+      btn.disabled = false; btn.textContent = 'Send Reset Link';
+    }
+  }
+  document.getElementById('forgotModal').addEventListener('click', e => {
+    if (e.target.id === 'forgotModal') closeForgot();
+  });
+
+  // ── PWA install ──
+  let deferredPrompt = null;
+  window.addEventListener('beforeinstallprompt', e => {
+    e.preventDefault();
+    deferredPrompt = e;
+    if (!localStorage.getItem('pc_tech_install_dismissed')) {
+      document.getElementById('installBanner').classList.add('show');
+    }
+  });
+  async function doInstall() {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    await deferredPrompt.userChoice;
+    deferredPrompt = null;
+    document.getElementById('installBanner').classList.remove('show');
+  }
+  function dismissInstall() {
+    localStorage.setItem('pc_tech_install_dismissed', '1');
+    document.getElementById('installBanner').classList.remove('show');
+    document.getElementById('iosHint').style.display = 'none';
+  }
+  const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+  if (isIos && !isStandalone && !localStorage.getItem('pc_tech_install_dismissed')) {
+    document.getElementById('iosHint').style.display = 'block';
+  }
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+</script>
+</body>
+</html>
