@@ -49,6 +49,7 @@ ADMIN_PERMS = {
         "review:approve", "review:reject", "review:delete",
         "audit:view_all",
         "timesheet:view_all",
+        "schedule:view", "schedule:edit",
     },
     "supervisor_admin": {
         "admin:view_all",
@@ -57,6 +58,7 @@ ADMIN_PERMS = {
         "visit:update",
         "audit:view_all",
         "timesheet:view_all",
+        "schedule:view", "schedule:edit",
     },
     "system_admin": {
         "tech:create", "tech:update", "tech:reset_pin",
@@ -64,6 +66,7 @@ ADMIN_PERMS = {
         "visit:create", "visit:update",
         "audit:view_self",
         "timesheet:view_all",
+        "schedule:view", "schedule:edit",
     },
     "hr_admin": {
         "tech:create", "tech:update", "tech:reset_pin",
@@ -312,6 +315,7 @@ class VisitCreate(BaseModel):
     visit_type:       str
     status:           str = "scheduled"
     scheduled_date:   str = ""
+    scheduled_time:   str = ""
     completed_date:   str = ""
     technician:       str = ""
     work_done:        str = ""
@@ -325,6 +329,7 @@ class VisitUpdate(BaseModel):
     visit_type:       str
     status:           str
     scheduled_date:   str = ""
+    scheduled_time:   str = ""
     completed_date:   str = ""
     technician:       str = ""
     work_done:        str = ""

@@ -258,6 +258,7 @@ def init_db():
             visit_type       TEXT NOT NULL,
             status           TEXT NOT NULL DEFAULT 'scheduled',
             scheduled_date   TEXT,
+            scheduled_time   TEXT,
             completed_date   TEXT,
             technician       TEXT,
             work_done        TEXT,
@@ -276,6 +277,7 @@ def init_db():
         ("assigned_tech_id", "ALTER TABLE maintenance_visits ADD COLUMN assigned_tech_id INTEGER REFERENCES technicians(id)"),
         ("start_time",       "ALTER TABLE maintenance_visits ADD COLUMN start_time TEXT"),
         ("end_time",         "ALTER TABLE maintenance_visits ADD COLUMN end_time TEXT"),
+        ("scheduled_time",   "ALTER TABLE maintenance_visits ADD COLUMN scheduled_time TEXT"),
     ):
         if col_sql[0] not in existing_cols:
             try: con.execute(col_sql[1])
@@ -532,9 +534,9 @@ def create_visit(data: dict) -> int:
         """
         INSERT INTO maintenance_visits
             (customer_id, equipment_id, visit_type, status, scheduled_date,
-             completed_date, technician, work_done, parts_replaced, notes,
-             assigned_tech_id, start_time, end_time, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             scheduled_time, completed_date, technician, work_done, parts_replaced,
+             notes, assigned_tech_id, start_time, end_time, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             data["customer_id"],
@@ -542,6 +544,7 @@ def create_visit(data: dict) -> int:
             data["visit_type"].upper(),
             data.get("status", "scheduled"),
             data.get("scheduled_date") or None,
+            data.get("scheduled_time") or None,
             data.get("completed_date") or None,
             data.get("technician", ""),
             data.get("work_done", ""),
@@ -568,6 +571,7 @@ def update_visit(visit_id: int, data: dict):
             visit_type       = ?,
             status           = ?,
             scheduled_date   = ?,
+            scheduled_time   = ?,
             completed_date   = ?,
             technician       = ?,
             work_done        = ?,
@@ -581,6 +585,7 @@ def update_visit(visit_id: int, data: dict):
             data["visit_type"].upper(),
             data["status"],
             data.get("scheduled_date") or None,
+            data.get("scheduled_time") or None,
             data.get("completed_date") or None,
             data.get("technician", ""),
             data.get("work_done", ""),

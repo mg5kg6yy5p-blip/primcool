@@ -178,6 +178,112 @@
     /* ── Empty state ── */
     .empty { text-align: center; padding: 36px; color: var(--muted); font-size: 13px; }
 
+    /* ── Schedule grid ── */
+    .sch-grid {
+      display: grid;
+      grid-template-columns: 160px repeat(7, minmax(130px, 1fr));
+      min-width: 1080px;
+    }
+    .sch-header, .sch-tech-cell {
+      background: #f8fafc;
+      padding: 10px 12px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.6px;
+      text-transform: uppercase;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      border-right: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 2;
+    }
+    .sch-header.today { background: rgba(34,160,138,0.1); color: var(--teal); }
+    .sch-tech-cell {
+      position: sticky;
+      left: 0;
+      top: auto;
+      z-index: 1;
+      text-transform: none;
+      letter-spacing: 0.3px;
+      font-weight: 600;
+      color: var(--navy);
+      font-size: 13px;
+    }
+    .sch-tech-cell .role-pill {
+      display: inline-block;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      padding: 1px 6px;
+      border-radius: 8px;
+      margin-top: 4px;
+      background: #eff6ff;
+      color: #1d4ed8;
+    }
+    .sch-cell {
+      padding: 6px;
+      border-bottom: 1px solid var(--border);
+      border-right: 1px solid var(--border);
+      min-height: 80px;
+      vertical-align: top;
+      background: white;
+    }
+    .sch-cell.today { background: rgba(34,160,138,0.04); }
+    .sch-visit {
+      display: block;
+      margin-bottom: 5px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 11px;
+      line-height: 1.3;
+      border-left: 3px solid;
+      background: white;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+      transition: transform 0.1s, box-shadow 0.1s;
+    }
+    .sch-visit:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 3px 8px rgba(0,0,0,0.1);
+    }
+    .sch-visit.pm           { border-left-color: #1d4ed8; background: #eff6ff; }
+    .sch-visit.cm           { border-left-color: #b45309; background: #fffbeb; }
+    .sch-visit.in_progress  { background: rgba(34,160,138,0.1); border-left-color: var(--teal); }
+    .sch-visit.completed    { opacity: 0.55; }
+    .sch-visit .type {
+      font-weight: 800;
+      font-size: 10px;
+      letter-spacing: 0.5px;
+    }
+    .sch-visit .pm .type { color: #1d4ed8; }
+    .sch-visit .customer {
+      font-weight: 600;
+      color: var(--navy);
+      margin-top: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .sch-visit .equip {
+      color: var(--muted);
+      font-size: 10px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .sch-tech-cell.unassigned {
+      background: #fff5f5;
+      color: var(--danger);
+    }
+    .sch-empty-msg {
+      grid-column: 1 / -1;
+      padding: 40px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
     /* ── Review cards ── */
     .review-card {
       background: var(--white); border: 1px solid var(--border); border-radius: 12px;
@@ -272,6 +378,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 11h-6"/><path d="M19 8v6"/></svg>
         Technicians
       </div>
+      <div class="nav-item" onclick="showPanel('schedule')" id="nav-schedule" style="display:none;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+        Schedule
+      </div>
       <div class="nav-item" onclick="showPanel('timesheets')" id="nav-timesheets" style="display:none;">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
         Timesheets
@@ -340,6 +450,30 @@
             </div>
           </div>
         </div>
+      </div>
+
+      <!-- ── Schedule panel ── -->
+      <div class="panel" id="panel-schedule">
+        <div class="top-bar">
+          <h2>Schedule</h2>
+          <button class="btn btn-primary" onclick="openModal('addVisit')">+ Schedule Visit</button>
+        </div>
+        <div class="filter-bar" style="gap:10px;align-items:center;">
+          <button class="filter-btn" onclick="shiftScheduleWeek(-1)">← Prev Week</button>
+          <input type="date" id="sch-week-start" onchange="loadSchedule()" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;">
+          <span id="sch-week-label" style="font-size:13px;color:var(--muted);font-weight:600;"></span>
+          <button class="filter-btn" onclick="shiftScheduleWeek(1)">Next Week →</button>
+          <button class="filter-btn" onclick="setScheduleThisWeek()">This Week</button>
+          <span id="sch-stats" style="margin-left:auto;font-size:12px;color:var(--muted);align-self:center;"></span>
+        </div>
+
+        <div class="sch-grid-wrap" style="background:white;border:1px solid var(--border);border-radius:12px;overflow:auto;">
+          <div id="sch-grid"></div>
+        </div>
+
+        <p style="font-size:12px;color:var(--muted);margin-top:14px;line-height:1.5;">
+          Click any visit to edit it. Use the <strong>Assigned Technician</strong> dropdown in the edit modal to move a visit to another tech. Unassigned visits appear at the bottom.
+        </p>
       </div>
 
       <!-- ── Timesheets panel ── -->
@@ -739,9 +873,10 @@
         <select id="v-tech"><option value="">— Unassigned —</option></select>
       </div>
       <div class="field-row">
-        <div class="field"><label>Scheduled Date</label><input id="v-scheduled-date" type="date"></div>
-        <div class="field"><label>Completed Date</label><input id="v-completed-date" type="date"></div>
+        <div class="field"><label>Scheduled Date *</label><input id="v-scheduled-date" type="date"></div>
+        <div class="field"><label>Scheduled Time *</label><input id="v-scheduled-time" type="time"></div>
       </div>
+      <div class="field"><label>Completed Date</label><input id="v-completed-date" type="date"></div>
       <div class="field"><label>Technician</label><input id="v-technician" placeholder="Technician name"></div>
       <div class="field"><label>Work Performed</label><textarea id="v-work-done" placeholder="Describe work carried out…"></textarea></div>
       <div class="field"><label>Parts Replaced</label><textarea id="v-parts" placeholder="List any parts replaced…"></textarea></div>
@@ -774,9 +909,9 @@
   let resetAdminPwId = null;
 
   const ADMIN_PERMS = {
-    super_admin: new Set(['admin:create','admin:set_role','admin:set_active','admin:reset_password','admin:view_all','audit:view_all','tech:create','tech:delete','customer:create','customer:delete','visit:create','visit:delete','review:approve','review:delete','timesheet:view_all']),
-    supervisor_admin: new Set(['admin:view_all','audit:view_all','tech:update','customer:update','visit:update','timesheet:view_all']),
-    system_admin: new Set(['tech:create','customer:create','visit:create','audit:view_self','timesheet:view_all']),
+    super_admin: new Set(['admin:create','admin:set_role','admin:set_active','admin:reset_password','admin:view_all','audit:view_all','tech:create','tech:delete','customer:create','customer:delete','visit:create','visit:delete','review:approve','review:delete','timesheet:view_all','schedule:view','schedule:edit']),
+    supervisor_admin: new Set(['admin:view_all','audit:view_all','tech:update','customer:update','visit:update','timesheet:view_all','schedule:view','schedule:edit']),
+    system_admin: new Set(['tech:create','customer:create','visit:create','audit:view_self','timesheet:view_all','schedule:view','schedule:edit']),
     hr_admin: new Set(['tech:create','audit:view_self','timesheet:view_all']),
     ceo_assistant: new Set(['audit:view_self']),
   };
@@ -847,6 +982,7 @@
     if (can('admin:view_all')) loadAdmins();
     if (can('audit:view_all') || can('audit:view_self')) loadAudit();
     if (can('timesheet:view_all')) { initTimesheetWeek(); loadTimesheets(); }
+    if (can('schedule:view')) { initScheduleWeek(); loadSchedule(); }
   }
 
   function applyRoleVisibility() {
@@ -854,6 +990,7 @@
     if (can('admin:view_all')) document.getElementById('nav-admins').style.display = 'flex';
     if (can('audit:view_all') || can('audit:view_self')) document.getElementById('nav-audit').style.display = 'flex';
     if (can('timesheet:view_all')) document.getElementById('nav-timesheets').style.display = 'flex';
+    if (can('schedule:view')) document.getElementById('nav-schedule').style.display = 'flex';
     if (can('admin:create')) document.getElementById('addAdminBtn').style.display = '';
     // Show current admin name + role
     const tag = document.querySelector('.admin-tag');
@@ -1014,7 +1151,7 @@
       <tr>
         <td><span class="badge badge-${v.visit_type.toLowerCase()}">${v.visit_type}</span></td>
         <td><span class="badge badge-${v.status}">${v.status.replace('_',' ')}</span></td>
-        <td>${fmtDate(v.scheduled_date)}</td>
+        <td>${fmtDateTime(v.scheduled_date, v.scheduled_time)}</td>
         <td>${fmtDate(v.completed_date)}</td>
         <td>${v.technician || '—'}</td>
         <td style="white-space:nowrap;">
@@ -1114,6 +1251,7 @@
       allVisits = await api('GET', '/api/admin/visits');
       renderVisitTable();
       if (currentCustomer) loadCustomerVisits();
+      if (can && can('schedule:view')) loadSchedule();
     } catch {}
   }
 
@@ -1134,7 +1272,7 @@
         <td><strong>${v.customer_name}</strong><br><span class="code-pill">${v.customer_code}</span></td>
         <td><span class="badge badge-${v.visit_type.toLowerCase()}">${v.visit_type}</span></td>
         <td><span class="badge badge-${v.status}">${v.status.replace('_',' ')}</span></td>
-        <td>${fmtDate(v.scheduled_date)}</td>
+        <td>${fmtDateTime(v.scheduled_date, v.scheduled_time)}</td>
         <td>${fmtDate(v.completed_date)}</td>
         <td>${techCell}</td>
         <td>${v.equipment_name || '—'}</td>
@@ -1230,6 +1368,7 @@
     document.getElementById('v-status').value         = v.status;
     document.getElementById('v-tech').value           = v.assigned_tech_id || '';
     document.getElementById('v-scheduled-date').value = v.scheduled_date || '';
+    document.getElementById('v-scheduled-time').value = v.scheduled_time || '';
     document.getElementById('v-completed-date').value = v.completed_date || '';
     document.getElementById('v-technician').value     = v.technician     || '';
     document.getElementById('v-work-done').value      = v.work_done      || '';
@@ -1245,6 +1384,12 @@
       ? currentCustomer.id
       : document.getElementById('v-customer').value;
     if (!customerIdRaw) { showErr('err-addVisit', 'Please select a customer.'); return; }
+    const schedDate = document.getElementById('v-scheduled-date').value;
+    const schedTime = document.getElementById('v-scheduled-time').value;
+    if (!schedDate || !schedTime) {
+      showErr('err-addVisit', 'Scheduled date and time are required.');
+      return;
+    }
     const body = {
       customer_id:      parseInt(customerIdRaw),
       equipment_id:     document.getElementById('v-equipment').value ? parseInt(document.getElementById('v-equipment').value) : null,
@@ -1252,6 +1397,7 @@
       visit_type:       document.getElementById('v-type').value,
       status:           document.getElementById('v-status').value,
       scheduled_date:   document.getElementById('v-scheduled-date').value,
+      scheduled_time:   document.getElementById('v-scheduled-time').value,
       completed_date: document.getElementById('v-completed-date').value,
       technician:     document.getElementById('v-technician').value.trim(),
       work_done:      document.getElementById('v-work-done').value.trim(),
@@ -1490,6 +1636,126 @@
       closeModal('resetAdminPw');
       alert('Password saved. Share it privately with the admin.');
     } catch(e) { showErr('err-resetAdminPw', e.message); }
+  }
+
+  // ── Schedule (calendar week view) ──────────────────────────────────────────
+  const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+
+  function initScheduleWeek() {
+    document.getElementById('sch-week-start').value = isoDate(mondayOf(new Date()));
+  }
+  function setScheduleThisWeek() {
+    document.getElementById('sch-week-start').value = isoDate(mondayOf(new Date()));
+    loadSchedule();
+  }
+  function shiftScheduleWeek(n) {
+    const cur = new Date(document.getElementById('sch-week-start').value || isoDate(mondayOf(new Date())));
+    document.getElementById('sch-week-start').value = isoDate(addDays(cur, n * 7));
+    loadSchedule();
+  }
+
+  function loadSchedule() {
+    if (!can('schedule:view')) return;
+    let start = document.getElementById('sch-week-start').value;
+    if (!start) { initScheduleWeek(); start = document.getElementById('sch-week-start').value; }
+    const monday = mondayOf(new Date(start));
+    renderSchedule(monday);
+  }
+
+  function visitFallsOnDay(v, dayDateStr) {
+    if (!v.scheduled_date) return false;
+    return v.scheduled_date.slice(0, 10) === dayDateStr;
+  }
+
+  function renderSchedule(monday) {
+    const todayStr = isoDate(new Date());
+    const days = [];
+    for (let i = 0; i < 7; i++) days.push(addDays(monday, i));
+
+    document.getElementById('sch-week-label').textContent =
+      `${monday.toLocaleDateString('en-TT',{month:'short',day:'numeric'})} – ${addDays(monday,6).toLocaleDateString('en-TT',{month:'short',day:'numeric',year:'numeric'})}`;
+
+    // Filter visits to this week
+    const weekStart = monday.getTime();
+    const weekEnd   = addDays(monday, 7).getTime();
+    const weekVisits = allVisits.filter(v => {
+      if (!v.scheduled_date) return false;
+      const t = new Date(v.scheduled_date.slice(0,10) + 'T00:00:00').getTime();
+      return t >= weekStart && t < weekEnd;
+    });
+
+    document.getElementById('sch-stats').textContent =
+      `${weekVisits.length} visits this week`;
+
+    // Active techs only
+    const activeTechs = allTechs.filter(t => t.active);
+
+    // Build grid
+    let html = '<div class="sch-grid">';
+    // Header row
+    html += '<div class="sch-header sch-tech-cell">Technician</div>';
+    for (const d of days) {
+      const ds = isoDate(d);
+      const isToday = ds === todayStr;
+      html += `<div class="sch-header${isToday ? ' today' : ''}">
+        ${d.toLocaleDateString('en-TT',{weekday:'short'})}
+        <div style="font-size:14px;font-weight:800;color:${isToday ? 'var(--teal)' : 'var(--navy)'};margin-top:2px;text-transform:none;letter-spacing:0;">
+          ${d.getDate()} ${d.toLocaleDateString('en-TT',{month:'short'})}
+        </div>
+      </div>`;
+    }
+
+    // Tech rows
+    if (!activeTechs.length) {
+      html += '<div class="sch-empty-msg">No active technicians. Add one in the Technicians tab to schedule visits.</div>';
+    }
+    const roleLabel = { lead_tech:'Lead', tech:'Tech', apprentice:'Apprentice' };
+    const byTimeAsc = (a, b) => (a.scheduled_time || '99:99').localeCompare(b.scheduled_time || '99:99');
+    for (const t of activeTechs) {
+      html += `<div class="sch-tech-cell">
+        ${escHtml(t.name)}
+        <div class="role-pill">${roleLabel[t.role] || 'Tech'}</div>
+      </div>`;
+      for (const d of days) {
+        const ds = isoDate(d);
+        const isToday = ds === todayStr;
+        const dayVisits = weekVisits
+          .filter(v => v.assigned_tech_id === t.id && visitFallsOnDay(v, ds))
+          .sort(byTimeAsc);
+        html += `<div class="sch-cell${isToday ? ' today' : ''}">${dayVisits.map(visitChip).join('')}</div>`;
+      }
+    }
+
+    // Unassigned row
+    const unassigned = weekVisits.filter(v => !v.assigned_tech_id);
+    if (unassigned.length) {
+      html += '<div class="sch-tech-cell unassigned">Unassigned<div class="role-pill" style="background:#fee2e2;color:var(--danger);">Needs Tech</div></div>';
+      for (const d of days) {
+        const ds = isoDate(d);
+        const dayVisits = unassigned.filter(v => visitFallsOnDay(v, ds)).sort(byTimeAsc);
+        html += `<div class="sch-cell">${dayVisits.map(visitChip).join('')}</div>`;
+      }
+    }
+
+    html += '</div>';
+    document.getElementById('sch-grid').innerHTML = html;
+  }
+
+  function visitChip(v) {
+    const cls = `${v.visit_type.toLowerCase()} ${v.status}`;
+    const customer = v.customer_name || '(no customer)';
+    const equip = v.equipment_name || '';
+    const time = v.scheduled_time ? fmtTime12(v.scheduled_time) : '<span style="color:var(--danger);font-style:italic;">no time</span>';
+    return `
+      <div class="sch-visit ${cls}" onclick="openEditVisit(${v.id})" title="Click to edit">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:4px;">
+          <span class="type">${v.visit_type}</span>
+          <span style="font-size:11px;font-weight:700;color:var(--navy);">${time}</span>
+        </div>
+        <div class="customer">${escHtml(customer)}</div>
+        ${equip ? `<div class="equip">${escHtml(equip)}</div>` : ''}
+        <div style="font-size:9px;color:var(--muted);margin-top:2px;letter-spacing:0.3px;">${v.status.replace('_',' ')}</div>
+      </div>`;
   }
 
   // ── Timesheets ─────────────────────────────────────────────────────────────
@@ -1847,7 +2113,7 @@
       const el = document.getElementById(id);
       if (el && el.tagName === 'SELECT') el.selectedIndex = 0;
     });
-    ['v-scheduled-date','v-completed-date','v-technician','v-work-done','v-parts','v-notes']
+    ['v-scheduled-date','v-scheduled-time','v-completed-date','v-technician','v-work-done','v-parts','v-notes']
       .forEach(id => { document.getElementById(id).value = ''; });
     document.getElementById('err-addVisit').style.display = 'none';
   }
@@ -1861,6 +2127,20 @@
     if (!d) return '—';
     const dt = new Date(d + (d.includes('T') ? '' : 'T00:00:00'));
     return dt.toLocaleDateString('en-TT', { day: 'numeric', month: 'short', year: 'numeric' });
+  }
+  function fmtTime12(t) {
+    if (!t) return '';
+    const [h, m] = t.split(':').map(Number);
+    if (isNaN(h)) return '';
+    const period = h >= 12 ? 'PM' : 'AM';
+    const h12 = h % 12 || 12;
+    return `${h12}:${String(m).padStart(2,'0')} ${period}`;
+  }
+  function fmtDateTime(d, t) {
+    if (!d) return '—';
+    const date = fmtDate(d);
+    const time = fmtTime12(t);
+    return time ? `${date} · ${time}` : date;
   }
   function esc(s) { return (s || '').replace(/'/g,"\'"); }
 

@@ -601,6 +601,16 @@
   function renderList() {
     const buckets = { today: [], upcoming: [], done: [] };
     for (const j of allJobs) buckets[bucketize(j)].push(j);
+    // Sort within each bucket: today/upcoming by date then time, done by most recent first
+    const sortByTime = (a, b) => {
+      const da = (a.scheduled_date || '') + ' ' + (a.scheduled_time || '99:99');
+      const db = (b.scheduled_date || '') + ' ' + (b.scheduled_time || '99:99');
+      return da.localeCompare(db);
+    };
+    buckets.today.sort(sortByTime);
+    buckets.upcoming.sort(sortByTime);
+    buckets.done.sort((a, b) => (b.scheduled_date || '').localeCompare(a.scheduled_date || ''));
+
     document.getElementById('cnt-today').textContent    = buckets.today.length;
     document.getElementById('cnt-upcoming').textContent = buckets.upcoming.length;
     document.getElementById('cnt-done').textContent     = buckets.done.length;
@@ -632,7 +642,7 @@
             ${esc(j.customer_address)}</div>` : ''}
           ${j.scheduled_date ? `<div class="row">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-            ${fmtDate(j.scheduled_date)}</div>` : ''}
+            ${fmtDate(j.scheduled_date)}${j.scheduled_time ? ' · ' + fmtTime12(j.scheduled_time) : ''}</div>` : ''}
         </div>
       </div>`).join('');
     document.getElementById('listView').style.display   = 'block';
@@ -701,10 +711,11 @@
           ${j.equipment_location ? `<div class="detail-row"><span class="l">Location</span><span class="v">${esc(j.equipment_location)}</span></div>` : ''}
         </div>` : ''}
 
-        <!-- Times card if started -->
-        ${j.start_time || j.end_time ? `
+        <!-- Times card -->
+        ${(j.scheduled_date || j.start_time || j.end_time) ? `
         <div class="detail-card">
           <h3>Job Time</h3>
+          ${j.scheduled_date ? `<div class="detail-row"><span class="l">Scheduled</span><span class="v">${fmtDate(j.scheduled_date)}${j.scheduled_time ? ' · ' + fmtTime12(j.scheduled_time) : ''}</span></div>` : ''}
           ${j.start_time ? `<div class="detail-row"><span class="l">Started</span><span class="v">${fmtTimeFull(j.start_time)}</span></div>` : ''}
           ${j.end_time ? `<div class="detail-row"><span class="l">Ended</span><span class="v">${fmtTimeFull(j.end_time)}</span></div>` : ''}
           ${j.start_time && j.end_time ? `<div class="detail-row"><span class="l">Duration</span><span class="v">${duration(j.start_time, j.end_time)}</span></div>` : ''}
@@ -874,6 +885,14 @@
     if (!d) return '';
     const dt = new Date(d + (d.includes('T') ? '' : 'T00:00:00'));
     return dt.toLocaleDateString('en-TT', { weekday: 'short', day: 'numeric', month: 'short' });
+  }
+  function fmtTime12(t) {
+    if (!t) return '';
+    const [h, m] = t.split(':').map(Number);
+    if (isNaN(h)) return '';
+    const period = h >= 12 ? 'PM' : 'AM';
+    const h12 = h % 12 || 12;
+    return `${h12}:${String(m).padStart(2,'0')} ${period}`;
   }
   function fmtTimeFull(iso) {
     if (!iso) return '';

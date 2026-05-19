@@ -493,6 +493,20 @@
       const d = new Date(dateStr + (dateStr.includes('T') ? '' : 'T00:00:00'));
       return d.toLocaleDateString('en-TT', { day: 'numeric', month: 'long', year: 'numeric' });
     }
+    function fmtTime12(t) {
+      if (!t) return '';
+      const [h, m] = t.split(':').map(Number);
+      if (isNaN(h)) return '';
+      const period = h >= 12 ? 'PM' : 'AM';
+      const h12 = h % 12 || 12;
+      return `${h12}:${String(m).padStart(2,'0')} ${period}`;
+    }
+    function fmtDateTime(d, t) {
+      if (!d) return null;
+      const date = fmt(d);
+      const time = fmtTime12(t);
+      return time ? `${date} · ${time}` : date;
+    }
 
     function badge(status) {
       const map = {
@@ -521,7 +535,7 @@
       const typeLabel = v.visit_type === 'PM' ? 'Preventive' : 'Corrective';
       const dateDisplay = v.completed_date
         ? fmt(v.completed_date)
-        : (v.scheduled_date ? fmt(v.scheduled_date) : 'Date TBC');
+        : (v.scheduled_date ? fmtDateTime(v.scheduled_date, v.scheduled_time) : 'Date TBC');
       const sub = [v.equipment_name, v.technician ? `Technician: ${v.technician}` : null].filter(Boolean).join(' · ');
 
       const review = (dashboardData?.reviews || []).find(r => r.visit_id === v.id);
@@ -535,7 +549,7 @@
       }
 
       const details = [
-        v.scheduled_date ? { l: 'Scheduled Date', v: fmt(v.scheduled_date) } : null,
+        v.scheduled_date ? { l: 'Scheduled', v: fmtDateTime(v.scheduled_date, v.scheduled_time) } : null,
         v.completed_date ? { l: 'Completed Date', v: fmt(v.completed_date) } : null,
         v.technician     ? { l: 'Technician',     v: v.technician }          : null,
         v.equipment_name ? { l: 'Equipment',       v: v.equipment_name }      : null,
@@ -643,7 +657,7 @@
           <div class="label"><span class="dot dot-pm"></span>Next PM Visit</div>
           ${nextPM
             ? `<div class="date-val">${fmt(nextPM.scheduled_date) || 'Date TBC'}</div>
-               <div class="date-sub">${nextPM.status.charAt(0).toUpperCase() + nextPM.status.slice(1)}</div>`
+               <div class="date-sub">${fmtTime12(nextPM.scheduled_time) ? fmtTime12(nextPM.scheduled_time) + ' · ' : ''}${nextPM.status.charAt(0).toUpperCase() + nextPM.status.slice(1)}</div>`
             : `<div class="date-val none">None scheduled</div>`}`;
 
         const cardNextCM = document.getElementById('cardNextCM');
@@ -651,7 +665,7 @@
           <div class="label"><span class="dot dot-cm"></span>Next CM Visit</div>
           ${nextCM
             ? `<div class="date-val">${fmt(nextCM.scheduled_date) || 'Date TBC'}</div>
-               <div class="date-sub">${nextCM.status.charAt(0).toUpperCase() + nextCM.status.slice(1)}</div>`
+               <div class="date-sub">${fmtTime12(nextCM.scheduled_time) ? fmtTime12(nextCM.scheduled_time) + ' · ' : ''}${nextCM.status.charAt(0).toUpperCase() + nextCM.status.slice(1)}</div>`
             : `<div class="date-val none">None scheduled</div>`}`;
 
         const cardLastPM = document.getElementById('cardLastPM');
