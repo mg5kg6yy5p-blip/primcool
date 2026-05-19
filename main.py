@@ -185,9 +185,10 @@ async def lifespan(app: FastAPI):
     bs_name  = os.environ.get("BOOTSTRAP_ADMIN_NAME",  "Super Admin")
     bs_email = os.environ.get("BOOTSTRAP_ADMIN_EMAIL")
     if bs_user and bs_pw and bs_email:
-        new_id = bootstrap_super_admin(bs_user, bs_pw, bs_name, bs_email)
-        if new_id:
-            print(f"✓ Bootstrapped super_admin '{bs_user}' (id={new_id})")
+        result = bootstrap_super_admin(bs_user, bs_pw, bs_name, bs_email)
+        if result:
+            new_id, prid = result
+            print(f"✓ Bootstrapped super_admin '{bs_user}' (id={new_id}, PRID={prid})")
     yield
 
 
@@ -243,12 +244,12 @@ class AdminLoginRequest(BaseModel):
 
 
 class AdminUserCreate(BaseModel):
-    username: str
-    password: str
-    name:     str
-    email:    str
-    phone:    str = ""
-    role:     str
+    password:  str
+    name:      str
+    email:     str
+    phone:     str = ""
+    role:      str
+    hire_date: str = ""
 
 
 class AdminUserUpdate(BaseModel):
@@ -333,12 +334,12 @@ class TechLogin(BaseModel):
 
 
 class TechCreate(BaseModel):
-    tech_code: str
     pin:       str
     name:      str
     phone:     str = ""
     email:     str = ""
     role:      str = "tech"   # 'lead_tech' | 'tech' | 'apprentice'
+    hire_date: str = ""
 
 
 class TechUpdate(BaseModel):
@@ -872,16 +873,18 @@ def admin_create_user(request: Request, body: AdminUserCreate):
         raise HTTPException(400, "Invalid role")
     if len(body.password) < 8:
         raise HTTPException(400, "Password must be at least 8 characters")
+    # PRID is generated server-side and used as the username.
+    data = body.model_dump()
     try:
-        new_id = create_admin_user(body.model_dump(), created_by=admin["id"])
+        new_id, prid = create_admin_user(data, created_by=admin["id"])
     except Exception as e:
         if "UNIQUE" in str(e):
-            raise HTTPException(409, "Username or email already exists")
+            raise HTTPException(409, "Email already exists")
         raise
     _audit_from(admin, "admin.create", request,
-                target_type="admin", target_id=new_id, target_label=body.username,
-                after={"username": body.username, "name": body.name, "email": body.email, "role": body.role})
-    return {"id": new_id}
+                target_type="admin", target_id=new_id, target_label=prid,
+                after={"username": prid, "name": body.name, "email": body.email, "role": body.role})
+    return {"id": new_id, "prid": prid, "username": prid}
 
 
 @app.put("/api/admin/users/{user_id}")
@@ -1140,16 +1143,16 @@ def admin_create_tech(request: Request, body: TechCreate):
     if body.role not in ("lead_tech", "tech", "apprentice"):
         raise HTTPException(400, "Invalid tech role")
     try:
-        tech_id = create_tech(body.model_dump())
+        tech_id, prid = create_tech(body.model_dump())
     except Exception as e:
         if "UNIQUE" in str(e):
-            raise HTTPException(409, "Tech code already exists")
+            raise HTTPException(409, "PRID conflict — try again")
         raise
     _audit_from(admin, "tech.create", request,
-                target_type="tech", target_id=tech_id, target_label=body.tech_code,
-                after={"name": body.name, "tech_code": body.tech_code,
+                target_type="tech", target_id=tech_id, target_label=prid,
+                after={"name": body.name, "tech_code": prid,
                        "role": body.role, "email": body.email})
-    return {"id": tech_id}
+    return {"id": tech_id, "prid": prid, "tech_code": prid}
 
 
 @app.put("/api/admin/techs/{tech_id}")

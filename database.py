@@ -22,24 +22,52 @@ def _verify_pin(pin: str, stored: str) -> bool:
     return secrets.compare_digest(_hash_pin(pin, salt), stored)
 
 
-def generate_prid() -> str:
-    """Sequential year-prefixed PRID, shared across admins and techs."""
-    year = datetime.now(timezone.utc).year
-    prefix = f"PR-{year}-"
+def _initials_from_name(name: str) -> str:
+    # Strip anything that isn't a letter so initials are always clean
+    parts = [''.join(c for c in p if c.isalpha()) for p in name.strip().split()]
+    parts = [p for p in parts if p]
+    if len(parts) >= 2:
+        return (parts[0][0] + parts[-1][0]).upper()
+    if len(parts) == 1 and parts[0]:
+        return (parts[0][0] * 2).upper()
+    return "XX"
+
+
+def generate_prid(name: str, hire_date: str = None) -> str:
+    """PRID format: PC{initials}{DDMMYY} — letters & digits only, no separators.
+
+    hire_date: ISO YYYY-MM-DD, or None (defaults to today UTC).
+    Collisions get a letter suffix (A, B, C, ...).
+    """
+    if hire_date:
+        try:
+            d = datetime.fromisoformat(hire_date).date()
+        except ValueError:
+            d = datetime.now(timezone.utc).date()
+    else:
+        d = datetime.now(timezone.utc).date()
+    date_part = d.strftime("%d%m%y")
+    initials  = _initials_from_name(name)
+    base      = f"PC{initials}{date_part}"
+
     con = _con()
-    row = con.execute(
-        """
-        SELECT MAX(CAST(SUBSTR(prid, ?) AS INTEGER)) AS max_seq FROM (
-            SELECT prid FROM admin_users  WHERE prid LIKE ?
-            UNION ALL
-            SELECT prid FROM technicians  WHERE prid LIKE ?
-        )
-        """,
-        (len(prefix) + 1, f"{prefix}%", f"{prefix}%"),
-    ).fetchone()
+    candidates = [base] + [f"{base}{chr(c)}" for c in range(ord('A'), ord('Z') + 1)]
+    chosen = None
+    for cand in candidates:
+        exists = con.execute(
+            "SELECT 1 FROM admin_users WHERE prid = ? UNION ALL "
+            "SELECT 1 FROM technicians WHERE prid = ? LIMIT 1",
+            (cand, cand),
+        ).fetchone()
+        if not exists:
+            chosen = cand
+            break
     con.close()
-    next_seq = (row["max_seq"] or 0) + 1
-    return f"{prefix}{next_seq:04d}"
+    if not chosen:
+        # 27+ collisions on the same initials + date is implausible at this scale,
+        # but raise rather than overwrite if it ever happens.
+        raise RuntimeError("PRID collision space exhausted for this initial+date combo")
+    return chosen
 
 
 def _con():
@@ -123,8 +151,9 @@ def init_db():
     # Idempotent column additions for existing tech DBs
     tech_cols = {row[1] for row in con.execute("PRAGMA table_info(technicians)")}
     for name, sql in (
-        ("role", "ALTER TABLE technicians ADD COLUMN role TEXT NOT NULL DEFAULT 'tech'"),
-        ("prid", "ALTER TABLE technicians ADD COLUMN prid TEXT"),
+        ("role",      "ALTER TABLE technicians ADD COLUMN role TEXT NOT NULL DEFAULT 'tech'"),
+        ("prid",      "ALTER TABLE technicians ADD COLUMN prid TEXT"),
+        ("hire_date", "ALTER TABLE technicians ADD COLUMN hire_date TEXT"),
     ):
         if name not in tech_cols:
             try: con.execute(sql)
@@ -140,11 +169,17 @@ def init_db():
             phone         TEXT,
             role          TEXT NOT NULL,
             prid          TEXT UNIQUE,
+            hire_date     TEXT,
             active        INTEGER NOT NULL DEFAULT 1,
             created_by    INTEGER REFERENCES admin_users(id),
             created_at    TEXT NOT NULL
         )
     """)
+    # Idempotent column addition for existing admin DBs
+    admin_cols = {row[1] for row in con.execute("PRAGMA table_info(admin_users)")}
+    if "hire_date" not in admin_cols:
+        try: con.execute("ALTER TABLE admin_users ADD COLUMN hire_date TEXT")
+        except sqlite3.OperationalError: pass
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS admin_password_resets (
@@ -252,16 +287,19 @@ def init_db():
 
 
 def _backfill_prids():
-    """Give existing techs a PRID if they don't have one."""
+    """Give existing techs a PRID if they don't have one (uses created_at as hire date)."""
     con = _con()
-    rows = con.execute("SELECT id FROM technicians WHERE prid IS NULL OR prid = ''").fetchall()
+    rows = con.execute(
+        "SELECT id, name, created_at FROM technicians WHERE prid IS NULL OR prid = ''"
+    ).fetchall()
+    con.close()
     for r in rows:
-        con.close()
-        prid = generate_prid()
+        hire = (r["created_at"] or "")[:10] or None
+        prid = generate_prid(name=r["name"] or "Tech", hire_date=hire)
         con = _con()
         con.execute("UPDATE technicians SET prid = ? WHERE id = ?", (prid, r["id"]))
         con.commit()
-    con.close()
+        con.close()
 
 
 def save_submission(data: dict):
@@ -775,29 +813,34 @@ def get_all_techs():
     return [dict(r) for r in rows]
 
 
-def create_tech(data: dict) -> int:
-    prid = generate_prid()
+def create_tech(data: dict) -> tuple:
+    """Returns (tech_id, prid). If `tech_code` not provided, PRID is used as the tech_code."""
+    hire_date = (data.get("hire_date") or "").strip() or None
+    prid      = generate_prid(name=data["name"], hire_date=hire_date)
+    raw_code  = (data.get("tech_code") or "").strip().upper()
+    tech_code = raw_code if raw_code else prid
     con = _con()
     cur = con.execute(
         """
-        INSERT INTO technicians (tech_code, pin_hash, name, phone, email, role, prid, active, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
+        INSERT INTO technicians (tech_code, pin_hash, name, phone, email, role, prid, hire_date, active, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
         """,
         (
-            data["tech_code"].strip().upper(),
+            tech_code,
             _hash_pin(data["pin"]),
             data["name"],
             data.get("phone", ""),
             data.get("email", ""),
             data.get("role", "tech"),
             prid,
+            hire_date,
             datetime.now(timezone.utc).isoformat(),
         ),
     )
     tech_id = cur.lastrowid
     con.commit()
     con.close()
-    return tech_id
+    return tech_id, prid
 
 
 def set_tech_pin(tech_id: int, pin: str):
@@ -982,23 +1025,28 @@ def get_all_admin_users():
     return [dict(r) for r in rows]
 
 
-def create_admin_user(data: dict, created_by: int = None) -> int:
-    prid = generate_prid()
+def create_admin_user(data: dict, created_by: int = None) -> tuple:
+    """Returns (admin_id, prid). If `username` not provided, PRID is used as username."""
+    hire_date = (data.get("hire_date") or "").strip() or None
+    prid      = generate_prid(name=data["name"], hire_date=hire_date)
+    raw_user  = (data.get("username") or "").strip()
+    username  = raw_user.lower() if raw_user else prid.lower()
     con = _con()
     cur = con.execute(
         """
         INSERT INTO admin_users
-            (username, password_hash, name, email, phone, role, prid, active, created_by, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            (username, password_hash, name, email, phone, role, prid, hire_date, active, created_by, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
         """,
         (
-            data["username"].strip().lower(),
+            username,
             _hash_password(data["password"]),
             data["name"].strip(),
             data["email"].strip().lower(),
             data.get("phone", "").strip(),
             data["role"],
             prid,
+            hire_date,
             created_by,
             datetime.now(timezone.utc).isoformat(),
         ),
@@ -1006,7 +1054,7 @@ def create_admin_user(data: dict, created_by: int = None) -> int:
     admin_id = cur.lastrowid
     con.commit()
     con.close()
-    return admin_id
+    return admin_id, prid
 
 
 def update_admin_user(admin_id: int, data: dict):
@@ -1164,7 +1212,7 @@ def query_audit_log(
 # ── Bootstrap first super admin ──────────────────────────────────────────────
 
 def bootstrap_super_admin(username: str, password: str, name: str, email: str):
-    """Creates the first super_admin if no admin_users exist. Returns id or None."""
+    """Creates the first super_admin if no admin_users exist. Returns (id, prid) or None."""
     con = _con()
     n = con.execute("SELECT COUNT(*) AS n FROM admin_users").fetchone()["n"]
     con.close()

@@ -506,14 +506,10 @@
 <div class="modal-overlay" id="modal-addTech">
   <div class="modal">
     <div class="modal-header">
-      <h3 id="techModalTitle">Add Technician</h3>
+      <h3 id="techModalTitle">Onboard Technician</h3>
       <button class="modal-close" onclick="closeModal('addTech')">×</button>
     </div>
     <div class="modal-body">
-      <div class="field-row">
-        <div class="field"><label>Tech Code *</label><input id="t-code" placeholder="T-001" style="text-transform:uppercase;letter-spacing:2px;font-family:'Courier New',monospace;"></div>
-        <div class="field"><label>PIN (4–8 digits) *</label><input id="t-pin" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="••••" style="letter-spacing:6px;font-family:'Courier New',monospace;"></div>
-      </div>
       <div class="field"><label>Full Name *</label><input id="t-name" placeholder="Marcus Reid"></div>
       <div class="field-row">
         <div class="field"><label>Phone</label><input id="t-phone" placeholder="+1 868 ..."></div>
@@ -527,12 +523,16 @@
           <option value="apprentice">Apprentice / Junior</option>
         </select>
       </div>
+      <div class="field-row">
+        <div class="field"><label>Hire Date *</label><input id="t-hire" type="date"></div>
+        <div class="field"><label>Initial PIN (4–8 digits) *</label><input id="t-pin" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="••••" style="letter-spacing:6px;font-family:'Courier New',monospace;"></div>
+      </div>
       <div class="form-error" id="err-addTech"></div>
-      <p style="font-size:12px;color:var(--muted);">The tech will sign in at <strong>/tech</strong> using this code + PIN.</p>
+      <p style="font-size:12px;color:var(--muted);">PRID is auto-generated from initials + hire date (e.g. <strong>PCMR200526</strong>) and used as their sign-in code at <strong>/tech</strong>.</p>
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('addTech')">Cancel</button>
-      <button class="btn btn-primary" id="techSubmitBtn" onclick="submitAddTech()">Create Tech</button>
+      <button class="btn btn-primary" id="techSubmitBtn" onclick="submitAddTech()">Generate PRID &amp; Create</button>
     </div>
   </div>
 </div>
@@ -541,14 +541,10 @@
 <div class="modal-overlay" id="modal-addAdmin">
   <div class="modal">
     <div class="modal-header">
-      <h3>Add Admin User</h3>
+      <h3>Onboard Admin User</h3>
       <button class="modal-close" onclick="closeModal('addAdmin')">×</button>
     </div>
     <div class="modal-body">
-      <div class="field-row">
-        <div class="field"><label>Username *</label><input id="au-username" placeholder="jdoe" autocomplete="off" style="letter-spacing:1px;"></div>
-        <div class="field"><label>Initial Password *</label><input id="au-password" type="text" placeholder="min 8 chars" autocomplete="off"></div>
-      </div>
       <div class="field"><label>Full Name *</label><input id="au-name" placeholder="Jane Doe"></div>
       <div class="field-row">
         <div class="field"><label>Email *</label><input id="au-email" type="email" placeholder="jane@primecoolservices.com"></div>
@@ -565,12 +561,35 @@
           <option value="ceo_assistant">CEO Assistant</option>
         </select>
       </div>
+      <div class="field-row">
+        <div class="field"><label>Hire Date *</label><input id="au-hire" type="date"></div>
+        <div class="field"><label>Initial Password *</label><input id="au-password" type="text" placeholder="min 8 chars" autocomplete="off"></div>
+      </div>
       <div class="form-error" id="err-addAdmin"></div>
-      <p style="font-size:12px;color:var(--muted);margin-top:2px;line-height:1.5;">Share the username + initial password privately. PRID is auto-assigned.</p>
+      <p style="font-size:12px;color:var(--muted);margin-top:2px;line-height:1.5;">PRID is auto-generated from initials + hire date (e.g. <strong>PCJD200526</strong>). The PRID is the username — share it with the employee along with the initial password.</p>
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('addAdmin')">Cancel</button>
-      <button class="btn btn-primary" onclick="submitAddAdmin()">Create Admin</button>
+      <button class="btn btn-primary" onclick="submitAddAdmin()">Generate PRID &amp; Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- Success: show generated PRID -->
+<div class="modal-overlay" id="modal-prid">
+  <div class="modal" style="max-width:420px;">
+    <div class="modal-header" style="background:var(--teal);color:white;">
+      <h3 style="color:white;">✓ Account Created</h3>
+      <button class="modal-close" style="color:white;" onclick="closeModal('prid');location.reload();">×</button>
+    </div>
+    <div class="modal-body" style="text-align:center;padding:32px 24px;">
+      <p style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;">PRID — this is their username</p>
+      <div id="pridDisplay" style="font-family:'Courier New',monospace;font-size:28px;font-weight:700;color:var(--navy);letter-spacing:3px;padding:18px;background:var(--light);border:2px dashed var(--teal);border-radius:10px;margin-bottom:18px;"></div>
+      <p id="pridSubText" style="font-size:13px;color:var(--text);line-height:1.6;"></p>
+      <button class="btn btn-primary" style="margin-top:14px;" onclick="copyPrid()">📋 Copy PRID</button>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" style="width:100%;" onclick="closeModal('prid');location.reload();">Done</button>
     </div>
   </div>
 </div>
@@ -1350,24 +1369,44 @@
     const err = document.getElementById('err-addAdmin');
     err.style.display = 'none';
     const body = {
-      username: document.getElementById('au-username').value.trim().toLowerCase(),
-      password: document.getElementById('au-password').value,
-      name:     document.getElementById('au-name').value.trim(),
-      email:    document.getElementById('au-email').value.trim(),
-      phone:    document.getElementById('au-phone').value.trim(),
-      role:     document.getElementById('au-role').value,
+      password:  document.getElementById('au-password').value,
+      name:      document.getElementById('au-name').value.trim(),
+      email:     document.getElementById('au-email').value.trim(),
+      phone:     document.getElementById('au-phone').value.trim(),
+      role:      document.getElementById('au-role').value,
+      hire_date: document.getElementById('au-hire').value,
     };
-    if (!body.username || !body.password || !body.name || !body.email || !body.role) {
-      showErr('err-addAdmin', 'Username, password, name, email, and role are required.'); return;
+    if (!body.password || !body.name || !body.email || !body.role || !body.hire_date) {
+      showErr('err-addAdmin', 'Name, email, role, hire date, and password are required.'); return;
     }
     if (body.password.length < 8) { showErr('err-addAdmin', 'Password must be at least 8 characters.'); return; }
     try {
-      await api('POST', '/api/admin/users', body);
+      const res = await api('POST', '/api/admin/users', body);
       closeModal('addAdmin');
-      ['au-username','au-password','au-name','au-email','au-phone'].forEach(id => document.getElementById(id).value = '');
+      ['au-password','au-name','au-email','au-phone','au-hire'].forEach(id => document.getElementById(id).value = '');
       document.getElementById('au-role').value = '';
       await loadAdmins();
+      showPridModal(res.prid, `${body.name} signs in at <strong>/admin</strong> with their PRID as the username, plus the password you set.`);
     } catch(e) { showErr('err-addAdmin', e.message); }
+  }
+
+  // ── PRID success modal ──
+  function showPridModal(prid, subText) {
+    document.getElementById('pridDisplay').textContent = prid;
+    document.getElementById('pridSubText').innerHTML = subText;
+    document.getElementById('modal-prid').classList.add('open');
+  }
+  async function copyPrid() {
+    const prid = document.getElementById('pridDisplay').textContent;
+    try {
+      await navigator.clipboard.writeText(prid);
+      const btn = event.target;
+      const orig = btn.textContent;
+      btn.textContent = '✓ Copied!';
+      setTimeout(() => { btn.textContent = orig; }, 1500);
+    } catch {
+      alert('PRID: ' + prid);
+    }
   }
 
   async function changeAdminRole(id, role) {
@@ -1501,21 +1540,22 @@
     const err = document.getElementById('err-addTech');
     err.style.display = 'none';
     const body = {
-      tech_code: document.getElementById('t-code').value.trim(),
       pin:       document.getElementById('t-pin').value.trim(),
       name:      document.getElementById('t-name').value.trim(),
       phone:     document.getElementById('t-phone').value.trim(),
       email:     document.getElementById('t-email').value.trim(),
       role:      document.getElementById('t-role').value || 'tech',
+      hire_date: document.getElementById('t-hire').value,
     };
-    if (!body.tech_code || !body.pin || !body.name) { showErr('err-addTech','Tech code, PIN, and name are required.'); return; }
+    if (!body.pin || !body.name || !body.hire_date) { showErr('err-addTech','Name, PIN, and hire date are required.'); return; }
     if (!/^\d{4,8}$/.test(body.pin)) { showErr('err-addTech','PIN must be 4–8 digits.'); return; }
     try {
-      await api('POST', '/api/admin/techs', body);
+      const res = await api('POST', '/api/admin/techs', body);
       closeModal('addTech');
-      ['t-code','t-pin','t-name','t-phone','t-email'].forEach(id => document.getElementById(id).value = '');
+      ['t-pin','t-name','t-phone','t-email','t-hire'].forEach(id => document.getElementById(id).value = '');
       document.getElementById('t-role').value = 'tech';
       await loadTechs();
+      showPridModal(res.prid, `${body.name} signs in at <strong>/tech</strong> with their PRID as the code, plus the PIN you set.`);
     } catch(e) { showErr('err-addTech', e.message); }
   }
 
@@ -1564,6 +1604,19 @@
   document.querySelectorAll('.modal-overlay').forEach(el => {
     el.addEventListener('click', e => { if (e.target === el) el.classList.remove('open'); });
   });
+
+  // Default hire date to today when onboarding modals open
+  function defaultHireDate(id) {
+    const el = document.getElementById(id);
+    if (el && !el.value) el.value = new Date().toISOString().slice(0, 10);
+  }
+  const _origOpen = openModal;
+  openModal = function(name, visitId) {
+    const r = _origOpen.apply(this, arguments);
+    if (name === 'addAdmin') defaultHireDate('au-hire');
+    if (name === 'addTech')  defaultHireDate('t-hire');
+    return r;
+  };
 
   // ── Helpers ────────────────────────────────────────────────────────────────
   function clearVisitForm() {
