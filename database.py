@@ -22,6 +22,26 @@ def _verify_pin(pin: str, stored: str) -> bool:
     return secrets.compare_digest(_hash_pin(pin, salt), stored)
 
 
+def generate_prid() -> str:
+    """Sequential year-prefixed PRID, shared across admins and techs."""
+    year = datetime.now(timezone.utc).year
+    prefix = f"PR-{year}-"
+    con = _con()
+    row = con.execute(
+        """
+        SELECT MAX(CAST(SUBSTR(prid, ?) AS INTEGER)) AS max_seq FROM (
+            SELECT prid FROM admin_users  WHERE prid LIKE ?
+            UNION ALL
+            SELECT prid FROM technicians  WHERE prid LIKE ?
+        )
+        """,
+        (len(prefix) + 1, f"{prefix}%", f"{prefix}%"),
+    ).fetchone()
+    con.close()
+    next_seq = (row["max_seq"] or 0) + 1
+    return f"{prefix}{next_seq:04d}"
+
+
 def _con():
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
@@ -94,10 +114,71 @@ def init_db():
             name       TEXT NOT NULL,
             phone      TEXT,
             email      TEXT,
+            role       TEXT NOT NULL DEFAULT 'tech',
+            prid       TEXT UNIQUE,
             active     INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL
         )
     """)
+    # Idempotent column additions for existing tech DBs
+    tech_cols = {row[1] for row in con.execute("PRAGMA table_info(technicians)")}
+    for name, sql in (
+        ("role", "ALTER TABLE technicians ADD COLUMN role TEXT NOT NULL DEFAULT 'tech'"),
+        ("prid", "ALTER TABLE technicians ADD COLUMN prid TEXT"),
+    ):
+        if name not in tech_cols:
+            try: con.execute(sql)
+            except sqlite3.OperationalError: pass
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS admin_users (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            username      TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            name          TEXT NOT NULL,
+            email         TEXT NOT NULL UNIQUE,
+            phone         TEXT,
+            role          TEXT NOT NULL,
+            prid          TEXT UNIQUE,
+            active        INTEGER NOT NULL DEFAULT 1,
+            created_by    INTEGER REFERENCES admin_users(id),
+            created_at    TEXT NOT NULL
+        )
+    """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS admin_password_resets (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id    INTEGER NOT NULL REFERENCES admin_users(id),
+            token       TEXT NOT NULL UNIQUE,
+            expires_at  TEXT NOT NULL,
+            used_at     TEXT,
+            created_at  TEXT NOT NULL
+        )
+    """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            actor_type   TEXT NOT NULL,
+            actor_id     INTEGER,
+            actor_prid   TEXT,
+            actor_label  TEXT,
+            actor_role   TEXT,
+            action       TEXT NOT NULL,
+            target_type  TEXT,
+            target_id    INTEGER,
+            target_label TEXT,
+            before_value TEXT,
+            after_value  TEXT,
+            ip_address   TEXT,
+            created_at   TEXT NOT NULL
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_audit_actor   ON audit_log(actor_id, created_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_audit_action  ON audit_log(action, created_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_audit_target  ON audit_log(target_type, target_id)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at)")
     con.execute("""
         CREATE TABLE IF NOT EXISTS tech_pin_resets (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -166,6 +247,20 @@ def init_db():
             except sqlite3.OperationalError: pass
 
     con.commit()
+    con.close()
+    _backfill_prids()
+
+
+def _backfill_prids():
+    """Give existing techs a PRID if they don't have one."""
+    con = _con()
+    rows = con.execute("SELECT id FROM technicians WHERE prid IS NULL OR prid = ''").fetchall()
+    for r in rows:
+        con.close()
+        prid = generate_prid()
+        con = _con()
+        con.execute("UPDATE technicians SET prid = ? WHERE id = ?", (prid, r["id"]))
+        con.commit()
     con.close()
 
 
@@ -669,7 +764,7 @@ def get_all_techs():
     con = _con()
     rows = con.execute(
         """
-        SELECT t.id, t.tech_code, t.name, t.phone, t.email, t.active, t.created_at,
+        SELECT t.id, t.tech_code, t.name, t.phone, t.email, t.role, t.prid, t.active, t.created_at,
                (SELECT COUNT(*) FROM maintenance_visits v
                 WHERE v.assigned_tech_id = t.id AND v.status != 'completed') AS active_jobs
         FROM technicians t
@@ -681,11 +776,12 @@ def get_all_techs():
 
 
 def create_tech(data: dict) -> int:
+    prid = generate_prid()
     con = _con()
     cur = con.execute(
         """
-        INSERT INTO technicians (tech_code, pin_hash, name, phone, email, active, created_at)
-        VALUES (?, ?, ?, ?, ?, 1, ?)
+        INSERT INTO technicians (tech_code, pin_hash, name, phone, email, role, prid, active, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
         """,
         (
             data["tech_code"].strip().upper(),
@@ -693,6 +789,8 @@ def create_tech(data: dict) -> int:
             data["name"],
             data.get("phone", ""),
             data.get("email", ""),
+            data.get("role", "tech"),
+            prid,
             datetime.now(timezone.utc).isoformat(),
         ),
     )
@@ -712,11 +810,12 @@ def set_tech_pin(tech_id: int, pin: str):
 def update_tech(tech_id: int, data: dict):
     con = _con()
     con.execute(
-        "UPDATE technicians SET name = ?, phone = ?, email = ?, active = ? WHERE id = ?",
+        "UPDATE technicians SET name = ?, phone = ?, email = ?, role = ?, active = ? WHERE id = ?",
         (
             data.get("name", ""),
             data.get("phone", ""),
             data.get("email", ""),
+            data.get("role", "tech"),
             1 if data.get("active", True) else 0,
             tech_id,
         ),
@@ -818,3 +917,266 @@ def delete_photo(photo_id: int):
     con.execute("DELETE FROM visit_photos WHERE id = ?", (photo_id,))
     con.commit()
     con.close()
+
+
+# ── Admin Users ───────────────────────────────────────────────────────────────
+
+def _hash_password(pw: str, salt: str = None) -> str:
+    if salt is None:
+        salt = secrets.token_hex(12)
+    digest = hashlib.pbkdf2_hmac("sha256", pw.encode(), salt.encode(), 100_000).hex()
+    return f"{salt}${digest}"
+
+
+def _verify_password(pw: str, stored: str) -> bool:
+    if not stored or "$" not in stored:
+        return False
+    salt, _ = stored.split("$", 1)
+    return secrets.compare_digest(_hash_password(pw, salt), stored)
+
+
+def get_admin_user_by_username(username: str):
+    con = _con()
+    row = con.execute(
+        "SELECT * FROM admin_users WHERE LOWER(username) = LOWER(?) AND active = 1",
+        (username.strip(),),
+    ).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
+def get_admin_user_by_id(admin_id: int):
+    con = _con()
+    row = con.execute("SELECT * FROM admin_users WHERE id = ?", (admin_id,)).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
+def verify_admin_user(username: str, password: str):
+    admin = get_admin_user_by_username(username)
+    if not admin or not _verify_password(password, admin["password_hash"]):
+        return None
+    return admin
+
+
+def count_active_admins(role: str = None) -> int:
+    con = _con()
+    if role:
+        n = con.execute(
+            "SELECT COUNT(*) AS n FROM admin_users WHERE active = 1 AND role = ?",
+            (role,),
+        ).fetchone()["n"]
+    else:
+        n = con.execute("SELECT COUNT(*) AS n FROM admin_users WHERE active = 1").fetchone()["n"]
+    con.close()
+    return n
+
+
+def get_all_admin_users():
+    con = _con()
+    rows = con.execute(
+        "SELECT id, username, name, email, phone, role, prid, active, created_at "
+        "FROM admin_users ORDER BY active DESC, name"
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def create_admin_user(data: dict, created_by: int = None) -> int:
+    prid = generate_prid()
+    con = _con()
+    cur = con.execute(
+        """
+        INSERT INTO admin_users
+            (username, password_hash, name, email, phone, role, prid, active, created_by, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+        """,
+        (
+            data["username"].strip().lower(),
+            _hash_password(data["password"]),
+            data["name"].strip(),
+            data["email"].strip().lower(),
+            data.get("phone", "").strip(),
+            data["role"],
+            prid,
+            created_by,
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    admin_id = cur.lastrowid
+    con.commit()
+    con.close()
+    return admin_id
+
+
+def update_admin_user(admin_id: int, data: dict):
+    con = _con()
+    con.execute(
+        "UPDATE admin_users SET name = ?, email = ?, phone = ? WHERE id = ?",
+        (
+            data["name"].strip(),
+            data["email"].strip().lower(),
+            data.get("phone", "").strip(),
+            admin_id,
+        ),
+    )
+    con.commit()
+    con.close()
+
+
+def set_admin_role(admin_id: int, role: str):
+    con = _con()
+    con.execute("UPDATE admin_users SET role = ? WHERE id = ?", (role, admin_id))
+    con.commit()
+    con.close()
+
+
+def set_admin_active(admin_id: int, active: bool):
+    con = _con()
+    con.execute("UPDATE admin_users SET active = ? WHERE id = ?", (1 if active else 0, admin_id))
+    con.commit()
+    con.close()
+
+
+def set_admin_password(admin_id: int, password: str):
+    con = _con()
+    con.execute(
+        "UPDATE admin_users SET password_hash = ? WHERE id = ?",
+        (_hash_password(password), admin_id),
+    )
+    con.commit()
+    con.close()
+
+
+def get_admin_by_email(email: str):
+    con = _con()
+    row = con.execute(
+        "SELECT * FROM admin_users WHERE LOWER(email) = LOWER(?) AND active = 1",
+        (email.strip(),),
+    ).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
+def create_admin_password_reset(admin_id: int) -> str:
+    from datetime import timedelta
+    token   = secrets.token_urlsafe(24)
+    expires = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
+    con = _con()
+    con.execute(
+        "INSERT INTO admin_password_resets (admin_id, token, expires_at, created_at) VALUES (?, ?, ?, ?)",
+        (admin_id, token, expires, datetime.now(timezone.utc).isoformat()),
+    )
+    con.commit()
+    con.close()
+    return token
+
+
+def consume_admin_password_reset(token: str):
+    con = _con()
+    row = con.execute(
+        "SELECT * FROM admin_password_resets WHERE token = ? AND used_at IS NULL",
+        (token,),
+    ).fetchone()
+    if not row:
+        con.close()
+        return None
+    row = dict(row)
+    if row["expires_at"] < datetime.now(timezone.utc).isoformat():
+        con.close()
+        return None
+    con.execute(
+        "UPDATE admin_password_resets SET used_at = ? WHERE id = ?",
+        (datetime.now(timezone.utc).isoformat(), row["id"]),
+    )
+    con.commit()
+    con.close()
+    return row["admin_id"]
+
+
+# ── Audit Log ────────────────────────────────────────────────────────────────
+
+def log_audit(
+    actor_type: str,
+    actor_id: int = None,
+    actor_prid: str = None,
+    actor_label: str = None,
+    actor_role: str = None,
+    action: str = "",
+    target_type: str = None,
+    target_id: int = None,
+    target_label: str = None,
+    before_value=None,
+    after_value=None,
+    ip_address: str = None,
+):
+    import json as _json
+    con = _con()
+    con.execute(
+        """
+        INSERT INTO audit_log
+            (actor_type, actor_id, actor_prid, actor_label, actor_role,
+             action, target_type, target_id, target_label,
+             before_value, after_value, ip_address, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            actor_type, actor_id, actor_prid, actor_label, actor_role,
+            action, target_type, target_id, target_label,
+            _json.dumps(before_value) if before_value is not None else None,
+            _json.dumps(after_value)  if after_value  is not None else None,
+            ip_address,
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    con.commit()
+    con.close()
+
+
+def query_audit_log(
+    actor_id: int = None,
+    action_prefix: str = None,
+    target_type: str = None,
+    since: str = None,
+    until: str = None,
+    limit: int = 200,
+):
+    sql = "SELECT * FROM audit_log WHERE 1=1"
+    args = []
+    if actor_id is not None:
+        sql += " AND actor_id = ?"; args.append(actor_id)
+    if action_prefix:
+        sql += " AND action LIKE ?"; args.append(action_prefix + "%")
+    if target_type:
+        sql += " AND target_type = ?"; args.append(target_type)
+    if since:
+        sql += " AND created_at >= ?"; args.append(since)
+    if until:
+        sql += " AND created_at <= ?"; args.append(until)
+    sql += " ORDER BY created_at DESC LIMIT ?"; args.append(int(limit))
+
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+# ── Bootstrap first super admin ──────────────────────────────────────────────
+
+def bootstrap_super_admin(username: str, password: str, name: str, email: str):
+    """Creates the first super_admin if no admin_users exist. Returns id or None."""
+    con = _con()
+    n = con.execute("SELECT COUNT(*) AS n FROM admin_users").fetchone()["n"]
+    con.close()
+    if n > 0:
+        return None
+    return create_admin_user(
+        {
+            "username": username,
+            "password": password,
+            "name": name,
+            "email": email,
+            "role": "super_admin",
+        },
+        created_by=None,
+    )

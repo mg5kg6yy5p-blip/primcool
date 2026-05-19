@@ -16,7 +16,7 @@ import os
 import resend as resend_lib
 
 from database import (
-    init_db, save_submission,
+    init_db, save_submission, bootstrap_super_admin,
     get_customer_by_code, get_customer_by_id, get_all_customers,
     create_customer, delete_customer, verify_customer, set_customer_pin,
     get_customer_by_code_and_email, create_customer_pin_reset, consume_customer_pin_reset,
@@ -29,7 +29,50 @@ from database import (
     delete_tech, set_tech_pin,
     get_tech_by_code_and_email, create_pin_reset_token, consume_pin_reset_token,
     create_photo, get_visit_photos, get_photo_by_id, delete_photo,
+    # Admin users + audit
+    verify_admin_user, get_admin_user_by_id, get_all_admin_users,
+    create_admin_user, update_admin_user, set_admin_role, set_admin_active,
+    set_admin_password, count_active_admins, get_admin_by_email,
+    create_admin_password_reset, consume_admin_password_reset,
+    log_audit, query_audit_log,
 )
+
+# ── Admin role → permission matrix ────────────────────────────────────────────
+ADMIN_PERMS = {
+    "super_admin": {
+        "admin:create", "admin:update", "admin:delete", "admin:set_role",
+        "admin:set_active", "admin:reset_password", "admin:view_all",
+        "tech:create", "tech:update", "tech:delete", "tech:reset_pin",
+        "customer:create", "customer:update", "customer:delete",
+        "visit:create", "visit:update", "visit:delete",
+        "review:approve", "review:reject", "review:delete",
+        "audit:view_all",
+    },
+    "supervisor_admin": {
+        "admin:view_all",
+        "tech:update",
+        "customer:update",
+        "visit:update",
+        "audit:view_all",
+    },
+    "system_admin": {
+        "tech:create", "tech:update", "tech:reset_pin",
+        "customer:create", "customer:update",
+        "visit:create", "visit:update",
+        "audit:view_self",
+    },
+    "hr_admin": {
+        "tech:create", "tech:update", "tech:reset_pin",
+        "audit:view_self",
+    },
+    "ceo_assistant": {
+        "audit:view_self",
+    },
+}
+
+
+def _admin_can(role: str, perm: str) -> bool:
+    return perm in ADMIN_PERMS.get(role, set())
 
 PHOTOS_DIR = Path(os.environ.get("PHOTOS_DIR", "uploads/photos"))
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
@@ -85,6 +128,7 @@ def _require_tech(request: Request) -> int:
 
 
 def _require_admin(request: Request):
+    """Returns the admin_user dict for the authenticated admin."""
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
         raise HTTPException(401, "Unauthorized")
@@ -96,11 +140,54 @@ def _require_admin(request: Request):
         raise HTTPException(401, "Token expired")
     except jwt.InvalidTokenError:
         raise HTTPException(401, "Invalid token")
+    admin_id = data.get("sub")
+    if not admin_id:
+        raise HTTPException(401, "Invalid token")
+    admin = get_admin_user_by_id(int(admin_id))
+    if not admin or not admin.get("active"):
+        raise HTTPException(403, "Account inactive or deleted")
+    return admin
+
+
+def _require_perm(request: Request, perm: str):
+    admin = _require_admin(request)
+    if not _admin_can(admin["role"], perm):
+        raise HTTPException(403, f"Your role ({admin['role']}) lacks permission: {perm}")
+    return admin
+
+
+def _audit_from(admin: dict, action: str, request: Request,
+                target_type: str = None, target_id: int = None,
+                target_label: str = None, before=None, after=None):
+    log_audit(
+        actor_type="admin",
+        actor_id=admin["id"],
+        actor_prid=admin.get("prid"),
+        actor_label=admin.get("name"),
+        actor_role=admin.get("role"),
+        action=action,
+        target_type=target_type,
+        target_id=target_id,
+        target_label=target_label,
+        before_value=before,
+        after_value=after,
+        ip_address=request.client.host if request.client else None,
+    )
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+
+    # Bootstrap first super_admin if BOOTSTRAP_ADMIN_* env vars are set and no admins exist.
+    bs_user  = os.environ.get("BOOTSTRAP_ADMIN_USERNAME")
+    bs_pw    = os.environ.get("BOOTSTRAP_ADMIN_PASSWORD")
+    bs_name  = os.environ.get("BOOTSTRAP_ADMIN_NAME",  "Super Admin")
+    bs_email = os.environ.get("BOOTSTRAP_ADMIN_EMAIL")
+    if bs_user and bs_pw and bs_email:
+        new_id = bootstrap_super_admin(bs_user, bs_pw, bs_name, bs_email)
+        if new_id:
+            print(f"✓ Bootstrapped super_admin '{bs_user}' (id={new_id})")
     yield
 
 
@@ -151,7 +238,45 @@ class CustomerPinReset(BaseModel):
 
 
 class AdminLoginRequest(BaseModel):
+    username: str = ""
     password: str
+
+
+class AdminUserCreate(BaseModel):
+    username: str
+    password: str
+    name:     str
+    email:    str
+    phone:    str = ""
+    role:     str
+
+
+class AdminUserUpdate(BaseModel):
+    name:  str
+    email: str
+    phone: str = ""
+
+
+class AdminRoleChange(BaseModel):
+    role: str
+
+
+class AdminActiveChange(BaseModel):
+    active: bool
+
+
+class AdminPasswordSet(BaseModel):
+    password: str
+
+
+class AdminForgotPassword(BaseModel):
+    email: str
+
+
+class AdminResetPassword(BaseModel):
+    token:            str
+    password:         str
+    confirm_password: str
 
 
 class CustomerCreate(BaseModel):
@@ -213,12 +338,14 @@ class TechCreate(BaseModel):
     name:      str
     phone:     str = ""
     email:     str = ""
+    role:      str = "tech"   # 'lead_tech' | 'tech' | 'apprentice'
 
 
 class TechUpdate(BaseModel):
     name:   str
     phone:  str = ""
     email:  str = ""
+    role:   str = "tech"
     active: bool = True
 
 
@@ -640,12 +767,216 @@ def tech_delete_photo(request: Request, photo_id: int):
 # ── Admin routes ──────────────────────────────────────────────────────────────
 
 @app.post("/api/admin/login")
-def admin_login(req: AdminLoginRequest):
-    admin_password = os.environ.get("ADMIN_PASSWORD", "primecool-admin")
-    if req.password != admin_password:
-        raise HTTPException(401, "Invalid password")
-    token = _make_token({"sub": "admin", "type": "admin"}, timedelta(hours=12))
-    return {"token": token}
+def admin_login(req: AdminLoginRequest, request: Request):
+    if not req.username:
+        raise HTTPException(400, "Username is required")
+    admin = verify_admin_user(req.username, req.password)
+    if not admin:
+        raise HTTPException(401, "Invalid username or password")
+    if not admin.get("active"):
+        raise HTTPException(403, "Account is deactivated")
+    token = _make_token({"sub": str(admin["id"]), "type": "admin"}, timedelta(hours=12))
+    log_audit(
+        actor_type="admin",
+        actor_id=admin["id"],
+        actor_prid=admin.get("prid"),
+        actor_label=admin.get("name"),
+        actor_role=admin.get("role"),
+        action="admin.login",
+        ip_address=request.client.host if request.client else None,
+    )
+    return {
+        "token":    token,
+        "name":     admin["name"],
+        "username": admin["username"],
+        "role":     admin["role"],
+        "prid":     admin.get("prid"),
+    }
+
+
+@app.get("/api/admin/me")
+def admin_me(request: Request):
+    admin = _require_admin(request)
+    return {
+        "id":       admin["id"],
+        "username": admin["username"],
+        "name":     admin["name"],
+        "email":    admin["email"],
+        "phone":    admin.get("phone"),
+        "role":     admin["role"],
+        "prid":     admin.get("prid"),
+    }
+
+
+@app.post("/api/admin/forgot-password")
+async def admin_forgot_password(request: Request, body: AdminForgotPassword):
+    admin = get_admin_by_email(body.email)
+    if admin:
+        token = create_admin_password_reset(admin["id"])
+        api_key  = os.environ.get("RESEND_API_KEY")
+        base_url = str(request.base_url).rstrip("/")
+        reset_url = f"{base_url}/admin/reset?token={token}"
+        if api_key:
+            resend_lib.api_key = api_key
+            try:
+                resend_lib.Emails.send({
+                    "from":    "PrimeCool Services <onboarding@resend.dev>",
+                    "to":      admin["email"],
+                    "subject": "PrimeCool Admin — Password Reset",
+                    "html": f"""
+                    <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;">
+                      <div style="background:#0B2545;padding:22px;color:white;">
+                        <h2 style="margin:0;color:#22A08A;">Reset Your Admin Password</h2>
+                      </div>
+                      <div style="padding:22px;border:1px solid #e8ecf0;line-height:1.6;color:#1a2533;">
+                        <p>Hi {admin['name']},</p>
+                        <p>Click the button below within <strong>30 minutes</strong> to set a new password.</p>
+                        <p style="text-align:center;margin:24px 0;">
+                          <a href="{reset_url}" style="display:inline-block;background:#22A08A;color:white;padding:12px 28px;text-decoration:none;font-weight:600;letter-spacing:0.5px;">Reset Password →</a>
+                        </p>
+                        <p style="font-size:13px;color:#5A6472;">If you didn't request this, you can ignore this email.</p>
+                      </div>
+                    </div>
+                    """,
+                })
+            except Exception as e:
+                print(f"ADMIN PW RESET EMAIL ERROR: {e}")
+    return {"ok": True}
+
+
+@app.post("/api/admin/reset-password")
+def admin_reset_password_endpoint(body: AdminResetPassword):
+    if len(body.password) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters")
+    if body.password != body.confirm_password:
+        raise HTTPException(400, "Passwords do not match")
+    admin_id = consume_admin_password_reset(body.token)
+    if not admin_id:
+        raise HTTPException(400, "Reset link is invalid or has expired")
+    set_admin_password(admin_id, body.password)
+    return {"ok": True}
+
+
+# ── Admin user management (super_admin only for create/role/active/delete) ────
+
+@app.get("/api/admin/users")
+def admin_list_users(request: Request):
+    _require_perm(request, "admin:view_all")
+    return get_all_admin_users()
+
+
+@app.post("/api/admin/users")
+def admin_create_user(request: Request, body: AdminUserCreate):
+    admin = _require_perm(request, "admin:create")
+    if body.role not in ADMIN_PERMS:
+        raise HTTPException(400, "Invalid role")
+    if len(body.password) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters")
+    try:
+        new_id = create_admin_user(body.model_dump(), created_by=admin["id"])
+    except Exception as e:
+        if "UNIQUE" in str(e):
+            raise HTTPException(409, "Username or email already exists")
+        raise
+    _audit_from(admin, "admin.create", request,
+                target_type="admin", target_id=new_id, target_label=body.username,
+                after={"username": body.username, "name": body.name, "email": body.email, "role": body.role})
+    return {"id": new_id}
+
+
+@app.put("/api/admin/users/{user_id}")
+def admin_update_user(request: Request, user_id: int, body: AdminUserUpdate):
+    admin  = _require_admin(request)
+    target = get_admin_user_by_id(user_id)
+    if not target:
+        raise HTTPException(404, "Admin not found")
+    # An admin can update their own profile; super_admin can update anyone's
+    if admin["id"] != user_id and not _admin_can(admin["role"], "admin:update"):
+        raise HTTPException(403, "You can only update your own profile")
+    before = {"name": target["name"], "email": target["email"], "phone": target.get("phone")}
+    update_admin_user(user_id, body.model_dump())
+    _audit_from(admin, "admin.update", request,
+                target_type="admin", target_id=user_id, target_label=target["username"],
+                before=before, after=body.model_dump())
+    return {"ok": True}
+
+
+@app.put("/api/admin/users/{user_id}/role")
+def admin_change_role(request: Request, user_id: int, body: AdminRoleChange):
+    admin = _require_perm(request, "admin:set_role")
+    target = get_admin_user_by_id(user_id)
+    if not target:
+        raise HTTPException(404, "Admin not found")
+    if body.role not in ADMIN_PERMS:
+        raise HTTPException(400, "Invalid role")
+    # Safety: prevent demoting the last active super_admin
+    if target["role"] == "super_admin" and body.role != "super_admin":
+        if count_active_admins("super_admin") <= 1:
+            raise HTTPException(400, "Cannot demote the last active super_admin")
+    before = {"role": target["role"]}
+    set_admin_role(user_id, body.role)
+    _audit_from(admin, "admin.set_role", request,
+                target_type="admin", target_id=user_id, target_label=target["username"],
+                before=before, after={"role": body.role})
+    return {"ok": True}
+
+
+@app.put("/api/admin/users/{user_id}/active")
+def admin_change_active(request: Request, user_id: int, body: AdminActiveChange):
+    admin = _require_perm(request, "admin:set_active")
+    target = get_admin_user_by_id(user_id)
+    if not target:
+        raise HTTPException(404, "Admin not found")
+    # Safety: prevent deactivating the last active super_admin
+    if target["role"] == "super_admin" and not body.active:
+        if count_active_admins("super_admin") <= 1:
+            raise HTTPException(400, "Cannot deactivate the last active super_admin")
+    # Safety: prevent admins from deactivating themselves
+    if admin["id"] == user_id and not body.active:
+        raise HTTPException(400, "You cannot deactivate your own account")
+    before = {"active": bool(target["active"])}
+    set_admin_active(user_id, body.active)
+    _audit_from(admin, "admin.set_active", request,
+                target_type="admin", target_id=user_id, target_label=target["username"],
+                before=before, after={"active": body.active})
+    return {"ok": True}
+
+
+@app.put("/api/admin/users/{user_id}/password")
+def admin_reset_user_password(request: Request, user_id: int, body: AdminPasswordSet):
+    admin = _require_admin(request)
+    target = get_admin_user_by_id(user_id)
+    if not target:
+        raise HTTPException(404, "Admin not found")
+    # super_admin can reset anyone's; everyone else can reset only their own
+    if admin["id"] != user_id and not _admin_can(admin["role"], "admin:reset_password"):
+        raise HTTPException(403, "You can only reset your own password")
+    if len(body.password) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters")
+    set_admin_password(user_id, body.password)
+    _audit_from(admin, "admin.reset_password", request,
+                target_type="admin", target_id=user_id, target_label=target["username"])
+    return {"ok": True}
+
+
+# ── Audit log ─────────────────────────────────────────────────────────────────
+
+@app.get("/api/admin/audit")
+def admin_audit(request: Request,
+                actor_id: Optional[int] = None,
+                action_prefix: Optional[str] = None,
+                target_type: Optional[str] = None,
+                since: Optional[str] = None,
+                until: Optional[str] = None,
+                limit: int = 200):
+    admin = _require_admin(request)
+    if _admin_can(admin["role"], "audit:view_all"):
+        return query_audit_log(actor_id=actor_id, action_prefix=action_prefix,
+                               target_type=target_type, since=since, until=until, limit=limit)
+    if _admin_can(admin["role"], "audit:view_self"):
+        return query_audit_log(actor_id=admin["id"], action_prefix=action_prefix,
+                               target_type=target_type, since=since, until=until, limit=limit)
+    raise HTTPException(403, "Forbidden")
 
 
 @app.get("/api/admin/customers")
@@ -656,7 +987,7 @@ def admin_list_customers(request: Request):
 
 @app.post("/api/admin/customers")
 def admin_create_customer(request: Request, body: CustomerCreate):
-    _require_admin(request)
+    admin = _require_perm(request, "customer:create")
     if body.pin and (not body.pin.isdigit() or not (4 <= len(body.pin) <= 8)):
         raise HTTPException(400, "PIN must be 4–8 digits")
     try:
@@ -665,24 +996,35 @@ def admin_create_customer(request: Request, body: CustomerCreate):
         if "UNIQUE" in str(e):
             raise HTTPException(409, "Customer ID already exists")
         raise
+    _audit_from(admin, "customer.create", request,
+                target_type="customer", target_id=customer_id, target_label=body.customer_code,
+                after={k: v for k, v in body.model_dump().items() if k != "pin"})
     return {"id": customer_id}
 
 
 @app.put("/api/admin/customers/{customer_id}/pin")
 def admin_reset_customer_pin(request: Request, customer_id: int, body: CustomerPinReset):
-    _require_admin(request)
+    admin = _require_perm(request, "customer:update")
     if not body.pin.isdigit() or not (4 <= len(body.pin) <= 8):
         raise HTTPException(400, "PIN must be 4–8 digits")
-    if not get_customer_by_id(customer_id):
+    cust = get_customer_by_id(customer_id)
+    if not cust:
         raise HTTPException(404, "Customer not found")
     set_customer_pin(customer_id, body.pin)
+    _audit_from(admin, "customer.reset_pin", request,
+                target_type="customer", target_id=customer_id, target_label=cust["customer_code"])
     return {"ok": True}
 
 
 @app.delete("/api/admin/customers/{customer_id}")
 def admin_delete_customer(request: Request, customer_id: int):
-    _require_admin(request)
+    admin = _require_perm(request, "customer:delete")
+    cust = get_customer_by_id(customer_id)
     delete_customer(customer_id)
+    _audit_from(admin, "customer.delete", request,
+                target_type="customer", target_id=customer_id,
+                target_label=cust.get("customer_code") if cust else str(customer_id),
+                before=cust)
     return {"ok": True}
 
 
@@ -694,15 +1036,20 @@ def admin_list_equipment(request: Request, customer_id: int):
 
 @app.post("/api/admin/equipment")
 def admin_create_equipment(request: Request, body: EquipmentCreate):
-    _require_admin(request)
+    admin = _require_perm(request, "customer:update")
     equipment_id = create_equipment(body.model_dump())
+    _audit_from(admin, "equipment.create", request,
+                target_type="equipment", target_id=equipment_id, target_label=body.name,
+                after=body.model_dump())
     return {"id": equipment_id}
 
 
 @app.delete("/api/admin/equipment/{equipment_id}")
 def admin_delete_equipment(request: Request, equipment_id: int):
-    _require_admin(request)
+    admin = _require_perm(request, "customer:update")
     delete_equipment(equipment_id)
+    _audit_from(admin, "equipment.delete", request,
+                target_type="equipment", target_id=equipment_id)
     return {"ok": True}
 
 
@@ -714,22 +1061,35 @@ def admin_list_visits(request: Request):
 
 @app.post("/api/admin/visits")
 def admin_create_visit(request: Request, body: VisitCreate):
-    _require_admin(request)
+    admin = _require_perm(request, "visit:create")
     visit_id = create_visit(body.model_dump())
+    _audit_from(admin, "visit.create", request,
+                target_type="visit", target_id=visit_id,
+                target_label=f"{body.visit_type} for cust {body.customer_id}",
+                after=body.model_dump())
     return {"id": visit_id}
 
 
 @app.put("/api/admin/visits/{visit_id}")
 def admin_update_visit(request: Request, visit_id: int, body: VisitUpdate):
-    _require_admin(request)
+    admin = _require_perm(request, "visit:update")
+    before = get_visit_by_id(visit_id)
     update_visit(visit_id, body.model_dump())
+    _audit_from(admin, "visit.update", request,
+                target_type="visit", target_id=visit_id,
+                target_label=f"{body.visit_type} #{visit_id}",
+                before=before, after=body.model_dump())
     return {"ok": True}
 
 
 @app.delete("/api/admin/visits/{visit_id}")
 def admin_delete_visit(request: Request, visit_id: int):
-    _require_admin(request)
+    admin = _require_perm(request, "visit:delete")
+    before = get_visit_by_id(visit_id)
     delete_visit(visit_id)
+    _audit_from(admin, "visit.delete", request,
+                target_type="visit", target_id=visit_id,
+                before=before)
     return {"ok": True}
 
 
@@ -741,22 +1101,28 @@ def admin_list_reviews(request: Request, status: Optional[str] = None):
 
 @app.put("/api/admin/reviews/{review_id}/approve")
 def admin_approve_review(request: Request, review_id: int):
-    _require_admin(request)
+    admin = _require_perm(request, "review:approve")
     update_review_status(review_id, "approved")
+    _audit_from(admin, "review.approve", request,
+                target_type="review", target_id=review_id)
     return {"ok": True}
 
 
 @app.put("/api/admin/reviews/{review_id}/reject")
 def admin_reject_review(request: Request, review_id: int):
-    _require_admin(request)
+    admin = _require_perm(request, "review:reject")
     update_review_status(review_id, "rejected")
+    _audit_from(admin, "review.reject", request,
+                target_type="review", target_id=review_id)
     return {"ok": True}
 
 
 @app.delete("/api/admin/reviews/{review_id}")
 def admin_delete_review(request: Request, review_id: int):
-    _require_admin(request)
+    admin = _require_perm(request, "review:delete")
     delete_review(review_id)
+    _audit_from(admin, "review.delete", request,
+                target_type="review", target_id=review_id)
     return {"ok": True}
 
 
@@ -768,38 +1134,60 @@ def admin_list_techs(request: Request):
 
 @app.post("/api/admin/techs")
 def admin_create_tech(request: Request, body: TechCreate):
-    _require_admin(request)
+    admin = _require_perm(request, "tech:create")
     if not body.pin.isdigit() or not (4 <= len(body.pin) <= 8):
         raise HTTPException(400, "PIN must be 4–8 digits")
+    if body.role not in ("lead_tech", "tech", "apprentice"):
+        raise HTTPException(400, "Invalid tech role")
     try:
         tech_id = create_tech(body.model_dump())
     except Exception as e:
         if "UNIQUE" in str(e):
             raise HTTPException(409, "Tech code already exists")
         raise
+    _audit_from(admin, "tech.create", request,
+                target_type="tech", target_id=tech_id, target_label=body.tech_code,
+                after={"name": body.name, "tech_code": body.tech_code,
+                       "role": body.role, "email": body.email})
     return {"id": tech_id}
 
 
 @app.put("/api/admin/techs/{tech_id}")
 def admin_update_tech(request: Request, tech_id: int, body: TechUpdate):
-    _require_admin(request)
+    admin = _require_perm(request, "tech:update")
+    if body.role not in ("lead_tech", "tech", "apprentice"):
+        raise HTTPException(400, "Invalid tech role")
+    tech = get_tech_by_id(tech_id)
     update_tech(tech_id, body.model_dump())
+    _audit_from(admin, "tech.update", request,
+                target_type="tech", target_id=tech_id,
+                target_label=tech.get("tech_code") if tech else str(tech_id),
+                before=tech, after=body.model_dump())
     return {"ok": True}
 
 
 @app.put("/api/admin/techs/{tech_id}/pin")
 def admin_reset_tech_pin(request: Request, tech_id: int, body: TechPinReset):
-    _require_admin(request)
+    admin = _require_perm(request, "tech:reset_pin")
     if not body.pin.isdigit() or not (4 <= len(body.pin) <= 8):
         raise HTTPException(400, "PIN must be 4–8 digits")
+    tech = get_tech_by_id(tech_id)
     set_tech_pin(tech_id, body.pin)
+    _audit_from(admin, "tech.reset_pin", request,
+                target_type="tech", target_id=tech_id,
+                target_label=tech.get("tech_code") if tech else str(tech_id))
     return {"ok": True}
 
 
 @app.delete("/api/admin/techs/{tech_id}")
 def admin_delete_tech(request: Request, tech_id: int):
-    _require_admin(request)
+    admin = _require_perm(request, "tech:delete")
+    tech = get_tech_by_id(tech_id)
     delete_tech(tech_id)
+    _audit_from(admin, "tech.delete", request,
+                target_type="tech", target_id=tech_id,
+                target_label=tech.get("tech_code") if tech else str(tech_id),
+                before=tech)
     return {"ok": True}
 
 
@@ -843,6 +1231,11 @@ def portal_reset_page():
 @app.get("/admin")
 def admin_page():
     return FileResponse("admin.html")
+
+
+@app.get("/admin/reset")
+def admin_reset_page():
+    return FileResponse("admin_reset.html")
 
 
 @app.get("/tech")

@@ -215,12 +215,36 @@
   <div class="login-card">
     <h1>Admin Panel</h1>
     <p>PrimeCool Services — staff access only.</p>
+    <div class="field" style="margin-bottom:14px;">
+      <label>Username</label>
+      <input type="text" id="adminUser" placeholder="username" autocomplete="username" onkeydown="if(event.key==='Enter')document.getElementById('adminPw').focus()">
+    </div>
     <div class="field">
       <label>Password</label>
-      <input type="password" id="adminPw" placeholder="Enter admin password" onkeydown="if(event.key==='Enter')doAdminLogin()">
+      <input type="password" id="adminPw" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter')doAdminLogin()">
     </div>
-    <div class="form-error" id="loginError">Incorrect password.</div>
+    <div class="form-error" id="loginError"></div>
     <button class="btn btn-primary" style="width:100%;margin-top:16px;" onclick="doAdminLogin()">Sign In →</button>
+    <p style="text-align:center;margin-top:14px;font-size:13px;">
+      <a href="#" onclick="event.preventDefault();openAdminForgot()" style="color:var(--teal);text-decoration:none;font-weight:600;">Forgot Password?</a>
+    </p>
+  </div>
+</div>
+
+<!-- Admin forgot password modal -->
+<div id="adminForgotModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:500;align-items:center;justify-content:center;padding:20px;">
+  <div style="background:white;border-radius:16px;width:100%;max-width:400px;padding:32px 28px;box-shadow:0 8px 40px rgba(0,0,0,0.2);">
+    <h2 style="color:var(--navy);font-size:21px;margin-bottom:8px;">Reset Admin Password</h2>
+    <p style="color:var(--muted);font-size:13px;margin-bottom:22px;line-height:1.5;">Enter the email on your admin account. If it matches, we'll send you a reset link.</p>
+    <div class="form-error" id="adminForgotErr"></div>
+    <div id="adminForgotOk" style="display:none;background:#f0fdf4;color:#059669;border:1px solid #bbf7d0;padding:12px 14px;border-radius:8px;font-size:13px;margin-bottom:14px;line-height:1.5;">
+      If a matching admin exists, a reset link has been sent. Check your email.
+    </div>
+    <div class="field"><label>Admin Email</label><input id="adminForgotEmail" type="email" placeholder="you@example.com" style="font-family:inherit;font-size:15px;letter-spacing:0;text-transform:none;"></div>
+    <button class="btn btn-primary" id="adminForgotBtn" onclick="submitAdminForgot()" style="width:100%;">Send Reset Link</button>
+    <p style="text-align:center;margin-top:14px;font-size:13px;">
+      <a href="#" onclick="event.preventDefault();closeAdminForgot()" style="color:var(--muted);text-decoration:none;">← Back to Sign In</a>
+    </p>
   </div>
 </div>
 
@@ -247,6 +271,14 @@
       <div class="nav-item" onclick="showPanel('techs')" id="nav-techs">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 11h-6"/><path d="M19 8v6"/></svg>
         Technicians
+      </div>
+      <div class="nav-item" onclick="showPanel('admins')" id="nav-admins" style="display:none;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        Admins
+      </div>
+      <div class="nav-item" onclick="showPanel('audit')" id="nav-audit" style="display:none;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+        Audit Log
       </div>
       <div class="nav-item" onclick="showPanel('reviews')" id="nav-reviews">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
@@ -303,6 +335,55 @@
               </table>
             </div>
           </div>
+        </div>
+      </div>
+
+      <!-- ── Admins panel ── -->
+      <div class="panel" id="panel-admins">
+        <div class="top-bar">
+          <h2>Admin Users</h2>
+          <button class="btn btn-primary" id="addAdminBtn" onclick="openModal('addAdmin')" style="display:none;">+ Add Admin</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>PRID</th><th>Username</th><th>Name</th><th>Role</th><th>Status</th><th>Actions</th>
+            </tr></thead>
+            <tbody id="adminTableBody"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+        <p style="font-size:12px;color:var(--muted);margin-top:14px;line-height:1.5;">
+          Only <strong>super_admin</strong> can create/delete admins or change roles. All admin actions are logged.
+        </p>
+      </div>
+
+      <!-- ── Audit Log panel ── -->
+      <div class="panel" id="panel-audit">
+        <div class="top-bar">
+          <h2>Audit Log</h2>
+        </div>
+        <div class="filter-bar" id="auditFilters" style="gap:8px;">
+          <select id="auditAction" onchange="loadAudit()" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
+            <option value="">All actions</option>
+            <option value="admin">Admin actions</option>
+            <option value="tech">Tech actions</option>
+            <option value="customer">Customer actions</option>
+            <option value="visit">Visit actions</option>
+            <option value="review">Review actions</option>
+            <option value="equipment">Equipment actions</option>
+          </select>
+          <input type="date" id="auditSince" onchange="loadAudit()" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;" title="From">
+          <input type="date" id="auditUntil" onchange="loadAudit()" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;" title="To">
+          <button class="filter-btn" onclick="clearAuditFilters()">Clear</button>
+          <span id="auditCount" style="margin-left:auto;font-size:12px;color:var(--muted);align-self:center;"></span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>When</th><th>Actor</th><th>Action</th><th>Target</th><th>Detail</th>
+            </tr></thead>
+            <tbody id="auditTableBody"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+          </table>
         </div>
       </div>
 
@@ -438,12 +519,77 @@
         <div class="field"><label>Phone</label><input id="t-phone" placeholder="+1 868 ..."></div>
         <div class="field"><label>Email</label><input id="t-email" type="email" placeholder="marcus@primecool..."></div>
       </div>
+      <div class="field">
+        <label>Role</label>
+        <select id="t-role">
+          <option value="tech">Technician</option>
+          <option value="lead_tech">Lead Technician</option>
+          <option value="apprentice">Apprentice / Junior</option>
+        </select>
+      </div>
       <div class="form-error" id="err-addTech"></div>
       <p style="font-size:12px;color:var(--muted);">The tech will sign in at <strong>/tech</strong> using this code + PIN.</p>
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('addTech')">Cancel</button>
       <button class="btn btn-primary" id="techSubmitBtn" onclick="submitAddTech()">Create Tech</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Admin User -->
+<div class="modal-overlay" id="modal-addAdmin">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>Add Admin User</h3>
+      <button class="modal-close" onclick="closeModal('addAdmin')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field-row">
+        <div class="field"><label>Username *</label><input id="au-username" placeholder="jdoe" autocomplete="off" style="letter-spacing:1px;"></div>
+        <div class="field"><label>Initial Password *</label><input id="au-password" type="text" placeholder="min 8 chars" autocomplete="off"></div>
+      </div>
+      <div class="field"><label>Full Name *</label><input id="au-name" placeholder="Jane Doe"></div>
+      <div class="field-row">
+        <div class="field"><label>Email *</label><input id="au-email" type="email" placeholder="jane@primecoolservices.com"></div>
+        <div class="field"><label>Phone</label><input id="au-phone" placeholder="+1 868 ..."></div>
+      </div>
+      <div class="field">
+        <label>Role *</label>
+        <select id="au-role">
+          <option value="">Select role…</option>
+          <option value="super_admin">Super Admin (CEO)</option>
+          <option value="supervisor_admin">Supervisor Admin</option>
+          <option value="system_admin">System Admin</option>
+          <option value="hr_admin">HR Admin</option>
+          <option value="ceo_assistant">CEO Assistant</option>
+        </select>
+      </div>
+      <div class="form-error" id="err-addAdmin"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:2px;line-height:1.5;">Share the username + initial password privately. PRID is auto-assigned.</p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('addAdmin')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitAddAdmin()">Create Admin</button>
+    </div>
+  </div>
+</div>
+
+<!-- Reset Admin Password -->
+<div class="modal-overlay" id="modal-resetAdminPw">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>Reset Admin Password</h3>
+      <button class="modal-close" onclick="closeModal('resetAdminPw')">×</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:13px;color:var(--muted);margin-bottom:10px;">Set a new password for <strong id="resetAdminPwName"></strong>. Share privately.</p>
+      <div class="field"><label>New Password (min 8)</label><input id="rap-pw" type="text" autocomplete="off"></div>
+      <div class="form-error" id="err-resetAdminPw"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('resetAdminPw')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitResetAdminPw()">Save Password</button>
     </div>
   </div>
 </div>
@@ -555,6 +701,20 @@
   let editingTechId = null;
   let resetPinTechId = null;
   let resetPinCustomerId = null;
+  let currentAdmin = null;       // { id, role, name, ... }
+  let allAdmins    = [];
+  let resetAdminPwId = null;
+
+  const ADMIN_PERMS = {
+    super_admin: new Set(['admin:create','admin:set_role','admin:set_active','admin:reset_password','admin:view_all','audit:view_all','tech:create','tech:delete','customer:create','customer:delete','visit:create','visit:delete','review:approve','review:delete']),
+    supervisor_admin: new Set(['admin:view_all','audit:view_all','tech:update','customer:update','visit:update']),
+    system_admin: new Set(['tech:create','customer:create','visit:create','audit:view_self']),
+    hr_admin: new Set(['tech:create','audit:view_self']),
+    ceo_assistant: new Set(['audit:view_self']),
+  };
+  function can(perm) {
+    return currentAdmin && ADMIN_PERMS[currentAdmin.role]?.has(perm);
+  }
 
   // ── Auth ───────────────────────────────────────────────────────────────────
   function init() {
@@ -562,15 +722,34 @@
   }
 
   async function doAdminLogin() {
-    const pw  = document.getElementById('adminPw').value;
-    const err = document.getElementById('loginError');
+    const user = document.getElementById('adminUser').value.trim();
+    const pw   = document.getElementById('adminPw').value;
+    const err  = document.getElementById('loginError');
     err.style.display = 'none';
+    if (!user || !pw) {
+      err.textContent = 'Enter your username and password.';
+      err.style.display = 'block';
+      return;
+    }
     try {
-      const res = await api('POST', '/api/admin/login', { password: pw });
-      adminToken = res.token;
+      const res = await fetch('/api/admin/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: user, password: pw }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        err.textContent = d.detail || 'Sign-in failed.';
+        err.style.display = 'block';
+        return;
+      }
+      const data = await res.json();
+      adminToken = data.token;
       localStorage.setItem('pc_admin_token', adminToken);
+      currentAdmin = { id: null, role: data.role, name: data.name, username: data.username, prid: data.prid };
       showApp();
     } catch {
+      err.textContent = 'Connection error.';
       err.style.display = 'block';
     }
   }
@@ -578,19 +757,76 @@
   function adminLogout() {
     localStorage.removeItem('pc_admin_token');
     adminToken = null;
+    currentAdmin = null;
     document.getElementById('app').style.display = 'none';
     document.getElementById('loginScreen').style.display = 'flex';
     document.getElementById('adminPw').value = '';
   }
 
-  function showApp() {
+  async function showApp() {
     document.getElementById('loginScreen').style.display = 'none';
     document.getElementById('app').style.display = 'block';
+    // Fetch full profile (incl. id) — token alone doesn't have it
+    try {
+      const me = await api('GET', '/api/admin/me');
+      currentAdmin = me;
+      applyRoleVisibility();
+    } catch {}
     loadCustomers();
     loadAllVisits();
     loadReviews();
     loadTechs();
+    if (can('admin:view_all')) loadAdmins();
+    if (can('audit:view_all') || can('audit:view_self')) loadAudit();
   }
+
+  function applyRoleVisibility() {
+    // Show admin/audit tabs based on role
+    if (can('admin:view_all')) document.getElementById('nav-admins').style.display = 'flex';
+    if (can('audit:view_all') || can('audit:view_self')) document.getElementById('nav-audit').style.display = 'flex';
+    if (can('admin:create')) document.getElementById('addAdminBtn').style.display = '';
+    // Show current admin name + role
+    const tag = document.querySelector('.admin-tag');
+    if (tag && currentAdmin) {
+      tag.textContent = currentAdmin.role.replace(/_/g,' ');
+      tag.title = `${currentAdmin.name} (${currentAdmin.prid || ''})`;
+    }
+  }
+
+  // ── Forgot admin password ──
+  function openAdminForgot() {
+    document.getElementById('adminForgotModal').style.display = 'flex';
+    document.getElementById('adminForgotErr').style.display = 'none';
+    document.getElementById('adminForgotOk').style.display = 'none';
+    document.getElementById('adminForgotEmail').value = '';
+  }
+  function closeAdminForgot() {
+    document.getElementById('adminForgotModal').style.display = 'none';
+  }
+  async function submitAdminForgot() {
+    const email = document.getElementById('adminForgotEmail').value.trim();
+    const err = document.getElementById('adminForgotErr');
+    const ok  = document.getElementById('adminForgotOk');
+    const btn = document.getElementById('adminForgotBtn');
+    err.style.display = 'none'; ok.style.display = 'none';
+    if (!email) { err.textContent = 'Enter your admin email.'; err.style.display = 'block'; return; }
+    btn.disabled = true; btn.textContent = 'Sending…';
+    try {
+      await fetch('/api/admin/forgot-password', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+      ok.style.display = 'block';
+    } catch {
+      err.textContent = 'Connection error.';
+      err.style.display = 'block';
+    } finally {
+      btn.disabled = false; btn.textContent = 'Send Reset Link';
+    }
+  }
+  document.getElementById('adminForgotModal').addEventListener('click', e => {
+    if (e.target.id === 'adminForgotModal') closeAdminForgot();
+  });
 
   // ── API helper ─────────────────────────────────────────────────────────────
   async function api(method, url, body) {
@@ -1067,6 +1303,160 @@
     return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
+  // ── Admin Users ────────────────────────────────────────────────────────────
+  const ROLE_LABEL = {
+    super_admin: 'Super Admin', supervisor_admin: 'Supervisor Admin',
+    system_admin: 'System Admin', hr_admin: 'HR Admin', ceo_assistant: 'CEO Assistant',
+  };
+
+  async function loadAdmins() {
+    try {
+      allAdmins = await api('GET', '/api/admin/users');
+      renderAdmins();
+    } catch {}
+  }
+
+  function renderAdmins() {
+    const tbody = document.getElementById('adminTableBody');
+    if (!allAdmins.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty">No admin users yet.</td></tr>';
+      return;
+    }
+    const canManage = can('admin:set_role');
+    tbody.innerHTML = allAdmins.map(a => {
+      const isMe = currentAdmin && currentAdmin.id === a.id;
+      return `
+      <tr style="${a.active ? '' : 'opacity:0.55;'}">
+        <td><span class="code-pill">${a.prid || '—'}</span></td>
+        <td><strong>${escHtml(a.username)}</strong>${isMe ? ' <span style="font-size:10px;color:var(--teal);">(you)</span>' : ''}<br><span style="font-size:11px;color:var(--muted);">${escHtml(a.email)}</span></td>
+        <td>${escHtml(a.name)}${a.phone ? `<br><span style="font-size:11px;color:var(--muted);">${escHtml(a.phone)}</span>` : ''}</td>
+        <td>${
+          canManage && !isMe
+            ? `<select onchange="changeAdminRole(${a.id}, this.value)" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
+                 ${Object.entries(ROLE_LABEL).map(([k,v]) => `<option value="${k}" ${a.role===k?'selected':''}>${v}</option>`).join('')}
+               </select>`
+            : `<span class="badge badge-confirmed">${ROLE_LABEL[a.role] || a.role}</span>`
+        }</td>
+        <td>${a.active ? '<span class="badge badge-confirmed">Active</span>' : '<span class="badge" style="background:#f3f4f6;color:var(--muted);">Inactive</span>'}</td>
+        <td style="white-space:nowrap;">
+          <button class="btn btn-edit btn-sm" onclick="openResetAdminPw(${a.id},'${escHtml(a.name)}')">Reset PW</button>
+          ${canManage && !isMe ? `<button class="btn btn-ghost btn-sm" onclick="toggleAdminActive(${a.id},${a.active ? 0 : 1})" style="margin-left:6px;">${a.active ? 'Deactivate' : 'Activate'}</button>` : ''}
+        </td>
+      </tr>`;
+    }).join('');
+  }
+
+  async function submitAddAdmin() {
+    const err = document.getElementById('err-addAdmin');
+    err.style.display = 'none';
+    const body = {
+      username: document.getElementById('au-username').value.trim().toLowerCase(),
+      password: document.getElementById('au-password').value,
+      name:     document.getElementById('au-name').value.trim(),
+      email:    document.getElementById('au-email').value.trim(),
+      phone:    document.getElementById('au-phone').value.trim(),
+      role:     document.getElementById('au-role').value,
+    };
+    if (!body.username || !body.password || !body.name || !body.email || !body.role) {
+      showErr('err-addAdmin', 'Username, password, name, email, and role are required.'); return;
+    }
+    if (body.password.length < 8) { showErr('err-addAdmin', 'Password must be at least 8 characters.'); return; }
+    try {
+      await api('POST', '/api/admin/users', body);
+      closeModal('addAdmin');
+      ['au-username','au-password','au-name','au-email','au-phone'].forEach(id => document.getElementById(id).value = '');
+      document.getElementById('au-role').value = '';
+      await loadAdmins();
+    } catch(e) { showErr('err-addAdmin', e.message); }
+  }
+
+  async function changeAdminRole(id, role) {
+    try {
+      await api('PUT', `/api/admin/users/${id}/role`, { role });
+      await loadAdmins();
+    } catch(e) { alert('Error: ' + e.message); await loadAdmins(); }
+  }
+
+  async function toggleAdminActive(id, active) {
+    try {
+      await api('PUT', `/api/admin/users/${id}/active`, { active: !!active });
+      await loadAdmins();
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  function openResetAdminPw(id, name) {
+    resetAdminPwId = id;
+    document.getElementById('resetAdminPwName').textContent = name;
+    document.getElementById('rap-pw').value = '';
+    document.getElementById('err-resetAdminPw').style.display = 'none';
+    document.getElementById('modal-resetAdminPw').classList.add('open');
+  }
+
+  async function submitResetAdminPw() {
+    const pw = document.getElementById('rap-pw').value;
+    if (pw.length < 8) { showErr('err-resetAdminPw','Password must be at least 8 characters.'); return; }
+    try {
+      await api('PUT', `/api/admin/users/${resetAdminPwId}/password`, { password: pw });
+      closeModal('resetAdminPw');
+      alert('Password saved. Share it privately with the admin.');
+    } catch(e) { showErr('err-resetAdminPw', e.message); }
+  }
+
+  // ── Audit Log ──────────────────────────────────────────────────────────────
+  async function loadAudit() {
+    if (!currentAdmin) return;
+    if (!can('audit:view_all') && !can('audit:view_self')) return;
+    const params = new URLSearchParams();
+    const ap = document.getElementById('auditAction')?.value;
+    const since = document.getElementById('auditSince')?.value;
+    const until = document.getElementById('auditUntil')?.value;
+    if (ap)    params.set('action_prefix', ap + '.');
+    if (since) params.set('since', since + 'T00:00:00Z');
+    if (until) params.set('until', until + 'T23:59:59Z');
+    params.set('limit', '500');
+    try {
+      const rows = await api('GET', '/api/admin/audit?' + params.toString());
+      renderAudit(rows);
+    } catch {}
+  }
+
+  function clearAuditFilters() {
+    document.getElementById('auditAction').value = '';
+    document.getElementById('auditSince').value = '';
+    document.getElementById('auditUntil').value = '';
+    loadAudit();
+  }
+
+  function renderAudit(rows) {
+    const tbody = document.getElementById('auditTableBody');
+    document.getElementById('auditCount').textContent = `${rows.length} entries`;
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">No audit entries.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map(r => {
+      const t = new Date(r.created_at);
+      const when = t.toLocaleString('en-TT', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+      const actor = r.actor_label
+        ? `<strong>${escHtml(r.actor_label)}</strong><br><span style="font-size:10px;color:var(--muted);font-family:'Courier New',monospace;">${r.actor_prid || ''}</span>${r.actor_role ? `<br><span style="font-size:10px;color:var(--muted);">${r.actor_role.replace(/_/g,' ')}</span>` : ''}`
+        : `<span style="color:var(--muted);">${r.actor_type || '?'}</span>`;
+      const target = r.target_label
+        ? `${escHtml(r.target_type || '')} <strong>${escHtml(r.target_label)}</strong>`
+        : (r.target_type ? `${escHtml(r.target_type)} #${r.target_id || '?'}` : '—');
+      const detail = (r.before_value || r.after_value)
+        ? `<details><summary style="cursor:pointer;font-size:11px;color:var(--teal);">view</summary><div style="font-size:11px;font-family:'Courier New',monospace;background:var(--light);padding:8px;border-radius:6px;margin-top:4px;max-width:400px;white-space:pre-wrap;word-break:break-word;">${r.before_value ? 'BEFORE: ' + escHtml(r.before_value) + '\n\n' : ''}${r.after_value ? 'AFTER: ' + escHtml(r.after_value) : ''}</div></details>`
+        : '';
+      return `
+      <tr>
+        <td style="font-size:11px;color:var(--muted);white-space:nowrap;">${when}</td>
+        <td>${actor}</td>
+        <td><span class="badge" style="background:#f3f4f6;color:var(--text);font-family:'Courier New',monospace;text-transform:none;">${escHtml(r.action)}</span></td>
+        <td>${target}</td>
+        <td>${detail}</td>
+      </tr>`;
+    }).join('');
+  }
+
   // ── Technicians ────────────────────────────────────────────────────────────
   async function loadTechs() {
     try {
@@ -1082,10 +1472,11 @@
       tbody.innerHTML = '<tr><td colspan="6" class="empty">No technicians yet. Add your first one.</td></tr>';
       return;
     }
+    const roleLabel = { lead_tech: 'Lead Tech', tech: 'Technician', apprentice: 'Apprentice' };
     tbody.innerHTML = allTechs.map(t => `
       <tr style="${t.active ? '' : 'opacity:0.55;'}">
-        <td><span class="code-pill">${t.tech_code}</span></td>
-        <td><strong>${escHtml(t.name)}</strong>${t.email ? `<br><span style="font-size:11px;color:var(--muted);">${escHtml(t.email)}</span>` : ''}</td>
+        <td><span class="code-pill">${t.tech_code}</span>${t.prid ? `<br><span style="font-size:10px;color:var(--muted);font-family:'Courier New',monospace;">${t.prid}</span>` : ''}</td>
+        <td><strong>${escHtml(t.name)}</strong>${t.email ? `<br><span style="font-size:11px;color:var(--muted);">${escHtml(t.email)}</span>` : ''}<br><span class="badge" style="background:#eff6ff;color:#1d4ed8;margin-top:3px;display:inline-block;">${roleLabel[t.role] || 'Technician'}</span></td>
         <td>${escHtml(t.phone) || '—'}</td>
         <td>${t.active_jobs > 0 ? `<span class="badge badge-in_progress">${t.active_jobs} active</span>` : '<span style="color:var(--muted);">0</span>'}</td>
         <td>${t.active ? '<span class="badge badge-confirmed">Active</span>' : '<span class="badge" style="background:#f3f4f6;color:var(--muted);">Inactive</span>'}</td>
@@ -1115,6 +1506,7 @@
       name:      document.getElementById('t-name').value.trim(),
       phone:     document.getElementById('t-phone').value.trim(),
       email:     document.getElementById('t-email').value.trim(),
+      role:      document.getElementById('t-role').value || 'tech',
     };
     if (!body.tech_code || !body.pin || !body.name) { showErr('err-addTech','Tech code, PIN, and name are required.'); return; }
     if (!/^\d{4,8}$/.test(body.pin)) { showErr('err-addTech','PIN must be 4–8 digits.'); return; }
@@ -1122,6 +1514,7 @@
       await api('POST', '/api/admin/techs', body);
       closeModal('addTech');
       ['t-code','t-pin','t-name','t-phone','t-email'].forEach(id => document.getElementById(id).value = '');
+      document.getElementById('t-role').value = 'tech';
       await loadTechs();
     } catch(e) { showErr('err-addTech', e.message); }
   }
@@ -1148,7 +1541,8 @@
     const t = allTechs.find(x => x.id === id);
     try {
       await api('PUT', `/api/admin/techs/${id}`, {
-        name: t.name, phone: t.phone || '', email: t.email || '', active: !!active,
+        name: t.name, phone: t.phone || '', email: t.email || '',
+        role: t.role || 'tech', active: !!active,
       });
       await loadTechs();
     } catch(e) { alert('Error: ' + e.message); }
