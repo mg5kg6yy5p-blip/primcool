@@ -193,6 +193,40 @@ def init_db():
     """)
 
     con.execute("""
+        CREATE TABLE IF NOT EXISTS parts (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            sku           TEXT NOT NULL UNIQUE,
+            name          TEXT NOT NULL,
+            description   TEXT,
+            category      TEXT,
+            unit          TEXT NOT NULL DEFAULT 'each',
+            unit_cost     REAL NOT NULL DEFAULT 0,
+            quantity      REAL NOT NULL DEFAULT 0,
+            reorder_point REAL NOT NULL DEFAULT 0,
+            supplier      TEXT,
+            active        INTEGER NOT NULL DEFAULT 1,
+            created_at    TEXT NOT NULL,
+            updated_at    TEXT NOT NULL
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS part_movements (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            part_id             INTEGER NOT NULL REFERENCES parts(id),
+            movement_type       TEXT NOT NULL,
+            quantity_delta      REAL NOT NULL,
+            reason              TEXT,
+            visit_id            INTEGER REFERENCES maintenance_visits(id),
+            performed_by_type   TEXT,
+            performed_by_id     INTEGER,
+            performed_by_prid   TEXT,
+            performed_by_label  TEXT,
+            created_at          TEXT NOT NULL
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_part_movements_part ON part_movements(part_id, created_at)")
+
+    con.execute("""
         CREATE TABLE IF NOT EXISTS audit_log (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             actor_type   TEXT NOT NULL,
@@ -1248,6 +1282,151 @@ def query_audit_log(
 
     con = _con()
     rows = con.execute(sql, args).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+# ── Parts / Inventory ────────────────────────────────────────────────────────
+
+def get_all_parts(include_inactive: bool = False):
+    con = _con()
+    sql = "SELECT * FROM parts"
+    if not include_inactive:
+        sql += " WHERE active = 1"
+    sql += " ORDER BY name"
+    rows = con.execute(sql).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def get_part_by_id(part_id: int):
+    con = _con()
+    row = con.execute("SELECT * FROM parts WHERE id = ?", (part_id,)).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
+def create_part(data: dict) -> int:
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    cur = con.execute(
+        """
+        INSERT INTO parts
+            (sku, name, description, category, unit, unit_cost, quantity,
+             reorder_point, supplier, active, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+        """,
+        (
+            data["sku"].strip().upper(),
+            data["name"].strip(),
+            data.get("description", "").strip(),
+            data.get("category", "").strip(),
+            (data.get("unit") or "each").strip(),
+            float(data.get("unit_cost") or 0),
+            float(data.get("quantity") or 0),
+            float(data.get("reorder_point") or 0),
+            data.get("supplier", "").strip(),
+            now, now,
+        ),
+    )
+    part_id = cur.lastrowid
+    con.commit()
+    con.close()
+    return part_id
+
+
+def update_part(part_id: int, data: dict):
+    con = _con()
+    con.execute(
+        """
+        UPDATE parts SET
+            name = ?, description = ?, category = ?, unit = ?,
+            unit_cost = ?, reorder_point = ?, supplier = ?,
+            active = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            data["name"].strip(),
+            data.get("description", "").strip(),
+            data.get("category", "").strip(),
+            (data.get("unit") or "each").strip(),
+            float(data.get("unit_cost") or 0),
+            float(data.get("reorder_point") or 0),
+            data.get("supplier", "").strip(),
+            1 if data.get("active", True) else 0,
+            datetime.now(timezone.utc).isoformat(),
+            part_id,
+        ),
+    )
+    con.commit()
+    con.close()
+
+
+def delete_part(part_id: int):
+    """Soft delete: mark inactive. Hard delete only if no movements exist."""
+    con = _con()
+    n = con.execute("SELECT COUNT(*) AS n FROM part_movements WHERE part_id = ?",
+                    (part_id,)).fetchone()["n"]
+    if n > 0:
+        con.execute("UPDATE parts SET active = 0 WHERE id = ?", (part_id,))
+    else:
+        con.execute("DELETE FROM parts WHERE id = ?", (part_id,))
+    con.commit()
+    con.close()
+
+
+def adjust_part_quantity(part_id: int, movement_type: str, quantity_delta: float,
+                         reason: str = "", visit_id: int = None,
+                         performed_by_type: str = None, performed_by_id: int = None,
+                         performed_by_prid: str = None, performed_by_label: str = None) -> dict:
+    """Apply a movement and update the part's running quantity.
+    Returns (new_quantity, movement_id).
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    # Load current to validate
+    row = con.execute("SELECT quantity FROM parts WHERE id = ?", (part_id,)).fetchone()
+    if not row:
+        con.close()
+        raise ValueError("Part not found")
+    current = float(row["quantity"])
+    new_qty = current + float(quantity_delta)
+    if new_qty < 0:
+        con.close()
+        raise ValueError(f"Insufficient stock — current {current}, requested change {quantity_delta}")
+    # Insert movement
+    cur = con.execute(
+        """
+        INSERT INTO part_movements
+            (part_id, movement_type, quantity_delta, reason, visit_id,
+             performed_by_type, performed_by_id, performed_by_prid, performed_by_label, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (part_id, movement_type, float(quantity_delta), reason, visit_id,
+         performed_by_type, performed_by_id, performed_by_prid, performed_by_label, now),
+    )
+    movement_id = cur.lastrowid
+    con.execute("UPDATE parts SET quantity = ?, updated_at = ? WHERE id = ?",
+                (new_qty, now, part_id))
+    con.commit()
+    con.close()
+    return {"new_quantity": new_qty, "movement_id": movement_id}
+
+
+def get_part_movements(part_id: int, limit: int = 100):
+    con = _con()
+    rows = con.execute(
+        """
+        SELECT m.*, v.visit_type AS visit_type_label, c.name AS customer_name
+        FROM part_movements m
+        LEFT JOIN maintenance_visits v ON m.visit_id = v.id
+        LEFT JOIN customers c          ON v.customer_id = c.id
+        WHERE m.part_id = ?
+        ORDER BY m.created_at DESC
+        LIMIT ?
+        """,
+        (part_id, limit),
+    ).fetchall()
     con.close()
     return [dict(r) for r in rows]
 

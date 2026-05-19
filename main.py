@@ -30,6 +30,8 @@ from database import (
     get_tech_by_code_and_email, create_pin_reset_token, consume_pin_reset_token,
     create_photo, get_visit_photos, get_photo_by_id, delete_photo,
     get_timesheet_data,
+    get_all_parts, get_part_by_id, create_part, update_part, delete_part,
+    adjust_part_quantity, get_part_movements,
     # Admin users + audit
     verify_admin_user, get_admin_user_by_id, get_all_admin_users,
     create_admin_user, update_admin_user, set_admin_role, set_admin_active,
@@ -50,6 +52,8 @@ ADMIN_PERMS = {
         "audit:view_all",
         "timesheet:view_all",
         "schedule:view", "schedule:edit",
+        "inventory:view", "inventory:create", "inventory:update",
+        "inventory:adjust", "inventory:delete",
     },
     "supervisor_admin": {
         "admin:view_all",
@@ -59,6 +63,7 @@ ADMIN_PERMS = {
         "audit:view_all",
         "timesheet:view_all",
         "schedule:view", "schedule:edit",
+        "inventory:view", "inventory:adjust",
     },
     "system_admin": {
         "tech:create", "tech:update", "tech:reset_pin",
@@ -67,6 +72,7 @@ ADMIN_PERMS = {
         "audit:view_self",
         "timesheet:view_all",
         "schedule:view", "schedule:edit",
+        "inventory:view", "inventory:create", "inventory:update", "inventory:adjust",
     },
     "hr_admin": {
         "tech:create", "tech:update", "tech:reset_pin",
@@ -75,6 +81,7 @@ ADMIN_PERMS = {
     },
     "ceo_assistant": {
         "audit:view_self",
+        "inventory:view",
     },
 }
 
@@ -368,6 +375,36 @@ class TechCompleteVisit(BaseModel):
     work_done:      str = ""
     parts_replaced: str = ""
     notes:          str = ""
+
+
+class PartCreate(BaseModel):
+    sku:           str
+    name:          str
+    description:   str = ""
+    category:      str = ""
+    unit:          str = "each"
+    unit_cost:     float = 0
+    quantity:      float = 0
+    reorder_point: float = 0
+    supplier:      str = ""
+
+
+class PartUpdate(BaseModel):
+    name:          str
+    description:   str = ""
+    category:      str = ""
+    unit:          str = "each"
+    unit_cost:     float = 0
+    reorder_point: float = 0
+    supplier:      str = ""
+    active:        bool = True
+
+
+class PartAdjust(BaseModel):
+    movement_type:  str           # 'received' | 'used' | 'adjusted'
+    quantity_delta: float          # signed: +receive, -use, ±adjust
+    reason:         str = ""
+    visit_id:       Optional[int] = None
 
 
 class TechForgotPin(BaseModel):
@@ -1000,6 +1037,101 @@ def admin_timesheets(request: Request,
         else:
             r["duration_minutes"] = None
     return rows
+
+
+# ── Inventory ────────────────────────────────────────────────────────────────
+
+@app.get("/api/admin/parts")
+def admin_list_parts(request: Request, include_inactive: bool = False):
+    _require_perm(request, "inventory:view")
+    return get_all_parts(include_inactive=include_inactive)
+
+
+@app.post("/api/admin/parts")
+def admin_create_part(request: Request, body: PartCreate):
+    admin = _require_perm(request, "inventory:create")
+    if body.quantity < 0 or body.reorder_point < 0 or body.unit_cost < 0:
+        raise HTTPException(400, "Quantities and cost must be non-negative")
+    try:
+        part_id = create_part(body.model_dump())
+    except Exception as e:
+        if "UNIQUE" in str(e):
+            raise HTTPException(409, "SKU already exists")
+        raise
+    # Record the initial stock as a 'received' movement if non-zero
+    if body.quantity > 0:
+        adjust_part_quantity(
+            part_id, "received", 0,  # 0 delta because create_part already stored it
+            reason="Initial stock on creation",
+            performed_by_type="admin", performed_by_id=admin["id"],
+            performed_by_prid=admin.get("prid"), performed_by_label=admin.get("name"),
+        )
+    _audit_from(admin, "inventory.create", request,
+                target_type="part", target_id=part_id, target_label=body.sku,
+                after=body.model_dump())
+    return {"id": part_id}
+
+
+@app.put("/api/admin/parts/{part_id}")
+def admin_update_part(request: Request, part_id: int, body: PartUpdate):
+    admin = _require_perm(request, "inventory:update")
+    before = get_part_by_id(part_id)
+    if not before:
+        raise HTTPException(404, "Part not found")
+    update_part(part_id, body.model_dump())
+    _audit_from(admin, "inventory.update", request,
+                target_type="part", target_id=part_id, target_label=before["sku"],
+                before=before, after=body.model_dump())
+    return {"ok": True}
+
+
+@app.delete("/api/admin/parts/{part_id}")
+def admin_delete_part(request: Request, part_id: int):
+    admin = _require_perm(request, "inventory:delete")
+    before = get_part_by_id(part_id)
+    if not before:
+        raise HTTPException(404, "Part not found")
+    delete_part(part_id)
+    _audit_from(admin, "inventory.delete", request,
+                target_type="part", target_id=part_id,
+                target_label=before["sku"], before=before)
+    return {"ok": True}
+
+
+@app.post("/api/admin/parts/{part_id}/adjust")
+def admin_adjust_part(request: Request, part_id: int, body: PartAdjust):
+    admin = _require_perm(request, "inventory:adjust")
+    if body.movement_type not in ("received", "used", "adjusted"):
+        raise HTTPException(400, "movement_type must be received, used, or adjusted")
+    part = get_part_by_id(part_id)
+    if not part:
+        raise HTTPException(404, "Part not found")
+    try:
+        result = adjust_part_quantity(
+            part_id,
+            body.movement_type,
+            body.quantity_delta,
+            reason=body.reason,
+            visit_id=body.visit_id,
+            performed_by_type="admin",
+            performed_by_id=admin["id"],
+            performed_by_prid=admin.get("prid"),
+            performed_by_label=admin.get("name"),
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    _audit_from(admin, f"inventory.{body.movement_type}", request,
+                target_type="part", target_id=part_id, target_label=part["sku"],
+                before={"quantity": part["quantity"]},
+                after={"quantity": result["new_quantity"], "delta": body.quantity_delta,
+                       "reason": body.reason})
+    return result
+
+
+@app.get("/api/admin/parts/{part_id}/movements")
+def admin_part_movements(request: Request, part_id: int):
+    _require_perm(request, "inventory:view")
+    return get_part_movements(part_id)
 
 
 # ── Audit log ─────────────────────────────────────────────────────────────────

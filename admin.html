@@ -378,6 +378,11 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 11h-6"/><path d="M19 8v6"/></svg>
         Technicians
       </div>
+      <div class="nav-item" onclick="showPanel('inventory')" id="nav-inventory" style="display:none;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+        Inventory
+        <span id="lowStockBadge" style="margin-left:auto;background:var(--danger);color:white;font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px;display:none;"></span>
+      </div>
       <div class="nav-item" onclick="showPanel('schedule')" id="nav-schedule" style="display:none;">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
         Schedule
@@ -450,6 +455,36 @@
             </div>
           </div>
         </div>
+      </div>
+
+      <!-- ── Inventory panel ── -->
+      <div class="panel" id="panel-inventory">
+        <div class="top-bar">
+          <h2>Inventory</h2>
+          <button class="btn btn-primary" id="addPartBtn" onclick="openModal('addPart')" style="display:none;">+ Add Part</button>
+        </div>
+
+        <div id="inv-summary" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:20px;"></div>
+
+        <div class="filter-bar" id="invFilters" style="gap:8px;">
+          <button class="filter-btn active" data-f="all" onclick="setInvFilter('all',this)">All</button>
+          <button class="filter-btn" data-f="low" onclick="setInvFilter('low',this)">Low Stock</button>
+          <button class="filter-btn" data-f="out" onclick="setInvFilter('out',this)">Out of Stock</button>
+          <button class="filter-btn" data-f="inactive" onclick="setInvFilter('inactive',this)">Inactive</button>
+          <input type="text" id="inv-search" oninput="renderInventory()" placeholder="Search SKU, name, category…" style="margin-left:auto;padding:6px 12px;border:1px solid var(--border);border-radius:6px;font-size:13px;min-width:240px;">
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>SKU</th><th>Name</th><th>Category</th><th>Quantity</th><th>Reorder</th><th>Unit Cost</th><th>Value</th><th>Actions</th>
+            </tr></thead>
+            <tbody id="inv-tbody"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+        <p style="font-size:12px;color:var(--muted);margin-top:14px;line-height:1.5;">
+          Click <strong>Adjust</strong> to record stock received from a supplier, used on a job, or a manual count correction. Every change is logged with the actor's PRID.
+        </p>
       </div>
 
       <!-- ── Schedule panel ── -->
@@ -627,6 +662,100 @@
 </div><!-- /#app -->
 
 <!-- ── Modals ── -->
+
+<!-- Add / Edit Part -->
+<div class="modal-overlay" id="modal-addPart">
+  <div class="modal" style="max-width:540px;">
+    <div class="modal-header">
+      <h3 id="partModalTitle">Add Part</h3>
+      <button class="modal-close" onclick="closeModal('addPart')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field-row">
+        <div class="field"><label>SKU *</label><input id="p-sku" placeholder="AF-LG-14" style="text-transform:uppercase;letter-spacing:1px;font-family:'Courier New',monospace;"></div>
+        <div class="field"><label>Category</label><input id="p-category" placeholder="Filters, Capacitors, Refrigerant…"></div>
+      </div>
+      <div class="field"><label>Name *</label><input id="p-name" placeholder="LG Air Filter 14x20"></div>
+      <div class="field"><label>Description</label><textarea id="p-description" placeholder="Optional details…"></textarea></div>
+      <div class="field-row">
+        <div class="field"><label>Unit</label><input id="p-unit" placeholder="each, lb, ft…" value="each"></div>
+        <div class="field"><label>Unit Cost</label><input id="p-cost" type="number" step="0.01" min="0" placeholder="0.00"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Quantity on Hand</label><input id="p-qty" type="number" step="0.01" min="0" placeholder="0"></div>
+        <div class="field"><label>Reorder Point</label><input id="p-reorder" type="number" step="0.01" min="0" placeholder="0"></div>
+      </div>
+      <div class="field"><label>Supplier</label><input id="p-supplier" placeholder="ABC Parts Ltd."></div>
+      <div class="form-error" id="err-addPart"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('addPart')">Cancel</button>
+      <button class="btn btn-primary" id="partSubmitBtn" onclick="submitPart()">Save Part</button>
+    </div>
+  </div>
+</div>
+
+<!-- Adjust Stock -->
+<div class="modal-overlay" id="modal-adjustStock">
+  <div class="modal" style="max-width:460px;">
+    <div class="modal-header">
+      <h3>Adjust Stock</h3>
+      <button class="modal-close" onclick="closeModal('adjustStock')">×</button>
+    </div>
+    <div class="modal-body">
+      <div style="background:var(--light);border-radius:8px;padding:12px 14px;margin-bottom:14px;">
+        <div style="font-weight:600;color:var(--navy);" id="adj-part-name">—</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:2px;">Current: <strong id="adj-current">0</strong> <span id="adj-unit"></span></div>
+      </div>
+      <div class="field">
+        <label>Movement Type *</label>
+        <select id="adj-type" onchange="updateAdjPreview()">
+          <option value="received">Received from supplier (+)</option>
+          <option value="used">Used on job (−)</option>
+          <option value="adjusted">Manual adjustment (±)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Quantity *</label>
+        <input id="adj-qty" type="number" step="0.01" min="0.01" placeholder="0" oninput="updateAdjPreview()">
+      </div>
+      <div class="field">
+        <label>Reason / Note</label>
+        <input id="adj-reason" placeholder="e.g. PO #1234, manual recount, damaged unit">
+      </div>
+      <div style="background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af;padding:10px 13px;border-radius:8px;font-size:13px;">
+        After this change: <strong id="adj-preview">—</strong> <span id="adj-unit2"></span>
+      </div>
+      <div class="form-error" id="err-adjustStock"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('adjustStock')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitAdjustStock()">Save Adjustment</button>
+    </div>
+  </div>
+</div>
+
+<!-- Movements history -->
+<div class="modal-overlay" id="modal-movements">
+  <div class="modal" style="max-width:700px;">
+    <div class="modal-header">
+      <h3>Stock Movement History — <span id="mov-part-name"></span></h3>
+      <button class="modal-close" onclick="closeModal('movements')">×</button>
+    </div>
+    <div class="modal-body" style="max-height:60vh;overflow-y:auto;">
+      <table style="width:100%;font-size:13px;">
+        <thead><tr style="border-bottom:1px solid var(--border);">
+          <th style="text-align:left;padding:8px 4px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;">When</th>
+          <th style="text-align:left;padding:8px 4px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;">Type</th>
+          <th style="text-align:right;padding:8px 4px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;">Δ</th>
+          <th style="text-align:left;padding:8px 4px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;">By</th>
+          <th style="text-align:left;padding:8px 4px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;">Reason</th>
+        </tr></thead>
+        <tbody id="mov-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
 
 <!-- Add Customer -->
 <div class="modal-overlay" id="modal-addCustomer">
@@ -909,11 +1038,11 @@
   let resetAdminPwId = null;
 
   const ADMIN_PERMS = {
-    super_admin: new Set(['admin:create','admin:set_role','admin:set_active','admin:reset_password','admin:view_all','audit:view_all','tech:create','tech:delete','customer:create','customer:delete','visit:create','visit:delete','review:approve','review:delete','timesheet:view_all','schedule:view','schedule:edit']),
-    supervisor_admin: new Set(['admin:view_all','audit:view_all','tech:update','customer:update','visit:update','timesheet:view_all','schedule:view','schedule:edit']),
-    system_admin: new Set(['tech:create','customer:create','visit:create','audit:view_self','timesheet:view_all','schedule:view','schedule:edit']),
+    super_admin: new Set(['admin:create','admin:set_role','admin:set_active','admin:reset_password','admin:view_all','audit:view_all','tech:create','tech:delete','customer:create','customer:delete','visit:create','visit:delete','review:approve','review:delete','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','inventory:delete']),
+    supervisor_admin: new Set(['admin:view_all','audit:view_all','tech:update','customer:update','visit:update','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:adjust']),
+    system_admin: new Set(['tech:create','customer:create','visit:create','audit:view_self','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust']),
     hr_admin: new Set(['tech:create','audit:view_self','timesheet:view_all']),
-    ceo_assistant: new Set(['audit:view_self']),
+    ceo_assistant: new Set(['audit:view_self','inventory:view']),
   };
   function can(perm) {
     return currentAdmin && ADMIN_PERMS[currentAdmin.role]?.has(perm);
@@ -983,6 +1112,7 @@
     if (can('audit:view_all') || can('audit:view_self')) loadAudit();
     if (can('timesheet:view_all')) { initTimesheetWeek(); loadTimesheets(); }
     if (can('schedule:view')) { initScheduleWeek(); loadSchedule(); }
+    if (can('inventory:view')) loadInventory();
   }
 
   function applyRoleVisibility() {
@@ -991,6 +1121,8 @@
     if (can('audit:view_all') || can('audit:view_self')) document.getElementById('nav-audit').style.display = 'flex';
     if (can('timesheet:view_all')) document.getElementById('nav-timesheets').style.display = 'flex';
     if (can('schedule:view')) document.getElementById('nav-schedule').style.display = 'flex';
+    if (can('inventory:view')) document.getElementById('nav-inventory').style.display = 'flex';
+    if (can('inventory:create')) document.getElementById('addPartBtn').style.display = '';
     if (can('admin:create')) document.getElementById('addAdminBtn').style.display = '';
     // Show current admin name + role
     const tag = document.querySelector('.admin-tag');
@@ -1638,6 +1770,253 @@
     } catch(e) { showErr('err-resetAdminPw', e.message); }
   }
 
+  // ── Inventory ──────────────────────────────────────────────────────────────
+  let allParts = [];
+  let invFilter = 'all';
+  let editingPartId = null;
+  let adjustingPart = null;
+
+  async function loadInventory() {
+    if (!can('inventory:view')) return;
+    try {
+      allParts = await api('GET', '/api/admin/parts?include_inactive=true');
+      renderInventory();
+    } catch(e) {}
+  }
+
+  function setInvFilter(f, btn) {
+    invFilter = f;
+    document.querySelectorAll('#invFilters .filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    renderInventory();
+  }
+
+  function renderInventory() {
+    const q = (document.getElementById('inv-search')?.value || '').toLowerCase().trim();
+    let rows = allParts.filter(p => {
+      if (invFilter === 'inactive') return !p.active;
+      if (!p.active) return false;
+      if (invFilter === 'low') return p.quantity > 0 && p.quantity <= p.reorder_point;
+      if (invFilter === 'out') return p.quantity <= 0;
+      return true;
+    });
+    if (q) {
+      rows = rows.filter(p =>
+        (p.sku || '').toLowerCase().includes(q) ||
+        (p.name || '').toLowerCase().includes(q) ||
+        (p.category || '').toLowerCase().includes(q) ||
+        (p.supplier || '').toLowerCase().includes(q)
+      );
+    }
+
+    // Summary cards (always over the full active set, not the filter)
+    const active = allParts.filter(p => p.active);
+    const lowCount = active.filter(p => p.quantity > 0 && p.quantity <= p.reorder_point).length;
+    const outCount = active.filter(p => p.quantity <= 0).length;
+    const totalValue = active.reduce((s, p) => s + (p.quantity * p.unit_cost), 0);
+    document.getElementById('inv-summary').innerHTML = `
+      ${summaryCard('Active Parts', active.length, '#0B2545')}
+      ${summaryCard('Total Stock Value', '$' + totalValue.toFixed(2), '#059669')}
+      ${summaryCard('Low Stock', lowCount, lowCount ? '#f59e0b' : '#94a3b8')}
+      ${summaryCard('Out of Stock', outCount, outCount ? '#dc2626' : '#94a3b8')}
+    `;
+    // Sidebar badge
+    const totalAlerts = lowCount + outCount;
+    const badge = document.getElementById('lowStockBadge');
+    if (totalAlerts) { badge.textContent = totalAlerts; badge.style.display = 'inline-block'; }
+    else { badge.style.display = 'none'; }
+
+    const tbody = document.getElementById('inv-tbody');
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="empty">No parts match the current filter.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map(p => {
+      let qtyCell;
+      if (p.quantity <= 0) {
+        qtyCell = `<span class="badge" style="background:#fee2e2;color:#991b1b;">${formatQty(p.quantity)} ${escHtml(p.unit||'')} · OUT</span>`;
+      } else if (p.quantity <= p.reorder_point) {
+        qtyCell = `<span class="badge" style="background:#fef3c7;color:#92400e;">${formatQty(p.quantity)} ${escHtml(p.unit||'')} · LOW</span>`;
+      } else {
+        qtyCell = `<strong>${formatQty(p.quantity)}</strong> <span style="color:var(--muted);font-size:11px;">${escHtml(p.unit||'')}</span>`;
+      }
+      const value = (p.quantity * p.unit_cost).toFixed(2);
+      return `
+        <tr style="${p.active ? '' : 'opacity:0.5;'}">
+          <td><span class="code-pill">${escHtml(p.sku)}</span></td>
+          <td><strong>${escHtml(p.name)}</strong>${p.supplier ? `<br><span style="font-size:11px;color:var(--muted);">${escHtml(p.supplier)}</span>` : ''}</td>
+          <td>${escHtml(p.category) || '—'}</td>
+          <td>${qtyCell}</td>
+          <td>${formatQty(p.reorder_point)}</td>
+          <td>$${Number(p.unit_cost).toFixed(2)}</td>
+          <td>$${value}</td>
+          <td style="white-space:nowrap;">
+            ${can('inventory:adjust') ? `<button class="btn btn-primary btn-sm" onclick="openAdjustStock(${p.id})">Adjust</button>` : ''}
+            ${can('inventory:update') ? `<button class="btn btn-edit btn-sm" onclick="openEditPart(${p.id})" style="margin-left:4px;">Edit</button>` : ''}
+            <button class="btn btn-ghost btn-sm" onclick="openMovements(${p.id})" style="margin-left:4px;">History</button>
+            ${can('inventory:delete') && p.active ? `<button class="btn btn-danger btn-sm" onclick="removePart(${p.id},'${escHtml(p.sku)}')" style="margin-left:4px;">Delete</button>` : ''}
+          </td>
+        </tr>`;
+    }).join('');
+  }
+
+  function formatQty(n) {
+    // Show as integer when whole, decimals otherwise
+    return (Number(n) % 1 === 0) ? String(Number(n)) : Number(n).toFixed(2);
+  }
+
+  // ── Add / Edit Part ──
+  function openEditPart(id) {
+    const p = allParts.find(x => x.id === id);
+    if (!p) return;
+    editingPartId = id;
+    document.getElementById('partModalTitle').textContent = 'Edit Part';
+    document.getElementById('p-sku').value         = p.sku;
+    document.getElementById('p-sku').disabled      = true;
+    document.getElementById('p-name').value        = p.name;
+    document.getElementById('p-description').value = p.description || '';
+    document.getElementById('p-category').value    = p.category || '';
+    document.getElementById('p-unit').value        = p.unit || 'each';
+    document.getElementById('p-cost').value        = p.unit_cost;
+    document.getElementById('p-qty').value         = p.quantity;
+    document.getElementById('p-qty').disabled      = true;  // adjust via Adjust button
+    document.getElementById('p-reorder').value     = p.reorder_point;
+    document.getElementById('p-supplier').value    = p.supplier || '';
+    document.getElementById('err-addPart').style.display = 'none';
+    document.getElementById('modal-addPart').classList.add('open');
+  }
+
+  async function submitPart() {
+    const err = document.getElementById('err-addPart');
+    err.style.display = 'none';
+    const body = {
+      sku:           document.getElementById('p-sku').value.trim(),
+      name:          document.getElementById('p-name').value.trim(),
+      description:   document.getElementById('p-description').value.trim(),
+      category:      document.getElementById('p-category').value.trim(),
+      unit:          document.getElementById('p-unit').value.trim() || 'each',
+      unit_cost:     parseFloat(document.getElementById('p-cost').value) || 0,
+      quantity:      parseFloat(document.getElementById('p-qty').value) || 0,
+      reorder_point: parseFloat(document.getElementById('p-reorder').value) || 0,
+      supplier:      document.getElementById('p-supplier').value.trim(),
+    };
+    if (!body.sku || !body.name) { showErr('err-addPart', 'SKU and name are required.'); return; }
+    try {
+      if (editingPartId) {
+        const updateBody = {...body, active: true};
+        delete updateBody.sku;
+        delete updateBody.quantity;
+        await api('PUT', `/api/admin/parts/${editingPartId}`, updateBody);
+      } else {
+        await api('POST', '/api/admin/parts', body);
+      }
+      closeModal('addPart');
+      resetPartForm();
+      await loadInventory();
+    } catch(e) { showErr('err-addPart', e.message); }
+  }
+
+  function resetPartForm() {
+    editingPartId = null;
+    document.getElementById('partModalTitle').textContent = 'Add Part';
+    document.getElementById('p-sku').disabled = false;
+    document.getElementById('p-qty').disabled = false;
+    ['p-sku','p-name','p-description','p-category','p-supplier','p-cost','p-qty','p-reorder']
+      .forEach(id => document.getElementById(id).value = '');
+    document.getElementById('p-unit').value = 'each';
+  }
+
+  async function removePart(id, sku) {
+    if (!confirm(`Delete part ${sku}? If it has any stock movement history, it will be archived (deactivated). Otherwise, it will be removed permanently.`)) return;
+    try {
+      await api('DELETE', `/api/admin/parts/${id}`);
+      await loadInventory();
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  // ── Adjust Stock ──
+  function openAdjustStock(id) {
+    adjustingPart = allParts.find(p => p.id === id);
+    if (!adjustingPart) return;
+    document.getElementById('adj-part-name').textContent = `${adjustingPart.sku} — ${adjustingPart.name}`;
+    document.getElementById('adj-current').textContent = formatQty(adjustingPart.quantity);
+    document.getElementById('adj-unit').textContent = adjustingPart.unit || '';
+    document.getElementById('adj-unit2').textContent = adjustingPart.unit || '';
+    document.getElementById('adj-type').value = 'received';
+    document.getElementById('adj-qty').value = '';
+    document.getElementById('adj-reason').value = '';
+    document.getElementById('err-adjustStock').style.display = 'none';
+    updateAdjPreview();
+    document.getElementById('modal-adjustStock').classList.add('open');
+  }
+
+  function updateAdjPreview() {
+    if (!adjustingPart) return;
+    const type = document.getElementById('adj-type').value;
+    const qty = parseFloat(document.getElementById('adj-qty').value) || 0;
+    let delta = qty;
+    if (type === 'used') delta = -qty;
+    if (type === 'adjusted') delta = qty;  // user can enter negative manually if needed
+    const newQ = adjustingPart.quantity + delta;
+    const el = document.getElementById('adj-preview');
+    el.textContent = formatQty(newQ);
+    el.style.color = newQ < 0 ? '#dc2626' : (newQ <= adjustingPart.reorder_point ? '#92400e' : '#1e40af');
+  }
+
+  async function submitAdjustStock() {
+    const err = document.getElementById('err-adjustStock');
+    err.style.display = 'none';
+    const type = document.getElementById('adj-type').value;
+    const qty  = parseFloat(document.getElementById('adj-qty').value);
+    const reason = document.getElementById('adj-reason').value.trim();
+    if (!qty || qty <= 0) { showErr('err-adjustStock', 'Enter a positive quantity.'); return; }
+    let delta = qty;
+    if (type === 'used') delta = -qty;
+    // For 'adjusted', user can input negative reason — for now treat as positive delta
+    // (user can edit and resubmit with negative if needed via API)
+    try {
+      await api('POST', `/api/admin/parts/${adjustingPart.id}/adjust`, {
+        movement_type: type,
+        quantity_delta: delta,
+        reason: reason,
+      });
+      closeModal('adjustStock');
+      await loadInventory();
+    } catch(e) { showErr('err-adjustStock', e.message); }
+  }
+
+  // ── Movements history ──
+  async function openMovements(id) {
+    const p = allParts.find(x => x.id === id);
+    if (!p) return;
+    document.getElementById('mov-part-name').textContent = `${p.sku} — ${p.name}`;
+    document.getElementById('mov-tbody').innerHTML = '<tr><td colspan="5" class="empty">Loading…</td></tr>';
+    document.getElementById('modal-movements').classList.add('open');
+    try {
+      const movs = await api('GET', `/api/admin/parts/${id}/movements`);
+      if (!movs.length) {
+        document.getElementById('mov-tbody').innerHTML = '<tr><td colspan="5" style="padding:24px;text-align:center;color:var(--muted);">No movement history yet.</td></tr>';
+        return;
+      }
+      document.getElementById('mov-tbody').innerHTML = movs.map(m => {
+        const d = new Date(m.created_at);
+        const when = d.toLocaleString('en-TT', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+        const typeColor = m.movement_type === 'received' ? '#059669' : m.movement_type === 'used' ? '#dc2626' : '#6b7280';
+        const sign = m.quantity_delta >= 0 ? '+' : '';
+        return `
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 4px;font-size:12px;color:var(--muted);white-space:nowrap;">${when}</td>
+            <td style="padding:10px 4px;"><span class="badge" style="background:#f3f4f6;color:${typeColor};">${m.movement_type}</span></td>
+            <td style="padding:10px 4px;text-align:right;font-weight:700;color:${typeColor};">${sign}${formatQty(m.quantity_delta)}</td>
+            <td style="padding:10px 4px;">${escHtml(m.performed_by_label || '?')}<br><span style="font-size:10px;color:var(--muted);font-family:'Courier New',monospace;">${escHtml(m.performed_by_prid || '')}</span></td>
+            <td style="padding:10px 4px;font-size:12px;">${escHtml(m.reason || '')}${m.customer_name ? `<br><span style="font-size:11px;color:var(--muted);">${escHtml(m.customer_name)}</span>` : ''}</td>
+          </tr>`;
+      }).join('');
+    } catch(e) {
+      document.getElementById('mov-tbody').innerHTML = `<tr><td colspan="5" class="empty">Error: ${e.message}</td></tr>`;
+    }
+  }
+
   // ── Schedule (calendar week view) ──────────────────────────────────────────
   const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 
@@ -2104,6 +2483,7 @@
     const r = _origOpen.apply(this, arguments);
     if (name === 'addAdmin') defaultHireDate('au-hire');
     if (name === 'addTech')  defaultHireDate('t-hire');
+    if (name === 'addPart')  resetPartForm();
     return r;
   };
 
