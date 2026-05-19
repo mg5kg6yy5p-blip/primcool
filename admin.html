@@ -272,6 +272,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 11h-6"/><path d="M19 8v6"/></svg>
         Technicians
       </div>
+      <div class="nav-item" onclick="showPanel('timesheets')" id="nav-timesheets" style="display:none;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        Timesheets
+      </div>
       <div class="nav-item" onclick="showPanel('admins')" id="nav-admins" style="display:none;">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
         Admins
@@ -336,6 +340,51 @@
             </div>
           </div>
         </div>
+      </div>
+
+      <!-- ── Timesheets panel ── -->
+      <div class="panel" id="panel-timesheets">
+        <div class="top-bar">
+          <h2>Timesheets</h2>
+          <button class="btn btn-ghost" onclick="exportTimesheetCsv()">↓ Export CSV</button>
+        </div>
+        <div class="filter-bar" style="gap:10px;align-items:center;">
+          <button class="filter-btn" onclick="shiftWeek(-1)">← Prev Week</button>
+          <input type="date" id="ts-week-start" onchange="loadTimesheets()" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;">
+          <span id="ts-week-label" style="font-size:13px;color:var(--muted);font-weight:600;"></span>
+          <button class="filter-btn" onclick="shiftWeek(1)">Next Week →</button>
+          <select id="ts-tech-filter" onchange="loadTimesheets()" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;margin-left:12px;">
+            <option value="">All technicians</option>
+          </select>
+          <button class="filter-btn" onclick="setThisWeek()">This Week</button>
+        </div>
+
+        <!-- Summary cards -->
+        <div id="ts-summary" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px;"></div>
+
+        <!-- Per-tech breakdown -->
+        <div class="table-wrap" style="margin-bottom:20px;">
+          <table>
+            <thead><tr>
+              <th>Technician</th><th>PRID</th><th>Visits</th><th>PM Hours</th><th>CM Hours</th><th>Total Hours</th>
+            </tr></thead>
+            <tbody id="ts-by-tech"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+
+        <!-- Detail rows -->
+        <h3 style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:10px;">Time Entries</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Date</th><th>Tech</th><th>Type</th><th>Customer</th><th>Start</th><th>End</th><th>Duration</th><th>Status</th>
+            </tr></thead>
+            <tbody id="ts-entries"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+        <p style="font-size:12px;color:var(--muted);margin-top:14px;line-height:1.5;">
+          Hours are computed from the tech's Start Job / End Job timestamps. In-progress visits (no end time) are listed but excluded from totals. To correct a missed clock-in/out, edit the visit directly.
+        </p>
       </div>
 
       <!-- ── Admins panel ── -->
@@ -725,10 +774,10 @@
   let resetAdminPwId = null;
 
   const ADMIN_PERMS = {
-    super_admin: new Set(['admin:create','admin:set_role','admin:set_active','admin:reset_password','admin:view_all','audit:view_all','tech:create','tech:delete','customer:create','customer:delete','visit:create','visit:delete','review:approve','review:delete']),
-    supervisor_admin: new Set(['admin:view_all','audit:view_all','tech:update','customer:update','visit:update']),
-    system_admin: new Set(['tech:create','customer:create','visit:create','audit:view_self']),
-    hr_admin: new Set(['tech:create','audit:view_self']),
+    super_admin: new Set(['admin:create','admin:set_role','admin:set_active','admin:reset_password','admin:view_all','audit:view_all','tech:create','tech:delete','customer:create','customer:delete','visit:create','visit:delete','review:approve','review:delete','timesheet:view_all']),
+    supervisor_admin: new Set(['admin:view_all','audit:view_all','tech:update','customer:update','visit:update','timesheet:view_all']),
+    system_admin: new Set(['tech:create','customer:create','visit:create','audit:view_self','timesheet:view_all']),
+    hr_admin: new Set(['tech:create','audit:view_self','timesheet:view_all']),
     ceo_assistant: new Set(['audit:view_self']),
   };
   function can(perm) {
@@ -797,12 +846,14 @@
     loadTechs();
     if (can('admin:view_all')) loadAdmins();
     if (can('audit:view_all') || can('audit:view_self')) loadAudit();
+    if (can('timesheet:view_all')) { initTimesheetWeek(); loadTimesheets(); }
   }
 
   function applyRoleVisibility() {
     // Show admin/audit tabs based on role
     if (can('admin:view_all')) document.getElementById('nav-admins').style.display = 'flex';
     if (can('audit:view_all') || can('audit:view_self')) document.getElementById('nav-audit').style.display = 'flex';
+    if (can('timesheet:view_all')) document.getElementById('nav-timesheets').style.display = 'flex';
     if (can('admin:create')) document.getElementById('addAdminBtn').style.display = '';
     // Show current admin name + role
     const tag = document.querySelector('.admin-tag');
@@ -1439,6 +1490,178 @@
       closeModal('resetAdminPw');
       alert('Password saved. Share it privately with the admin.');
     } catch(e) { showErr('err-resetAdminPw', e.message); }
+  }
+
+  // ── Timesheets ─────────────────────────────────────────────────────────────
+  let tsCache = [];
+
+  function mondayOf(date) {
+    const d = new Date(date);
+    const day = d.getDay();
+    const diff = (day === 0 ? -6 : 1 - day);
+    d.setDate(d.getDate() + diff);
+    d.setHours(0,0,0,0);
+    return d;
+  }
+  function isoDate(d) { return d.toISOString().slice(0, 10); }
+  function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+
+  function initTimesheetWeek() {
+    const m = mondayOf(new Date());
+    document.getElementById('ts-week-start').value = isoDate(m);
+    // Populate tech dropdown
+    const sel = document.getElementById('ts-tech-filter');
+    sel.innerHTML = '<option value="">All technicians</option>' +
+      allTechs.map(t => `<option value="${t.id}">${escHtml(t.name)} (${t.tech_code})</option>`).join('');
+  }
+
+  function setThisWeek() {
+    document.getElementById('ts-week-start').value = isoDate(mondayOf(new Date()));
+    loadTimesheets();
+  }
+
+  function shiftWeek(n) {
+    const cur = new Date(document.getElementById('ts-week-start').value || isoDate(mondayOf(new Date())));
+    document.getElementById('ts-week-start').value = isoDate(addDays(cur, n * 7));
+    loadTimesheets();
+  }
+
+  async function loadTimesheets() {
+    if (!can('timesheet:view_all')) return;
+    let start = document.getElementById('ts-week-start').value;
+    if (!start) { initTimesheetWeek(); start = document.getElementById('ts-week-start').value; }
+    const m = mondayOf(new Date(start));
+    const startStr = isoDate(m);
+    const endStr   = isoDate(addDays(m, 7));
+    document.getElementById('ts-week-label').textContent =
+      `${m.toLocaleDateString('en-TT',{month:'short',day:'numeric'})} – ${addDays(m,6).toLocaleDateString('en-TT',{month:'short',day:'numeric',year:'numeric'})}`;
+    const techId = document.getElementById('ts-tech-filter').value;
+    const params = new URLSearchParams({ start: startStr, end: endStr });
+    if (techId) params.set('tech_id', techId);
+    try {
+      tsCache = await api('GET', '/api/admin/timesheets?' + params.toString());
+      renderTimesheets();
+    } catch(e) {
+      document.getElementById('ts-entries').innerHTML = `<tr><td colspan="8" class="empty">Error: ${e.message}</td></tr>`;
+    }
+  }
+
+  function fmtHours(mins) {
+    if (mins == null) return '—';
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return h ? `${h}h ${m}m` : `${m}m`;
+  }
+  function decimalHours(mins) { return mins == null ? 0 : Math.round((mins / 60) * 100) / 100; }
+
+  function renderTimesheets() {
+    const rows = tsCache;
+
+    // Top summary cards
+    const totalMins = rows.reduce((s, r) => s + (r.duration_minutes || 0), 0);
+    const pmMins    = rows.filter(r => r.visit_type === 'PM').reduce((s, r) => s + (r.duration_minutes || 0), 0);
+    const cmMins    = rows.filter(r => r.visit_type === 'CM').reduce((s, r) => s + (r.duration_minutes || 0), 0);
+    const inProg    = rows.filter(r => !r.end_time).length;
+    document.getElementById('ts-summary').innerHTML = `
+      ${summaryCard('Total Hours', fmtHours(totalMins), '#0B2545')}
+      ${summaryCard('PM Hours',    fmtHours(pmMins),    '#1d4ed8')}
+      ${summaryCard('CM Hours',    fmtHours(cmMins),    '#b45309')}
+      ${summaryCard('Time Entries', rows.length + (inProg ? ` (${inProg} in progress)` : ''), '#059669')}
+    `;
+
+    // Per-tech breakdown
+    const byTech = {};
+    for (const r of rows) {
+      const key = r.tech_id || 0;
+      if (!byTech[key]) byTech[key] = { name: r.tech_name || 'Unassigned', prid: r.tech_prid || '—', visits: 0, pm: 0, cm: 0, total: 0 };
+      byTech[key].visits += 1;
+      const m = r.duration_minutes || 0;
+      if (r.visit_type === 'PM') byTech[key].pm += m;
+      if (r.visit_type === 'CM') byTech[key].cm += m;
+      byTech[key].total += m;
+    }
+    const techRows = Object.values(byTech).sort((a, b) => b.total - a.total);
+    const tbody1 = document.getElementById('ts-by-tech');
+    if (!techRows.length) {
+      tbody1.innerHTML = '<tr><td colspan="6" class="empty">No time entries in this week.</td></tr>';
+    } else {
+      tbody1.innerHTML = techRows.map(t => `
+        <tr>
+          <td><strong>${escHtml(t.name)}</strong></td>
+          <td><span class="code-pill">${escHtml(t.prid)}</span></td>
+          <td>${t.visits}</td>
+          <td>${fmtHours(t.pm)}</td>
+          <td>${fmtHours(t.cm)}</td>
+          <td><strong>${fmtHours(t.total)}</strong></td>
+        </tr>`).join('');
+    }
+
+    // Detail entries
+    const tbody2 = document.getElementById('ts-entries');
+    if (!rows.length) {
+      tbody2.innerHTML = '<tr><td colspan="8" class="empty">No time entries in this week.</td></tr>';
+      return;
+    }
+    tbody2.innerHTML = rows.map(r => {
+      const start = new Date(r.start_time);
+      const end   = r.end_time ? new Date(r.end_time) : null;
+      const d = start.toLocaleDateString('en-TT', { weekday: 'short', day: '2-digit', month: 'short' });
+      const ts = start.toLocaleTimeString('en-TT', { hour: '2-digit', minute: '2-digit' });
+      const te = end ? end.toLocaleTimeString('en-TT', { hour: '2-digit', minute: '2-digit' }) : '<span style="color:var(--muted);">in progress</span>';
+      return `
+        <tr>
+          <td style="white-space:nowrap;">${d}</td>
+          <td>${escHtml(r.tech_name || 'Unassigned')}<br><span style="font-size:10px;color:var(--muted);font-family:'Courier New',monospace;">${escHtml(r.tech_prid || '')}</span></td>
+          <td><span class="badge badge-${(r.visit_type||'').toLowerCase()}">${r.visit_type}</span></td>
+          <td>${escHtml(r.customer_name || '')}<br><span class="code-pill">${escHtml(r.customer_code || '')}</span></td>
+          <td>${ts}</td>
+          <td>${te}</td>
+          <td><strong>${fmtHours(r.duration_minutes)}</strong></td>
+          <td><span class="badge badge-${r.status}">${(r.status||'').replace('_',' ')}</span></td>
+        </tr>`;
+    }).join('');
+  }
+
+  function summaryCard(label, value, accent) {
+    return `
+      <div style="background:white;border:1px solid var(--border);border-left:4px solid ${accent};border-radius:10px;padding:14px 16px;">
+        <div style="font-size:10px;font-weight:700;letter-spacing:0.7px;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">${label}</div>
+        <div style="font-size:18px;font-weight:700;color:var(--navy);">${value}</div>
+      </div>`;
+  }
+
+  function exportTimesheetCsv() {
+    if (!tsCache.length) { alert('Nothing to export — load a week with time entries first.'); return; }
+    const header = ['Date','Tech Name','PRID','Tech Code','Visit Type','Customer','Customer ID','Start','End','Duration (hours)','Status'];
+    const lines  = [header.join(',')];
+    for (const r of tsCache) {
+      const start = new Date(r.start_time);
+      const end   = r.end_time ? new Date(r.end_time) : null;
+      const cells = [
+        start.toISOString().slice(0,10),
+        r.tech_name || '',
+        r.tech_prid || '',
+        r.tech_code || '',
+        r.visit_type || '',
+        r.customer_name || '',
+        r.customer_code || '',
+        start.toISOString(),
+        end ? end.toISOString() : '',
+        decimalHours(r.duration_minutes),
+        r.status || '',
+      ].map(v => {
+        const s = String(v);
+        return /[",\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+      });
+      lines.push(cells.join(','));
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    const wk   = document.getElementById('ts-week-start').value;
+    a.href = url; a.download = `primecool-timesheet-${wk}.csv`;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a); URL.revokeObjectURL(url);
   }
 
   // ── Audit Log ──────────────────────────────────────────────────────────────

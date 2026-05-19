@@ -1181,6 +1181,44 @@ def log_audit(
     con.close()
 
 
+def get_timesheet_data(start_iso: str, end_iso: str, tech_id: int = None):
+    """Returns clock-in entries within the date range (visits with start_time set).
+    Includes both completed and in-progress visits."""
+    sql = """
+        SELECT
+            v.id AS visit_id,
+            v.visit_type,
+            v.status,
+            v.start_time,
+            v.end_time,
+            v.scheduled_date,
+            v.assigned_tech_id AS tech_id,
+            t.name      AS tech_name,
+            t.tech_code AS tech_code,
+            t.prid      AS tech_prid,
+            t.role      AS tech_role,
+            c.name      AS customer_name,
+            c.customer_code,
+            e.name      AS equipment_name
+        FROM maintenance_visits v
+        LEFT JOIN technicians t ON v.assigned_tech_id = t.id
+        LEFT JOIN customers   c ON v.customer_id      = c.id
+        LEFT JOIN equipment   e ON v.equipment_id     = e.id
+        WHERE v.start_time IS NOT NULL
+          AND v.start_time >= ?
+          AND v.start_time <  ?
+    """
+    args = [start_iso, end_iso]
+    if tech_id is not None:
+        sql += " AND v.assigned_tech_id = ?"
+        args.append(tech_id)
+    sql += " ORDER BY v.start_time ASC"
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
 def query_audit_log(
     actor_id: int = None,
     action_prefix: str = None,

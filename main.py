@@ -29,6 +29,7 @@ from database import (
     delete_tech, set_tech_pin,
     get_tech_by_code_and_email, create_pin_reset_token, consume_pin_reset_token,
     create_photo, get_visit_photos, get_photo_by_id, delete_photo,
+    get_timesheet_data,
     # Admin users + audit
     verify_admin_user, get_admin_user_by_id, get_all_admin_users,
     create_admin_user, update_admin_user, set_admin_role, set_admin_active,
@@ -47,6 +48,7 @@ ADMIN_PERMS = {
         "visit:create", "visit:update", "visit:delete",
         "review:approve", "review:reject", "review:delete",
         "audit:view_all",
+        "timesheet:view_all",
     },
     "supervisor_admin": {
         "admin:view_all",
@@ -54,16 +56,19 @@ ADMIN_PERMS = {
         "customer:update",
         "visit:update",
         "audit:view_all",
+        "timesheet:view_all",
     },
     "system_admin": {
         "tech:create", "tech:update", "tech:reset_pin",
         "customer:create", "customer:update",
         "visit:create", "visit:update",
         "audit:view_self",
+        "timesheet:view_all",
     },
     "hr_admin": {
         "tech:create", "tech:update", "tech:reset_pin",
         "audit:view_self",
+        "timesheet:view_all",
     },
     "ceo_assistant": {
         "audit:view_self",
@@ -960,6 +965,36 @@ def admin_reset_user_password(request: Request, user_id: int, body: AdminPasswor
     _audit_from(admin, "admin.reset_password", request,
                 target_type="admin", target_id=user_id, target_label=target["username"])
     return {"ok": True}
+
+
+# ── Timesheets ────────────────────────────────────────────────────────────────
+
+@app.get("/api/admin/timesheets")
+def admin_timesheets(request: Request,
+                     start: str,
+                     end:   str,
+                     tech_id: Optional[int] = None):
+    """Returns clock-in entries with start_time in [start, end). Dates are ISO YYYY-MM-DD."""
+    _require_perm(request, "timesheet:view_all")
+    try:
+        # Convert to ISO datetime at UTC midnight
+        start_iso = _dt.fromisoformat(start).replace(tzinfo=timezone.utc).isoformat()
+        end_iso   = _dt.fromisoformat(end).replace(tzinfo=timezone.utc).isoformat()
+    except ValueError:
+        raise HTTPException(400, "start and end must be ISO dates (YYYY-MM-DD)")
+    rows = get_timesheet_data(start_iso, end_iso, tech_id=tech_id)
+    # Compute duration_minutes server-side so the client doesn't have to
+    for r in rows:
+        if r.get("start_time") and r.get("end_time"):
+            try:
+                s = _dt.fromisoformat(r["start_time"].replace("Z", "+00:00"))
+                e = _dt.fromisoformat(r["end_time"].replace("Z", "+00:00"))
+                r["duration_minutes"] = int((e - s).total_seconds() / 60)
+            except Exception:
+                r["duration_minutes"] = None
+        else:
+            r["duration_minutes"] = None
+    return rows
 
 
 # ── Audit log ─────────────────────────────────────────────────────────────────
