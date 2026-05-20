@@ -69,10 +69,10 @@ ADMIN_PERMS = {
     "super_admin": {
         "admin:create", "admin:update", "admin:delete", "admin:set_role",
         "admin:set_active", "admin:reset_password", "admin:view_all",
-        "tech:create", "tech:update", "tech:delete", "tech:reset_pin",
-        "customer:create", "customer:update", "customer:delete",
-        "visit:create", "visit:update", "visit:delete",
-        "review:approve", "review:reject", "review:delete",
+        "tech:view", "tech:create", "tech:update", "tech:delete", "tech:reset_pin",
+        "customer:view", "customer:create", "customer:update", "customer:delete",
+        "visit:view", "visit:create", "visit:update", "visit:delete",
+        "review:view", "review:approve", "review:reject", "review:delete",
         "audit:view_all",
         "timesheet:view_all",
         "schedule:view", "schedule:edit",
@@ -85,9 +85,10 @@ ADMIN_PERMS = {
     },
     "supervisor_admin": {
         "admin:view_all",
-        "tech:update",
-        "customer:update",
-        "visit:update",
+        "tech:view", "tech:update",
+        "customer:view", "customer:update",
+        "visit:view", "visit:update",
+        "review:view",
         "audit:view_all",
         "timesheet:view_all",
         "schedule:view", "schedule:edit",
@@ -97,9 +98,10 @@ ADMIN_PERMS = {
         "documents:delete",
     },
     "system_admin": {
-        "tech:create", "tech:update", "tech:reset_pin",
-        "customer:create", "customer:update",
-        "visit:create", "visit:update",
+        "tech:view", "tech:create", "tech:update", "tech:reset_pin",
+        "customer:view", "customer:create", "customer:update",
+        "visit:view", "visit:create", "visit:update",
+        "review:view",
         "audit:view_self",
         "timesheet:view_all",
         "schedule:view", "schedule:edit",
@@ -108,9 +110,10 @@ ADMIN_PERMS = {
         "documents:upload", "documents:view",
     },
     "hr_admin": {
-        "tech:create", "tech:update", "tech:reset_pin",
+        "tech:view", "tech:create", "tech:update", "tech:reset_pin",
         "audit:view_self",
         "timesheet:view_all",
+        "invoice:view",
         "documents:upload", "documents:view", "documents:view_highly_sensitive",
     },
     "ceo_assistant": {
@@ -2479,7 +2482,7 @@ def admin_audit(request: Request,
 
 @app.get("/api/admin/customers")
 def admin_list_customers(request: Request):
-    _require_admin(request)
+    _require_perm(request, "customer:view")
     return get_all_customers()
 
 
@@ -2559,7 +2562,7 @@ def admin_delete_equipment(request: Request, equipment_id: int):
 
 @app.get("/api/admin/visits")
 def admin_list_visits(request: Request):
-    _require_admin(request)
+    _require_perm(request, "visit:view")
     return get_all_visits()
 
 
@@ -2602,7 +2605,7 @@ def admin_delete_visit(request: Request, visit_id: int):
 
 @app.get("/api/admin/reviews")
 def admin_list_reviews(request: Request, status: Optional[str] = None):
-    _require_admin(request)
+    _require_perm(request, "review:view")
     return get_all_reviews(status=status)
 
 
@@ -2641,7 +2644,7 @@ def admin_delete_review(request: Request, review_id: int):
 
 @app.get("/api/admin/techs")
 def admin_list_techs(request: Request):
-    _require_admin(request)
+    _require_perm(request, "tech:view")
     return get_all_techs()
 
 
