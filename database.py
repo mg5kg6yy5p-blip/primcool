@@ -467,6 +467,29 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_access_actor   ON access_log(actor_id, created_at)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_access_path    ON access_log(path, created_at)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_access_created ON access_log(created_at)")
+    # Anomaly alerts raised by the detector that runs after each access_log
+    # write. Append-only from the app's perspective; admins can mark
+    # resolved/dismissed but not delete.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS security_alerts (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind         TEXT NOT NULL,             -- 'bulk_read'|'off_hours'|'permission_probe'
+            severity     TEXT NOT NULL DEFAULT 'medium',
+            actor_type   TEXT,
+            actor_id     INTEGER,
+            actor_prid   TEXT,
+            actor_label  TEXT,
+            summary      TEXT NOT NULL,
+            details      TEXT,                       -- JSON blob with counts/window
+            status       TEXT NOT NULL DEFAULT 'open',   -- 'open'|'resolved'|'dismissed'
+            resolved_by  INTEGER,
+            resolved_at  TEXT,
+            resolution_note TEXT,
+            created_at   TEXT NOT NULL
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_alerts_status  ON security_alerts(status, created_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_alerts_actor   ON security_alerts(actor_id, created_at)")
     con.execute("""
         CREATE TABLE IF NOT EXISTS tech_pin_resets (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2503,6 +2526,150 @@ def purge_old_access_log(days: int = 90):
     con.execute("DELETE FROM access_log WHERE created_at < ?", (cutoff,))
     con.commit()
     con.close()
+
+
+# ── Security alerts (anomaly detection) ──────────────────────────────────────
+def create_security_alert(kind: str, summary: str, *,
+                          severity: str = "medium",
+                          actor_type: str = None, actor_id: int = None,
+                          actor_prid: str = None, actor_label: str = None,
+                          details: dict = None):
+    """Insert a new open alert. Caller should de-dupe before calling — the
+    detector uses recent_alert_exists() to avoid spamming."""
+    import json as _json
+    con = _con()
+    cur = con.execute(
+        """INSERT INTO security_alerts
+            (kind, severity, actor_type, actor_id, actor_prid, actor_label,
+             summary, details, status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)""",
+        (kind, severity, actor_type, actor_id, actor_prid, actor_label,
+         summary, _json.dumps(details or {}),
+         datetime.now(timezone.utc).isoformat()),
+    )
+    aid = cur.lastrowid
+    con.commit()
+    con.close()
+    return aid
+
+
+def recent_alert_exists(kind: str, actor_id: int, within_minutes: int = 30) -> bool:
+    """Was an alert of this kind raised for this actor in the last N minutes?
+    Used to de-dupe so the detector doesn't fire repeatedly on the same burst."""
+    from datetime import timedelta as _td
+    cutoff = (datetime.now(timezone.utc) - _td(minutes=within_minutes)).isoformat()
+    con = _con()
+    row = con.execute(
+        "SELECT 1 FROM security_alerts WHERE kind = ? AND actor_id IS ? AND created_at >= ? LIMIT 1",
+        (kind, actor_id, cutoff),
+    ).fetchone()
+    con.close()
+    return row is not None
+
+
+def list_security_alerts(status: str = None, limit: int = 100):
+    sql = "SELECT * FROM security_alerts"
+    args = []
+    if status:
+        sql += " WHERE status = ?"; args.append(status)
+    sql += " ORDER BY created_at DESC LIMIT ?"; args.append(int(limit))
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def count_open_security_alerts() -> int:
+    con = _con()
+    n = con.execute("SELECT COUNT(*) AS n FROM security_alerts WHERE status = 'open'").fetchone()["n"]
+    con.close()
+    return int(n)
+
+
+def resolve_security_alert(alert_id: int, admin_id: int, note: str = "", status: str = "resolved"):
+    con = _con()
+    con.execute(
+        """UPDATE security_alerts SET status = ?, resolved_by = ?, resolved_at = ?, resolution_note = ?
+           WHERE id = ?""",
+        (status, admin_id, datetime.now(timezone.utc).isoformat(), note or "", alert_id),
+    )
+    con.commit()
+    con.close()
+
+
+def detect_anomalies_for_actor(actor_type: str, actor_id: int) -> list:
+    """Run the standard checks against this actor's recent access_log.
+    Returns a list of (kind, severity, summary, details) tuples for any
+    triggered rules. Caller decides whether to insert them.
+
+    Rules:
+      A. bulk_read       — ≥20 distinct customer IDs viewed in 5 min
+      B. off_hours       — ≥50 reads outside 07:00–20:00 Jamaica time today
+      C. permission_probe — ≥10 403/401 responses in 10 min
+    """
+    from datetime import timedelta as _td
+    if actor_id is None:
+        return []
+    now = datetime.now(timezone.utc)
+    out = []
+    con = _con()
+
+    # A. distinct customers viewed in last 5 min
+    cutoff_5 = (now - _td(minutes=5)).isoformat()
+    rows = con.execute(
+        """SELECT path FROM access_log
+            WHERE actor_id = ? AND method = 'GET'
+              AND status_code >= 200 AND status_code < 300
+              AND created_at >= ?
+              AND (path LIKE '/api/admin/customers/%' OR path LIKE '/api/tech/customers/%')""",
+        (actor_id, cutoff_5),
+    ).fetchall()
+    import re as _re
+    rx = _re.compile(r"/customers/(\d+)")
+    ids = set()
+    for r in rows:
+        m = rx.search(r["path"] or "")
+        if m: ids.add(m.group(1))
+    if len(ids) >= 20:
+        out.append((
+            "bulk_read", "high",
+            f"{actor_type} #{actor_id} viewed {len(ids)} distinct customers in 5 minutes",
+            {"distinct_customers": len(ids), "window_minutes": 5},
+        ))
+
+    # B. off-hours volume today (Jamaica = UTC-5, no DST)
+    # 07:00 JA = 12:00 UTC; 20:00 JA = 01:00 UTC next day. Off-hours UTC: 01:00–12:00.
+    today = now.date().isoformat()
+    n_off = con.execute(
+        """SELECT COUNT(*) AS n FROM access_log
+            WHERE actor_id = ? AND method = 'GET' AND created_at LIKE ?
+              AND substr(created_at, 12, 2) >= '01' AND substr(created_at, 12, 2) < '12'""",
+        (actor_id, today + "%"),
+    ).fetchone()["n"]
+    if n_off >= 50:
+        out.append((
+            "off_hours", "medium",
+            f"{actor_type} #{actor_id} made {n_off} reads outside 07:00–20:00 Jamaica time today",
+            {"reads_off_hours": int(n_off), "date_utc": today},
+        ))
+
+    # C. permission probing — repeated 401/403 in last 10 min
+    cutoff_10 = (now - _td(minutes=10)).isoformat()
+    n_denied = con.execute(
+        """SELECT COUNT(*) AS n FROM access_log
+            WHERE actor_id = ? AND status_code IN (401, 403)
+              AND created_at >= ?""",
+        (actor_id, cutoff_10),
+    ).fetchone()["n"]
+    if n_denied >= 10:
+        out.append((
+            "permission_probe", "high",
+            f"{actor_type} #{actor_id} hit {n_denied} denied responses (401/403) in 10 minutes",
+            {"denied_count": int(n_denied), "window_minutes": 10},
+        ))
+
+    con.close()
+    return out
 
 
 def revoke_session(jti: str) -> bool:

@@ -17,7 +17,7 @@ import uuid
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import jwt
@@ -59,6 +59,8 @@ from database import (
     get_expiring_documents,
     log_audit, query_audit_log, verify_audit_chain,
     log_access, query_access_log, aggregate_access_by_target,
+    create_security_alert, recent_alert_exists, list_security_alerts,
+    count_open_security_alerts, resolve_security_alert, detect_anomalies_for_actor,
     create_session, get_session_by_jti, is_session_active,
     revoke_session, revoke_all_sessions_for, get_active_sessions_for,
     mark_session_mfa_verified,
@@ -69,10 +71,12 @@ ADMIN_PERMS = {
     "super_admin": {
         "admin:create", "admin:update", "admin:delete", "admin:set_role",
         "admin:set_active", "admin:reset_password", "admin:view_all",
-        "tech:view", "tech:create", "tech:update", "tech:delete", "tech:reset_pin",
-        "customer:view", "customer:create", "customer:update", "customer:delete",
-        "visit:view", "visit:create", "visit:update", "visit:delete",
+        "tech:view", "tech:create", "tech:update", "tech:delete", "tech:reset_pin", "tech:export",
+        "customer:view", "customer:create", "customer:update", "customer:delete", "customer:export",
+        "visit:view", "visit:create", "visit:update", "visit:delete", "visit:export",
         "review:view", "review:approve", "review:reject", "review:delete",
+        "invoice:export",
+        "security:view_alerts", "security:resolve_alerts",
         "audit:view_all",
         "timesheet:view_all",
         "schedule:view", "schedule:edit",
@@ -85,10 +89,12 @@ ADMIN_PERMS = {
     },
     "supervisor_admin": {
         "admin:view_all",
-        "tech:view", "tech:update",
-        "customer:view", "customer:update",
-        "visit:view", "visit:update",
+        "tech:view", "tech:update", "tech:export",
+        "customer:view", "customer:update", "customer:export",
+        "visit:view", "visit:update", "visit:export",
         "review:view",
+        "invoice:export",
+        "security:view_alerts",
         "audit:view_all",
         "timesheet:view_all",
         "schedule:view", "schedule:edit",
@@ -300,6 +306,16 @@ def _enforce_rate(request: Request, bucket: str, identity: str = "",
     key = f"{bucket}:{ip}:{identity}"
     if not _rate_check(key, max_attempts, window_seconds):
         raise HTTPException(status_code=429, detail=message)
+
+
+def _enforce_export_rate(request: Request, admin_id: int, resource: str):
+    """Bulk exports get a tighter cap (10/hour per admin) — pulling all
+    customer records is a meaningfully different action from opening one,
+    and it should be visibly limited so a compromised account can't
+    silently exfiltrate the database."""
+    _enforce_rate(request, bucket=f"export:{resource}", identity=str(admin_id),
+                  max_attempts=10, window_seconds=3600,
+                  message=f"Export limit reached: max 10 {resource} exports per hour.")
 
 
 # Signed photo URL helpers are defined further down — after JWT_SECRET.
@@ -672,6 +688,60 @@ def _identify_actor_silent(request: Request) -> dict:
     return {}
 
 
+def _send_security_alert_email(alert: dict):
+    """Best-effort email notification for a newly-raised alert. Silent on
+    failure — the alert is still in the DB and visible to super_admin."""
+    api_key = os.environ.get("RESEND_API_KEY")
+    to_addr = os.environ.get("SECURITY_ALERT_EMAIL")
+    if not (api_key and to_addr):
+        return
+    try:
+        resend_lib.api_key = api_key
+        sev = (alert.get("severity") or "medium").upper()
+        actor = f"{alert.get('actor_label') or ''} ({alert.get('actor_prid') or alert.get('actor_id')})"
+        subject = f"[PrimeCool · {sev}] {alert.get('kind')}: {alert.get('summary')}"
+        html = (
+            f"<h2 style='color:#991b1b'>Security alert — {sev}</h2>"
+            f"<p><strong>Kind:</strong> {alert.get('kind')}</p>"
+            f"<p><strong>Actor:</strong> {actor}</p>"
+            f"<p><strong>Summary:</strong> {alert.get('summary')}</p>"
+            f"<pre style='background:#f3f4f6;padding:10px;border-radius:6px;font-size:12px'>"
+            f"{alert.get('details') or ''}</pre>"
+            f"<p style='color:#6b7280;font-size:12px'>Raised {alert.get('created_at')}. "
+            f"Sign in to the admin panel to review or resolve.</p>"
+        )
+        resend_lib.Emails.send({
+            "from":    "PrimeCool Services <onboarding@resend.dev>",
+            "to":      to_addr,
+            "subject": subject,
+            "html":    html,
+        })
+    except Exception as e:
+        print(f"SECURITY ALERT EMAIL ERROR: {e}")
+
+
+def _run_anomaly_detector(actor_type: str, actor_id: int):
+    """Check rules against this actor's recent activity. De-dupes by kind so
+    a single burst doesn't fire repeatedly."""
+    try:
+        hits = detect_anomalies_for_actor(actor_type, actor_id)
+        for kind, severity, summary, details in hits:
+            if recent_alert_exists(kind, actor_id, within_minutes=30):
+                continue
+            aid = create_security_alert(
+                kind=kind, summary=summary, severity=severity,
+                actor_type=actor_type, actor_id=actor_id, details=details,
+            )
+            print(f"SECURITY ALERT #{aid} [{severity}] {kind}: {summary}")
+            _send_security_alert_email({
+                "kind": kind, "severity": severity, "summary": summary,
+                "actor_id": actor_id, "actor_label": None, "actor_prid": None,
+                "details": details, "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+    except Exception as e:
+        print(f"anomaly detector error: {e}")
+
+
 @app.middleware("http")
 async def access_log_middleware(request: Request, call_next):
     """Records every API read access to access_log so we can answer
@@ -708,6 +778,7 @@ async def access_log_middleware(request: Request, call_next):
             ip_address=_client_ip(request),
             user_agent=(request.headers.get("user-agent", "") or "")[:255],
         )
+        _run_anomaly_detector(actor.get("actor_type"), actor.get("actor_id"))
     except Exception as e:
         print(f"access_log error: {e}")
     return response
@@ -2486,6 +2557,105 @@ def admin_access_aggregate(request: Request,
                                           target_type=target_type,
                                           min_views=min_views, limit=limit)
     raise HTTPException(403, "Forbidden")
+
+
+@app.get("/api/admin/security/alerts")
+def admin_list_alerts(request: Request, status: Optional[str] = None, limit: int = 100):
+    _require_perm(request, "security:view_alerts")
+    return list_security_alerts(status=status, limit=limit)
+
+
+@app.get("/api/admin/security/alerts/summary")
+def admin_alerts_summary(request: Request):
+    """Lightweight count for the dashboard banner — anyone with view_alerts
+    perm sees this. Used by admin.html to render a red banner on login."""
+    _require_perm(request, "security:view_alerts")
+    return {"open": count_open_security_alerts()}
+
+
+class AlertResolveBody(BaseModel):
+    note: Optional[str] = None
+    status: Optional[str] = "resolved"   # 'resolved' | 'dismissed'
+
+
+@app.post("/api/admin/security/alerts/{alert_id}/resolve")
+def admin_resolve_alert(request: Request, alert_id: int, body: AlertResolveBody):
+    admin = _require_perm(request, "security:resolve_alerts")
+    if body.status not in ("resolved", "dismissed"):
+        raise HTTPException(400, "status must be 'resolved' or 'dismissed'")
+    resolve_security_alert(alert_id, admin["id"], note=body.note or "", status=body.status)
+    _audit_from(admin, f"security.alert_{body.status}", request,
+                target_type="security_alert", target_id=alert_id,
+                target_label=body.note or "")
+    return {"ok": True}
+
+
+def _csv_response(rows: list, columns: list, filename: str) -> PlainTextResponse:
+    """Render rows to CSV with RFC 4180 escaping. `columns` is a list of dict
+    keys to include, in order."""
+    import csv as _csv
+    buf = io.StringIO()
+    w = _csv.writer(buf, quoting=_csv.QUOTE_MINIMAL)
+    w.writerow(columns)
+    for r in rows:
+        w.writerow([r.get(c, "") if r.get(c) is not None else "" for c in columns])
+    return PlainTextResponse(
+        buf.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/admin/customers/export")
+def admin_export_customers(request: Request):
+    admin = _require_perm(request, "customer:export")
+    _enforce_export_rate(request, admin["id"], "customer")
+    rows = get_all_customers()
+    _audit_from(admin, "customer.export", request, target_type="customer",
+                target_label=f"exported {len(rows)} rows")
+    cols = ["id", "customer_type", "first_name", "last_name", "company_name",
+            "email", "phone", "address", "parish", "created_at"]
+    return _csv_response(rows, cols, f"customers-{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv")
+
+
+@app.get("/api/admin/techs/export")
+def admin_export_techs(request: Request):
+    admin = _require_perm(request, "tech:export")
+    _enforce_export_rate(request, admin["id"], "tech")
+    rows = get_all_techs()
+    _audit_from(admin, "tech.export", request, target_type="tech",
+                target_label=f"exported {len(rows)} rows")
+    cols = ["id", "prid", "first_name", "last_name", "email", "phone",
+            "tech_role", "is_active", "hire_date", "created_at"]
+    return _csv_response(rows, cols, f"techs-{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv")
+
+
+@app.get("/api/admin/visits/export")
+def admin_export_visits(request: Request):
+    admin = _require_perm(request, "visit:export")
+    _enforce_export_rate(request, admin["id"], "visit")
+    rows = get_all_visits()
+    _audit_from(admin, "visit.export", request, target_type="visit",
+                target_label=f"exported {len(rows)} rows")
+    cols = ["id", "customer_id", "technician_id", "scheduled_date",
+            "service_type", "status", "equipment_name", "work_performed",
+            "created_at"]
+    return _csv_response(rows, cols, f"visits-{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv")
+
+
+@app.get("/api/admin/invoices/export")
+def admin_export_invoices(request: Request,
+                          status: Optional[str] = None,
+                          customer_id: Optional[int] = None):
+    admin = _require_perm(request, "invoice:export")
+    _enforce_export_rate(request, admin["id"], "invoice")
+    rows = get_all_invoices(status=status, customer_id=customer_id)
+    _audit_from(admin, "invoice.export", request, target_type="invoice",
+                target_label=f"exported {len(rows)} rows")
+    cols = ["id", "invoice_number", "customer_id", "visit_id", "issue_date",
+            "due_date", "subtotal", "gct_amount", "total", "amount_paid",
+            "status", "created_at"]
+    return _csv_response(rows, cols, f"invoices-{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv")
 
 
 @app.get("/api/admin/audit")

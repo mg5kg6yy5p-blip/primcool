@@ -445,12 +445,17 @@
 
     <div class="main">
 
+      <div id="securityAlertBanner" style="display:none;margin-bottom:16px;padding:12px 16px;border-radius:8px;background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;font-size:14px;font-weight:600;cursor:pointer;" onclick="showPanel('audit'); document.getElementById('auditMode').value='alerts'; loadAudit();"></div>
+
       <!-- ── Customers panel ── -->
       <div class="panel active" id="panel-customers">
         <div id="customerList">
           <div class="top-bar">
             <h2>Customers</h2>
-            <button class="btn btn-primary" onclick="openModal('addCustomer')">+ Add Customer</button>
+            <div style="display:flex;gap:8px;">
+              <button class="btn btn-ghost" id="exportCustomersBtn" onclick="exportResource('customers')" style="display:none;">⬇ Export CSV</button>
+              <button class="btn btn-primary" onclick="openModal('addCustomer')">+ Add Customer</button>
+            </div>
           </div>
           <div class="table-wrap">
             <table>
@@ -498,7 +503,10 @@
       <div class="panel" id="panel-invoices">
         <div class="top-bar">
           <h2>Invoices</h2>
-          <button class="btn btn-primary" id="addInvoiceBtn" onclick="openInvoiceModal()" style="display:none;">+ New Invoice</button>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-ghost" id="exportInvoicesBtn" onclick="exportResource('invoices')" style="display:none;">⬇ Export CSV</button>
+            <button class="btn btn-primary" id="addInvoiceBtn" onclick="openInvoiceModal()" style="display:none;">+ New Invoice</button>
+          </div>
         </div>
 
         <div id="inv-totals" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:20px;"></div>
@@ -692,6 +700,7 @@
             <option value="mutations">Mutations (writes)</option>
             <option value="reads">Read access</option>
             <option value="aggregate">Aggregate (who viewed what)</option>
+            <option value="alerts">Security alerts</option>
           </select>
           <select id="auditAction" onchange="loadAudit()" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
             <option value="">All actions</option>
@@ -725,7 +734,10 @@
       <div class="panel" id="panel-techs">
         <div class="top-bar">
           <h2>Technicians</h2>
-          <button class="btn btn-primary" onclick="openModal('addTech')">+ Add Technician</button>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-ghost" id="exportTechsBtn" onclick="exportResource('techs')" style="display:none;">⬇ Export CSV</button>
+            <button class="btn btn-primary" onclick="openModal('addTech')">+ Add Technician</button>
+          </div>
         </div>
         <div class="table-wrap">
           <table>
@@ -755,7 +767,10 @@
       <div class="panel" id="panel-visits">
         <div class="top-bar">
           <h2>All Maintenance Visits</h2>
-          <button class="btn btn-primary" onclick="openModal('addVisit')">+ Schedule Visit</button>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-ghost" id="exportVisitsBtn" onclick="exportResource('visits')" style="display:none;">⬇ Export CSV</button>
+            <button class="btn btn-primary" onclick="openModal('addVisit')">+ Schedule Visit</button>
+          </div>
         </div>
         <div class="filter-bar" id="visitFilters">
           <button class="filter-btn active" onclick="setFilter('all',this)">All</button>
@@ -1412,10 +1427,10 @@
   let resetAdminPwId = null;
 
   const ADMIN_PERMS = {
-    super_admin: new Set(['admin:create','admin:set_role','admin:set_active','admin:reset_password','admin:view_all','audit:view_all','tech:create','tech:delete','customer:create','customer:delete','visit:create','visit:delete','review:approve','review:delete','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','inventory:delete','invoice:view','invoice:create','invoice:update','invoice:delete','invoice:record_payment','documents:upload','documents:view','documents:view_highly_sensitive','documents:delete','documents:delete_highly_sensitive']),
-    supervisor_admin: new Set(['admin:view_all','audit:view_all','tech:update','customer:update','visit:update','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:adjust','invoice:view','invoice:update','invoice:record_payment','documents:upload','documents:view','documents:view_highly_sensitive','documents:delete']),
-    system_admin: new Set(['tech:create','customer:create','visit:create','audit:view_self','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','invoice:view','invoice:create','invoice:update','invoice:record_payment','documents:upload','documents:view']),
-    hr_admin: new Set(['tech:create','audit:view_self','timesheet:view_all','documents:upload','documents:view','documents:view_highly_sensitive']),
+    super_admin: new Set(['admin:create','admin:set_role','admin:set_active','admin:reset_password','admin:view_all','audit:view_all','tech:view','tech:create','tech:delete','tech:export','customer:view','customer:create','customer:delete','customer:export','visit:view','visit:create','visit:delete','visit:export','review:view','review:approve','review:delete','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','inventory:delete','invoice:view','invoice:create','invoice:update','invoice:delete','invoice:record_payment','invoice:export','documents:upload','documents:view','documents:view_highly_sensitive','documents:delete','documents:delete_highly_sensitive','security:view_alerts','security:resolve_alerts']),
+    supervisor_admin: new Set(['admin:view_all','audit:view_all','tech:view','tech:update','tech:export','customer:view','customer:update','customer:export','visit:view','visit:update','visit:export','review:view','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:adjust','invoice:view','invoice:update','invoice:record_payment','invoice:export','documents:upload','documents:view','documents:view_highly_sensitive','documents:delete','security:view_alerts']),
+    system_admin: new Set(['tech:view','tech:create','customer:view','customer:create','visit:view','visit:create','review:view','audit:view_self','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','invoice:view','invoice:create','invoice:update','invoice:record_payment','documents:upload','documents:view']),
+    hr_admin: new Set(['tech:view','tech:create','audit:view_self','timesheet:view_all','invoice:view','documents:upload','documents:view','documents:view_highly_sensitive']),
     ceo_assistant: new Set(['audit:view_self','inventory:view','invoice:view','documents:view']),
   };
   function can(perm) {
@@ -1581,6 +1596,11 @@
     if (can('documents:upload')) document.getElementById('uploadDocBtn').style.display = '';
     if (can('documents:view_highly_sensitive')) document.getElementById('docHighlySensitiveBtn').style.display = 'inline-block';
     if (can('admin:create')) document.getElementById('addAdminBtn').style.display = '';
+    if (can('customer:export')) document.getElementById('exportCustomersBtn').style.display = '';
+    if (can('tech:export'))     document.getElementById('exportTechsBtn').style.display = '';
+    if (can('visit:export'))    document.getElementById('exportVisitsBtn').style.display = '';
+    if (can('invoice:export'))  document.getElementById('exportInvoicesBtn').style.display = '';
+    if (can('security:view_alerts')) refreshSecurityBanner();
     // Show current admin name + role
     const tag = document.querySelector('.admin-tag');
     if (tag && currentAdmin) {
@@ -3661,6 +3681,45 @@
   }
 
   // ── Audit Log ──────────────────────────────────────────────────────────────
+  async function refreshSecurityBanner() {
+    try {
+      const r = await api('GET', '/api/admin/security/alerts/summary');
+      const el = document.getElementById('securityAlertBanner');
+      if (!el) return;
+      if (r && r.open > 0) {
+        el.style.display = 'block';
+        el.innerHTML = `⚠ <strong>${r.open} open security alert${r.open === 1 ? '' : 's'}</strong> — click to review`;
+      } else {
+        el.style.display = 'none';
+      }
+    } catch {}
+  }
+
+  async function exportResource(name) {
+    // Browser download via authenticated fetch → blob (cookie auth is on the request).
+    const btn = document.getElementById('export' + name[0].toUpperCase() + name.slice(1) + 'Btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Exporting…'; }
+    try {
+      const res = await fetch('/api/admin/' + name + '/export', { credentials: 'include' });
+      if (!res.ok) {
+        const t = await res.text().catch(() => '');
+        alert('Export failed: ' + (res.status === 429 ? 'rate limit reached (10/hour).' : (t || res.statusText)));
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name + '-' + new Date().toISOString().slice(0,10) + '.csv';
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      alert('Export failed: ' + e.message);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '⬇ Export CSV'; }
+    }
+  }
+
   async function loadAudit() {
     if (!currentAdmin) return;
     if (!can('audit:view_all') && !can('audit:view_self')) return;
@@ -3684,12 +3743,55 @@
         params.set('min_views', String(parseInt(minViewsEl?.value || '1', 10) || 1));
         const rows = await api('GET', '/api/admin/access/aggregate?' + params.toString());
         renderAggregateAccess(rows);
+      } else if (mode === 'alerts') {
+        const rows = await api('GET', '/api/admin/security/alerts?limit=200');
+        renderSecurityAlerts(rows);
       } else {
         if (ap) params.set('action_prefix', ap + '.');
         const rows = await api('GET', '/api/admin/audit?' + params.toString());
         renderAudit(rows);
       }
     } catch {}
+  }
+
+  function renderSecurityAlerts(rows) {
+    const tbody = document.getElementById('auditTableBody');
+    const countEl = document.getElementById('auditCount');
+    if (countEl) countEl.textContent = rows.length ? `${rows.length} alert${rows.length === 1 ? '' : 's'}` : '';
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">No security alerts.</td></tr>';
+      return;
+    }
+    const fmt = (iso) => { try { return new Date(iso).toLocaleString(); } catch { return iso || ''; } };
+    const canResolve = can('security:resolve_alerts');
+    tbody.innerHTML = rows.map(r => {
+      const sev = (r.severity || 'medium').toLowerCase();
+      const sevColor = sev === 'high' ? 'background:#fee2e2;color:#991b1b;' : (sev === 'medium' ? 'background:#fef3c7;color:#92400e;' : 'background:#e0e7ff;color:#3730a3;');
+      const statusBadge = r.status === 'open'
+        ? '<span class="badge" style="background:#fee2e2;color:#991b1b;">OPEN</span>'
+        : `<span class="badge" style="background:#e5e7eb;color:#374151;">${escHtml(r.status.toUpperCase())}</span>`;
+      const resolveBtns = (canResolve && r.status === 'open')
+        ? `<button class="btn btn-ghost btn-sm" onclick="resolveAlert(${r.id}, 'resolved')">Resolve</button>
+           <button class="btn btn-ghost btn-sm" onclick="resolveAlert(${r.id}, 'dismissed')">Dismiss</button>`
+        : '';
+      return `<tr>
+        <td>${escHtml(fmt(r.created_at))}</td>
+        <td><span class="badge" style="${sevColor}">${escHtml(sev.toUpperCase())}</span> ${escHtml(r.kind)}</td>
+        <td>${statusBadge}</td>
+        <td>${escHtml(r.summary || '')}</td>
+        <td>${resolveBtns}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  async function resolveAlert(id, status) {
+    const note = prompt(`${status === 'resolved' ? 'Resolution' : 'Dismiss'} note (optional):`, '');
+    if (note === null) return;
+    try {
+      await api('POST', `/api/admin/security/alerts/${id}/resolve`, { note, status });
+      loadAudit();
+      refreshSecurityBanner();
+    } catch (e) { alert(e.message); }
   }
 
   function renderAggregateAccess(rows) {
