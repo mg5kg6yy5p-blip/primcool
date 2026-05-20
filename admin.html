@@ -989,13 +989,19 @@
         <div class="field"><label>Phone</label><input id="t-phone" placeholder="+1 868 ..."></div>
         <div class="field"><label>Email</label><input id="t-email" type="email" placeholder="marcus@primecool..."></div>
       </div>
-      <div class="field">
-        <label>Role</label>
-        <select id="t-role">
-          <option value="tech">Technician</option>
-          <option value="lead_tech">Lead Technician</option>
-          <option value="apprentice">Apprentice / Junior</option>
-        </select>
+      <div class="field-row">
+        <div class="field">
+          <label>Role</label>
+          <select id="t-role">
+            <option value="tech">Technician</option>
+            <option value="lead_tech">Lead Technician</option>
+            <option value="apprentice">Apprentice / Junior</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Hourly Rate (J$) <span style="text-transform:none;font-weight:400;color:var(--muted);">— used to bill labor on invoices</span></label>
+          <input id="t-rate" type="number" step="0.01" min="0" placeholder="0.00">
+        </div>
       </div>
       <div class="field-row">
         <div class="field"><label>Hire Date *</label><input id="t-hire" type="date"></div>
@@ -1575,10 +1581,18 @@
         <td>${v.equipment_name || '—'}</td>
         <td style="white-space:nowrap;">
           <button class="btn btn-edit btn-sm" onclick="openEditVisit(${v.id})">Edit</button>
+          ${v.status === 'completed' && can('invoice:create') ? `<button class="btn btn-primary btn-sm" onclick="generateInvoiceFromVisit(${v.id})" style="margin-left:6px;background:#059669;">+ Invoice</button>` : ''}
           <button class="btn btn-danger btn-sm" onclick="deleteVisit(${v.id})" style="margin-left:6px;">Delete</button>
         </td>
       </tr>`;
     }).join('');
+  }
+
+  async function generateInvoiceFromVisit(visitId) {
+    try {
+      const prefill = await api('GET', `/api/admin/visits/${visitId}/invoice-prefill`);
+      await openInvoiceModal(null, prefill);
+    } catch(e) { alert('Error: ' + e.message); }
   }
 
   function setFilter(f, btn) {
@@ -2035,11 +2049,12 @@
   }
 
   // ── Invoice create/edit modal ──
-  async function openInvoiceModal(invoiceId) {
+  async function openInvoiceModal(invoiceId, prefill) {
     editingInvoiceId = invoiceId || null;
     currentLineItems = [];
     document.getElementById('err-invoice').style.display = 'none';
-    document.getElementById('invoiceModalTitle').textContent = invoiceId ? 'Edit Invoice' : 'New Invoice';
+    document.getElementById('invoiceModalTitle').textContent = invoiceId ? 'Edit Invoice'
+      : (prefill ? 'New Invoice (pre-filled from visit)' : 'New Invoice');
 
     // Populate customer dropdown
     const custSel = document.getElementById('iv-customer');
@@ -2055,6 +2070,19 @@
     document.getElementById('iv-notes').value    = '';
     document.getElementById('iv-visit').innerHTML = '<option value="">— none —</option>';
     document.getElementById('iv-tracked-time-hint').style.display = 'none';
+
+    if (prefill && !invoiceId) {
+      custSel.value = prefill.customer_id;
+      await loadVisitsForInvoice(prefill.visit_id);
+      document.getElementById('iv-issue').value = prefill.issue_date || document.getElementById('iv-issue').value;
+      document.getElementById('iv-due').value   = prefill.due_date   || document.getElementById('iv-due').value;
+      currentLineItems = (prefill.line_items || []).map(li => ({...li}));
+      // Show a hint banner above the totals
+      if (prefill.hourly_rate === 0 && currentLineItems.some(li => li.line_type === 'labor')) {
+        setTimeout(() => showErr('err-invoice',
+          '⚠️ Tech\'s hourly rate is not set — labor line shows J$0. Set the rate in the Technicians tab, or edit the line manually.'), 50);
+      }
+    }
 
     if (invoiceId) {
       try {
@@ -2927,7 +2955,7 @@
     tbody.innerHTML = allTechs.map(t => `
       <tr style="${t.active ? '' : 'opacity:0.55;'}">
         <td><span class="code-pill">${t.tech_code}</span>${t.prid ? `<br><span style="font-size:10px;color:var(--muted);font-family:'Courier New',monospace;">${t.prid}</span>` : ''}</td>
-        <td><strong>${escHtml(t.name)}</strong>${t.email ? `<br><span style="font-size:11px;color:var(--muted);">${escHtml(t.email)}</span>` : ''}<br><span class="badge" style="background:#eff6ff;color:#1d4ed8;margin-top:3px;display:inline-block;">${roleLabel[t.role] || 'Technician'}</span></td>
+        <td><strong>${escHtml(t.name)}</strong>${t.email ? `<br><span style="font-size:11px;color:var(--muted);">${escHtml(t.email)}</span>` : ''}<br><span class="badge" style="background:#eff6ff;color:#1d4ed8;margin-top:3px;display:inline-block;">${roleLabel[t.role] || 'Technician'}</span>${t.hourly_rate > 0 ? `<br><span style="font-size:11px;color:var(--muted);margin-top:2px;display:inline-block;">J$${Number(t.hourly_rate).toFixed(2)}/hr</span>` : '<br><span style="font-size:11px;color:#dc2626;margin-top:2px;display:inline-block;">No rate set</span>'}</td>
         <td>${escHtml(t.phone) || '—'}</td>
         <td>${t.active_jobs > 0 ? `<span class="badge badge-in_progress">${t.active_jobs} active</span>` : '<span style="color:var(--muted);">0</span>'}</td>
         <td>${t.active ? '<span class="badge badge-confirmed">Active</span>' : '<span class="badge" style="background:#f3f4f6;color:var(--muted);">Inactive</span>'}</td>
@@ -2952,19 +2980,20 @@
     const err = document.getElementById('err-addTech');
     err.style.display = 'none';
     const body = {
-      pin:       document.getElementById('t-pin').value.trim(),
-      name:      document.getElementById('t-name').value.trim(),
-      phone:     document.getElementById('t-phone').value.trim(),
-      email:     document.getElementById('t-email').value.trim(),
-      role:      document.getElementById('t-role').value || 'tech',
-      hire_date: document.getElementById('t-hire').value,
+      pin:         document.getElementById('t-pin').value.trim(),
+      name:        document.getElementById('t-name').value.trim(),
+      phone:       document.getElementById('t-phone').value.trim(),
+      email:       document.getElementById('t-email').value.trim(),
+      role:        document.getElementById('t-role').value || 'tech',
+      hire_date:   document.getElementById('t-hire').value,
+      hourly_rate: parseFloat(document.getElementById('t-rate').value) || 0,
     };
     if (!body.pin || !body.name || !body.hire_date) { showErr('err-addTech','Name, PIN, and hire date are required.'); return; }
     if (!/^\d{4,8}$/.test(body.pin)) { showErr('err-addTech','PIN must be 4–8 digits.'); return; }
     try {
       const res = await api('POST', '/api/admin/techs', body);
       closeModal('addTech');
-      ['t-pin','t-name','t-phone','t-email','t-hire'].forEach(id => document.getElementById(id).value = '');
+      ['t-pin','t-name','t-phone','t-email','t-hire','t-rate'].forEach(id => document.getElementById(id).value = '');
       document.getElementById('t-role').value = 'tech';
       await loadTechs();
       showPridModal(res.prid, `${body.name} signs in at <strong>/tech</strong> with their PRID as the code, plus the PIN you set.`);
@@ -2994,7 +3023,8 @@
     try {
       await api('PUT', `/api/admin/techs/${id}`, {
         name: t.name, phone: t.phone || '', email: t.email || '',
-        role: t.role || 'tech', active: !!active,
+        role: t.role || 'tech', hourly_rate: t.hourly_rate || 0,
+        active: !!active,
       });
       await loadTechs();
     } catch(e) { alert('Error: ' + e.message); }

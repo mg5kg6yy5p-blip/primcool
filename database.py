@@ -136,24 +136,40 @@ def init_db():
     """)
     con.execute("""
         CREATE TABLE IF NOT EXISTS technicians (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            tech_code  TEXT NOT NULL UNIQUE,
-            pin_hash   TEXT NOT NULL,
-            name       TEXT NOT NULL,
-            phone      TEXT,
-            email      TEXT,
-            role       TEXT NOT NULL DEFAULT 'tech',
-            prid       TEXT UNIQUE,
-            active     INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            tech_code   TEXT NOT NULL UNIQUE,
+            pin_hash    TEXT NOT NULL,
+            name        TEXT NOT NULL,
+            phone       TEXT,
+            email       TEXT,
+            role        TEXT NOT NULL DEFAULT 'tech',
+            prid        TEXT UNIQUE,
+            hire_date   TEXT,
+            hourly_rate REAL NOT NULL DEFAULT 0,
+            active      INTEGER NOT NULL DEFAULT 1,
+            created_at  TEXT NOT NULL
         )
     """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS visit_parts (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            visit_id    INTEGER NOT NULL REFERENCES maintenance_visits(id),
+            part_id     INTEGER NOT NULL REFERENCES parts(id),
+            quantity    REAL NOT NULL,
+            unit_price  REAL NOT NULL DEFAULT 0,
+            notes       TEXT,
+            added_by_tech_id INTEGER REFERENCES technicians(id),
+            created_at  TEXT NOT NULL
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_visit_parts_visit ON visit_parts(visit_id)")
     # Idempotent column additions for existing tech DBs
     tech_cols = {row[1] for row in con.execute("PRAGMA table_info(technicians)")}
     for name, sql in (
-        ("role",      "ALTER TABLE technicians ADD COLUMN role TEXT NOT NULL DEFAULT 'tech'"),
-        ("prid",      "ALTER TABLE technicians ADD COLUMN prid TEXT"),
-        ("hire_date", "ALTER TABLE technicians ADD COLUMN hire_date TEXT"),
+        ("role",        "ALTER TABLE technicians ADD COLUMN role TEXT NOT NULL DEFAULT 'tech'"),
+        ("prid",        "ALTER TABLE technicians ADD COLUMN prid TEXT"),
+        ("hire_date",   "ALTER TABLE technicians ADD COLUMN hire_date TEXT"),
+        ("hourly_rate", "ALTER TABLE technicians ADD COLUMN hourly_rate REAL NOT NULL DEFAULT 0"),
     ):
         if name not in tech_cols:
             try: con.execute(sql)
@@ -689,7 +705,7 @@ def update_visit(visit_id: int, data: dict):
     con.close()
 
 
-def get_visit_by_id(visit_id: int):
+def get_visit_by_id(visit_id: int, with_parts: bool = False):
     con = _con()
     row = con.execute(
         """
@@ -697,7 +713,7 @@ def get_visit_by_id(visit_id: int):
                c.phone AS customer_phone, c.address AS customer_address,
                c.customer_code, e.name AS equipment_name, e.type AS equipment_type,
                e.model AS equipment_model, e.location AS equipment_location,
-               t.name AS tech_name
+               t.name AS tech_name, t.hourly_rate AS tech_hourly_rate
         FROM maintenance_visits v
         JOIN customers c ON v.customer_id = c.id
         LEFT JOIN equipment   e ON v.equipment_id     = e.id
@@ -707,7 +723,12 @@ def get_visit_by_id(visit_id: int):
         (visit_id,),
     ).fetchone()
     con.close()
-    return dict(row) if row else None
+    if not row:
+        return None
+    out = dict(row)
+    if with_parts:
+        out["parts_used"] = get_visit_parts(visit_id)
+    return out
 
 
 def update_visit_time(visit_id: int, field: str, value: str):
@@ -897,7 +918,8 @@ def get_all_techs():
     con = _con()
     rows = con.execute(
         """
-        SELECT t.id, t.tech_code, t.name, t.phone, t.email, t.role, t.prid, t.active, t.created_at,
+        SELECT t.id, t.tech_code, t.name, t.phone, t.email, t.role, t.prid,
+               t.hourly_rate, t.active, t.created_at,
                (SELECT COUNT(*) FROM maintenance_visits v
                 WHERE v.assigned_tech_id = t.id AND v.status != 'completed') AS active_jobs
         FROM technicians t
@@ -917,8 +939,9 @@ def create_tech(data: dict) -> tuple:
     con = _con()
     cur = con.execute(
         """
-        INSERT INTO technicians (tech_code, pin_hash, name, phone, email, role, prid, hire_date, active, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+        INSERT INTO technicians
+            (tech_code, pin_hash, name, phone, email, role, prid, hire_date, hourly_rate, active, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
         """,
         (
             tech_code,
@@ -929,6 +952,7 @@ def create_tech(data: dict) -> tuple:
             data.get("role", "tech"),
             prid,
             hire_date,
+            float(data.get("hourly_rate") or 0),
             datetime.now(timezone.utc).isoformat(),
         ),
     )
@@ -948,12 +972,13 @@ def set_tech_pin(tech_id: int, pin: str):
 def update_tech(tech_id: int, data: dict):
     con = _con()
     con.execute(
-        "UPDATE technicians SET name = ?, phone = ?, email = ?, role = ?, active = ? WHERE id = ?",
+        "UPDATE technicians SET name = ?, phone = ?, email = ?, role = ?, hourly_rate = ?, active = ? WHERE id = ?",
         (
             data.get("name", ""),
             data.get("phone", ""),
             data.get("email", ""),
             data.get("role", "tech"),
+            float(data.get("hourly_rate") or 0),
             1 if data.get("active", True) else 0,
             tech_id,
         ),
@@ -1485,6 +1510,166 @@ def get_part_movements(part_id: int, limit: int = 100):
     ).fetchall()
     con.close()
     return [dict(r) for r in rows]
+
+
+# ── Visit Parts (parts used by a tech on a specific visit) ───────────────────
+
+def get_visit_parts(visit_id: int):
+    con = _con()
+    rows = con.execute(
+        """
+        SELECT vp.*, p.sku, p.name AS part_name, p.unit AS part_unit,
+               p.unit_cost AS current_unit_cost, t.name AS tech_name
+        FROM visit_parts vp
+        JOIN parts p ON vp.part_id = p.id
+        LEFT JOIN technicians t ON vp.added_by_tech_id = t.id
+        WHERE vp.visit_id = ?
+        ORDER BY vp.created_at
+        """,
+        (visit_id,),
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def add_visit_part(visit_id: int, part_id: int, quantity: float,
+                   added_by_tech_id: int = None, notes: str = "",
+                   tech_prid: str = None, tech_label: str = None) -> int:
+    """Records a part used on a visit and auto-deducts inventory.
+    Unit price is snapshotted from the part's current unit_cost.
+    Raises ValueError if stock is insufficient."""
+    if quantity <= 0:
+        raise ValueError("Quantity must be positive")
+    part = get_part_by_id(part_id)
+    if not part:
+        raise ValueError("Part not found")
+
+    # Deduct inventory first — this will fail if insufficient stock
+    adjust_part_quantity(
+        part_id, "used", -float(quantity),
+        reason=f"Used on visit #{visit_id}",
+        visit_id=visit_id,
+        performed_by_type="tech",
+        performed_by_id=added_by_tech_id,
+        performed_by_prid=tech_prid,
+        performed_by_label=tech_label,
+    )
+
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    cur = con.execute(
+        """
+        INSERT INTO visit_parts (visit_id, part_id, quantity, unit_price, notes, added_by_tech_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (visit_id, part_id, float(quantity), float(part["unit_cost"]),
+         notes, added_by_tech_id, now),
+    )
+    vp_id = cur.lastrowid
+    con.commit()
+    con.close()
+    return vp_id
+
+
+def remove_visit_part(vp_id: int, removed_by_tech_id: int = None,
+                      tech_prid: str = None, tech_label: str = None):
+    """Removes a part usage record and reverses the inventory adjustment."""
+    con = _con()
+    row = con.execute("SELECT * FROM visit_parts WHERE id = ?", (vp_id,)).fetchone()
+    if not row:
+        con.close()
+        raise ValueError("Visit part not found")
+    row = dict(row)
+    con.execute("DELETE FROM visit_parts WHERE id = ?", (vp_id,))
+    con.commit()
+    con.close()
+    # Reverse the inventory deduction
+    adjust_part_quantity(
+        row["part_id"], "received", float(row["quantity"]),
+        reason=f"Reversed: removed from visit #{row['visit_id']}",
+        visit_id=row["visit_id"],
+        performed_by_type="tech",
+        performed_by_id=removed_by_tech_id,
+        performed_by_prid=tech_prid,
+        performed_by_label=tech_label,
+    )
+
+
+def get_visit_part_by_id(vp_id: int):
+    con = _con()
+    row = con.execute("SELECT * FROM visit_parts WHERE id = ?", (vp_id,)).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
+def build_invoice_lines_from_visit(visit_id: int):
+    """Returns a dict with default invoice payload pre-built from a completed visit:
+       - labor line: (tracked hours) × tech's hourly_rate (0 if no rate set)
+       - part lines: one per visit_parts row
+       - default issue_date = today, due_date = today + 30
+    """
+    from datetime import timedelta as _td
+    con = _con()
+    v = con.execute(
+        """
+        SELECT v.*, c.id AS customer_id, t.name AS tech_name, t.hourly_rate, t.prid AS tech_prid
+        FROM maintenance_visits v
+        JOIN customers c   ON v.customer_id      = c.id
+        LEFT JOIN technicians t ON v.assigned_tech_id = t.id
+        WHERE v.id = ?
+        """,
+        (visit_id,),
+    ).fetchone()
+    con.close()
+    if not v:
+        return None
+    v = dict(v)
+
+    line_items = []
+
+    # Labor from tracked time
+    if v.get("start_time") and v.get("end_time"):
+        try:
+            start = datetime.fromisoformat(v["start_time"].replace("Z", "+00:00"))
+            end   = datetime.fromisoformat(v["end_time"].replace("Z",   "+00:00"))
+            hours = round((end - start).total_seconds() / 3600.0, 2)
+        except Exception:
+            hours = 0
+    else:
+        hours = 0
+    rate = float(v.get("hourly_rate") or 0)
+    tech_label = v.get("tech_name") or "Technician"
+    visit_type_label = "Preventive Maintenance" if v.get("visit_type") == "PM" else "Corrective Maintenance"
+    if hours > 0:
+        line_items.append({
+            "line_type":   "labor",
+            "part_id":     None,
+            "description": f"{visit_type_label} — labor ({tech_label}, {hours}h)",
+            "quantity":    hours,
+            "unit_price":  rate,
+        })
+
+    # Parts
+    for vp in get_visit_parts(visit_id):
+        line_items.append({
+            "line_type":   "part",
+            "part_id":     vp["part_id"],
+            "description": f"{vp['sku']} — {vp['part_name']}",
+            "quantity":    float(vp["quantity"]),
+            "unit_price":  float(vp["unit_price"]),
+        })
+
+    today = datetime.now(timezone.utc).date()
+    due   = today + _td(days=30)
+    return {
+        "customer_id": v["customer_id"],
+        "visit_id":    visit_id,
+        "issue_date":  today.isoformat(),
+        "due_date":    due.isoformat(),
+        "line_items":  line_items,
+        "tracked_hours": hours,
+        "hourly_rate":   rate,
+    }
 
 
 # ── Invoices ─────────────────────────────────────────────────────────────────

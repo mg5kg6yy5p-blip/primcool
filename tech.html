@@ -745,6 +745,25 @@
           </div>
 
           <div class="detail-card">
+            <h3>Parts Used</h3>
+            <div id="partsUsedList" style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px;"></div>
+            <div style="display:grid;grid-template-columns:1fr 80px auto;gap:6px;align-items:end;">
+              <div>
+                <label style="display:block;font-size:10px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:var(--navy);margin-bottom:4px;">Add a part</label>
+                <select id="partPicker" style="width:100%;padding:9px 10px;border:2px solid var(--border);border-radius:8px;font-size:13px;outline:none;">
+                  <option value="">Select part…</option>
+                </select>
+              </div>
+              <div>
+                <label style="display:block;font-size:10px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:var(--navy);margin-bottom:4px;">Qty</label>
+                <input id="partQty" type="number" step="0.01" min="0.01" value="1" style="width:100%;padding:9px 10px;border:2px solid var(--border);border-radius:8px;font-size:13px;outline:none;text-align:right;">
+              </div>
+              <button onclick="addPartToVisit()" style="padding:9px 16px;background:var(--teal);color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;height:38px;">Add</button>
+            </div>
+            <p style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.4;">Adding a part deducts it from inventory. Tap × to remove and put it back.</p>
+          </div>
+
+          <div class="detail-card">
             <h3>Photos</h3>
             <div class="photo-upload-row">
               <label class="upload-btn" id="upload-before">
@@ -770,7 +789,16 @@
         <!-- Read-only completed view -->
         ${j.status === 'completed' ? `
           ${j.work_done ? `<div class="detail-card"><h3>Work Performed</h3><p style="font-size:14px;line-height:1.6;">${esc(j.work_done).replace(/\n/g,'<br>')}</p></div>` : ''}
-          ${j.parts_replaced ? `<div class="detail-card"><h3>Parts Replaced</h3><p style="font-size:14px;line-height:1.6;">${esc(j.parts_replaced).replace(/\n/g,'<br>')}</p></div>` : ''}
+          ${(j.parts_used || []).length ? `
+            <div class="detail-card">
+              <h3>Parts Used</h3>
+              ${(j.parts_used || []).map(p => `
+                <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;">
+                  <div><strong>${esc(p.sku)}</strong> — ${esc(p.part_name)}</div>
+                  <div style="color:var(--muted);">×${p.quantity} ${esc(p.part_unit || '')}</div>
+                </div>`).join('')}
+            </div>` : ''}
+          ${j.parts_replaced ? `<div class="detail-card"><h3>Notes on Parts</h3><p style="font-size:14px;line-height:1.6;">${esc(j.parts_replaced).replace(/\n/g,'<br>')}</p></div>` : ''}
           ${j.notes ? `<div class="detail-card"><h3>Notes</h3><p style="font-size:14px;line-height:1.6;">${esc(j.notes).replace(/\n/g,'<br>')}</p></div>` : ''}
           ${(photosBefore.length || photosAfter.length) ? `
             <div class="detail-card">
@@ -789,6 +817,84 @@
         const el = document.getElementById('liveTimer');
         if (el) el.textContent = liveTimerLabel(currentJob);
       }, 1000);
+    }
+
+    if (j.status === 'in_progress') {
+      renderPartsUsed();
+      loadPartsCatalog();
+    }
+  }
+
+  // ── Parts catalog (tech-side) ──
+  let partsCatalog = [];
+  async function loadPartsCatalog() {
+    if (partsCatalog.length) { fillPartPicker(); return; }
+    try {
+      partsCatalog = await api('GET', '/api/tech/parts');
+      fillPartPicker();
+    } catch {}
+  }
+  function fillPartPicker() {
+    const sel = document.getElementById('partPicker');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">Select part…</option>' +
+      partsCatalog.map(p => {
+        const stockNote = p.quantity <= 0 ? ' · OUT OF STOCK'
+                        : p.quantity <= p.reorder_point ? ` · low (${formatQty(p.quantity)} ${p.unit||''})`
+                        : ` · ${formatQty(p.quantity)} ${p.unit||''} in stock`;
+        return `<option value="${p.id}" ${p.quantity<=0?'disabled':''}>${esc(p.sku)} — ${esc(p.name)}${stockNote}</option>`;
+      }).join('');
+  }
+  function formatQty(n) { return (Number(n) % 1 === 0) ? String(Number(n)) : Number(n).toFixed(2); }
+
+  function renderPartsUsed() {
+    const wrap = document.getElementById('partsUsedList');
+    if (!wrap) return;
+    const parts = currentJob.parts_used || [];
+    if (!parts.length) {
+      wrap.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px 0;">No parts added yet.</div>';
+      return;
+    }
+    wrap.innerHTML = parts.map(p => `
+      <div style="display:flex;align-items:center;justify-content:space-between;background:white;border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:13px;">
+        <div style="min-width:0;flex:1;">
+          <strong style="color:var(--navy);">${esc(p.sku)}</strong> — ${esc(p.part_name)}
+          <div style="font-size:11px;color:var(--muted);margin-top:2px;">Qty ${formatQty(p.quantity)} ${esc(p.part_unit || '')}</div>
+        </div>
+        <button onclick="removePartFromVisit(${p.id})" style="background:none;border:none;color:var(--red);font-size:20px;cursor:pointer;padding:0 4px;line-height:1;" title="Remove and return to inventory">×</button>
+      </div>`).join('');
+  }
+
+  async function addPartToVisit() {
+    const sel = document.getElementById('partPicker');
+    const partId = parseInt(sel.value);
+    const qty    = parseFloat(document.getElementById('partQty').value);
+    if (!partId) { toast('Pick a part first.', 'error'); return; }
+    if (!qty || qty <= 0) { toast('Quantity must be positive.', 'error'); return; }
+    try {
+      await api('POST', `/api/tech/jobs/${currentJob.id}/parts`, {
+        part_id: partId, quantity: qty,
+      });
+      toast('Part added to job', 'success');
+      // Refresh job + catalog (stock changed)
+      currentJob = await api('GET', `/api/tech/jobs/${currentJob.id}`);
+      partsCatalog = [];
+      renderDetail();
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  }
+
+  async function removePartFromVisit(vpId) {
+    if (!confirm('Remove this part and return it to inventory?')) return;
+    try {
+      await api('DELETE', `/api/tech/jobs/${currentJob.id}/parts/${vpId}`);
+      toast('Part removed and returned to stock', 'success');
+      currentJob = await api('GET', `/api/tech/jobs/${currentJob.id}`);
+      partsCatalog = [];
+      renderDetail();
+    } catch (e) {
+      toast(e.message, 'error');
     }
   }
 

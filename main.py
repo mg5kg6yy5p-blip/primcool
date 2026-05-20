@@ -34,6 +34,8 @@ from database import (
     adjust_part_quantity, get_part_movements,
     create_invoice, update_invoice, get_invoice_by_id, get_all_invoices,
     get_customer_invoices, set_invoice_status, delete_invoice, record_invoice_payment,
+    get_visit_parts, add_visit_part, remove_visit_part, get_visit_part_by_id,
+    build_invoice_lines_from_visit,
     # Admin users + audit
     verify_admin_user, get_admin_user_by_id, get_all_admin_users,
     create_admin_user, update_admin_user, set_admin_role, set_admin_active,
@@ -404,20 +406,28 @@ class TechLogin(BaseModel):
 
 
 class TechCreate(BaseModel):
-    pin:       str
-    name:      str
-    phone:     str = ""
-    email:     str = ""
-    role:      str = "tech"   # 'lead_tech' | 'tech' | 'apprentice'
-    hire_date: str = ""
+    pin:         str
+    name:        str
+    phone:       str = ""
+    email:       str = ""
+    role:        str = "tech"   # 'lead_tech' | 'tech' | 'apprentice'
+    hire_date:   str = ""
+    hourly_rate: float = 0
 
 
 class TechUpdate(BaseModel):
-    name:   str
-    phone:  str = ""
-    email:  str = ""
-    role:   str = "tech"
-    active: bool = True
+    name:        str
+    phone:       str = ""
+    email:       str = ""
+    role:        str = "tech"
+    hourly_rate: float = 0
+    active:      bool = True
+
+
+class TechAddPart(BaseModel):
+    part_id:  int
+    quantity: float
+    notes:    str = ""
 
 
 class TechPinReset(BaseModel):
@@ -810,11 +820,59 @@ def tech_me(request: Request):
 @app.get("/api/tech/jobs/{visit_id}")
 def tech_get_job(request: Request, visit_id: int):
     tech_id = _require_tech(request)
-    visit   = get_visit_by_id(visit_id)
+    visit   = get_visit_by_id(visit_id, with_parts=True)
     if not visit or visit.get("assigned_tech_id") != tech_id:
         raise HTTPException(404, "Job not found")
     visit["photos"] = get_visit_photos(visit_id)
     return visit
+
+
+@app.get("/api/tech/parts")
+def tech_parts_catalog(request: Request):
+    _require_tech(request)
+    # Only active parts
+    return [p for p in get_all_parts() if p.get("active")]
+
+
+@app.post("/api/tech/jobs/{visit_id}/parts")
+def tech_add_part(request: Request, visit_id: int, body: TechAddPart):
+    tech_id = _require_tech(request)
+    visit = get_visit_by_id(visit_id)
+    if not visit or visit.get("assigned_tech_id") != tech_id:
+        raise HTTPException(404, "Job not found")
+    if visit["status"] == "completed":
+        raise HTTPException(400, "Cannot add parts after job is completed")
+    tech = get_tech_by_id(tech_id)
+    try:
+        vp_id = add_visit_part(
+            visit_id, body.part_id, body.quantity,
+            added_by_tech_id=tech_id,
+            notes=body.notes,
+            tech_prid=tech.get("prid") if tech else None,
+            tech_label=tech.get("name") if tech else None,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"id": vp_id}
+
+
+@app.delete("/api/tech/jobs/{visit_id}/parts/{vp_id}")
+def tech_remove_part(request: Request, visit_id: int, vp_id: int):
+    tech_id = _require_tech(request)
+    visit = get_visit_by_id(visit_id)
+    if not visit or visit.get("assigned_tech_id") != tech_id:
+        raise HTTPException(404, "Job not found")
+    vp = get_visit_part_by_id(vp_id)
+    if not vp or vp["visit_id"] != visit_id:
+        raise HTTPException(404, "Visit part not found")
+    tech = get_tech_by_id(tech_id)
+    remove_visit_part(
+        vp_id,
+        removed_by_tech_id=tech_id,
+        tech_prid=tech.get("prid") if tech else None,
+        tech_label=tech.get("name") if tech else None,
+    )
+    return {"ok": True}
 
 
 @app.put("/api/tech/jobs/{visit_id}/start")
@@ -1234,6 +1292,21 @@ def admin_part_movements(request: Request, part_id: int):
 def admin_tax_reference(request: Request):
     _require_admin(request)
     return JAMAICA_TAX_REFERENCE
+
+
+@app.get("/api/admin/visits/{visit_id}/invoice-prefill")
+def admin_invoice_prefill(request: Request, visit_id: int):
+    _require_perm(request, "invoice:create")
+    payload = build_invoice_lines_from_visit(visit_id)
+    if not payload:
+        raise HTTPException(404, "Visit not found")
+    return payload
+
+
+@app.get("/api/admin/visits/{visit_id}/parts")
+def admin_visit_parts(request: Request, visit_id: int):
+    _require_perm(request, "visit:update")
+    return get_visit_parts(visit_id)
 
 
 @app.get("/api/admin/invoices")
