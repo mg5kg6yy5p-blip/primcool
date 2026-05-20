@@ -444,6 +444,29 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_audit_action  ON audit_log(action, created_at)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_audit_target  ON audit_log(target_type, target_id)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at)")
+
+    # Read-access trail — separate from audit_log so the hash chain stays
+    # focused on mutations and security events. Reads are high-volume; this
+    # table is append-only and purged on a rolling window.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS access_log (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            actor_type   TEXT,                 -- 'admin' | 'tech' | 'customer' | NULL when unauthenticated
+            actor_id     INTEGER,
+            actor_prid   TEXT,
+            actor_label  TEXT,
+            method       TEXT NOT NULL,
+            path         TEXT NOT NULL,
+            query        TEXT,
+            status_code  INTEGER NOT NULL,
+            ip_address   TEXT,
+            user_agent   TEXT,
+            created_at   TEXT NOT NULL
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_access_actor   ON access_log(actor_id, created_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_access_path    ON access_log(path, created_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_access_created ON access_log(created_at)")
     con.execute("""
         CREATE TABLE IF NOT EXISTS tech_pin_resets (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2301,15 +2324,22 @@ def get_session_by_jti(jti: str):
     return dict(row) if row else None
 
 
-def is_session_active(jti: str) -> bool:
-    """Returns True if the session row exists, isn't revoked, and isn't past expiry.
-    Also bumps last_seen_at."""
+def is_session_active(jti: str, idle_timeout_by_type: dict = None) -> bool:
+    """Returns True if the session row exists, isn't revoked, isn't past expiry,
+    and (optionally) hasn't been idle past its per-type limit. Bumps last_seen_at
+    on success. Auto-revokes the row on idle timeout so subsequent calls fail
+    fast without re-checking the clock.
+
+    idle_timeout_by_type: {'admin': 1800, 'tech': 0, 'customer': 0} — 0 disables.
+    """
     if not jti:
         return False
-    now = datetime.now(timezone.utc).isoformat()
+    now_dt  = datetime.now(timezone.utc)
+    now_iso = now_dt.isoformat()
     con = _con()
     row = con.execute(
-        "SELECT id, revoked_at, expires_at FROM sessions WHERE jti = ?",
+        "SELECT id, subject_type, revoked_at, expires_at, last_seen_at "
+        "FROM sessions WHERE jti = ?",
         (jti,),
     ).fetchone()
     if not row:
@@ -2319,13 +2349,86 @@ def is_session_active(jti: str) -> bool:
     if r["revoked_at"]:
         con.close()
         return False
-    if r["expires_at"] and r["expires_at"] < now:
+    if r["expires_at"] and r["expires_at"] < now_iso:
         con.close()
         return False
-    con.execute("UPDATE sessions SET last_seen_at = ? WHERE id = ?", (now, r["id"]))
+    # Idle timeout check — based on per-role configuration
+    if idle_timeout_by_type and r.get("last_seen_at"):
+        limit_sec = int(idle_timeout_by_type.get(r["subject_type"], 0) or 0)
+        if limit_sec > 0:
+            try:
+                last = datetime.fromisoformat(r["last_seen_at"].replace("Z", "+00:00"))
+                idle = (now_dt - last).total_seconds()
+            except Exception:
+                idle = 0
+            if idle > limit_sec:
+                con.execute("UPDATE sessions SET revoked_at = ? WHERE id = ?",
+                            (now_iso, r["id"]))
+                con.commit()
+                con.close()
+                return False
+    con.execute("UPDATE sessions SET last_seen_at = ? WHERE id = ?", (now_iso, r["id"]))
     con.commit()
     con.close()
     return True
+
+
+# ── Access log (read traceability via middleware) ────────────────────────────
+
+def log_access(actor_type: str = None, actor_id: int = None,
+               actor_prid: str = None, actor_label: str = None,
+               method: str = "", path: str = "", query: str = "",
+               status_code: int = 0,
+               ip_address: str = None, user_agent: str = None):
+    """Appends a row to access_log. Designed to be called from a request
+    middleware after the response is produced. Fast — no chain, no commit
+    batching, just one insert."""
+    con = _con()
+    con.execute(
+        """
+        INSERT INTO access_log
+            (actor_type, actor_id, actor_prid, actor_label,
+             method, path, query, status_code, ip_address, user_agent, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            actor_type, actor_id, actor_prid, actor_label,
+            method.upper(), path[:512], (query or "")[:512],
+            int(status_code), ip_address, (user_agent or "")[:255],
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    con.commit()
+    con.close()
+
+
+def query_access_log(actor_id: int = None, path_prefix: str = None,
+                     since: str = None, until: str = None,
+                     limit: int = 200):
+    sql = "SELECT * FROM access_log WHERE 1=1"
+    args = []
+    if actor_id is not None:
+        sql += " AND actor_id = ?"; args.append(actor_id)
+    if path_prefix:
+        sql += " AND path LIKE ?"; args.append(path_prefix + "%")
+    if since:
+        sql += " AND created_at >= ?"; args.append(since)
+    if until:
+        sql += " AND created_at <= ?"; args.append(until)
+    sql += " ORDER BY created_at DESC LIMIT ?"; args.append(int(limit))
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def purge_old_access_log(days: int = 90):
+    from datetime import timedelta as _td
+    cutoff = (datetime.now(timezone.utc) - _td(days=days)).isoformat()
+    con = _con()
+    con.execute("DELETE FROM access_log WHERE created_at < ?", (cutoff,))
+    con.commit()
+    con.close()
 
 
 def revoke_session(jti: str) -> bool:

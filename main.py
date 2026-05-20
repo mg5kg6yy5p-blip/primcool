@@ -58,6 +58,7 @@ from database import (
     touch_document_accessed, soft_delete_document, hard_delete_document,
     get_expiring_documents,
     log_audit, query_audit_log, verify_audit_chain,
+    log_access, query_access_log,
     create_session, get_session_by_jti, is_session_active,
     revoke_session, revoke_all_sessions_for, get_active_sessions_for,
     mark_session_mfa_verified,
@@ -358,6 +359,15 @@ COOKIE_ADMIN    = "pc_admin_session"
 COOKIE_TECH     = "pc_tech_session"
 COOKIE_CUSTOMER = "pc_customer_session"
 
+# Per-role idle timeout (seconds). 0 disables idle expiry for that role.
+# Admin defaults to 30 minutes (sensitive desk role). Techs in the field and
+# customers checking infrequently rely on the hard expiry instead.
+IDLE_TIMEOUT = {
+    "admin":    int(os.environ.get("ADMIN_IDLE_TIMEOUT_SEC",    str(30 * 60))),
+    "tech":     int(os.environ.get("TECH_IDLE_TIMEOUT_SEC",     "0")),
+    "customer": int(os.environ.get("CUSTOMER_IDLE_TIMEOUT_SEC", "0")),
+}
+
 PHOTO_URL_SECRET  = os.environ.get("PHOTO_URL_SECRET", JWT_SECRET)
 PHOTO_URL_TTL_SEC = int(os.environ.get("PHOTO_URL_TTL_SEC", "1800"))   # 30 min default
 
@@ -534,11 +544,11 @@ def _decode_token(token: str, expected_type: str, require_session: bool = True) 
         raise HTTPException(401, "Invalid session")
     if data.get("type") != expected_type:
         raise HTTPException(403, "Forbidden")
-    # Server-side session check — a JWT whose row has been revoked or
-    # never existed (legacy token from before this change) is rejected.
+    # Server-side session check — a JWT whose row has been revoked, expired,
+    # or idled past its per-role limit is rejected.
     if require_session:
         jti = data.get("jti")
-        if not jti or not is_session_active(jti):
+        if not jti or not is_session_active(jti, IDLE_TIMEOUT):
             raise HTTPException(401, "Session no longer valid — please sign in again")
     return data
 
@@ -609,6 +619,96 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+# ── Paths the access-log middleware skips (noise reduction) ──────────────────
+_ACCESS_LOG_SKIP_PREFIXES = (
+    "/health",
+    "/manifest-", "/sw.js",
+    "/icons/", "/images/", "/photos/", "/documents/",   # static + signed-URL paths
+)
+# Endpoints whose own purpose is reading the logs themselves — skipping them
+# prevents the access log from filling up just from the Audit tab refreshing.
+_ACCESS_LOG_SKIP_EXACT = {
+    "/api/admin/audit",
+    "/api/admin/audit/verify",
+    "/api/admin/access",
+    "/api/admin/sessions",
+}
+
+
+def _identify_actor_silent(request: Request) -> dict:
+    """Best-effort actor identification for the access log. Never raises —
+    returns {} when the request is anonymous or the token is bad."""
+    for ctype, cookie in (("admin", COOKIE_ADMIN), ("tech", COOKIE_TECH), ("customer", COOKIE_CUSTOMER)):
+        token = _read_token(request, cookie)
+        if not token:
+            continue
+        try:
+            data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        except Exception:
+            continue
+        if data.get("type") != ctype:
+            continue
+        out = {"actor_type": ctype, "actor_id": int(data["sub"])}
+        if ctype == "admin":
+            row = get_admin_user_by_id(out["actor_id"])
+            if row:
+                out["actor_prid"]  = row.get("prid")
+                out["actor_label"] = row.get("name")
+        elif ctype == "tech":
+            row = get_tech_by_id(out["actor_id"])
+            if row:
+                out["actor_prid"]  = row.get("prid")
+                out["actor_label"] = row.get("name")
+        elif ctype == "customer":
+            row = get_customer_by_id(out["actor_id"])
+            if row:
+                out["actor_prid"]  = row.get("customer_code")
+                out["actor_label"] = row.get("name")
+        return out
+    return {}
+
+
+@app.middleware("http")
+async def access_log_middleware(request: Request, call_next):
+    """Records every API read access to access_log so we can answer
+    'who looked at this customer's data and when?' — the spec's audit-
+    logging-middleware requirement. Writes happen anyway via _audit_from()
+    on the routes themselves, so we skip non-GET here to avoid duplicating
+    the trail. Filtered to /api/* with skip-list above."""
+    response = await call_next(request)
+
+    if request.method != "GET":
+        return response
+    path = request.url.path
+    if not path.startswith("/api/"):
+        return response
+    if path in _ACCESS_LOG_SKIP_EXACT:
+        return response
+    if any(path.startswith(p) for p in _ACCESS_LOG_SKIP_PREFIXES):
+        return response
+
+    actor = _identify_actor_silent(request)
+    if not actor:
+        # Skip anonymous GETs to keep the log focused on actual user activity
+        return response
+    try:
+        log_access(
+            actor_type=actor.get("actor_type"),
+            actor_id=actor.get("actor_id"),
+            actor_prid=actor.get("actor_prid"),
+            actor_label=actor.get("actor_label"),
+            method=request.method,
+            path=path,
+            query=str(request.url.query)[:512],
+            status_code=response.status_code,
+            ip_address=_client_ip(request),
+            user_agent=(request.headers.get("user-agent", "") or "")[:255],
+        )
+    except Exception as e:
+        print(f"access_log error: {e}")
+    return response
+
 
 @app.middleware("http")
 async def csrf_origin_check(request: Request, call_next):
@@ -2337,6 +2437,26 @@ def admin_audit_verify(request: Request):
     if not _admin_can(admin["role"], "audit:view_all"):
         raise HTTPException(403, "Only roles with audit:view_all can verify the chain")
     return verify_audit_chain()
+
+
+@app.get("/api/admin/access")
+def admin_access_log(request: Request,
+                     actor_id: Optional[int] = None,
+                     path_prefix: Optional[str] = None,
+                     since: Optional[str] = None,
+                     until: Optional[str] = None,
+                     limit: int = 200):
+    """Read-access trail (separate from audit_log so the chain stays focused
+    on mutations). audit:view_all sees everything; audit:view_self sees only
+    their own access events."""
+    admin = _require_admin(request)
+    if _admin_can(admin["role"], "audit:view_all"):
+        return query_access_log(actor_id=actor_id, path_prefix=path_prefix,
+                                since=since, until=until, limit=limit)
+    if _admin_can(admin["role"], "audit:view_self"):
+        return query_access_log(actor_id=admin["id"], path_prefix=path_prefix,
+                                since=since, until=until, limit=limit)
+    raise HTTPException(403, "Forbidden")
 
 
 @app.get("/api/admin/audit")

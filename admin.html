@@ -687,7 +687,11 @@
           <button class="btn btn-ghost" id="auditVerifyBtn" onclick="verifyAuditChain()" style="display:none;">🔗 Verify Chain</button>
         </div>
         <div id="auditChainStatus" style="display:none;margin-bottom:14px;padding:10px 14px;border-radius:8px;font-size:13px;line-height:1.5;"></div>
-        <div class="filter-bar" id="auditFilters" style="gap:8px;">
+        <div class="filter-bar" id="auditFilters" style="gap:8px;align-items:center;">
+          <select id="auditMode" onchange="loadAudit()" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
+            <option value="mutations">Mutations (writes)</option>
+            <option value="reads">Read access</option>
+          </select>
           <select id="auditAction" onchange="loadAudit()" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
             <option value="">All actions</option>
             <option value="admin">Admin actions</option>
@@ -696,6 +700,9 @@
             <option value="visit">Visit actions</option>
             <option value="review">Review actions</option>
             <option value="equipment">Equipment actions</option>
+            <option value="document">Document actions</option>
+            <option value="invoice">Invoice actions</option>
+            <option value="inventory">Inventory actions</option>
           </select>
           <input type="date" id="auditSince" onchange="loadAudit()" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;" title="From">
           <input type="date" id="auditUntil" onchange="loadAudit()" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;" title="To">
@@ -3655,18 +3662,45 @@
   async function loadAudit() {
     if (!currentAdmin) return;
     if (!can('audit:view_all') && !can('audit:view_self')) return;
-    const params = new URLSearchParams();
-    const ap = document.getElementById('auditAction')?.value;
+    const mode  = document.getElementById('auditMode')?.value || 'mutations';
+    const ap    = document.getElementById('auditAction')?.value;
     const since = document.getElementById('auditSince')?.value;
     const until = document.getElementById('auditUntil')?.value;
-    if (ap)    params.set('action_prefix', ap + '.');
+    const params = new URLSearchParams();
     if (since) params.set('since', since + 'T00:00:00Z');
     if (until) params.set('until', until + 'T23:59:59Z');
     params.set('limit', '500');
     try {
-      const rows = await api('GET', '/api/admin/audit?' + params.toString());
-      renderAudit(rows);
+      if (mode === 'reads') {
+        if (ap) params.set('path_prefix', '/api/admin/' + ap);
+        const rows = await api('GET', '/api/admin/access?' + params.toString());
+        renderAudit(rows.map(_accessRowToAuditShape));
+      } else {
+        if (ap) params.set('action_prefix', ap + '.');
+        const rows = await api('GET', '/api/admin/audit?' + params.toString());
+        renderAudit(rows);
+      }
     } catch {}
+  }
+
+  // Normalise an access_log row so renderAudit can display it uniformly.
+  function _accessRowToAuditShape(r) {
+    return {
+      created_at:   r.created_at,
+      actor_type:   r.actor_type,
+      actor_id:     r.actor_id,
+      actor_prid:   r.actor_prid,
+      actor_label:  r.actor_label,
+      actor_role:   null,
+      action:       'read.' + (r.method || 'GET'),
+      target_type:  null,
+      target_id:    null,
+      target_label: `${r.method} ${r.path}` + (r.status_code ? ` → ${r.status_code}` : ''),
+      before_value: null,
+      after_value:  r.query || r.ip_address
+        ? JSON.stringify({query: r.query, status: r.status_code, ip: r.ip_address, ua: r.user_agent})
+        : null,
+    };
   }
 
   async function verifyAuditChain() {
@@ -3700,6 +3734,7 @@
   }
 
   function clearAuditFilters() {
+    document.getElementById('auditMode').value = 'mutations';
     document.getElementById('auditAction').value = '';
     document.getElementById('auditSince').value = '';
     document.getElementById('auditUntil').value = '';
