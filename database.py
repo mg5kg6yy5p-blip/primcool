@@ -2422,6 +2422,80 @@ def query_access_log(actor_id: int = None, path_prefix: str = None,
     return [dict(r) for r in rows]
 
 
+def aggregate_access_by_target(since: str = None, until: str = None,
+                                actor_id: int = None, target_type: str = None,
+                                min_views: int = 1, limit: int = 200):
+    """Aggregate access_log entries by (actor, target_type, target_id).
+
+    Parses the request path to extract the resource and numeric id, then
+    counts views per (actor, target). Used by admin "who viewed what" panel
+    to surface unusual access patterns like "Tech X viewed Customer Y 47 times".
+    Only counts successful reads (GET with 2xx)."""
+    import re as _re
+    sql = """
+        SELECT actor_type, actor_id, actor_prid, actor_label, path,
+               COUNT(*) AS hits, MAX(created_at) AS last_seen
+        FROM access_log
+        WHERE method = 'GET' AND status_code >= 200 AND status_code < 300
+          AND actor_id IS NOT NULL
+    """
+    args = []
+    if since:
+        sql += " AND created_at >= ?"; args.append(since)
+    if until:
+        sql += " AND created_at <= ?"; args.append(until)
+    if actor_id is not None:
+        sql += " AND actor_id = ?"; args.append(actor_id)
+    sql += " GROUP BY actor_type, actor_id, path"
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+
+    # Path → (target_type, target_id) extraction.
+    patterns = [
+        (_re.compile(r"^/api/admin/customers/(\d+)(?:/|$)"),  "customer"),
+        (_re.compile(r"^/api/admin/visits/(\d+)(?:/|$)"),     "visit"),
+        (_re.compile(r"^/api/admin/techs/(\d+)(?:/|$)"),      "tech"),
+        (_re.compile(r"^/api/admin/invoices/(\d+)(?:/|$)"),   "invoice"),
+        (_re.compile(r"^/api/admin/reviews/(\d+)(?:/|$)"),    "review"),
+        (_re.compile(r"^/api/tech/visits/(\d+)(?:/|$)"),      "visit"),
+        (_re.compile(r"^/api/tech/customers/(\d+)(?:/|$)"),   "customer"),
+        (_re.compile(r"^/api/documents/(\d+)(?:/|$)"),        "document"),
+    ]
+    bucket = {}
+    for r in rows:
+        path = r["path"] or ""
+        tt, tid = None, None
+        for rx, name in patterns:
+            m = rx.match(path)
+            if m:
+                tt, tid = name, int(m.group(1)); break
+        if not tt:
+            continue
+        if target_type and tt != target_type:
+            continue
+        key = (r["actor_type"], r["actor_id"], tt, tid)
+        slot = bucket.get(key)
+        if slot is None:
+            bucket[key] = {
+                "actor_type":  r["actor_type"],
+                "actor_id":    r["actor_id"],
+                "actor_prid":  r["actor_prid"],
+                "actor_label": r["actor_label"],
+                "target_type": tt,
+                "target_id":   tid,
+                "hits":        r["hits"],
+                "last_seen":   r["last_seen"],
+            }
+        else:
+            slot["hits"] += r["hits"]
+            if r["last_seen"] > slot["last_seen"]:
+                slot["last_seen"] = r["last_seen"]
+    out = [v for v in bucket.values() if v["hits"] >= min_views]
+    out.sort(key=lambda x: (-x["hits"], x["last_seen"]))
+    return out[:limit]
+
+
 def purge_old_access_log(days: int = 90):
     from datetime import timedelta as _td
     cutoff = (datetime.now(timezone.utc) - _td(days=days)).isoformat()

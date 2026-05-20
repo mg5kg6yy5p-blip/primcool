@@ -691,6 +691,7 @@
           <select id="auditMode" onchange="loadAudit()" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
             <option value="mutations">Mutations (writes)</option>
             <option value="reads">Read access</option>
+            <option value="aggregate">Aggregate (who viewed what)</option>
           </select>
           <select id="auditAction" onchange="loadAudit()" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
             <option value="">All actions</option>
@@ -706,6 +707,7 @@
           </select>
           <input type="date" id="auditSince" onchange="loadAudit()" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;" title="From">
           <input type="date" id="auditUntil" onchange="loadAudit()" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;" title="To">
+          <input type="number" id="auditMinViews" min="1" value="1" onchange="loadAudit()" style="display:none;width:80px;padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;" title="Minimum views (aggregate mode)" placeholder="Min views">
           <button class="filter-btn" onclick="clearAuditFilters()">Clear</button>
           <span id="auditCount" style="margin-left:auto;font-size:12px;color:var(--muted);align-self:center;"></span>
         </div>
@@ -3666,6 +3668,8 @@
     const ap    = document.getElementById('auditAction')?.value;
     const since = document.getElementById('auditSince')?.value;
     const until = document.getElementById('auditUntil')?.value;
+    const minViewsEl = document.getElementById('auditMinViews');
+    if (minViewsEl) minViewsEl.style.display = (mode === 'aggregate') ? '' : 'none';
     const params = new URLSearchParams();
     if (since) params.set('since', since + 'T00:00:00Z');
     if (until) params.set('until', until + 'T23:59:59Z');
@@ -3675,12 +3679,40 @@
         if (ap) params.set('path_prefix', '/api/admin/' + ap);
         const rows = await api('GET', '/api/admin/access?' + params.toString());
         renderAudit(rows.map(_accessRowToAuditShape));
+      } else if (mode === 'aggregate') {
+        if (ap) params.set('target_type', ap);
+        params.set('min_views', String(parseInt(minViewsEl?.value || '1', 10) || 1));
+        const rows = await api('GET', '/api/admin/access/aggregate?' + params.toString());
+        renderAggregateAccess(rows);
       } else {
         if (ap) params.set('action_prefix', ap + '.');
         const rows = await api('GET', '/api/admin/audit?' + params.toString());
         renderAudit(rows);
       }
     } catch {}
+  }
+
+  function renderAggregateAccess(rows) {
+    const tbody = document.getElementById('auditTableBody');
+    const countEl = document.getElementById('auditCount');
+    if (countEl) countEl.textContent = rows.length ? `${rows.length} actor→target pair${rows.length === 1 ? '' : 's'}` : '';
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">No read activity in this window.</td></tr>';
+      return;
+    }
+    const fmt = (iso) => { try { return new Date(iso).toLocaleString(); } catch { return iso || ''; } };
+    tbody.innerHTML = rows.map(r => {
+      const actor = escHtml(`${r.actor_label || ''} ${r.actor_prid ? '(' + r.actor_prid + ')' : ''}`.trim()) || `#${r.actor_id}`;
+      const target = escHtml(`${r.target_type} #${r.target_id}`);
+      const hot = r.hits >= 20 ? 'background:#fef3c7;color:#92400e;font-weight:600;' : (r.hits >= 5 ? 'color:#92400e;font-weight:600;' : '');
+      return `<tr>
+        <td>${escHtml(fmt(r.last_seen))}</td>
+        <td>${actor} <span class="badge" style="font-size:10px;">${escHtml(r.actor_type || '')}</span></td>
+        <td><span style="${hot}">${r.hits} view${r.hits === 1 ? '' : 's'}</span></td>
+        <td>${target}</td>
+        <td style="color:var(--muted);font-size:12px;">last seen ${escHtml(fmt(r.last_seen))}</td>
+      </tr>`;
+    }).join('');
   }
 
   // Normalise an access_log row so renderAudit can display it uniformly.
@@ -3738,6 +3770,8 @@
     document.getElementById('auditAction').value = '';
     document.getElementById('auditSince').value = '';
     document.getElementById('auditUntil').value = '';
+    const mv = document.getElementById('auditMinViews');
+    if (mv) mv.value = '1';
     loadAudit();
   }
 

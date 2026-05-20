@@ -58,7 +58,7 @@ from database import (
     touch_document_accessed, soft_delete_document, hard_delete_document,
     get_expiring_documents,
     log_audit, query_audit_log, verify_audit_chain,
-    log_access, query_access_log,
+    log_access, query_access_log, aggregate_access_by_target,
     create_session, get_session_by_jti, is_session_active,
     revoke_session, revoke_all_sessions_for, get_active_sessions_for,
     mark_session_mfa_verified,
@@ -2459,6 +2459,32 @@ def admin_access_log(request: Request,
     if _admin_can(admin["role"], "audit:view_self"):
         return query_access_log(actor_id=admin["id"], path_prefix=path_prefix,
                                 since=since, until=until, limit=limit)
+    raise HTTPException(403, "Forbidden")
+
+
+@app.get("/api/admin/access/aggregate")
+def admin_access_aggregate(request: Request,
+                            since: Optional[str] = None,
+                            until: Optional[str] = None,
+                            actor_id: Optional[int] = None,
+                            target_type: Optional[str] = None,
+                            min_views: int = 1,
+                            limit: int = 200):
+    """Aggregate read-access by (actor, target_type, target_id) so admins can
+    spot patterns like "Tech X viewed Customer Y 47 times". Scoped the same
+    way as /api/admin/access: view_all sees everyone, view_self only sees
+    their own activity."""
+    admin = _require_admin(request)
+    if _admin_can(admin["role"], "audit:view_all"):
+        return aggregate_access_by_target(since=since, until=until,
+                                          actor_id=actor_id,
+                                          target_type=target_type,
+                                          min_views=min_views, limit=limit)
+    if _admin_can(admin["role"], "audit:view_self"):
+        return aggregate_access_by_target(since=since, until=until,
+                                          actor_id=admin["id"],
+                                          target_type=target_type,
+                                          min_views=min_views, limit=limit)
     raise HTTPException(403, "Forbidden")
 
 
