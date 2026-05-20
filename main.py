@@ -70,6 +70,11 @@ from database import (
     purge_old_access_log, purge_old_audit_log,
     get_entity_history, watcher_should_log, query_audit_log_team,
     set_admin_supervisor, set_tech_supervisor, subordinate_ids_for,
+    set_customer_password, verify_customer_password, set_customer_mfa,
+    set_customer_type, mark_customer_deletion_requested,
+    get_customer_full_export, get_customer_visits_portal,
+    create_service_request, list_service_requests, get_service_request,
+    update_service_request_status, set_visit_work_summary,
     create_security_alert, recent_alert_exists, list_security_alerts,
     count_open_security_alerts, resolve_security_alert, detect_anomalies_for_actor,
     create_session, get_session_by_jti, is_session_active,
@@ -414,7 +419,9 @@ COOKIE_CUSTOMER = "pc_customer_session"
 IDLE_TIMEOUT = {
     "admin":    int(os.environ.get("ADMIN_IDLE_TIMEOUT_SEC",    str(30 * 60))),
     "tech":     int(os.environ.get("TECH_IDLE_TIMEOUT_SEC",     "0")),
-    "customer": int(os.environ.get("CUSTOMER_IDLE_TIMEOUT_SEC", "0")),
+    # Customer portal is internet-facing — per spec, idle timeout is tighter
+    # than internal. Default 20 minutes; commercial-account MFA covers theft.
+    "customer": int(os.environ.get("CUSTOMER_IDLE_TIMEOUT_SEC", str(20 * 60))),
 }
 
 PHOTO_URL_SECRET  = os.environ.get("PHOTO_URL_SECRET", JWT_SECRET)
@@ -629,6 +636,55 @@ def _require_perm(request: Request, perm: str):
     if not _admin_can(admin["role"], perm):
         raise HTTPException(403, f"Your role ({admin['role']}) lacks permission: {perm}")
     return admin
+
+
+_COMMON_PASSWORDS = {
+    "password", "password1", "password12", "password123", "password1234",
+    "12345678", "123456789", "1234567890",
+    "qwerty", "qwerty123", "qwertyuiop", "abc12345", "letmein", "welcome",
+    "admin", "admin123", "administrator", "iloveyou", "primecool",
+    "primecool1", "primecool123", "summer2025", "winter2025", "spring2025",
+    "passw0rd", "p@ssw0rd", "p@ssword1", "trustno1",
+}
+
+
+def _validate_password_strength(pw: str) -> None:
+    """Per portal spec: real password strength on the public-facing surface.
+    Raises HTTPException(400) on weak input. ≥12 chars, must include letters
+    and digits, must not match the common-password deny-list (case folded),
+    and must not start with an obvious weak token."""
+    if len(pw) < 12:
+        raise HTTPException(400, "Password must be at least 12 characters")
+    if not any(c.isalpha() for c in pw) or not any(c.isdigit() for c in pw):
+        raise HTTPException(400, "Password must contain both letters and digits")
+    low = pw.lower()
+    if low in _COMMON_PASSWORDS:
+        raise HTTPException(400, "That password is too common — please choose something less guessable")
+    # Reject if a common password is a prefix that covers most of the string
+    for bad in _COMMON_PASSWORDS:
+        if len(bad) >= 6 and low.startswith(bad) and len(bad) >= len(low) * 0.6:
+            raise HTTPException(400, "Password is based on a common pattern — please choose something less guessable")
+
+
+def _audit_customer(customer: dict, action: str, request: Request,
+                    target_type: str = None, target_id: int = None,
+                    target_label: str = None, after=None):
+    """Audit a portal-side action. Every client interaction belongs in the
+    same chain as staff actions — the spec is explicit. Customer is the
+    actor; their customer_code stands in for the PRID."""
+    log_audit(
+        actor_type="customer",
+        actor_id=customer.get("id"),
+        actor_prid=customer.get("customer_code"),
+        actor_label=customer.get("name"),
+        actor_role=customer.get("customer_type") or "residential",
+        action=action,
+        target_type=target_type,
+        target_id=target_id,
+        target_label=target_label,
+        after_value=after,
+        ip_address=request.client.host if request.client else None,
+    )
 
 
 def _audit_anon(action: str, request: Request, *,
@@ -980,8 +1036,10 @@ class ConsultRequest(BaseModel):
 
 
 class PortalLoginRequest(BaseModel):
-    code: str
-    pin:  str
+    code:     str
+    pin:      str = ""        # used when auth_mode='pin' (residential default)
+    password: str = ""        # used when auth_mode='password' (commercial)
+    mfa_code: str = ""        # TOTP or backup code; required when MFA enrolled
 
 
 class PortalForgotPin(BaseModel):
@@ -997,6 +1055,26 @@ class PortalResetPin(BaseModel):
 
 class CustomerPinReset(BaseModel):
     pin: str
+
+
+class CustomerSetPassword(BaseModel):
+    """Customer self-service: switch own account to password auth."""
+    current_pin:      str = ""
+    current_password: str = ""
+    new_password:     str
+    confirm:          str
+
+
+class CustomerMfaEnable(BaseModel):
+    code: str    # TOTP code from authenticator app to confirm enrolment
+
+
+class CustomerServiceRequest(BaseModel):
+    request_type:   str       # 'maintenance'|'repair'|'quote'|'question'
+    subject:        str
+    body:           str
+    equipment_id:   Optional[int] = None
+    preferred_date: Optional[str] = None
 
 
 class AdminLoginRequest(BaseModel):
@@ -1064,6 +1142,7 @@ class CustomerCreate(BaseModel):
     phone:         str = ""
     address:       str = ""
     notes:         str = ""
+    customer_type: str = "residential"   # 'residential' | 'commercial' — commercial requires MFA
 
 
 class EquipmentCreate(BaseModel):
@@ -1352,21 +1431,209 @@ async def submit_consult(req: ConsultRequest):
 @app.post("/api/portal/login")
 def portal_login(req: PortalLoginRequest, request: Request, response: Response):
     _enforce_login_rate(request, req.code)
-    customer = verify_customer(req.code, req.pin)
+    existing = get_customer_by_code(req.code)
+    # Constant-ish error message regardless of which failure case we hit,
+    # to avoid enumerating valid customer codes.
+    INVALID = "Invalid customer ID or credentials"
+
+    customer = None
+    if existing:
+        if existing.get("auth_mode") == "password":
+            customer = verify_customer_password(req.code, req.password)
+        else:
+            if not existing.get("pin_hash"):
+                _audit_anon("auth.login_failed", request,
+                            attempted_identity=req.code, actor_type="customer",
+                            target_label="no PIN set")
+                # Still generic-ish — don't reveal whether the code is real.
+                raise HTTPException(401, INVALID)
+            customer = verify_customer(req.code, req.pin)
+
     if not customer:
-        existing = get_customer_by_code(req.code)
-        if existing and not existing.get("pin_hash"):
-            _audit_anon("auth.login_failed", request,
-                        attempted_identity=req.code, actor_type="customer",
-                        target_label="no PIN set")
-            raise HTTPException(403, "No PIN set on your account yet. Please contact PrimeCool to set one up.")
         _audit_anon("auth.login_failed", request,
                     attempted_identity=req.code, actor_type="customer",
-                    target_label="invalid code or PIN")
-        raise HTTPException(401, "Invalid customer ID or PIN")
-    token, _ = _issue_session("customer", customer["id"], timedelta(days=30), request)
-    _set_session_cookie(response, COOKIE_CUSTOMER, token, 30 * 24 * 3600)
-    return {"token": token, "name": customer["name"]}
+                    target_label="invalid code or credentials")
+        raise HTTPException(401, INVALID)
+
+    # Commercial accounts MUST have MFA enrolled per spec. Block login
+    # until they enrol (returning a one-shot enrolment token).
+    if customer.get("customer_type") == "commercial" and not customer.get("mfa_enabled"):
+        enrol_token = _make_token(
+            {"sub": str(customer["id"]), "type": "customer_mfa_enrol"},
+            MFA_TOKEN_TTL,
+        )
+        return {"requires_mfa_setup": True, "mfa_enrol_token": enrol_token,
+                "name": customer["name"]}
+
+    # MFA verification step if already enrolled.
+    if customer.get("mfa_enabled"):
+        if not req.mfa_code:
+            mfa_token = _make_token(
+                {"sub": str(customer["id"]), "type": "customer_pre_mfa"},
+                MFA_TOKEN_TTL,
+            )
+            return {"requires_mfa": True, "mfa_token": mfa_token,
+                    "name": customer["name"]}
+        if not _verify_customer_totp(customer, req.mfa_code):
+            _audit_anon("auth.mfa_failed", request,
+                        attempted_identity=req.code, actor_type="customer")
+            raise HTTPException(401, "Invalid MFA code")
+
+    # Customer portal sessions are 24h (tighter than the legacy 30d), with a
+    # 20-min idle limit enforced by IDLE_TIMEOUT["customer"].
+    token, _ = _issue_session("customer", customer["id"], timedelta(hours=24), request)
+    _set_session_cookie(response, COOKIE_CUSTOMER, token, 24 * 3600)
+    _audit_customer(customer, "portal.login", request)
+    return {"token": token, "name": customer["name"],
+            "customer_type": customer.get("customer_type", "residential"),
+            "auth_mode":     customer.get("auth_mode", "pin"),
+            "mfa_enabled":   bool(customer.get("mfa_enabled"))}
+
+
+def _verify_customer_totp(customer: dict, code: str) -> bool:
+    """TOTP check + backup-code fallback. Mirrors the admin MFA flow but
+    keyed off customers.mfa_secret / customers.backup_codes."""
+    import pyotp as _pyotp
+    code = (code or "").strip().replace(" ", "")
+    secret = customer.get("mfa_secret")
+    if secret:
+        try:
+            if _pyotp.TOTP(secret).verify(code, valid_window=1):
+                return True
+        except Exception:
+            pass
+    # Backup codes — Argon2-hashed, single-use.
+    try:
+        raw = customer.get("backup_codes")
+        if not raw: return False
+        codes = _json.loads(raw)
+        for i, h in enumerate(codes):
+            if h and _verify_pin(code, h):
+                # Burn the used code.
+                codes[i] = None
+                set_customer_mfa(customer["id"], secret, True, codes)
+                return True
+    except Exception:
+        pass
+    return False
+
+
+@app.post("/api/portal/login/mfa")
+def portal_login_mfa(body: dict, request: Request, response: Response):
+    """Second step of MFA login. body = {mfa_token, mfa_code}."""
+    tok = body.get("mfa_token") or ""
+    code = (body.get("mfa_code") or "").strip()
+    if not tok or not code:
+        raise HTTPException(400, "mfa_token and mfa_code required")
+    try:
+        data = jwt.decode(tok, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except Exception:
+        raise HTTPException(401, "Token invalid or expired")
+    if data.get("type") != "customer_pre_mfa":
+        raise HTTPException(401, "Wrong token type")
+    cust = get_customer_by_id(int(data["sub"]))
+    if not cust or not cust.get("mfa_enabled"):
+        raise HTTPException(401, "MFA not enrolled on this account")
+    if not _verify_customer_totp(cust, code):
+        _audit_anon("auth.mfa_failed", request,
+                    attempted_identity=cust.get("customer_code"),
+                    actor_type="customer")
+        raise HTTPException(401, "Invalid MFA code")
+    token, _ = _issue_session("customer", cust["id"], timedelta(hours=24), request)
+    _set_session_cookie(response, COOKIE_CUSTOMER, token, 24 * 3600)
+    _audit_customer(cust, "portal.login", request, target_label="mfa")
+    return {"token": token, "name": cust["name"]}
+
+
+@app.post("/api/portal/mfa/setup")
+def portal_mfa_setup(request: Request):
+    """Generate a TOTP secret + QR provisioning URL. The secret is stored
+    immediately but mfa_enabled stays 0 until /mfa/confirm verifies a code.
+    Authenticated either by a normal portal session OR a one-shot
+    customer_mfa_enrol token issued at login for commercial accounts."""
+    import pyotp as _pyotp
+    cust = _portal_actor_for_mfa_setup(request)
+    secret = _pyotp.random_base32()
+    set_customer_mfa(cust["id"], secret, False, None)
+    issuer = MFA_ISSUER
+    uri = _pyotp.TOTP(secret).provisioning_uri(
+        name=cust.get("email") or cust.get("customer_code"),
+        issuer_name=issuer,
+    )
+    _audit_customer(cust, "portal.mfa_setup_started", request)
+    return {"secret": secret, "provisioning_uri": uri}
+
+
+@app.post("/api/portal/mfa/confirm")
+def portal_mfa_confirm(body: CustomerMfaEnable, request: Request, response: Response):
+    """Verify a TOTP code, flip mfa_enabled, generate one-time backup codes,
+    and (if this was the commercial-account enrol flow) issue a session."""
+    import pyotp as _pyotp
+    cust, was_enrol = _portal_actor_for_mfa_setup(request, return_enrol=True)
+    if not cust.get("mfa_secret"):
+        raise HTTPException(400, "Call /portal/mfa/setup first to generate a secret")
+    if not _pyotp.TOTP(cust["mfa_secret"]).verify(body.code.strip(), valid_window=1):
+        raise HTTPException(401, "Invalid MFA code — try again")
+    # Generate + hash 8 single-use backup codes.
+    raw_codes = [_secrets.token_hex(4) for _ in range(8)]
+    hashed = [_hash_pin(c) if (c := rc) else None for rc in raw_codes]
+    set_customer_mfa(cust["id"], cust["mfa_secret"], True, hashed)
+    _audit_customer(cust, "portal.mfa_enabled", request)
+    out = {"ok": True, "backup_codes": raw_codes}
+    if was_enrol:
+        token, _ = _issue_session("customer", cust["id"], timedelta(hours=24), request)
+        _set_session_cookie(response, COOKIE_CUSTOMER, token, 24 * 3600)
+        out["token"] = token
+        out["name"]  = cust["name"]
+    return out
+
+
+def _portal_actor_for_mfa_setup(request: Request, return_enrol: bool = False):
+    """Accepts either a normal portal session OR a customer_mfa_enrol token.
+    Returns (customer, was_enrol_flow) when return_enrol=True else customer."""
+    # Try enrol token via Authorization: Bearer first, then normal session.
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        tok = auth.split(" ", 1)[1].strip()
+        try:
+            data = jwt.decode(tok, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            if data.get("type") == "customer_mfa_enrol":
+                cust = get_customer_by_id(int(data["sub"]))
+                if not cust: raise HTTPException(401, "Account not found")
+                return (cust, True) if return_enrol else cust
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+    customer_id = _require_customer(request)
+    cust = get_customer_by_id(customer_id)
+    if not cust:
+        raise HTTPException(404, "Customer not found")
+    return (cust, False) if return_enrol else cust
+
+
+@app.post("/api/portal/password")
+def portal_set_password(body: CustomerSetPassword, request: Request):
+    """Customer self-service: switch their account to password auth.
+    Requires the existing PIN/password to confirm identity, plus a strong
+    new password. Logs the mode change."""
+    customer_id = _require_customer(request)
+    cust = get_customer_by_id(customer_id)
+    if not cust:
+        raise HTTPException(404, "Customer not found")
+    # Verify current credential
+    if cust.get("auth_mode") == "password":
+        if not verify_customer_password(cust["customer_code"], body.current_password):
+            raise HTTPException(401, "Current password is incorrect")
+    else:
+        if not body.current_pin or not verify_customer(cust["customer_code"], body.current_pin):
+            raise HTTPException(401, "Current PIN is incorrect")
+    if body.new_password != body.confirm:
+        raise HTTPException(400, "Passwords do not match")
+    _validate_password_strength(body.new_password)
+    set_customer_password(customer_id, body.new_password)
+    _audit_customer(cust, "portal.password_set", request)
+    return {"ok": True, "auth_mode": "password"}
 
 
 @app.post("/api/portal/logout")
@@ -1441,19 +1708,28 @@ def portal_me(request: Request):
     customer    = get_customer_by_id(customer_id)
     if not customer:
         raise HTTPException(404, "Customer not found")
+    # Strip server-side fields the customer should never see in their own
+    # profile blob (auth hashes, MFA secrets, backup codes).
+    safe_customer = {k: v for k, v in customer.items()
+                     if k not in ("pin_hash", "password_hash",
+                                  "mfa_secret", "backup_codes")}
     equipment = get_customer_equipment(customer_id)
-    visits    = get_customer_visits(customer_id)
-    reviews   = get_customer_reviews(customer_id)
+    # Portal-shaped visit list — only client-facing fields, served from
+    # work_done_summary (raw work_done stays internal per spec).
+    visits = get_customer_visits_portal(customer_id)
+    reviews = get_customer_reviews(customer_id)
     for v in visits:
         v["photos"] = _enrich_photos(get_visit_photos(v["id"]))
-    return {"customer": customer, "equipment": equipment, "visits": visits, "reviews": reviews}
+    _audit_customer(customer, "portal.viewed_dashboard", request)
+    return {"customer": safe_customer, "equipment": equipment,
+            "visits": visits, "reviews": reviews}
 
 
 @app.post("/api/portal/reviews")
 def portal_create_review(request: Request, body: ReviewCreate):
     customer_id = _require_customer(request)
     _enforce_rate(request, "review", str(customer_id),
-                  max_attempts=5, window_seconds=3600,
+                  max_attempts=3, window_seconds=3600,
                   message="Too many reviews submitted recently. Please try again in an hour.")
 
     if body.review_type not in ("visit", "company"):
@@ -2832,11 +3108,133 @@ def portal_invoice_detail(request: Request, invoice_id: int):
     customer_id = _require_customer(request)
     inv = get_invoice_by_id(invoice_id)
     if not inv or inv["customer_id"] != customer_id:
+        # IDOR-safe: indistinguishable 404 whether the invoice doesn't exist
+        # or belongs to a different customer.
         raise HTTPException(404, "Invoice not found")
-    # Customers should not see drafts
     if inv["status"] == "draft":
         raise HTTPException(404, "Invoice not found")
+    cust = get_customer_by_id(customer_id)
+    _audit_customer(cust, "portal.viewed_invoice", request,
+                    target_type="invoice", target_id=invoice_id,
+                    target_label=inv.get("invoice_number"))
     return inv
+
+
+# ── Service requests (client-portal triage queue) ────────────────────────────
+@app.post("/api/portal/requests")
+def portal_create_request(req: CustomerServiceRequest, request: Request):
+    """A client request goes into a triage queue — it does NOT directly
+    create a visit on the schedule. Staff with visit:create promotes the
+    request into a real visit."""
+    customer_id = _require_customer(request)
+    _enforce_rate(request, "svcreq", str(customer_id),
+                  max_attempts=10, window_seconds=3600,
+                  message="Too many service requests in the last hour. Please try later.")
+    if req.request_type not in ("maintenance", "repair", "quote", "question"):
+        raise HTTPException(400, "Invalid request_type")
+    if not req.subject.strip() or not req.body.strip():
+        raise HTTPException(400, "Subject and body are required")
+    # Verify equipment_id (if provided) belongs to this customer — IDOR check.
+    if req.equipment_id is not None:
+        eq = get_equipment_by_id(req.equipment_id)
+        if not eq or eq["customer_id"] != customer_id:
+            raise HTTPException(404, "Equipment not found")
+    rid = create_service_request(customer_id, req.model_dump(), ip_address=_client_ip(request))
+    cust = get_customer_by_id(customer_id)
+    _audit_customer(cust, "portal.request_submitted", request,
+                    target_type="service_request", target_id=rid,
+                    target_label=req.subject[:60])
+    return {"id": rid, "status": "new"}
+
+
+@app.get("/api/portal/requests")
+def portal_list_my_requests(request: Request):
+    customer_id = _require_customer(request)
+    return list_service_requests(customer_id=customer_id)
+
+
+@app.get("/api/admin/service-requests")
+def admin_list_service_requests(request: Request, status: Optional[str] = None):
+    _require_perm(request, "visit:view")
+    return list_service_requests(status=status)
+
+
+class TriageBody(BaseModel):
+    status:   str             # 'triaged'|'scheduled'|'closed'
+    visit_id: Optional[int] = None
+    note:     str = ""
+
+
+@app.put("/api/admin/service-requests/{req_id}/triage")
+def admin_triage_service_request(request: Request, req_id: int, body: TriageBody):
+    admin = _require_perm(request, "visit:update")
+    sr = get_service_request(req_id)
+    if not sr:
+        raise HTTPException(404, "Request not found")
+    if body.status not in ("triaged", "scheduled", "closed"):
+        raise HTTPException(400, "Invalid status")
+    update_service_request_status(req_id, body.status, admin["id"],
+                                   visit_id=body.visit_id)
+    _audit_from(admin, f"service_request.{body.status}", request,
+                target_type="service_request", target_id=req_id,
+                target_label=body.note or sr.get("subject", "")[:60],
+                after={"visit_id": body.visit_id, "note": body.note})
+    return {"ok": True}
+
+
+# ── Privacy: data export + deletion request ─────────────────────────────────
+@app.get("/api/portal/me/export")
+def portal_export_me(request: Request):
+    """Customer self-service data export. JSON dump of every record the
+    customer has visibility into. Designed for DPA / GDPR-style
+    'right to portability' compliance. Rate-limited to 1/hour."""
+    customer_id = _require_customer(request)
+    _enforce_rate(request, "data_export", str(customer_id),
+                  max_attempts=1, window_seconds=3600,
+                  message="Data export limit reached: 1 per hour.")
+    cust = get_customer_by_id(customer_id)
+    data = get_customer_full_export(customer_id)
+    _audit_customer(cust, "portal.data_exported", request,
+                    target_type="customer", target_id=customer_id)
+    return data
+
+
+@app.post("/api/portal/me/deletion-request")
+def portal_request_deletion(request: Request):
+    """Marks the account as deletion-requested. Does NOT actually delete —
+    spec is explicit that deletion is a triaged, audited operation, not a
+    self-service hard delete. Staff completes the deletion under the
+    relevant retention policy."""
+    customer_id = _require_customer(request)
+    cust = get_customer_by_id(customer_id)
+    if not cust:
+        raise HTTPException(404, "Customer not found")
+    if cust.get("deletion_requested_at"):
+        return {"ok": True, "already_requested": True,
+                "requested_at": cust["deletion_requested_at"]}
+    mark_customer_deletion_requested(customer_id)
+    _audit_customer(cust, "portal.deletion_requested", request,
+                    target_type="customer", target_id=customer_id)
+    return {"ok": True}
+
+
+# Visit work-summary editor (admin/manager only). Tech writes the raw
+# work_done; admin polishes work_done_summary for the customer.
+class VisitWorkSummaryBody(BaseModel):
+    summary: str
+
+
+@app.put("/api/admin/visits/{visit_id}/work-summary")
+def admin_set_visit_summary(request: Request, visit_id: int, body: VisitWorkSummaryBody):
+    admin = _require_perm(request, "visit:update")
+    visit = get_visit_by_id(visit_id)
+    if not visit:
+        raise HTTPException(404, "Visit not found")
+    set_visit_work_summary(visit_id, body.summary)
+    _audit_from(admin, "visit.work_summary_set", request,
+                target_type="visit", target_id=visit_id,
+                target_label=(body.summary or "")[:80])
+    return {"ok": True}
 
 
 # ── Documents (DMS) ───────────────────────────────────────────────────────────

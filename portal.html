@@ -176,8 +176,14 @@
       <label for="code">Customer ID</label>
       <input type="text" id="code" placeholder="PC-0001" maxlength="20" autocomplete="off" spellcheck="false" style="margin-bottom:14px;">
 
-      <label for="pin">PIN</label>
+      <label for="pin">PIN <span id="pwToggle" style="float:right;font-weight:400;text-transform:none;font-size:11px;"><a href="#" onclick="event.preventDefault();usePassword()" style="color:var(--teal);">Use password instead →</a></span></label>
       <input type="password" id="pin" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="••••" autocomplete="off" style="letter-spacing:12px;text-align:center;font-size:22px;">
+      <input type="password" id="password" placeholder="Password" autocomplete="current-password" style="display:none;font-size:16px;">
+
+      <div id="mfaRow" style="display:none;">
+        <label for="mfaCode" style="margin-top:14px;">Two-factor code</label>
+        <input type="text" id="mfaCode" inputmode="numeric" maxlength="8" placeholder="6-digit code or backup code" autocomplete="one-time-code" style="text-align:center;font-size:18px;">
+      </div>
 
       <div class="error" id="error"></div>
       <button class="btn" id="loginBtn" onclick="doLogin()">Sign In →</button>
@@ -271,19 +277,50 @@
     document.getElementById('code').addEventListener('keydown', e => {
       if (e.key === 'Enter') document.getElementById('pin').focus();
     });
+    let authMode = 'pin';      // 'pin' | 'password'
+    let pendingMfaToken = null; // set when server returns requires_mfa
+    let pendingEnrolToken = null; // set when server returns requires_mfa_setup
+
+    function usePassword() {
+      authMode = 'password';
+      document.getElementById('pin').style.display = 'none';
+      document.getElementById('password').style.display = '';
+      document.getElementById('password').focus();
+      document.getElementById('pwToggle').innerHTML =
+        '<a href="#" onclick="event.preventDefault();usePin()" style="color:var(--teal);">Use PIN instead →</a>';
+    }
+    function usePin() {
+      authMode = 'pin';
+      document.getElementById('pin').style.display = '';
+      document.getElementById('password').style.display = 'none';
+      document.getElementById('pwToggle').innerHTML =
+        '<a href="#" onclick="event.preventDefault();usePassword()" style="color:var(--teal);">Use password instead →</a>';
+    }
+
     document.getElementById('pin').addEventListener('keydown', e => {
+      if (e.key === 'Enter') doLogin();
+    });
+    document.getElementById('password').addEventListener('keydown', e => {
+      if (e.key === 'Enter') doLogin();
+    });
+    document.getElementById('mfaCode').addEventListener('keydown', e => {
       if (e.key === 'Enter') doLogin();
     });
 
     async function doLogin() {
       const code = document.getElementById('code').value.trim();
       const pin  = document.getElementById('pin').value.trim();
+      const password = document.getElementById('password').value;
+      const mfa  = document.getElementById('mfaCode').value.trim();
       const btn  = document.getElementById('loginBtn');
       const err  = document.getElementById('error');
 
-      if (!code || !pin) {
-        showError('Please enter both your customer ID and PIN.');
-        return;
+      if (!code) { showError('Please enter your customer ID.'); return; }
+      if (authMode === 'pin' && !pin && !pendingMfaToken) {
+        showError('Please enter your PIN.'); return;
+      }
+      if (authMode === 'password' && !password && !pendingMfaToken) {
+        showError('Please enter your password.'); return;
       }
 
       btn.disabled    = true;
@@ -291,28 +328,63 @@
       err.style.display = 'none';
 
       try {
+        // If we're in the middle of MFA challenge, use the /login/mfa step.
+        if (pendingMfaToken) {
+          if (!mfa) { showError('Enter your 6-digit code.'); btn.disabled=false; btn.textContent='Sign In →'; return; }
+          const res = await fetch('/api/portal/login/mfa', {
+            method: 'POST',
+            headers: { 'Content-Type':'application/json' },
+            body: JSON.stringify({ mfa_token: pendingMfaToken, mfa_code: mfa }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) { showError(data.detail || 'Invalid MFA code.'); btn.disabled=false; btn.textContent='Sign In →'; return; }
+          localStorage.setItem('pc_token', data.token);
+          localStorage.setItem('pc_name',  data.name);
+          window.location.replace('/portal/dashboard');
+          return;
+        }
+        // Commercial-enrol bounce: server tells us we must enrol MFA first.
+        if (pendingEnrolToken) {
+          showError('MFA enrolment is required. Sign in via the dashboard once an admin completes setup.');
+          btn.disabled=false; btn.textContent='Sign In →'; return;
+        }
+
+        const body = { code };
+        if (authMode === 'password') body.password = password; else body.pin = pin;
+
         const res = await fetch('/api/portal/login', {
           method:  'POST',
           headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ code, pin }),
+          body:    JSON.stringify(body),
         });
+        const data = await res.json().catch(() => ({}));
 
         if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          showError(data.detail || 'Invalid customer ID or PIN.');
-          btn.disabled    = false;
-          btn.textContent = 'Sign In →';
+          showError(data.detail || 'Invalid customer ID or credentials.');
+          btn.disabled=false; btn.textContent='Sign In →'; return;
+        }
+
+        if (data.requires_mfa) {
+          pendingMfaToken = data.mfa_token;
+          document.getElementById('mfaRow').style.display = '';
+          document.getElementById('mfaCode').focus();
+          btn.disabled=false; btn.textContent='Verify →';
+          return;
+        }
+        if (data.requires_mfa_setup) {
+          pendingEnrolToken = data.mfa_enrol_token;
+          localStorage.setItem('pc_mfa_enrol', data.mfa_enrol_token);
+          localStorage.setItem('pc_name', data.name);
+          window.location.replace('/portal/dashboard?enrolMfa=1');
           return;
         }
 
-        const data = await res.json();
         localStorage.setItem('pc_token', data.token);
         localStorage.setItem('pc_name',  data.name);
         window.location.replace('/portal/dashboard');
       } catch {
         showError('Connection error. Please try again.');
-        btn.disabled    = false;
-        btn.textContent = 'Sign In →';
+        btn.disabled=false; btn.textContent='Sign In →';
       }
     }
 

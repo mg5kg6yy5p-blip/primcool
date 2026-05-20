@@ -363,6 +363,8 @@
     <a href="/" class="logo">Prime<span>Cool</span> Services</a>
     <div class="header-right">
       <span class="customer-name" id="headerName"></span>
+      <button class="logout-btn" onclick="openServiceRequest()" style="background:#22A08A;color:white;border-color:#22A08A;margin-right:8px;">+ Request Service</button>
+      <button class="logout-btn" onclick="openAccountSecurity()" style="margin-right:8px;">🔒 Account</button>
       <button class="logout-btn" onclick="logout()">Sign out</button>
     </div>
   </header>
@@ -481,6 +483,92 @@
     </div>
   </div>
 
+  <!-- ── Service Request modal ── -->
+  <div class="modal-overlay" id="svcReqModal">
+    <div class="modal">
+      <div class="modal-h">
+        <h3>Request Service</h3>
+        <button class="modal-close" onclick="closeSvcReq()">×</button>
+      </div>
+      <div class="modal-b">
+        <p style="font-size:13px;color:var(--muted);margin:0 0 14px;line-height:1.5;">Tell us what you need. A PrimeCool team member will review and follow up — this does not directly schedule a visit.</p>
+        <label class="modal-label">What kind of help do you need?</label>
+        <select id="sr-type" class="modal-input" style="margin-bottom:14px;">
+          <option value="maintenance">Routine maintenance / PM</option>
+          <option value="repair">Something isn't working (repair)</option>
+          <option value="quote">Request a quote</option>
+          <option value="question">General question</option>
+        </select>
+        <label class="modal-label">Equipment (optional)</label>
+        <select id="sr-equipment" class="modal-input" style="margin-bottom:14px;"><option value="">— Not specific to one unit —</option></select>
+        <label class="modal-label">Subject</label>
+        <input id="sr-subject" class="modal-input" placeholder="Brief description" maxlength="200" style="margin-bottom:14px;">
+        <label class="modal-label">Details</label>
+        <textarea id="sr-body" class="modal-textarea" placeholder="Symptoms, urgency, anything we should know…" maxlength="4000"></textarea>
+        <label class="modal-label" style="margin-top:14px;">Preferred date (optional)</label>
+        <input id="sr-date" class="modal-input" type="date">
+        <div class="modal-error" id="sr-error"></div>
+      </div>
+      <div class="modal-f">
+        <button class="btn-ghost" onclick="closeSvcReq()">Cancel</button>
+        <button class="btn-primary" id="sr-submit" onclick="submitSvcReq()">Submit Request</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Account Security modal ── -->
+  <div class="modal-overlay" id="acctModal">
+    <div class="modal" style="max-width:560px;">
+      <div class="modal-h">
+        <h3>Account Security</h3>
+        <button class="modal-close" onclick="closeAcct()">×</button>
+      </div>
+      <div class="modal-b">
+        <div id="acct-status" style="background:var(--light);padding:12px;border-radius:8px;margin-bottom:14px;font-size:13px;line-height:1.6;"></div>
+
+        <details style="margin-bottom:14px;">
+          <summary style="cursor:pointer;font-weight:600;color:var(--navy);padding:10px;background:white;border:1px solid var(--border);border-radius:8px;">Set a password (recommended for commercial accounts)</summary>
+          <div style="padding:14px;border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;">
+            <label class="modal-label">Current PIN or password</label>
+            <input id="pwd-current" class="modal-input" type="password" placeholder="••••••" style="margin-bottom:10px;">
+            <label class="modal-label">New password (≥12 chars, letters + digits)</label>
+            <input id="pwd-new" class="modal-input" type="password" placeholder="••••••••••••" style="margin-bottom:10px;">
+            <label class="modal-label">Confirm new password</label>
+            <input id="pwd-confirm" class="modal-input" type="password" style="margin-bottom:10px;">
+            <button class="btn-primary" onclick="submitPassword()" style="width:100%;">Set password</button>
+          </div>
+        </details>
+
+        <details style="margin-bottom:14px;">
+          <summary style="cursor:pointer;font-weight:600;color:var(--navy);padding:10px;background:white;border:1px solid var(--border);border-radius:8px;">Two-factor authentication (MFA)</summary>
+          <div style="padding:14px;border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;">
+            <p id="mfa-status-msg" style="font-size:13px;color:var(--muted);margin:0 0 10px;line-height:1.5;"></p>
+            <div id="mfa-setup-box" style="display:none;">
+              <p style="font-size:13px;line-height:1.5;">Scan this QR code in your authenticator app (Google Authenticator, Authy, 1Password), then enter the 6-digit code below to confirm:</p>
+              <div id="mfa-uri" style="font-family:monospace;font-size:11px;padding:8px;background:var(--light);border-radius:6px;word-break:break-all;margin:10px 0;"></div>
+              <label class="modal-label">6-digit code from app</label>
+              <input id="mfa-code" class="modal-input" type="text" inputmode="numeric" maxlength="6" placeholder="123456" style="margin-bottom:10px;">
+              <button class="btn-primary" onclick="confirmMfa()" style="width:100%;">Confirm &amp; enable MFA</button>
+              <div id="mfa-backup-codes" style="display:none;margin-top:14px;padding:12px;background:#fef3c7;border-radius:6px;font-size:12px;line-height:1.6;"></div>
+            </div>
+            <button id="mfa-start-btn" class="btn-primary" onclick="startMfa()" style="width:100%;">Enable MFA</button>
+          </div>
+        </details>
+
+        <details style="margin-bottom:14px;">
+          <summary style="cursor:pointer;font-weight:600;color:var(--navy);padding:10px;background:white;border:1px solid var(--border);border-radius:8px;">Privacy &amp; data</summary>
+          <div style="padding:14px;border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;">
+            <p style="font-size:13px;line-height:1.5;color:var(--muted);margin:0 0 10px;">Download a copy of all data we hold on your account, or request account deletion.</p>
+            <button class="btn-ghost" onclick="downloadMyData()" style="margin-right:8px;">⬇ Download my data</button>
+            <button class="btn-ghost" onclick="requestDeletion()" style="color:#991b1b;border-color:#991b1b;">Request deletion</button>
+          </div>
+        </details>
+
+        <div class="modal-error" id="acct-error"></div>
+      </div>
+    </div>
+  </div>
+
   <script>
     const token = localStorage.getItem('pc_token');
     if (!token) window.location.replace('/portal');
@@ -572,10 +660,10 @@
         v.equipment_name ? { l: 'Equipment',       v: esc(v.equipment_name) } : null,
       ].filter(Boolean);
 
+      // Customer sees only the polished summary, never the raw work_done /
+      // parts_replaced / notes — those fields are stripped server-side.
       const longDetails = [
-        v.work_done      ? { l: 'Work Performed',  v: v.work_done,      full: true } : null,
-        v.parts_replaced ? { l: 'Parts Replaced',  v: v.parts_replaced, full: true } : null,
-        v.notes          ? { l: 'Notes',           v: v.notes,          full: true } : null,
+        v.work_done_summary ? { l: 'Work Performed', v: esc(v.work_done_summary), full: true } : null,
       ].filter(Boolean);
 
       const allDetails = [...details, ...longDetails];
@@ -937,6 +1025,173 @@
             </div>
           </div>`;
       }).join('');
+    }
+
+    // ── Service Request ──────────────────────────────────────────────────
+    function openServiceRequest() {
+      // Populate equipment select from loaded dashboard data
+      const sel = document.getElementById('sr-equipment');
+      sel.innerHTML = '<option value="">— Not specific to one unit —</option>' +
+        ((dashboardData && dashboardData.equipment) || []).map(e =>
+          `<option value="${e.id}">${esc(e.name || '')}${e.type ? ' (' + esc(e.type) + ')' : ''}</option>`
+        ).join('');
+      document.getElementById('sr-error').style.display = 'none';
+      ['sr-subject','sr-body','sr-date'].forEach(id => document.getElementById(id).value = '');
+      document.getElementById('sr-type').value = 'maintenance';
+      document.getElementById('svcReqModal').classList.add('open');
+    }
+    function closeSvcReq() { document.getElementById('svcReqModal').classList.remove('open'); }
+
+    async function submitSvcReq() {
+      const err = document.getElementById('sr-error');
+      err.style.display = 'none';
+      const body = {
+        request_type:   document.getElementById('sr-type').value,
+        subject:        document.getElementById('sr-subject').value.trim(),
+        body:           document.getElementById('sr-body').value.trim(),
+        equipment_id:   document.getElementById('sr-equipment').value
+                          ? parseInt(document.getElementById('sr-equipment').value) : null,
+        preferred_date: document.getElementById('sr-date').value || null,
+      };
+      if (!body.subject || !body.body) {
+        err.textContent = 'Subject and details are required.';
+        err.style.display = 'block'; return;
+      }
+      const btn = document.getElementById('sr-submit');
+      btn.disabled = true; btn.textContent = 'Sending…';
+      try {
+        const res = await fetch('/api/portal/requests', {
+          method:  'POST',
+          headers: { 'Content-Type':'application/json',
+                     ...(token ? {'Authorization': `Bearer ${token}`} : {}) },
+          credentials: 'include',
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const t = await res.json().catch(() => ({detail:res.statusText}));
+          throw new Error(t.detail || 'Failed to send');
+        }
+        closeSvcReq();
+        alert('Request sent. A PrimeCool team member will follow up shortly.');
+      } catch (e) {
+        err.textContent = e.message; err.style.display = 'block';
+      } finally {
+        btn.disabled = false; btn.textContent = 'Submit Request';
+      }
+    }
+
+    // ── Account Security ─────────────────────────────────────────────────
+    let mfaSecret = null;
+    function openAccountSecurity() {
+      const c = dashboardData && dashboardData.customer;
+      if (!c) return;
+      const lines = [];
+      lines.push(`<strong>${esc(c.name || '')}</strong> · ${esc(c.customer_code || '')}`);
+      lines.push(`Account type: <strong>${esc(c.customer_type || 'residential')}</strong>`);
+      lines.push(`Sign-in method: <strong>${c.auth_mode === 'password' ? 'Password' : 'PIN'}</strong>`);
+      lines.push(`Two-factor authentication: <strong>${c.mfa_enabled ? '✓ Enabled' : '✗ Not enabled'}</strong>`);
+      if (c.customer_type === 'commercial' && !c.mfa_enabled) {
+        lines.push('<span style="color:#991b1b;">Commercial accounts must enable MFA at next login.</span>');
+      }
+      document.getElementById('acct-status').innerHTML = lines.join('<br>');
+      document.getElementById('mfa-status-msg').textContent = c.mfa_enabled
+        ? 'MFA is enabled on this account.'
+        : 'MFA is not enabled. Adding a second factor makes it much harder for someone to access your account if your password leaks.';
+      document.getElementById('mfa-setup-box').style.display = 'none';
+      document.getElementById('mfa-start-btn').style.display = c.mfa_enabled ? 'none' : '';
+      document.getElementById('mfa-backup-codes').style.display = 'none';
+      document.getElementById('acct-error').style.display = 'none';
+      document.getElementById('acctModal').classList.add('open');
+    }
+    function closeAcct() { document.getElementById('acctModal').classList.remove('open'); }
+
+    async function apiPortal(method, url, body) {
+      const res = await fetch(url, {
+        method,
+        headers: { 'Content-Type':'application/json',
+                   ...(token ? {'Authorization': `Bearer ${token}`} : {}) },
+        credentials: 'include',
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      if (!res.ok) {
+        const t = await res.json().catch(() => ({detail:res.statusText}));
+        throw new Error(t.detail || 'Request failed');
+      }
+      return res.json();
+    }
+
+    async function submitPassword() {
+      const cur  = document.getElementById('pwd-current').value;
+      const newp = document.getElementById('pwd-new').value;
+      const conf = document.getElementById('pwd-confirm').value;
+      if (!cur || !newp || !conf) { acctErr('All three fields are required.'); return; }
+      if (newp !== conf)            { acctErr('New password and confirmation do not match.'); return; }
+      try {
+        const isPw = dashboardData.customer.auth_mode === 'password';
+        await apiPortal('POST', '/api/portal/password', isPw
+          ? { current_password: cur, new_password: newp, confirm: conf }
+          : { current_pin: cur, new_password: newp, confirm: conf });
+        alert('Password set. Use this password to sign in from now on.');
+        closeAcct();
+      } catch (e) { acctErr(e.message); }
+    }
+
+    async function startMfa() {
+      try {
+        const res = await apiPortal('POST', '/api/portal/mfa/setup');
+        mfaSecret = res.secret;
+        document.getElementById('mfa-uri').textContent = res.provisioning_uri;
+        document.getElementById('mfa-setup-box').style.display = '';
+        document.getElementById('mfa-start-btn').style.display = 'none';
+      } catch (e) { acctErr(e.message); }
+    }
+    async function confirmMfa() {
+      const code = document.getElementById('mfa-code').value.trim();
+      if (!code) { acctErr('Enter the 6-digit code.'); return; }
+      try {
+        const res = await apiPortal('POST', '/api/portal/mfa/confirm', { code });
+        const box = document.getElementById('mfa-backup-codes');
+        box.style.display = '';
+        box.innerHTML = '<strong>Save these backup codes</strong> — each works once if you lose your authenticator:<br>' +
+          (res.backup_codes || []).map(c => `<code style="font-size:14px;">${esc(c)}</code>`).join('<br>');
+        document.getElementById('mfa-status-msg').textContent = 'MFA is enabled on this account.';
+        if (dashboardData && dashboardData.customer) dashboardData.customer.mfa_enabled = 1;
+      } catch (e) { acctErr(e.message); }
+    }
+
+    async function downloadMyData() {
+      try {
+        const res = await fetch('/api/portal/me/export', {
+          headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+          credentials: 'include',
+        });
+        if (!res.ok) {
+          const t = await res.json().catch(() => ({detail:res.statusText}));
+          throw new Error(t.detail || 'Export failed');
+        }
+        const data = await res.json();
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `primecool-data-${new Date().toISOString().slice(0,10)}.json`;
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
+      } catch (e) { acctErr(e.message); }
+    }
+
+    async function requestDeletion() {
+      if (!confirm('Request account deletion? A PrimeCool team member will follow up. This is not immediate — financial records must be retained for the statutory period.')) return;
+      try {
+        await apiPortal('POST', '/api/portal/me/deletion-request');
+        alert('Deletion request submitted. Our team will follow up.');
+        closeAcct();
+      } catch (e) { acctErr(e.message); }
+    }
+
+    function acctErr(msg) {
+      const el = document.getElementById('acct-error');
+      el.textContent = msg; el.style.display = 'block';
     }
 
     load();

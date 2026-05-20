@@ -1171,9 +1171,15 @@
       </div>
       <div class="field"><label>Full Name *</label><input id="f-name" placeholder="John Smith"></div>
       <div class="field-row">
-        <div class="field"><label>Company</label><input id="f-company" placeholder="ABC Ltd."></div>
+        <div class="field"><label>Account Type</label>
+          <select id="f-customer-type">
+            <option value="residential">Residential</option>
+            <option value="commercial">Commercial (MFA required at portal login)</option>
+          </select>
+        </div>
         <div class="field"><label>Phone</label><input id="f-phone" placeholder="+1 868 123 4567"></div>
       </div>
+      <div class="field"><label>Company</label><input id="f-company" placeholder="ABC Ltd."></div>
       <div class="field"><label>Email <span style="text-transform:none;font-weight:400;color:var(--muted);">(needed for customer self-service PIN reset)</span></label><input id="f-email" type="email" placeholder="john@example.com"></div>
       <div class="field"><label>Address</label><input id="f-address" placeholder="123 Main St, Port of Spain"></div>
       <div class="field"><label>Internal Notes</label><textarea id="f-notes" placeholder="Notes visible only to staff…"></textarea></div>
@@ -2078,6 +2084,7 @@
       email:         document.getElementById('f-email').value.trim(),
       address:       document.getElementById('f-address').value.trim(),
       notes:         document.getElementById('f-notes').value.trim(),
+      customer_type: document.getElementById('f-customer-type').value,
     };
     if (!body.customer_code || !body.name) { showErr('err-addCustomer','Customer ID and name are required.'); return; }
     if (!body.pin) { showErr('err-addCustomer','Initial PIN is required.'); return; }

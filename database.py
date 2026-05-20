@@ -159,9 +159,24 @@ def init_db():
     """)
     # Idempotent column addition for existing customer DBs
     cust_cols = {row[1] for row in con.execute("PRAGMA table_info(customers)")}
-    if "pin_hash" not in cust_cols:
-        try: con.execute("ALTER TABLE customers ADD COLUMN pin_hash TEXT")
-        except sqlite3.OperationalError: pass
+    for col, sql in (
+        ("pin_hash",       "ALTER TABLE customers ADD COLUMN pin_hash TEXT"),
+        # Client-portal hardening (per portal spec):
+        #   auth_mode: 'pin' (residential default) | 'password' (commercial)
+        #   password_hash: Argon2-hashed when auth_mode='password'
+        #   customer_type: 'residential' | 'commercial' — drives mandatory MFA
+        #   MFA TOTP secret/backup codes (same pattern as admin MFA)
+        ("auth_mode",      "ALTER TABLE customers ADD COLUMN auth_mode TEXT NOT NULL DEFAULT 'pin'"),
+        ("password_hash",  "ALTER TABLE customers ADD COLUMN password_hash TEXT"),
+        ("customer_type",  "ALTER TABLE customers ADD COLUMN customer_type TEXT NOT NULL DEFAULT 'residential'"),
+        ("mfa_secret",     "ALTER TABLE customers ADD COLUMN mfa_secret TEXT"),
+        ("mfa_enabled",    "ALTER TABLE customers ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 0"),
+        ("backup_codes",   "ALTER TABLE customers ADD COLUMN backup_codes TEXT"),
+        ("deletion_requested_at", "ALTER TABLE customers ADD COLUMN deletion_requested_at TEXT"),
+    ):
+        if col not in cust_cols:
+            try: con.execute(sql)
+            except sqlite3.OperationalError: pass
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS customer_pin_resets (
@@ -577,6 +592,9 @@ def init_db():
         # Phase 3 — manager flag-for-review
         ("flagged_for_review",     "ALTER TABLE maintenance_visits ADD COLUMN flagged_for_review INTEGER NOT NULL DEFAULT 0"),
         ("review_note",            "ALTER TABLE maintenance_visits ADD COLUMN review_note TEXT"),
+        # Client-facing summary of the work, distinct from the raw work_done
+        # field which can contain internal jargon. Spec: portal serves summary.
+        ("work_done_summary",      "ALTER TABLE maintenance_visits ADD COLUMN work_done_summary TEXT"),
     ):
         if col_sql[0] not in existing_cols:
             try: con.execute(col_sql[1])
@@ -626,6 +644,29 @@ def init_db():
             captured_at     TEXT NOT NULL
         )
     """)
+
+    # ── Client portal: service requests ─────────────────────────────────
+    # Client requests do NOT directly become visits. They go into a triage
+    # queue. Staff with visit:create promote them into the schedule.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS service_requests (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id     INTEGER NOT NULL REFERENCES customers(id),
+            equipment_id    INTEGER REFERENCES equipment(id),
+            request_type    TEXT NOT NULL,         -- 'maintenance'|'repair'|'quote'|'question'
+            subject         TEXT NOT NULL,
+            body            TEXT NOT NULL,
+            preferred_date  TEXT,
+            status          TEXT NOT NULL DEFAULT 'new',  -- 'new'|'triaged'|'scheduled'|'closed'
+            triaged_by      INTEGER REFERENCES admin_users(id),
+            triaged_at      TEXT,
+            visit_id        INTEGER REFERENCES maintenance_visits(id),
+            created_at      TEXT NOT NULL,
+            ip_address      TEXT
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_svcreq_status ON service_requests(status, created_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_svcreq_customer ON service_requests(customer_id, created_at)")
 
     # ── Purchase orders + goods received + physical counts (SoD controls) ──
     # The flow: inventory_manager drafts a PO → "sends" it → goods physically
@@ -783,11 +824,14 @@ def get_all_customers():
 def create_customer(data: dict) -> int:
     pin = data.get("pin", "").strip()
     pin_hash = _hash_pin(pin) if pin else None
+    ctype = data.get("customer_type", "residential")
+    if ctype not in ("residential", "commercial"):
+        ctype = "residential"
     con = _con()
     cur = con.execute(
         """
-        INSERT INTO customers (customer_code, name, company, email, phone, address, notes, pin_hash, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO customers (customer_code, name, company, email, phone, address, notes, pin_hash, customer_type, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             data["customer_code"].strip().upper(),
@@ -798,6 +842,7 @@ def create_customer(data: dict) -> int:
             data.get("address", ""),
             data.get("notes", ""),
             pin_hash,
+            ctype,
             datetime.now(timezone.utc).isoformat(),
         ),
     )
@@ -3715,3 +3760,211 @@ def set_visit_flag(visit_id: int, flagged: bool, note: str = ""):
     )
     con.commit()
     con.close()
+
+
+
+# ── Client-portal hardening ──────────────────────────────────────────────────
+def set_customer_password(customer_id: int, password: str):
+    """Argon2-hash a customer password and flip auth_mode → 'password'.
+    Caller is responsible for validating length/strength."""
+    con = _con()
+    con.execute(
+        "UPDATE customers SET password_hash = ?, auth_mode = 'password' WHERE id = ?",
+        (_hash_pin(password), customer_id),
+    )
+    con.commit()
+    con.close()
+
+
+def verify_customer_password(code: str, password: str):
+    """Same shape as verify_customer() but reads password_hash. Used when the
+    customer has auth_mode='password' (commercial accounts)."""
+    cust = get_customer_by_code(code)
+    if not cust:
+        return None
+    if cust.get("auth_mode") != "password":
+        return None
+    if not cust.get("password_hash"):
+        return None
+    if not _verify_pin(password, cust["password_hash"]):
+        return None
+    if _needs_rehash(cust["password_hash"]):
+        set_customer_password(cust["id"], password)
+    return cust
+
+
+def set_customer_mfa(customer_id: int, secret: str, enabled: bool,
+                     backup_codes_hashed: list = None):
+    import json as _json
+    con = _con()
+    con.execute(
+        """UPDATE customers SET
+              mfa_secret = ?, mfa_enabled = ?, backup_codes = ?
+            WHERE id = ?""",
+        (secret, 1 if enabled else 0,
+         _json.dumps(backup_codes_hashed) if backup_codes_hashed else None,
+         customer_id),
+    )
+    con.commit()
+    con.close()
+
+
+def set_customer_type(customer_id: int, customer_type: str):
+    if customer_type not in ("residential", "commercial"):
+        raise ValueError("customer_type must be 'residential' or 'commercial'")
+    con = _con()
+    con.execute("UPDATE customers SET customer_type = ? WHERE id = ?",
+                (customer_type, customer_id))
+    con.commit()
+    con.close()
+
+
+def mark_customer_deletion_requested(customer_id: int):
+    con = _con()
+    con.execute(
+        "UPDATE customers SET deletion_requested_at = ? WHERE id = ?",
+        (datetime.now(timezone.utc).isoformat(), customer_id),
+    )
+    con.commit()
+    con.close()
+
+
+def get_customer_full_export(customer_id: int) -> dict:
+    """Privacy-compliance data export. Returns every record this customer
+    has direct visibility into, plus contractual data they're a party to.
+    Excludes internal-only fields (raw findings, tech identity, costs)."""
+    con = _con()
+    cust = con.execute(
+        """SELECT id, customer_code, name, company, email, phone, address,
+                  notes, customer_type, auth_mode, created_at, deletion_requested_at
+             FROM customers WHERE id = ?""", (customer_id,)).fetchone()
+    if not cust:
+        con.close()
+        return {}
+    out = {"customer": dict(cust)}
+    out["equipment"] = [dict(r) for r in con.execute(
+        "SELECT * FROM equipment WHERE customer_id = ?", (customer_id,)
+    ).fetchall()]
+    out["visits"] = [dict(r) for r in con.execute(
+        """SELECT id, visit_type, status, scheduled_date, scheduled_time,
+                  completed_date, work_done_summary AS work_summary,
+                  next_pm_due, equipment_id, created_at
+             FROM maintenance_visits WHERE customer_id = ?""", (customer_id,)
+    ).fetchall()]
+    try:
+        out["invoices"] = [dict(r) for r in con.execute(
+            """SELECT id, invoice_number, issue_date, due_date, subtotal,
+                      gct_amount, total, amount_paid, status, created_at
+                 FROM invoices WHERE customer_id = ?""", (customer_id,)
+        ).fetchall()]
+    except Exception:
+        out["invoices"] = []
+    out["reviews"] = [dict(r) for r in con.execute(
+        "SELECT * FROM reviews WHERE customer_id = ?", (customer_id,)
+    ).fetchall()]
+    out["service_requests"] = [dict(r) for r in con.execute(
+        """SELECT id, request_type, subject, body, preferred_date, status,
+                  visit_id, created_at FROM service_requests WHERE customer_id = ?""",
+        (customer_id,),
+    ).fetchall()]
+    con.close()
+    return out
+
+
+# ── Service requests (client-portal triage queue) ────────────────────────────
+def create_service_request(customer_id: int, data: dict, ip_address: str = None) -> int:
+    con = _con()
+    cur = con.execute(
+        """INSERT INTO service_requests
+            (customer_id, equipment_id, request_type, subject, body,
+             preferred_date, status, created_at, ip_address)
+           VALUES (?, ?, ?, ?, ?, ?, 'new', ?, ?)""",
+        (customer_id,
+         int(data["equipment_id"]) if data.get("equipment_id") else None,
+         data.get("request_type", "question"),
+         data["subject"].strip()[:200],
+         data["body"].strip()[:4000],
+         data.get("preferred_date") or None,
+         datetime.now(timezone.utc).isoformat(),
+         (ip_address or "")[:64] or None),
+    )
+    rid = cur.lastrowid
+    con.commit()
+    con.close()
+    return rid
+
+
+def list_service_requests(status: str = None, customer_id: int = None, limit: int = 200):
+    sql = """SELECT sr.*, c.name AS customer_name, c.customer_code,
+                    e.name AS equipment_name
+               FROM service_requests sr
+               JOIN customers c ON sr.customer_id = c.id
+          LEFT JOIN equipment e ON sr.equipment_id = e.id"""
+    where = []
+    args  = []
+    if status:
+        where.append("sr.status = ?"); args.append(status)
+    if customer_id is not None:
+        where.append("sr.customer_id = ?"); args.append(customer_id)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY sr.created_at DESC LIMIT ?"
+    args.append(int(limit))
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def get_service_request(req_id: int):
+    con = _con()
+    row = con.execute("SELECT * FROM service_requests WHERE id = ?", (req_id,)).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
+def update_service_request_status(req_id: int, status: str, admin_id: int,
+                                   visit_id: int = None):
+    con = _con()
+    con.execute(
+        """UPDATE service_requests SET
+              status = ?,
+              triaged_by = COALESCE(triaged_by, ?),
+              triaged_at = COALESCE(triaged_at, ?),
+              visit_id   = COALESCE(visit_id, ?)
+            WHERE id = ?""",
+        (status, admin_id, datetime.now(timezone.utc).isoformat(),
+         visit_id, req_id),
+    )
+    con.commit()
+    con.close()
+
+
+# ── Visit findings split (client-facing summary) ─────────────────────────────
+def set_visit_work_summary(visit_id: int, summary: str):
+    con = _con()
+    con.execute("UPDATE maintenance_visits SET work_done_summary = ? WHERE id = ?",
+                (summary or "", visit_id))
+    con.commit()
+    con.close()
+
+
+# ── Customer visits filtered to the customer-facing shape ────────────────────
+def get_customer_visits_portal(customer_id: int):
+    """Returns visits with ONLY the fields the customer is allowed to see.
+    Strips raw work_done, internal notes, parts_replaced, assigned_tech_id,
+    hazards, access_codes — anything operational/identifying."""
+    con = _con()
+    rows = con.execute(
+        """SELECT v.id, v.visit_type, v.status, v.scheduled_date, v.scheduled_time,
+                  v.completed_date, v.work_done_summary, v.next_pm_due,
+                  v.equipment_id, v.submitted_at, v.created_at,
+                  e.name AS equipment_name
+             FROM maintenance_visits v
+        LEFT JOIN equipment e ON v.equipment_id = e.id
+            WHERE v.customer_id = ?
+            ORDER BY COALESCE(v.completed_date, v.scheduled_date, v.created_at) DESC""",
+        (customer_id,),
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
