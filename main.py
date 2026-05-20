@@ -651,6 +651,9 @@ _ACCESS_LOG_SKIP_EXACT = {
     "/api/admin/audit",
     "/api/admin/audit/verify",
     "/api/admin/access",
+    "/api/admin/access/aggregate",
+    "/api/admin/security/alerts",
+    "/api/admin/security/alerts/summary",
     "/api/admin/sessions",
 }
 
