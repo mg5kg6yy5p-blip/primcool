@@ -709,6 +709,13 @@ def delete_customer(customer_id: int):
 
 # ── Equipment ─────────────────────────────────────────────────────────────────
 
+def get_equipment_by_id(equipment_id: int):
+    con = _con()
+    row = con.execute("SELECT * FROM equipment WHERE id = ?", (equipment_id,)).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
 def get_customer_equipment(customer_id: int):
     con = _con()
     rows = con.execute(

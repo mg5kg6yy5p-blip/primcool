@@ -31,7 +31,7 @@ from database import (
     get_customer_by_code, get_customer_by_id, get_all_customers,
     create_customer, delete_customer, verify_customer, set_customer_pin,
     get_customer_by_code_and_email, create_customer_pin_reset, consume_customer_pin_reset,
-    get_customer_equipment, create_equipment, delete_equipment,
+    get_customer_equipment, get_equipment_by_id, create_equipment, delete_equipment,
     get_customer_visits, get_all_visits, create_visit, update_visit, delete_visit,
     get_visit_by_id, update_visit_time, tech_complete_visit, get_tech_jobs,
     create_review, get_review_for_visit, get_customer_reviews,
@@ -2439,10 +2439,12 @@ def admin_reset_customer_pin(request: Request, customer_id: int, body: CustomerP
 def admin_delete_customer(request: Request, customer_id: int):
     admin = _require_perm(request, "customer:delete")
     cust = get_customer_by_id(customer_id)
+    if not cust:
+        raise HTTPException(404, "Customer not found")
     delete_customer(customer_id)
     _audit_from(admin, "customer.delete", request,
                 target_type="customer", target_id=customer_id,
-                target_label=cust.get("customer_code") if cust else str(customer_id),
+                target_label=cust["customer_code"],
                 before=cust)
     return {"ok": True}
 
@@ -2466,9 +2468,13 @@ def admin_create_equipment(request: Request, body: EquipmentCreate):
 @app.delete("/api/admin/equipment/{equipment_id}")
 def admin_delete_equipment(request: Request, equipment_id: int):
     admin = _require_perm(request, "customer:update")
+    eq = get_equipment_by_id(equipment_id)
+    if not eq:
+        raise HTTPException(404, "Equipment not found")
     delete_equipment(equipment_id)
     _audit_from(admin, "equipment.delete", request,
-                target_type="equipment", target_id=equipment_id)
+                target_type="equipment", target_id=equipment_id,
+                target_label=eq.get("name"))
     return {"ok": True}
 
 
@@ -2505,9 +2511,12 @@ def admin_update_visit(request: Request, visit_id: int, body: VisitUpdate):
 def admin_delete_visit(request: Request, visit_id: int):
     admin = _require_perm(request, "visit:delete")
     before = get_visit_by_id(visit_id)
+    if not before:
+        raise HTTPException(404, "Visit not found")
     delete_visit(visit_id)
     _audit_from(admin, "visit.delete", request,
                 target_type="visit", target_id=visit_id,
+                target_label=f"{before.get('visit_type','?')} for {before.get('customer_name','?')}",
                 before=before)
     return {"ok": True}
 
@@ -2539,9 +2548,15 @@ def admin_reject_review(request: Request, review_id: int):
 @app.delete("/api/admin/reviews/{review_id}")
 def admin_delete_review(request: Request, review_id: int):
     admin = _require_perm(request, "review:delete")
+    # Look up before deleting so the audit row captures the snapshot
+    existing = [r for r in get_all_reviews() if r["id"] == review_id]
+    if not existing:
+        raise HTTPException(404, "Review not found")
     delete_review(review_id)
     _audit_from(admin, "review.delete", request,
-                target_type="review", target_id=review_id)
+                target_type="review", target_id=review_id,
+                target_label=f"{existing[0].get('customer_name','?')} — {existing[0].get('rating','?')}★",
+                before=existing[0])
     return {"ok": True}
 
 
@@ -2602,10 +2617,12 @@ def admin_reset_tech_pin(request: Request, tech_id: int, body: TechPinReset):
 def admin_delete_tech(request: Request, tech_id: int):
     admin = _require_perm(request, "tech:delete")
     tech = get_tech_by_id(tech_id)
+    if not tech:
+        raise HTTPException(404, "Technician not found")
     delete_tech(tech_id)
     _audit_from(admin, "tech.delete", request,
                 target_type="tech", target_id=tech_id,
-                target_label=tech.get("tech_code") if tech else str(tech_id),
+                target_label=tech["tech_code"],
                 before=tech)
     return {"ok": True}
 
