@@ -705,6 +705,7 @@
             <option value="reads">Read access</option>
             <option value="aggregate">Aggregate (who viewed what)</option>
             <option value="alerts">Security alerts</option>
+            <option value="dormant">Dormant accounts</option>
           </select>
           <select id="auditAction" onchange="loadAudit()" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
             <option value="">All actions</option>
@@ -1046,6 +1047,41 @@
 
 <!-- Adjust Stock -->
 <!-- ── Procurement modal (POs + Physical counts) ── -->
+<!-- ── Offboarding modal (S1/S3/S4) ── -->
+<div class="modal-overlay" id="modal-offboard">
+  <div class="modal" style="max-width:680px;">
+    <div class="modal-header">
+      <h3 id="offboardTitle">Offboard account</h3>
+      <button class="modal-close" onclick="closeModal('offboard')">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="offboard-warn" style="background:#fee2e2;color:#991b1b;border-left:4px solid #dc2626;padding:12px 14px;border-radius:8px;margin-bottom:14px;font-size:13px;line-height:1.5;">
+        <strong>This is immediate and total.</strong> All active sessions for this account will be force-killed and the account will be locked out. The record stays in the database for retention purposes. Review the exit report below before confirming.
+      </div>
+
+      <div style="background:var(--light);padding:10px 12px;border-radius:8px;margin-bottom:14px;">
+        <div style="font-size:11px;letter-spacing:0.6px;text-transform:uppercase;color:var(--muted);font-weight:700;">Target</div>
+        <div id="offboard-target" style="font-weight:700;color:var(--navy);margin-top:2px;"></div>
+      </div>
+
+      <div style="font-size:11px;letter-spacing:0.6px;text-transform:uppercase;color:var(--muted);font-weight:700;margin-bottom:6px;">Exit report (last 30 days)</div>
+      <div id="offboard-report" style="background:white;border:1px solid var(--border);border-radius:8px;padding:12px;font-size:13px;line-height:1.6;margin-bottom:14px;max-height:280px;overflow:auto;">
+        <span style="color:var(--muted);">Loading…</span>
+      </div>
+
+      <div class="field">
+        <label>Reason (recorded in audit log)</label>
+        <textarea id="offboard-reason" placeholder="e.g. terminated effective Friday 4pm; contract ended 2026-04-30" style="min-height:60px;"></textarea>
+      </div>
+      <div class="form-error" id="err-offboard"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('offboard')">Cancel</button>
+      <button class="btn btn-danger" id="offboardConfirmBtn" onclick="confirmOffboard()">Confirm offboard</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modal-procurement">
   <div class="modal" style="max-width:880px;">
     <div class="modal-header">
@@ -1984,18 +2020,26 @@
       tbody.innerHTML = '<tr><td colspan="5" class="empty">No customers yet. Add your first one.</td></tr>';
       return;
     }
-    tbody.innerHTML = allCustomers.map(c => `
-      <tr>
-        <td><span class="code-pill">${c.customer_code}</span>${c.has_pin ? '' : '<br><span class="badge" style="background:#fee2e2;color:#991b1b;margin-top:4px;display:inline-block;">No PIN</span>'}</td>
-        <td><strong>${c.name}</strong></td>
+    tbody.innerHTML = allCustomers.map(c => {
+      const isActive = c.active !== 0 && c.active !== false;
+      const ctype = c.customer_type || 'residential';
+      return `
+      <tr style="${isActive ? '' : 'opacity:0.55;'}">
+        <td><span class="code-pill">${c.customer_code}</span>${c.has_pin ? '' : '<br><span class="badge" style="background:#fee2e2;color:#991b1b;margin-top:4px;display:inline-block;">No PIN</span>'}${!isActive ? '<br><span class="badge" style="background:#f3f4f6;color:var(--muted);margin-top:4px;display:inline-block;">Closed</span>' : ''}</td>
+        <td><strong>${esc(c.name)}</strong>${ctype === 'commercial' ? ' <span class="badge" style="background:#eff6ff;color:#1d4ed8;font-size:10px;">Commercial</span>' : ''}</td>
         <td>${c.company || '—'}</td>
         <td>${c.phone || '—'}</td>
         <td style="white-space:nowrap;">
           <button class="btn btn-edit btn-sm" onclick="openCustomerDetail(${c.id})">View →</button>
           <button class="btn btn-edit btn-sm" onclick="openResetCustomerPin(${c.id},'${esc(c.name)}')" style="margin-left:6px;">${c.has_pin ? 'Reset PIN' : 'Set PIN'}</button>
-          <button class="btn btn-danger btn-sm" onclick="deleteCustomer(${c.id},'${esc(c.name)}')" style="margin-left:6px;">Delete</button>
+          ${can('customer:delete') ? (
+            isActive
+              ? `<button class="btn btn-danger btn-sm" onclick="openOffboard('customer',${c.id},'${esc(c.name)}')" style="margin-left:6px;">🚪 Close</button>`
+              : `<button class="btn btn-ghost btn-sm" onclick="reinstateAccount('customer',${c.id})" style="margin-left:6px;">Reopen</button>`
+          ) : ''}
         </td>
-      </tr>`).join('');
+      </tr>`;
+    }).join('');
   }
 
   function openCustomerDetail(id) {
@@ -2505,7 +2549,11 @@
         <td>${a.active ? '<span class="badge badge-confirmed">Active</span>' : '<span class="badge" style="background:#f3f4f6;color:var(--muted);">Inactive</span>'}</td>
         <td style="white-space:nowrap;">
           <button class="btn btn-edit btn-sm" onclick="openResetAdminPw(${a.id},'${escHtml(a.name)}')">Reset PW</button>
-          ${canManage && !isMe ? `<button class="btn btn-ghost btn-sm" onclick="toggleAdminActive(${a.id},${a.active ? 0 : 1})" style="margin-left:6px;">${a.active ? 'Deactivate' : 'Activate'}</button>` : ''}
+          ${canManage && !isMe ? (
+            a.active
+              ? `<button class="btn btn-danger btn-sm" onclick="openOffboard('admin',${a.id},'${escHtml(a.name)}')" style="margin-left:6px;">🚪 Offboard</button>`
+              : `<button class="btn btn-ghost btn-sm" onclick="reinstateAccount('admin',${a.id})" style="margin-left:6px;">Reinstate</button>`
+          ) : ''}
         </td>
       </tr>`;
     }).join('');
@@ -4036,6 +4084,111 @@
   }
 
   // ── Audit Log ──────────────────────────────────────────────────────────────
+  // ── Offboarding (access-lifecycle UI) ─────────────────────────────────
+  let offboardCtx = null;
+
+  async function openOffboard(subjectType, id, name) {
+    offboardCtx = { subjectType, id, name };
+    const labels = { admin: 'admin user', tech: 'technician', customer: 'customer' };
+    document.getElementById('offboardTitle').textContent =
+      subjectType === 'customer' ? `Close customer account` : `Offboard ${labels[subjectType]}`;
+    document.getElementById('offboard-target').textContent = `${name} (${labels[subjectType]} #${id})`;
+    document.getElementById('offboard-reason').value = '';
+    document.getElementById('err-offboard').style.display = 'none';
+    document.getElementById('offboardConfirmBtn').textContent =
+      subjectType === 'customer' ? 'Confirm close' : 'Confirm offboard';
+    document.getElementById('offboard-report').innerHTML = '<span style="color:var(--muted);">Loading…</span>';
+    document.getElementById('modal-offboard').classList.add('open');
+
+    const pathMap = { admin: 'users', tech: 'techs', customer: 'customers' };
+    try {
+      const r = await api('GET', `/api/admin/${pathMap[subjectType]}/${id}/exit-report?days=30`);
+      renderExitReport(r);
+    } catch (e) {
+      document.getElementById('offboard-report').innerHTML =
+        `<span style="color:#991b1b;">Could not load exit report: ${escHtml(e.message)}</span>`;
+    }
+  }
+
+  function renderExitReport(r) {
+    const fmtDate = (iso) => { try { return new Date(iso).toLocaleString(); } catch { return iso || '—'; } };
+    const muts = r.mutations_by_action || [];
+    const exports = r.exports || [];
+    const acctChanges = r.account_changes || [];
+    const hotReads = (r.reads_total || 0) >= 100;
+    const hotCustomers = (r.distinct_customers || 0) >= 20;
+    const html = `
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px;">
+        <div style="background:var(--light);padding:8px;border-radius:6px;">
+          <div style="font-size:11px;color:var(--muted);">Last login</div>
+          <div style="font-weight:600;color:var(--navy);font-size:12px;">${escHtml(fmtDate(r.last_login_at))}</div>
+        </div>
+        <div style="background:${hotReads ? '#fef3c7' : 'var(--light)'};padding:8px;border-radius:6px;">
+          <div style="font-size:11px;color:var(--muted);">Reads (30d)</div>
+          <div style="font-weight:700;font-size:18px;color:${hotReads ? '#92400e' : 'var(--navy)'};">${r.reads_total || 0}</div>
+        </div>
+        <div style="background:${hotCustomers ? '#fef3c7' : 'var(--light)'};padding:8px;border-radius:6px;">
+          <div style="font-size:11px;color:var(--muted);">Distinct customers</div>
+          <div style="font-weight:700;font-size:18px;color:${hotCustomers ? '#92400e' : 'var(--navy)'};">${r.distinct_customers || 0}</div>
+        </div>
+      </div>
+      ${exports.length ? `
+        <div style="margin-bottom:10px;">
+          <strong style="color:#991b1b;">⚠ ${exports.length} export(s) in last 30 days:</strong>
+          ${exports.slice(0,5).map(e => `<div style="font-size:12px;color:var(--muted);margin-left:14px;">• ${escHtml(e.action)} — ${escHtml(e.target_label||'')} <span>(${escHtml(fmtDate(e.created_at))})</span></div>`).join('')}
+        </div>` : ''}
+      ${acctChanges.length ? `
+        <div style="margin-bottom:10px;">
+          <strong>Account changes by this user:</strong>
+          ${acctChanges.slice(0,5).map(c => `<div style="font-size:12px;color:var(--muted);margin-left:14px;">• ${escHtml(c.action)} → ${escHtml(c.target_label||'')} <span>(${escHtml(fmtDate(c.created_at))})</span></div>`).join('')}
+        </div>` : ''}
+      ${muts.length ? `
+        <div>
+          <strong>Mutations by action:</strong>
+          <div style="font-size:12px;color:var(--muted);">${muts.slice(0,8).map(m => `${escHtml(m.action)}: ${m.n}`).join(' · ')}</div>
+        </div>
+      ` : '<div style="color:var(--muted);font-size:12px;">No mutations recorded in window.</div>'}
+    `;
+    document.getElementById('offboard-report').innerHTML = html;
+  }
+
+  async function confirmOffboard() {
+    if (!offboardCtx) return;
+    const reason = document.getElementById('offboard-reason').value.trim();
+    if (!reason) { showErr('err-offboard', 'A reason is required (it goes into the audit log).'); return; }
+    const pathMap = { admin: 'users', tech: 'techs', customer: 'customers' };
+    const action  = offboardCtx.subjectType === 'customer' ? 'close' : 'terminate';
+    const btn = document.getElementById('offboardConfirmBtn');
+    btn.disabled = true; btn.textContent = 'Working…';
+    try {
+      const r = await api('POST', `/api/admin/${pathMap[offboardCtx.subjectType]}/${offboardCtx.id}/${action}`, { reason });
+      toast(`Done. ${r.sessions_revoked || 0} session(s) revoked.`, 'success');
+      closeModal('offboard');
+      // Reload the affected table
+      if (offboardCtx.subjectType === 'admin') loadAdmins();
+      else if (offboardCtx.subjectType === 'tech') loadTechs();
+      else loadCustomers();
+    } catch (e) {
+      showErr('err-offboard', e.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = offboardCtx.subjectType === 'customer' ? 'Confirm close' : 'Confirm offboard';
+    }
+  }
+
+  async function reinstateAccount(subjectType, id) {
+    if (!confirm(subjectType === 'customer' ? 'Reopen this customer account?' : 'Reinstate this account?')) return;
+    const pathMap = { admin: 'users', tech: 'techs', customer: 'customers' };
+    const action  = subjectType === 'customer' ? 'reopen' : 'reinstate';
+    try {
+      await api('POST', `/api/admin/${pathMap[subjectType]}/${id}/${action}`);
+      toast('Reinstated', 'success');
+      if (subjectType === 'admin') loadAdmins();
+      else if (subjectType === 'tech') loadTechs();
+      else loadCustomers();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
   async function refreshSecurityBanner() {
     try {
       const r = await api('GET', '/api/admin/security/alerts/summary');
@@ -4101,6 +4254,9 @@
       } else if (mode === 'alerts') {
         const rows = await api('GET', '/api/admin/security/alerts?limit=200');
         renderSecurityAlerts(rows);
+      } else if (mode === 'dormant') {
+        const data = await api('GET', '/api/admin/access-lifecycle/dormant?days=90');
+        renderDormant(data);
       } else {
         if (ap) params.set('action_prefix', ap + '.');
         const rows = await api('GET', '/api/admin/audit?' + params.toString());
@@ -4147,6 +4303,36 @@
       loadAudit();
       refreshSecurityBanner();
     } catch (e) { alert(e.message); }
+  }
+
+  function renderDormant(data) {
+    const tbody = document.getElementById('auditTableBody');
+    const countEl = document.getElementById('auditCount');
+    const all = [
+      ...(data.admin    || []).map(r => ({...r, kind: 'admin'})),
+      ...(data.tech     || []).map(r => ({...r, kind: 'tech'})),
+      ...(data.customer || []).map(r => ({...r, kind: 'customer'})),
+    ];
+    if (countEl) countEl.textContent = all.length ? `${all.length} dormant account${all.length===1?'':'s'} (≥90d)` : '';
+    if (!all.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">No dormant accounts — everyone has signed in within the last 90 days.</td></tr>';
+      return;
+    }
+    const fmt = (iso) => { if (!iso) return 'never'; try { return new Date(iso).toLocaleDateString(); } catch { return iso; } };
+    tbody.innerHTML = all.map(r => {
+      const kindLabel = r.kind === 'admin' ? 'Admin' : r.kind === 'tech' ? 'Tech' : 'Customer';
+      const kindColor = r.kind === 'admin' ? 'background:#fee2e2;color:#991b1b;' : r.kind === 'tech' ? 'background:#dbeafe;color:#1e40af;' : 'background:#d1fae5;color:#065f46;';
+      const path = r.kind === 'admin' ? 'users' : r.kind === 'tech' ? 'techs' : 'customers';
+      return `<tr>
+        <td>${escHtml(fmt(r.last_login_at))}</td>
+        <td><span class="badge" style="${kindColor}">${kindLabel}</span></td>
+        <td>${escHtml(r.label || '—')} <span style="color:var(--muted);font-size:11px;">#${r.id}</span></td>
+        <td style="color:var(--muted);font-size:12px;">${r.last_login_at ? 'last login ' + escHtml(fmt(r.last_login_at)) : 'never logged in · created ' + escHtml(fmt(r.created_at))}</td>
+        <td>
+          ${can('audit:view_all') ? `<button class="btn btn-ghost btn-sm" onclick="openOffboard('${r.kind}',${r.id},'${escHtml(r.label||'(no name)').replace(/'/g,"\\'")}')">${r.kind === 'customer' ? 'Close' : 'Offboard'}</button>` : ''}
+        </td>
+      </tr>`;
+    }).join('');
   }
 
   function renderAggregateAccess(rows) {
@@ -4288,8 +4474,11 @@
         <td style="white-space:nowrap;">
           <button class="btn btn-edit btn-sm" onclick="openEditTech(${t.id})">Edit</button>
           <button class="btn btn-edit btn-sm" onclick="openResetPin(${t.id},'${escHtml(t.name)}')" style="margin-left:6px;">Reset PIN</button>
-          <button class="btn btn-ghost btn-sm" onclick="toggleTechActive(${t.id},${t.active ? 0 : 1})" style="margin-left:6px;">${t.active ? 'Deactivate' : 'Activate'}</button>
-          <button class="btn btn-danger btn-sm" onclick="removeTech(${t.id},'${escHtml(t.name)}')" style="margin-left:6px;">Delete</button>
+          ${can('tech:delete') ? (
+            t.active
+              ? `<button class="btn btn-danger btn-sm" onclick="openOffboard('tech',${t.id},'${escHtml(t.name)}')" style="margin-left:6px;">🚪 Offboard</button>`
+              : `<button class="btn btn-ghost btn-sm" onclick="reinstateAccount('tech',${t.id})" style="margin-left:6px;">Reinstate</button>`
+          ) : ''}
         </td>
       </tr>`).join('');
   }
