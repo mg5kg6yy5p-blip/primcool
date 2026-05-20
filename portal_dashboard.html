@@ -501,6 +501,10 @@
       window.location.replace('/portal');
     }
 
+    function esc(s) {
+      return (s == null ? '' : String(s)).replace(/[&<>"']/g, c =>
+        ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
     function fmt(dateStr) {
       if (!dateStr) return null;
       const d = new Date(dateStr + (dateStr.includes('T') ? '' : 'T00:00:00'));
@@ -549,7 +553,7 @@
       const dateDisplay = v.completed_date
         ? fmt(v.completed_date)
         : (v.scheduled_date ? fmtDateTime(v.scheduled_date, v.scheduled_time) : 'Date TBC');
-      const sub = [v.equipment_name, v.technician ? `Technician: ${v.technician}` : null].filter(Boolean).join(' · ');
+      const sub = [esc(v.equipment_name), v.technician ? `Technician: ${esc(v.technician)}` : null].filter(Boolean).join(' · ');
 
       const review = (dashboardData?.reviews || []).find(r => r.visit_id === v.id);
       let reviewBtn = '';
@@ -564,8 +568,8 @@
       const details = [
         v.scheduled_date ? { l: 'Scheduled', v: fmtDateTime(v.scheduled_date, v.scheduled_time) } : null,
         v.completed_date ? { l: 'Completed Date', v: fmt(v.completed_date) } : null,
-        v.technician     ? { l: 'Technician',     v: v.technician }          : null,
-        v.equipment_name ? { l: 'Equipment',       v: v.equipment_name }      : null,
+        v.technician     ? { l: 'Technician',     v: esc(v.technician) }     : null,
+        v.equipment_name ? { l: 'Equipment',       v: esc(v.equipment_name) } : null,
       ].filter(Boolean);
 
       const longDetails = [
@@ -782,7 +786,7 @@
         document.getElementById('reviewModalMeta').innerHTML = `
           <strong>${v.visit_type === 'PM' ? 'Preventive' : 'Corrective'} Maintenance</strong>
           · ${fmt(v.completed_date || v.scheduled_date) || 'Date unknown'}
-          ${v.technician ? `<br>Technician: <strong>${v.technician}</strong>` : ''}`;
+          ${v.technician ? `<br>Technician: <strong>${esc(v.technician)}</strong>` : ''}`;
       } else {
         document.getElementById('reviewModalTitle').textContent = 'Annual Company Review';
         document.getElementById('reviewModalMeta').innerHTML = `Your overall experience with PrimeCool Services this year.`;

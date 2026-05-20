@@ -2316,7 +2316,7 @@
       ['au-password','au-name','au-email','au-phone','au-hire'].forEach(id => document.getElementById(id).value = '');
       document.getElementById('au-role').value = '';
       await loadAdmins();
-      showPridModal(res.prid, `${body.name} signs in at <strong>/admin</strong> with their PRID as the username, plus the password you set.`);
+      showPridModal(res.prid, `${escHtml(body.name)} signs in at <strong>/admin</strong> with their PRID as the username, plus the password you set.`);
     } catch(e) { showErr('err-addAdmin', e.message); }
   }
 
@@ -3752,7 +3752,7 @@
       closeModal('addTech');
       resetTechForm();
       await loadTechs();
-      showPridModal(res.prid, `${body.name} signs in at <strong>/tech</strong> with their PRID as the code, plus the PIN you set.`);
+      showPridModal(res.prid, `${escHtml(body.name)} signs in at <strong>/tech</strong> with their PRID as the code, plus the PIN you set.`);
     } catch(e) { showErr('err-addTech', e.message); }
   }
 

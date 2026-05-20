@@ -59,6 +59,8 @@ from database import (
     touch_document_accessed, soft_delete_document, hard_delete_document,
     get_expiring_documents,
     log_audit, query_audit_log, verify_audit_chain,
+    create_session, get_session_by_jti, is_session_active,
+    revoke_session, revoke_all_sessions_for, get_active_sessions_for,
 )
 
 # ── Admin role → permission matrix ────────────────────────────────────────────
@@ -377,6 +379,32 @@ def _make_token(payload: dict, expires: timedelta) -> str:
     )
 
 
+def _issue_session(subject_type: str, subject_id: int, expires: timedelta,
+                   request: Request, extra_claims: dict = None) -> tuple:
+    """Creates a session row, embeds its jti in a JWT, and returns (token, jti).
+    Use this for any session-bearing login. Pre-MFA tokens skip this."""
+    jti = uuid.uuid4().hex
+    now = datetime.now(timezone.utc)
+    exp_at = now + expires
+    claims = {
+        "sub":  str(subject_id),
+        "type": subject_type,
+        "jti":  jti,
+    }
+    if extra_claims:
+        claims.update(extra_claims)
+    token = _make_token(claims, expires)
+    create_session(
+        jti=jti,
+        subject_type=subject_type,
+        subject_id=subject_id,
+        expires_at=exp_at.isoformat(),
+        ip_address=_client_ip(request),
+        user_agent=(request.headers.get("user-agent", "") or "")[:255],
+    )
+    return token, jti
+
+
 def _set_session_cookie(response: Response, name: str, token: str, max_age_seconds: int):
     """Sets an HttpOnly + SameSite=Strict session cookie."""
     response.set_cookie(
@@ -405,7 +433,7 @@ def _read_token(request: Request, cookie_name: str) -> Optional[str]:
     return None
 
 
-def _decode_token(token: str, expected_type: str) -> dict:
+def _decode_token(token: str, expected_type: str, require_session: bool = True) -> dict:
     if not token:
         raise HTTPException(401, "Unauthorized")
     try:
@@ -416,6 +444,12 @@ def _decode_token(token: str, expected_type: str) -> dict:
         raise HTTPException(401, "Invalid session")
     if data.get("type") != expected_type:
         raise HTTPException(403, "Forbidden")
+    # Server-side session check — a JWT whose row has been revoked or
+    # never existed (legacy token from before this change) is rejected.
+    if require_session:
+        jti = data.get("jti")
+        if not jti or not is_session_active(jti):
+            raise HTTPException(401, "Session no longer valid — please sign in again")
     return data
 
 
@@ -862,13 +896,22 @@ def portal_login(req: PortalLoginRequest, request: Request, response: Response):
         if existing and not existing.get("pin_hash"):
             raise HTTPException(403, "No PIN set on your account yet. Please contact PrimeCool to set one up.")
         raise HTTPException(401, "Invalid customer ID or PIN")
-    token = _make_token({"sub": str(customer["id"]), "type": "customer"}, timedelta(days=30))
+    token, _ = _issue_session("customer", customer["id"], timedelta(days=30), request)
     _set_session_cookie(response, COOKIE_CUSTOMER, token, 30 * 24 * 3600)
     return {"token": token, "name": customer["name"]}
 
 
 @app.post("/api/portal/logout")
-def portal_logout(response: Response):
+def portal_logout(request: Request, response: Response):
+    token = _read_token(request, COOKIE_CUSTOMER)
+    if token:
+        try:
+            data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM],
+                              options={"verify_exp": False})
+            if data.get("jti"):
+                revoke_session(data["jti"])
+        except Exception:
+            pass
     _clear_session_cookie(response, COOKIE_CUSTOMER)
     return {"ok": True}
 
@@ -1009,13 +1052,22 @@ def tech_login(req: TechLogin, request: Request, response: Response):
     tech = verify_tech(req.tech_code, req.pin)
     if not tech:
         raise HTTPException(401, "Invalid tech code or PIN")
-    token = _make_token({"sub": str(tech["id"]), "type": "tech"}, timedelta(days=7))
+    token, _ = _issue_session("tech", tech["id"], timedelta(days=7), request)
     _set_session_cookie(response, COOKIE_TECH, token, 7 * 24 * 3600)
     return {"token": token, "name": tech["name"], "tech_code": tech["tech_code"]}
 
 
 @app.post("/api/tech/logout")
-def tech_logout(response: Response):
+def tech_logout(request: Request, response: Response):
+    token = _read_token(request, COOKIE_TECH)
+    if token:
+        try:
+            data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM],
+                              options={"verify_exp": False})
+            if data.get("jti"):
+                revoke_session(data["jti"])
+        except Exception:
+            pass
     _clear_session_cookie(response, COOKIE_TECH)
     return {"ok": True}
 
@@ -1262,7 +1314,7 @@ def admin_login(req: AdminLoginRequest, request: Request, response: Response):
         )
         return {"requires_mfa": True, "mfa_token": mfa_token, "name": admin["name"]}
 
-    token = _make_token({"sub": str(admin["id"]), "type": "admin"}, timedelta(hours=12))
+    token, _ = _issue_session("admin", admin["id"], timedelta(hours=12), request)
     _set_session_cookie(response, COOKIE_ADMIN, token, 12 * 3600)
     log_audit(
         actor_type="admin", actor_id=admin["id"],
@@ -1308,7 +1360,7 @@ def admin_mfa_verify(body: MfaVerify, request: Request, response: Response):
         )
         raise HTTPException(401, "Incorrect code")
 
-    token = _make_token({"sub": str(admin["id"]), "type": "admin"}, timedelta(hours=12))
+    token, _ = _issue_session("admin", admin["id"], timedelta(hours=12), request)
     _set_session_cookie(response, COOKIE_ADMIN, token, 12 * 3600)
     log_audit(
         actor_type="admin", actor_id=admin["id"],
@@ -1415,6 +1467,7 @@ def admin_mfa_disable(request: Request, body: MfaDisable):
 @app.post("/api/admin/logout")
 def admin_logout(request: Request, response: Response):
     # Log the logout if a valid session exists (best-effort)
+    admin = None
     try:
         admin = _require_admin(request)
         log_audit(
@@ -1425,8 +1478,54 @@ def admin_logout(request: Request, response: Response):
         )
     except Exception:
         pass
+    # Revoke the session row so the JWT can't be reused
+    token = _read_token(request, COOKIE_ADMIN)
+    if token:
+        try:
+            data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM],
+                              options={"verify_exp": False})
+            if data.get("jti"):
+                revoke_session(data["jti"])
+        except Exception:
+            pass
     _clear_session_cookie(response, COOKIE_ADMIN)
     return {"ok": True}
+
+
+@app.post("/api/admin/logout-everywhere")
+def admin_logout_everywhere(request: Request, response: Response):
+    """Revokes all of the current admin's active sessions on every device."""
+    admin = _require_admin(request)
+    n = revoke_all_sessions_for("admin", admin["id"])
+    _clear_session_cookie(response, COOKIE_ADMIN)
+    log_audit(
+        actor_type="admin", actor_id=admin["id"],
+        actor_prid=admin.get("prid"), actor_label=admin.get("name"),
+        actor_role=admin.get("role"), action="admin.logout_everywhere",
+        ip_address=_client_ip(request),
+        after_value={"revoked_count": n},
+    )
+    return {"ok": True, "revoked": n}
+
+
+@app.get("/api/admin/sessions")
+def admin_list_sessions(request: Request):
+    """Returns the current admin's own active sessions."""
+    admin = _require_admin(request)
+    rows = get_active_sessions_for("admin", admin["id"])
+    # Mark the current session
+    current_jti = None
+    token = _read_token(request, COOKIE_ADMIN)
+    if token:
+        try:
+            data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM],
+                              options={"verify_exp": False})
+            current_jti = data.get("jti")
+        except Exception:
+            pass
+    for r in rows:
+        r["is_current"] = (r["jti"] == current_jti)
+    return rows
 
 
 @app.get("/api/admin/me")

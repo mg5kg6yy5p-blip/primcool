@@ -394,6 +394,24 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_doc_expiry   ON documents(expiry_date)")
 
     con.execute("""
+        CREATE TABLE IF NOT EXISTS sessions (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            jti           TEXT NOT NULL UNIQUE,
+            subject_type  TEXT NOT NULL,           -- 'admin' | 'tech' | 'customer'
+            subject_id    INTEGER NOT NULL,
+            ip_address    TEXT,
+            user_agent    TEXT,
+            created_at    TEXT NOT NULL,
+            expires_at    TEXT NOT NULL,
+            revoked_at    TEXT,
+            last_seen_at  TEXT
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_sessions_subject ON sessions(subject_type, subject_id)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_sessions_jti     ON sessions(jti)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)")
+
+    con.execute("""
         CREATE TABLE IF NOT EXISTS audit_log (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             actor_type   TEXT NOT NULL,
@@ -2242,6 +2260,118 @@ def record_invoice_payment(invoice_id: int, data: dict,
     con.commit()
     con.close()
     return payment_id
+
+
+# ── Sessions ─────────────────────────────────────────────────────────────────
+
+def create_session(jti: str, subject_type: str, subject_id: int,
+                   expires_at: str, ip_address: str = None, user_agent: str = None):
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    con.execute(
+        """
+        INSERT INTO sessions
+            (jti, subject_type, subject_id, ip_address, user_agent, created_at, expires_at, last_seen_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (jti, subject_type, int(subject_id), ip_address, user_agent, now, expires_at, now),
+    )
+    con.commit()
+    con.close()
+
+
+def get_session_by_jti(jti: str):
+    if not jti:
+        return None
+    con = _con()
+    row = con.execute("SELECT * FROM sessions WHERE jti = ?", (jti,)).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
+def is_session_active(jti: str) -> bool:
+    """Returns True if the session row exists, isn't revoked, and isn't past expiry.
+    Also bumps last_seen_at."""
+    if not jti:
+        return False
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    row = con.execute(
+        "SELECT id, revoked_at, expires_at FROM sessions WHERE jti = ?",
+        (jti,),
+    ).fetchone()
+    if not row:
+        con.close()
+        return False
+    r = dict(row)
+    if r["revoked_at"]:
+        con.close()
+        return False
+    if r["expires_at"] and r["expires_at"] < now:
+        con.close()
+        return False
+    con.execute("UPDATE sessions SET last_seen_at = ? WHERE id = ?", (now, r["id"]))
+    con.commit()
+    con.close()
+    return True
+
+
+def revoke_session(jti: str) -> bool:
+    if not jti:
+        return False
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    cur = con.execute(
+        "UPDATE sessions SET revoked_at = ? WHERE jti = ? AND revoked_at IS NULL",
+        (now, jti),
+    )
+    n = cur.rowcount
+    con.commit()
+    con.close()
+    return n > 0
+
+
+def revoke_all_sessions_for(subject_type: str, subject_id: int) -> int:
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    cur = con.execute(
+        "UPDATE sessions SET revoked_at = ? "
+        "WHERE subject_type = ? AND subject_id = ? AND revoked_at IS NULL",
+        (now, subject_type, int(subject_id)),
+    )
+    n = cur.rowcount
+    con.commit()
+    con.close()
+    return n
+
+
+def get_active_sessions_for(subject_type: str, subject_id: int):
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    rows = con.execute(
+        """
+        SELECT * FROM sessions
+        WHERE subject_type = ? AND subject_id = ?
+          AND revoked_at IS NULL AND expires_at > ?
+        ORDER BY created_at DESC
+        """,
+        (subject_type, int(subject_id), now),
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def purge_expired_sessions():
+    """Removes expired/revoked sessions older than 90 days."""
+    from datetime import timedelta as _td
+    cutoff = (datetime.now(timezone.utc) - _td(days=90)).isoformat()
+    con = _con()
+    con.execute(
+        "DELETE FROM sessions WHERE (expires_at < ? OR revoked_at < ?)",
+        (cutoff, cutoff),
+    )
+    con.commit()
+    con.close()
 
 
 # ── Documents (DMS) ──────────────────────────────────────────────────────────
