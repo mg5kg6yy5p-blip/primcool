@@ -58,7 +58,7 @@ from database import (
     create_document, get_document_by_id, query_documents,
     touch_document_accessed, soft_delete_document, hard_delete_document,
     get_expiring_documents,
-    log_audit, query_audit_log,
+    log_audit, query_audit_log, verify_audit_chain,
 )
 
 # ── Admin role → permission matrix ────────────────────────────────────────────
@@ -2081,6 +2081,18 @@ def serve_document(tier: str, filename: str, exp: int = 0, sig: str = ""):
 
 
 # ── Audit log ─────────────────────────────────────────────────────────────────
+
+@app.get("/api/admin/audit/verify")
+def admin_audit_verify(request: Request):
+    """Walks the audit chain and reports whether every row's stored hash
+    matches the recomputed hash. Available to anyone with audit:view_all —
+    those roles already see the underlying data, so verifying is no extra
+    disclosure. Super_admin needs this when investigating a tampering claim."""
+    admin = _require_admin(request)
+    if not _admin_can(admin["role"], "audit:view_all"):
+        raise HTTPException(403, "Only roles with audit:view_all can verify the chain")
+    return verify_audit_chain()
+
 
 @app.get("/api/admin/audit")
 def admin_audit(request: Request,

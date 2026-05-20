@@ -684,7 +684,9 @@
       <div class="panel" id="panel-audit">
         <div class="top-bar">
           <h2>Audit Log</h2>
+          <button class="btn btn-ghost" id="auditVerifyBtn" onclick="verifyAuditChain()" style="display:none;">🔗 Verify Chain</button>
         </div>
+        <div id="auditChainStatus" style="display:none;margin-bottom:14px;padding:10px 14px;border-radius:8px;font-size:13px;line-height:1.5;"></div>
         <div class="filter-bar" id="auditFilters" style="gap:8px;">
           <select id="auditAction" onchange="loadAudit()" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
             <option value="">All actions</option>
@@ -1559,6 +1561,7 @@
     // Show admin/audit tabs based on role
     if (can('admin:view_all')) document.getElementById('nav-admins').style.display = 'flex';
     if (can('audit:view_all') || can('audit:view_self')) document.getElementById('nav-audit').style.display = 'flex';
+    if (can('audit:view_all')) document.getElementById('auditVerifyBtn').style.display = '';
     if (can('timesheet:view_all')) document.getElementById('nav-timesheets').style.display = 'flex';
     if (can('schedule:view')) document.getElementById('nav-schedule').style.display = 'flex';
     if (can('inventory:view')) document.getElementById('nav-inventory').style.display = 'flex';
@@ -3562,6 +3565,36 @@
       const rows = await api('GET', '/api/admin/audit?' + params.toString());
       renderAudit(rows);
     } catch {}
+  }
+
+  async function verifyAuditChain() {
+    const banner = document.getElementById('auditChainStatus');
+    const btn    = document.getElementById('auditVerifyBtn');
+    banner.style.display = 'block';
+    banner.style.background = 'var(--light)';
+    banner.style.color = 'var(--muted)';
+    banner.innerHTML = 'Verifying audit chain…';
+    btn.disabled = true; btn.textContent = 'Verifying…';
+    try {
+      const res = await api('GET', '/api/admin/audit/verify');
+      if (res.ok) {
+        banner.style.background = '#d1fae5';
+        banner.style.color      = '#065f46';
+        banner.style.border     = '1px solid #6ee7b7';
+        banner.innerHTML = `✓ <strong>Audit chain verified.</strong> All ${res.total} entries match their computed hashes. No tampering detected.`;
+      } else {
+        banner.style.background = '#fee2e2';
+        banner.style.color      = '#991b1b';
+        banner.style.border     = '1px solid #fca5a5';
+        banner.innerHTML = `⚠ <strong>Audit chain BROKEN.</strong> Tampering detected at entry #${res.broken_at_id} (position ${res.broken_at_index + 1} of ${res.total}). Investigate immediately and preserve the database for forensics.`;
+      }
+    } catch(e) {
+      banner.style.background = '#fee2e2';
+      banner.style.color      = '#991b1b';
+      banner.innerHTML = `Error verifying chain: ${escHtml(e.message)}`;
+    } finally {
+      btn.disabled = false; btn.textContent = '🔗 Verify Chain';
+    }
   }
 
   function clearAuditFilters() {

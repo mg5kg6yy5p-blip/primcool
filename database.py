@@ -1,8 +1,14 @@
 import hashlib
+import json as _json
 import os
 import secrets
 import sqlite3
+import threading
 from datetime import datetime, timezone
+
+# Audit chain serialization — single-process write lock so concurrent
+# coroutines can't race the prev-hash read against the insert.
+_audit_lock = threading.Lock()
 
 try:
     from argon2 import PasswordHasher
@@ -402,9 +408,15 @@ def init_db():
             before_value TEXT,
             after_value  TEXT,
             ip_address   TEXT,
-            created_at   TEXT NOT NULL
+            created_at   TEXT NOT NULL,
+            chain_hash   TEXT
         )
     """)
+    # Idempotent column add for existing audit DBs
+    audit_cols = {row[1] for row in con.execute("PRAGMA table_info(audit_log)")}
+    if "chain_hash" not in audit_cols:
+        try: con.execute("ALTER TABLE audit_log ADD COLUMN chain_hash TEXT")
+        except sqlite3.OperationalError: pass
     con.execute("CREATE INDEX IF NOT EXISTS idx_audit_actor   ON audit_log(actor_id, created_at)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_audit_action  ON audit_log(action, created_at)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_audit_target  ON audit_log(target_type, target_id)")
@@ -481,6 +493,7 @@ def init_db():
     con.commit()
     con.close()
     _backfill_prids()
+    _backfill_audit_chain()
 
 
 def _backfill_prids():
@@ -1467,6 +1480,33 @@ def consume_admin_password_reset(token: str):
 
 # ── Audit Log ────────────────────────────────────────────────────────────────
 
+AUDIT_GENESIS = "GENESIS"   # chain anchor when there's no previous row
+
+
+def _audit_canonical_payload(row: dict) -> str:
+    """Stable canonical JSON for a row's hashable content. Field order matters."""
+    return _json.dumps({
+        "actor_type":   row.get("actor_type"),
+        "actor_id":     row.get("actor_id"),
+        "actor_prid":   row.get("actor_prid"),
+        "actor_label":  row.get("actor_label"),
+        "actor_role":   row.get("actor_role"),
+        "action":       row.get("action"),
+        "target_type":  row.get("target_type"),
+        "target_id":    row.get("target_id"),
+        "target_label": row.get("target_label"),
+        "before_value": row.get("before_value"),
+        "after_value":  row.get("after_value"),
+        "ip_address":   row.get("ip_address"),
+        "created_at":   row.get("created_at"),
+    }, sort_keys=True, separators=(",", ":"))
+
+
+def _audit_compute_hash(prev_hash: str, row: dict) -> str:
+    payload = (prev_hash or AUDIT_GENESIS) + "\n" + _audit_canonical_payload(row)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def log_audit(
     actor_type: str,
     actor_id: int = None,
@@ -1481,27 +1521,113 @@ def log_audit(
     after_value=None,
     ip_address: str = None,
 ):
-    import json as _json
+    row = {
+        "actor_type":   actor_type,
+        "actor_id":     actor_id,
+        "actor_prid":   actor_prid,
+        "actor_label":  actor_label,
+        "actor_role":   actor_role,
+        "action":       action,
+        "target_type":  target_type,
+        "target_id":    target_id,
+        "target_label": target_label,
+        "before_value": _json.dumps(before_value) if before_value is not None else None,
+        "after_value":  _json.dumps(after_value)  if after_value  is not None else None,
+        "ip_address":   ip_address,
+        "created_at":   datetime.now(timezone.utc).isoformat(),
+    }
+
+    # Serialize prev-read + insert so concurrent writers can't break the chain
+    with _audit_lock:
+        con = _con()
+        prev = con.execute(
+            "SELECT chain_hash FROM audit_log ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        prev_hash = (dict(prev)["chain_hash"] if prev else None) or AUDIT_GENESIS
+        chain_hash = _audit_compute_hash(prev_hash, row)
+        con.execute(
+            """
+            INSERT INTO audit_log
+                (actor_type, actor_id, actor_prid, actor_label, actor_role,
+                 action, target_type, target_id, target_label,
+                 before_value, after_value, ip_address, created_at, chain_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row["actor_type"],   row["actor_id"],   row["actor_prid"],
+                row["actor_label"],  row["actor_role"], row["action"],
+                row["target_type"],  row["target_id"],  row["target_label"],
+                row["before_value"], row["after_value"],row["ip_address"],
+                row["created_at"],   chain_hash,
+            ),
+        )
+        con.commit()
+        con.close()
+
+
+def _backfill_audit_chain():
+    """Compute chain_hash for any audit rows that don't have one yet (in order).
+    Idempotent — does nothing if every row already has a hash."""
+    with _audit_lock:
+        con = _con()
+        rows = con.execute(
+            "SELECT id, actor_type, actor_id, actor_prid, actor_label, actor_role, "
+            "action, target_type, target_id, target_label, before_value, after_value, "
+            "ip_address, created_at, chain_hash FROM audit_log ORDER BY id ASC"
+        ).fetchall()
+        if not rows:
+            con.close()
+            return
+        prev_hash = AUDIT_GENESIS
+        updates = []
+        for r in rows:
+            d = dict(r)
+            existing = d.get("chain_hash")
+            if existing:
+                prev_hash = existing
+                continue
+            new_hash = _audit_compute_hash(prev_hash, d)
+            updates.append((new_hash, d["id"]))
+            prev_hash = new_hash
+        if updates:
+            con.executemany("UPDATE audit_log SET chain_hash = ? WHERE id = ?", updates)
+            con.commit()
+        con.close()
+
+
+def verify_audit_chain(limit: int = None) -> dict:
+    """Walks the audit log in id-order and recomputes each hash.
+    Returns {ok: bool, total: N, broken_at_id: int|None, broken_at_index: int|None, last_id: int|None}."""
     con = _con()
-    con.execute(
-        """
-        INSERT INTO audit_log
-            (actor_type, actor_id, actor_prid, actor_label, actor_role,
-             action, target_type, target_id, target_label,
-             before_value, after_value, ip_address, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            actor_type, actor_id, actor_prid, actor_label, actor_role,
-            action, target_type, target_id, target_label,
-            _json.dumps(before_value) if before_value is not None else None,
-            _json.dumps(after_value)  if after_value  is not None else None,
-            ip_address,
-            datetime.now(timezone.utc).isoformat(),
-        ),
-    )
-    con.commit()
+    sql = ("SELECT id, actor_type, actor_id, actor_prid, actor_label, actor_role, "
+           "action, target_type, target_id, target_label, before_value, after_value, "
+           "ip_address, created_at, chain_hash FROM audit_log ORDER BY id ASC")
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    rows = con.execute(sql).fetchall()
     con.close()
+    prev_hash = AUDIT_GENESIS
+    for i, r in enumerate(rows):
+        d = dict(r)
+        expected = _audit_compute_hash(prev_hash, d)
+        if d.get("chain_hash") != expected:
+            return {
+                "ok":              False,
+                "total":           len(rows),
+                "broken_at_id":    d["id"],
+                "broken_at_index": i,
+                "expected_hash":   expected,
+                "stored_hash":     d.get("chain_hash"),
+                "last_id":         rows[-1]["id"] if rows else None,
+            }
+        prev_hash = d["chain_hash"]
+    return {
+        "ok":              True,
+        "total":           len(rows),
+        "broken_at_id":    None,
+        "broken_at_index": None,
+        "last_id":         rows[-1]["id"] if rows else None,
+    }
 
 
 def get_timesheet_data(start_iso: str, end_iso: str, tech_id: int = None):
