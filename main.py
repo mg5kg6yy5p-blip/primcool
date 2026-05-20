@@ -61,6 +61,7 @@ from database import (
     log_audit, query_audit_log, verify_audit_chain,
     create_session, get_session_by_jti, is_session_active,
     revoke_session, revoke_all_sessions_for, get_active_sessions_for,
+    mark_session_mfa_verified,
 )
 
 # ── Admin role → permission matrix ────────────────────────────────────────────
@@ -161,6 +162,40 @@ DOC_TYPES = (
 HIGHLY_SENSITIVE_TYPES = {"trn", "passport", "police_record", "id", "nis"}
 
 
+def _virus_scan(body: bytes) -> tuple:
+    """Returns (clean: bool, reason: str). When CLAMD_HOST isn't set, returns
+    (True, 'skipped') so dev/local installs aren't blocked.
+
+    To enable in production:
+      pip install clamd
+      Run a clamd daemon (Docker image: clamav/clamav)
+      Set env: CLAMD_HOST=clamav  CLAMD_PORT=3310
+    """
+    host = os.environ.get("CLAMD_HOST")
+    if not host:
+        return True, "skipped (CLAMD_HOST not configured)"
+    try:
+        import clamd as _clamd
+        c = _clamd.ClamdNetworkSocket(host=host, port=int(os.environ.get("CLAMD_PORT", "3310")), timeout=10)
+        result = c.instream(io.BytesIO(body))
+        verdict, sig = result.get("stream", ("ERROR", "unknown"))
+        if verdict == "OK":
+            return True, "clean"
+        if verdict == "FOUND":
+            return False, f"virus detected: {sig}"
+        return False, f"clamd error: {verdict}/{sig}"
+    except ImportError:
+        # clamd lib not installed → fail open with a clear note. In a regulated
+        # environment, change this to fail closed.
+        return True, "skipped (clamd lib not installed)"
+    except Exception as e:
+        # Network/daemon problem. Fail open by default; flip to fail-closed
+        # by setting CLAMD_FAIL_CLOSED=true in production.
+        if os.environ.get("CLAMD_FAIL_CLOSED", "false").lower() == "true":
+            return False, f"clamd unreachable: {type(e).__name__}: {e}"
+        return True, f"clamd unreachable (failing open): {e}"
+
+
 def _validate_doc_upload(filename: str, body: bytes) -> tuple:
     """Returns (ext, mime_type_guess). Raises HTTPException on failure."""
     if not filename:
@@ -179,8 +214,10 @@ def _validate_doc_upload(filename: str, body: bytes) -> tuple:
     if ext in _DOC_MAGIC:
         if not any(body.startswith(prefix) for prefix in _DOC_MAGIC[ext]):
             raise HTTPException(400, f"File content does not match a {ext} file")
-    # Virus scan hook (stubbed). Wire to ClamAV daemon by setting CLAMD_HOST / CLAMD_PORT.
-    # See https://github.com/CISOfy/python-clamd — out of scope for v1.
+    # Virus scan — runs against clamd if CLAMD_HOST is set; otherwise skipped.
+    clean, reason = _virus_scan(body)
+    if not clean:
+        raise HTTPException(400, f"File rejected by virus scan: {reason}")
     mime = {
         ".pdf":  "application/pdf",
         ".jpg":  "image/jpeg", ".jpeg": "image/jpeg",
@@ -252,6 +289,16 @@ def _enforce_login_rate(request: Request, identity: str = ""):
         )
 
 
+def _enforce_rate(request: Request, bucket: str, identity: str = "",
+                  max_attempts: int = 10, window_seconds: int = 3600,
+                  message: str = "Too many requests. Please slow down."):
+    """Generic IP+identity rate-limit guard for non-auth endpoints."""
+    ip = _client_ip(request)
+    key = f"{bucket}:{ip}:{identity}"
+    if not _rate_check(key, max_attempts, window_seconds):
+        raise HTTPException(status_code=429, detail=message)
+
+
 # Signed photo URL helpers are defined further down — after JWT_SECRET.
 
 # Jamaica tax reference — values change annually, verify with Tax Administration Jamaica (TAJ).
@@ -317,6 +364,9 @@ PHOTO_URL_TTL_SEC = int(os.environ.get("PHOTO_URL_TTL_SEC", "1800"))   # 30 min 
 
 MFA_ISSUER       = os.environ.get("MFA_ISSUER", "PrimeCool Services")
 MFA_TOKEN_TTL    = timedelta(minutes=5)   # short-lived pre-MFA token
+# How recent does an MFA check need to be before Tier-3 (Highly Sensitive)
+# document access is allowed? Default 15 min.
+MFA_FRESH_TTL_SEC = int(os.environ.get("MFA_FRESH_TTL_SEC", str(15 * 60)))
 
 
 def _generate_backup_codes(n: int = 10):
@@ -327,6 +377,47 @@ def _generate_backup_codes(n: int = 10):
         plain.append(f"{raw[:4]}-{raw[4:]}")
     hashed = [_hash_pin(c) for c in plain]
     return plain, hashed
+
+
+def _current_session_jti(request: Request, cookie_name: str) -> Optional[str]:
+    """Reads the jti out of whichever token the request is presenting."""
+    token = _read_token(request, cookie_name)
+    if not token:
+        return None
+    try:
+        data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM],
+                          options={"verify_exp": False})
+        return data.get("jti")
+    except Exception:
+        return None
+
+
+def _require_recent_mfa(request: Request, admin: dict, max_age_seconds: int = None):
+    """Raises 401 with X-Require-MFA-Reauth header when the caller hasn't passed
+    MFA recently. Caller (e.g. Highly Sensitive document download) is expected
+    to handle that signal by prompting for the user's current TOTP."""
+    if not admin.get("mfa_enabled"):
+        # If MFA isn't even set up, there's nothing to re-verify against.
+        # Block Tier-3 access entirely for these accounts — admin should enroll first.
+        raise HTTPException(
+            status_code=403,
+            detail="Tier-3 access requires MFA enrollment. Enable Two-Factor Auth in Security first.",
+        )
+    jti = _current_session_jti(request, COOKIE_ADMIN)
+    sess = get_session_by_jti(jti) if jti else None
+    mfa_at = (sess or {}).get("mfa_verified_at")
+    max_age = max_age_seconds if max_age_seconds is not None else MFA_FRESH_TTL_SEC
+    if not mfa_at:
+        raise HTTPException(status_code=401, detail="Recent MFA required",
+                            headers={"X-Require-MFA-Reauth": "true"})
+    try:
+        last = _dt.fromisoformat(mfa_at.replace("Z", "+00:00"))
+        age = (datetime.now(timezone.utc) - last).total_seconds()
+    except Exception:
+        age = max_age + 1
+    if age > max_age:
+        raise HTTPException(status_code=401, detail="MFA re-authentication required",
+                            headers={"X-Require-MFA-Reauth": "true"})
 
 
 def _verify_admin_totp_or_backup(admin: dict, code: str) -> bool:
@@ -519,6 +610,45 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+@app.middleware("http")
+async def csrf_origin_check(request: Request, call_next):
+    """Lightweight CSRF defense for cookie-authenticated mutating requests.
+
+    Logic:
+      - Mutating methods only (POST/PUT/DELETE/PATCH)
+      - Skip if no session cookie present (no CSRF risk — Bearer-only requests
+        can't be forged cross-origin since attackers can't set custom headers)
+      - Require Origin or Referer to match the request's Host
+    """
+    method = request.method.upper()
+    if method in ("POST", "PUT", "DELETE", "PATCH"):
+        has_cookie = any(
+            request.cookies.get(c) for c in (COOKIE_ADMIN, COOKIE_TECH, COOKIE_CUSTOMER)
+        )
+        if has_cookie:
+            host = request.headers.get("host", "").split(":")[0].lower()
+            allowed_hosts = {host} | {h.strip().lower() for h in
+                                       os.environ.get("CSRF_ALLOWED_HOSTS", "").split(",") if h.strip()}
+            origin = request.headers.get("origin", "")
+            referer = request.headers.get("referer", "")
+            src = origin or referer
+            ok = False
+            if src:
+                try:
+                    from urllib.parse import urlparse
+                    src_host = urlparse(src).hostname or ""
+                    ok = src_host.lower() in allowed_hosts
+                except Exception:
+                    ok = False
+            if not ok:
+                return Response(
+                    content=_json.dumps({"detail": "CSRF check failed: bad Origin/Referer"}),
+                    status_code=403,
+                    media_type="application/json",
+                )
+    return await call_next(request)
+
 
 app.mount("/images", StaticFiles(directory="images"), name="images")
 # /photos is intentionally NOT mounted as public static — it serves through
@@ -984,6 +1114,9 @@ def portal_me(request: Request):
 @app.post("/api/portal/reviews")
 def portal_create_review(request: Request, body: ReviewCreate):
     customer_id = _require_customer(request)
+    _enforce_rate(request, "review", str(customer_id),
+                  max_attempts=5, window_seconds=3600,
+                  message="Too many reviews submitted recently. Please try again in an hour.")
 
     if body.review_type not in ("visit", "company"):
         raise HTTPException(400, "Invalid review_type")
@@ -1360,7 +1493,9 @@ def admin_mfa_verify(body: MfaVerify, request: Request, response: Response):
         )
         raise HTTPException(401, "Incorrect code")
 
-    token, _ = _issue_session("admin", admin["id"], timedelta(hours=12), request)
+    token, jti = _issue_session("admin", admin["id"], timedelta(hours=12), request)
+    # Stamp the session as having just passed MFA — used to gate Tier-3 access.
+    mark_session_mfa_verified(jti)
     _set_session_cookie(response, COOKIE_ADMIN, token, 12 * 3600)
     log_audit(
         actor_type="admin", actor_id=admin["id"],
@@ -1376,6 +1511,34 @@ def admin_mfa_verify(body: MfaVerify, request: Request, response: Response):
         "prid":     admin.get("prid"),
         "requires_mfa": False,
     }
+
+
+@app.post("/api/admin/mfa/reauth")
+def admin_mfa_reauth(request: Request, body: MfaActivate):
+    """Step-up MFA re-verification for accessing Tier-3 data. Verifies the
+    caller's current TOTP (or a backup code) and stamps the active session as
+    freshly-verified. Sensitive endpoints check that timestamp via
+    _require_recent_mfa()."""
+    admin = _require_admin(request)
+    if not admin.get("mfa_enabled"):
+        raise HTTPException(400, "MFA is not enabled on this account")
+    _enforce_rate(request, "mfa-reauth", str(admin["id"]),
+                  max_attempts=10, window_seconds=15 * 60,
+                  message="Too many MFA attempts. Please wait and try again.")
+    if not _verify_admin_totp_or_backup(admin, body.code):
+        log_audit(
+            actor_type="admin", actor_id=admin["id"],
+            actor_prid=admin.get("prid"), actor_label=admin.get("name"),
+            actor_role=admin.get("role"), action="admin.mfa.reauth_fail",
+            ip_address=_client_ip(request),
+        )
+        raise HTTPException(401, "Incorrect MFA code")
+    jti = _current_session_jti(request, COOKIE_ADMIN)
+    if jti:
+        mark_session_mfa_verified(jti)
+    _audit_from(admin, "admin.mfa.reauth_ok", request,
+                target_type="admin", target_id=admin["id"], target_label=admin["username"])
+    return {"ok": True, "fresh_for_seconds": MFA_FRESH_TTL_SEC}
 
 
 @app.get("/api/admin/mfa/status")
@@ -1506,6 +1669,25 @@ def admin_logout_everywhere(request: Request, response: Response):
         after_value={"revoked_count": n},
     )
     return {"ok": True, "revoked": n}
+
+
+@app.delete("/api/admin/sessions/{jti}")
+def admin_revoke_session(request: Request, jti: str):
+    """Revokes one of the caller's own sessions by JTI."""
+    admin = _require_admin(request)
+    sess = get_session_by_jti(jti)
+    if not sess or sess["subject_type"] != "admin" or sess["subject_id"] != admin["id"]:
+        raise HTTPException(404, "Session not found")
+    revoke_session(jti)
+    log_audit(
+        actor_type="admin", actor_id=admin["id"],
+        actor_prid=admin.get("prid"), actor_label=admin.get("name"),
+        actor_role=admin.get("role"), action="admin.session.revoke",
+        target_type="session", target_id=sess["id"],
+        target_label=(sess.get("user_agent") or "")[:50],
+        ip_address=_client_ip(request),
+    )
+    return {"ok": True}
 
 
 @app.get("/api/admin/sessions")
@@ -2111,13 +2293,18 @@ def admin_documents_expiring(request: Request, within_days: int = 30):
 @app.get("/api/admin/documents/{doc_id}/download")
 def admin_document_download(request: Request, doc_id: int):
     """Returns a short-lived signed URL the browser can use to fetch the file.
-    Every call is audit-logged as a view; highly_sensitive logs separately."""
+    Every call is audit-logged as a view; highly_sensitive logs separately
+    AND requires a recent MFA verification (default: within 15 minutes)."""
     admin = _require_perm(request, "documents:view")
     doc = get_document_by_id(doc_id)
     if not doc:
         raise HTTPException(404, "Document not found")
-    if doc["sensitivity"] == "highly_sensitive" and not _admin_can(admin["role"], "documents:view_highly_sensitive"):
-        raise HTTPException(403, "Your role cannot view Highly Sensitive documents")
+    if doc["sensitivity"] == "highly_sensitive":
+        if not _admin_can(admin["role"], "documents:view_highly_sensitive"):
+            raise HTTPException(403, "Your role cannot view Highly Sensitive documents")
+        # Tier-3 step-up: require a fresh MFA proof. Throws 401 with
+        # X-Require-MFA-Reauth header that the client uses to prompt.
+        _require_recent_mfa(request, admin)
 
     touch_document_accessed(doc_id)
     signed = _sign_document_url(doc["stored_filename"], doc["sensitivity"])

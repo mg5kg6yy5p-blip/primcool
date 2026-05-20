@@ -395,18 +395,23 @@ def init_db():
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            jti           TEXT NOT NULL UNIQUE,
-            subject_type  TEXT NOT NULL,           -- 'admin' | 'tech' | 'customer'
-            subject_id    INTEGER NOT NULL,
-            ip_address    TEXT,
-            user_agent    TEXT,
-            created_at    TEXT NOT NULL,
-            expires_at    TEXT NOT NULL,
-            revoked_at    TEXT,
-            last_seen_at  TEXT
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            jti             TEXT NOT NULL UNIQUE,
+            subject_type    TEXT NOT NULL,         -- 'admin' | 'tech' | 'customer'
+            subject_id      INTEGER NOT NULL,
+            ip_address      TEXT,
+            user_agent      TEXT,
+            created_at      TEXT NOT NULL,
+            expires_at      TEXT NOT NULL,
+            revoked_at      TEXT,
+            last_seen_at    TEXT,
+            mfa_verified_at TEXT
         )
     """)
+    sess_cols = {row[1] for row in con.execute("PRAGMA table_info(sessions)")}
+    if "mfa_verified_at" not in sess_cols:
+        try: con.execute("ALTER TABLE sessions ADD COLUMN mfa_verified_at TEXT")
+        except sqlite3.OperationalError: pass
     con.execute("CREATE INDEX IF NOT EXISTS idx_sessions_subject ON sessions(subject_type, subject_id)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_sessions_jti     ON sessions(jti)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)")
@@ -2343,6 +2348,18 @@ def revoke_all_sessions_for(subject_type: str, subject_id: int) -> int:
     con.commit()
     con.close()
     return n
+
+
+def mark_session_mfa_verified(jti: str):
+    """Records that the session's holder has just passed an MFA check.
+    Used to gate access to Tier-3 data — see _require_recent_mfa() in main.py."""
+    if not jti:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    con.execute("UPDATE sessions SET mfa_verified_at = ? WHERE jti = ?", (now, jti))
+    con.commit()
+    con.close()
 
 
 def get_active_sessions_for(subject_type: str, subject_id: int):

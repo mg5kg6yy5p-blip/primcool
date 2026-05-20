@@ -1590,8 +1590,14 @@
     const wrap = document.getElementById('securityBody');
     wrap.innerHTML = 'Loading…';
     try {
-      const s = await api('GET', '/api/admin/mfa/status');
+      const [s, sessions] = await Promise.all([
+        api('GET', '/api/admin/mfa/status'),
+        api('GET', '/api/admin/sessions').catch(() => []),
+      ]);
       const me = currentAdmin || {};
+
+      const sessionsHtml = renderActiveSessions(sessions);
+
       if (s.enabled) {
         const codes = s.backup_codes || {};
         wrap.innerHTML = `
@@ -1615,7 +1621,8 @@
             <p style="font-size:12px;color:var(--muted);margin-top:8px;line-height:1.5;">
               Disabling MFA reduces your account security. You'll need to enter your password + current MFA code to disable.
             </p>
-          </div>`;
+          </div>
+          ${sessionsHtml}`;
       } else {
         wrap.innerHTML = `
           <div style="display:flex;align-items:center;gap:12px;padding:14px;background:#fef3c7;border-left:4px solid #f59e0b;border-radius:8px;margin-bottom:18px;">
@@ -1629,7 +1636,8 @@
             With MFA enabled, signing in requires both your password and a 6-digit code from an authenticator app
             (Google Authenticator, Authy, 1Password, etc.). Even if your password is stolen, your account stays secure.
           </p>
-          <button class="btn btn-primary" onclick="startMfaEnrollment()" style="width:100%;">Set Up Two-Factor Authentication →</button>`;
+          <button class="btn btn-primary" onclick="startMfaEnrollment()" style="width:100%;">Set Up Two-Factor Authentication →</button>
+          ${sessionsHtml}`;
       }
     } catch(e) {
       wrap.innerHTML = `<div style="color:var(--danger);">Error: ${e.message}</div>`;
@@ -1637,6 +1645,63 @@
   }
 
   let _enrollData = null;
+
+  function renderActiveSessions(sessions) {
+    if (!sessions || !sessions.length) return '';
+    const fmtUA = (ua) => {
+      if (!ua) return 'Unknown device';
+      // Tiny UA fingerprint — not perfect but good enough for "is this me?"
+      const m = ua.match(/(Chrome|Safari|Firefox|Edge|curl)\/?[\d.]*/i);
+      const os = /Mac OS|Macintosh/.test(ua) ? 'Mac'
+               : /Windows/.test(ua) ? 'Windows'
+               : /Android/.test(ua) ? 'Android'
+               : /iPhone|iPad|iOS/.test(ua) ? 'iOS'
+               : /Linux/.test(ua) ? 'Linux' : '';
+      return [m ? m[0] : ua.slice(0, 30), os].filter(Boolean).join(' · ');
+    };
+    const fmtAgo = (iso) => {
+      if (!iso) return '';
+      const ms = Date.now() - new Date(iso).getTime();
+      const m = Math.floor(ms / 60000);
+      if (m < 1) return 'just now';
+      if (m < 60) return `${m}m ago`;
+      const h = Math.floor(m / 60);
+      if (h < 24) return `${h}h ago`;
+      return `${Math.floor(h / 24)}d ago`;
+    };
+    return `
+      <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:18px;">
+        <h4 style="font-size:13px;color:var(--navy);margin-bottom:10px;">Active Sessions <span style="color:var(--muted);font-weight:400;font-size:12px;">(${sessions.length})</span></h4>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px;">
+          ${sessions.map(s => `
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 12px;background:var(--light);border-radius:8px;font-size:12px;${s.is_current ? 'border:1px solid var(--teal);' : ''}">
+              <div>
+                <strong style="color:var(--navy);">${escHtml(fmtUA(s.user_agent))}</strong>${s.is_current ? ' <span style="color:var(--teal);font-size:11px;">— this device</span>' : ''}
+                <br><span style="color:var(--muted);font-size:11px;">${escHtml(s.ip_address || 'unknown IP')} · started ${escHtml(fmtAgo(s.created_at))} · last seen ${escHtml(fmtAgo(s.last_seen_at))}</span>
+              </div>
+              ${s.is_current ? '' : `<button class="btn btn-ghost btn-sm" onclick="revokeSession('${s.jti}')">Sign out</button>`}
+            </div>`).join('')}
+        </div>
+        <button class="btn btn-danger" onclick="logoutEverywhere()" style="width:100%;">🔌 Sign out everywhere (including this device)</button>
+      </div>`;
+  }
+
+  async function revokeSession(jti) {
+    if (!confirm('Sign out this session?')) return;
+    try {
+      await api('DELETE', `/api/admin/sessions/${jti}`);
+      await loadSecurityModal();
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  async function logoutEverywhere() {
+    if (!confirm('Sign out from ALL devices (including this one)? You\'ll need to sign in again.')) return;
+    try {
+      await api('POST', '/api/admin/logout-everywhere');
+    } catch {}
+    localStorage.removeItem('pc_admin_token');
+    window.location.reload();
+  }
 
   async function startMfaEnrollment() {
     document.getElementById('modal-security').classList.remove('open');
@@ -2512,17 +2577,54 @@
 
   async function downloadDocument(id) {
     try {
-      const res = await api('GET', `/api/admin/documents/${id}/download`);
-      // Open the signed URL in a new tab — the browser handles the file display/save
-      const a = document.createElement('a');
-      a.href = res.url;
-      a.target = '_blank';
-      a.rel = 'noopener';
-      a.download = res.original_filename || '';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
+      await _doDocumentDownload(id);
     } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  async function _doDocumentDownload(id) {
+    // Use fetch directly so we can read response headers
+    const res = await fetch(`/api/admin/documents/${id}/download`, {
+      headers: { 'Authorization': `Bearer ${adminToken}` },
+    });
+    if (res.status === 401 && res.headers.get('X-Require-MFA-Reauth') === 'true') {
+      // Tier-3 step-up: prompt for code and retry once
+      const code = await _promptMfaReauth();
+      if (!code) return;  // user cancelled
+      const ok = await fetch('/api/admin/mfa/reauth', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${adminToken}` },
+        body:    JSON.stringify({ code }),
+      });
+      if (!ok.ok) {
+        const d = await ok.json().catch(() => ({}));
+        throw new Error(d.detail || 'MFA verification failed');
+      }
+      return _doDocumentDownload(id);   // retry
+    }
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      throw new Error(d.detail || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    const a = document.createElement('a');
+    a.href = data.url;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.download = data.original_filename || '';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
+  function _promptMfaReauth() {
+    return new Promise(resolve => {
+      const code = prompt(
+        'This is a Highly Sensitive document.\n\n' +
+        'For your security, enter your current 6-digit authenticator code ' +
+        '(or a backup code) to continue:'
+      );
+      resolve(code && code.trim() ? code.trim() : null);
+    });
   }
 
   async function deleteDocument(id, title, isHighlySensitive) {
