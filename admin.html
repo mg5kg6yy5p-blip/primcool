@@ -574,7 +574,11 @@
       <div class="panel" id="panel-inventory">
         <div class="top-bar">
           <h2>Inventory</h2>
-          <button class="btn btn-primary" id="addPartBtn" onclick="openModal('addPart')" style="display:none;">+ Add Part</button>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-ghost" id="invProcurementBtn" onclick="openProcurement()" style="display:none;">📦 Procurement</button>
+            <button class="btn btn-ghost" id="exportInventoryBtn" onclick="exportResource('parts')" style="display:none;">⬇ Export CSV</button>
+            <button class="btn btn-primary" id="addPartBtn" onclick="openModal('addPart')" style="display:none;">+ Add Part</button>
+          </div>
         </div>
 
         <div id="inv-summary" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:20px;"></div>
@@ -1041,6 +1045,57 @@
 </div>
 
 <!-- Adjust Stock -->
+<!-- ── Procurement modal (POs + Physical counts) ── -->
+<div class="modal-overlay" id="modal-procurement">
+  <div class="modal" style="max-width:880px;">
+    <div class="modal-header">
+      <h3>Procurement &amp; Counts</h3>
+      <button class="modal-close" onclick="closeModal('procurement')">×</button>
+    </div>
+    <div class="modal-body" style="padding:0;">
+      <div style="display:flex;gap:0;border-bottom:1px solid var(--border);">
+        <button class="proc-tab active" data-tab="pos"    onclick="setProcTab('pos')"    style="flex:1;padding:12px;background:none;border:none;border-bottom:3px solid var(--teal);font-weight:600;cursor:pointer;">Purchase Orders</button>
+        <button class="proc-tab"        data-tab="counts" onclick="setProcTab('counts')" style="flex:1;padding:12px;background:none;border:none;border-bottom:3px solid transparent;font-weight:600;cursor:pointer;">Physical Counts</button>
+      </div>
+
+      <div id="proc-pane-pos" style="padding:16px;">
+        <div id="po-create-card" style="background:var(--light);padding:12px;border-radius:8px;margin-bottom:14px;display:none;">
+          <div style="font-weight:700;margin-bottom:8px;color:var(--navy);">New Purchase Order</div>
+          <div class="field"><label>Supplier *</label><input id="po-supplier" placeholder="e.g. ABC Parts Ltd."></div>
+          <div id="po-lines" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px;"></div>
+          <button class="btn btn-ghost btn-sm" onclick="addPOLine()">+ Add line</button>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;">
+            <div style="font-size:12px;color:var(--muted);">Expected total: <strong id="po-total">$0.00</strong></div>
+            <button class="btn btn-primary btn-sm" onclick="submitPO()">Create draft PO</button>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <div style="font-weight:700;color:var(--navy);">Open POs</div>
+          <button id="newPoBtn" class="btn btn-primary btn-sm" onclick="toggleNewPO()" style="display:none;">+ New PO</button>
+        </div>
+        <div id="po-list" style="font-size:13px;"></div>
+      </div>
+
+      <div id="proc-pane-counts" style="padding:16px;display:none;">
+        <div id="count-create-card" style="background:var(--light);padding:12px;border-radius:8px;margin-bottom:14px;display:none;">
+          <div style="font-weight:700;margin-bottom:8px;color:var(--navy);">Record Physical Count</div>
+          <div class="field-row">
+            <div class="field"><label>Part *</label><select id="count-part"><option value="">Select…</option></select></div>
+            <div class="field"><label>Counted quantity *</label><input id="count-qty" type="number" step="0.01" min="0"></div>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="submitCount()">Record count</button>
+          <p style="font-size:11px;color:var(--muted);margin-top:8px;">≥5% variance auto-escalates and notifies manager. You cannot approve your own count.</p>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <div style="font-weight:700;color:var(--navy);">Recent counts</div>
+          <button id="newCountBtn" class="btn btn-primary btn-sm" onclick="toggleNewCount()" style="display:none;">+ Record count</button>
+        </div>
+        <div id="count-list" style="font-size:13px;"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modal-adjustStock">
   <div class="modal" style="max-width:460px;">
     <div class="modal-header">
@@ -1273,6 +1328,7 @@
           <option value="system_admin">System Admin</option>
           <option value="hr_admin">HR Admin</option>
           <option value="ceo_assistant">CEO Assistant</option>
+          <option value="inventory_manager">Inventory Manager</option>
         </select>
       </div>
       <div class="field-row">
@@ -1453,11 +1509,12 @@
   let resetAdminPwId = null;
 
   const ADMIN_PERMS = {
-    super_admin: new Set(['admin:create','admin:set_role','admin:set_active','admin:reset_password','admin:view_all','audit:view_all','tech:view','tech:create','tech:delete','tech:export','customer:view','customer:create','customer:delete','customer:export','visit:view','visit:create','visit:delete','visit:export','review:view','review:approve','review:delete','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','inventory:delete','invoice:view','invoice:create','invoice:update','invoice:delete','invoice:record_payment','invoice:export','documents:upload','documents:view','documents:view_highly_sensitive','documents:delete','documents:delete_highly_sensitive','security:view_alerts','security:resolve_alerts']),
-    supervisor_admin: new Set(['admin:view_all','audit:view_all','tech:view','tech:update','tech:export','customer:view','customer:update','customer:export','visit:view','visit:update','visit:export','review:view','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:adjust','invoice:view','invoice:update','invoice:record_payment','invoice:export','documents:upload','documents:view','documents:view_highly_sensitive','documents:delete','security:view_alerts']),
+    super_admin: new Set(['admin:create','admin:set_role','admin:set_active','admin:reset_password','admin:view_all','audit:view_all','tech:view','tech:create','tech:delete','tech:export','customer:view','customer:create','customer:delete','customer:export','visit:view','visit:create','visit:delete','visit:export','review:view','review:approve','review:delete','visit:view_photos','visit:flag','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','inventory:delete','inventory:export','po:create','po:send','po:receive','po:close_out','po:approve_variance','count:create','count:approve','invoice:view','invoice:create','invoice:update','invoice:delete','invoice:record_payment','invoice:export','documents:upload','documents:view','documents:view_highly_sensitive','documents:delete','documents:delete_highly_sensitive','security:view_alerts','security:resolve_alerts']),
+    supervisor_admin: new Set(['admin:view_all','audit:view_all','tech:view','tech:update','tech:export','customer:view','customer:update','customer:export','visit:view','visit:update','visit:export','review:view','visit:view_photos','visit:flag','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:adjust','inventory:export','po:create','po:send','po:receive','po:close_out','po:approve_variance','count:create','count:approve','invoice:view','invoice:update','invoice:record_payment','invoice:export','documents:upload','documents:view','documents:view_highly_sensitive','documents:delete','security:view_alerts']),
     system_admin: new Set(['tech:view','tech:create','customer:view','customer:create','visit:view','visit:create','review:view','audit:view_self','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','invoice:view','invoice:create','invoice:update','invoice:record_payment','documents:upload','documents:view']),
     hr_admin: new Set(['tech:view','tech:create','audit:view_self','timesheet:view_all','invoice:view','documents:upload','documents:view','documents:view_highly_sensitive']),
     ceo_assistant: new Set(['audit:view_self','inventory:view','invoice:view','documents:view']),
+    inventory_manager: new Set(['inventory:view','inventory:create','inventory:update','inventory:adjust','po:create','po:send','po:receive','count:create','audit:view_self']),
   };
   function can(perm) {
     return currentAdmin && ADMIN_PERMS[currentAdmin.role]?.has(perm);
@@ -1626,6 +1683,9 @@
     if (can('tech:export'))     document.getElementById('exportTechsBtn').style.display = '';
     if (can('visit:export'))    document.getElementById('exportVisitsBtn').style.display = '';
     if (can('invoice:export'))  document.getElementById('exportInvoicesBtn').style.display = '';
+    if (can('inventory:export')) document.getElementById('exportInventoryBtn').style.display = '';
+    if (can('po:create') || can('po:close_out') || can('count:create') || can('count:approve'))
+      document.getElementById('invProcurementBtn').style.display = '';
     if (can('security:view_alerts')) refreshSecurityBanner();
     // Show current admin name + role
     const tag = document.querySelector('.admin-tag');
@@ -2404,6 +2464,7 @@
   const ROLE_LABEL = {
     super_admin: 'Super Admin', supervisor_admin: 'Supervisor Admin',
     system_admin: 'System Admin', hr_admin: 'HR Admin', ceo_assistant: 'CEO Assistant',
+    inventory_manager: 'Inventory Manager',
   };
 
   async function loadAdmins() {
@@ -3200,6 +3261,209 @@
   let invFilter = 'all';
   let editingPartId = null;
   let adjustingPart = null;
+
+  // ── Procurement (POs + Physical counts) ─────────────────────────────────
+  function openProcurement() {
+    document.getElementById('modal-procurement').classList.add('open');
+    if (can('po:create'))    document.getElementById('newPoBtn').style.display = '';
+    if (can('count:create')) document.getElementById('newCountBtn').style.display = '';
+    setProcTab('pos');
+    loadPOs();
+    populateCountPartSelect();
+  }
+  function setProcTab(tab) {
+    document.querySelectorAll('.proc-tab').forEach(b => {
+      const on = b.dataset.tab === tab;
+      b.style.borderBottomColor = on ? 'var(--teal)' : 'transparent';
+    });
+    document.getElementById('proc-pane-pos').style.display    = (tab === 'pos')    ? '' : 'none';
+    document.getElementById('proc-pane-counts').style.display = (tab === 'counts') ? '' : 'none';
+    if (tab === 'counts') loadCounts();
+  }
+
+  let poLines = [];
+  function toggleNewPO() {
+    const c = document.getElementById('po-create-card');
+    const showing = c.style.display !== 'none';
+    c.style.display = showing ? 'none' : '';
+    if (!showing) { poLines = []; addPOLine(); document.getElementById('po-supplier').value = ''; }
+  }
+  function addPOLine() {
+    poLines.push({ part_id: '', quantity: 1, expected_unit_cost: 0 });
+    renderPOLines();
+  }
+  function renderPOLines() {
+    const wrap = document.getElementById('po-lines');
+    if (!allParts || !allParts.length) { wrap.innerHTML = '<div style="font-size:12px;color:var(--muted);">Load parts first.</div>'; return; }
+    wrap.innerHTML = poLines.map((l, i) => `
+      <div style="display:grid;grid-template-columns:1fr 80px 100px auto;gap:6px;align-items:end;">
+        <select onchange="updatePOLine(${i},'part_id',this.value)" style="padding:6px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
+          <option value="">part…</option>
+          ${allParts.map(p => `<option value="${p.id}" ${String(l.part_id)===String(p.id)?'selected':''}>${escHtml(p.sku)} — ${escHtml(p.name)}</option>`).join('')}
+        </select>
+        <input type="number" step="0.01" min="0.01" value="${l.quantity}" onchange="updatePOLine(${i},'quantity',this.value)" placeholder="qty" style="padding:6px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
+        <input type="number" step="0.01" min="0" value="${l.expected_unit_cost}" onchange="updatePOLine(${i},'expected_unit_cost',this.value)" placeholder="unit $" style="padding:6px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
+        <button onclick="poLines.splice(${i},1); renderPOLines();" style="background:none;border:none;color:var(--red);font-size:18px;cursor:pointer;">×</button>
+      </div>`).join('');
+    const total = poLines.reduce((s,l) => s + (parseFloat(l.quantity)||0) * (parseFloat(l.expected_unit_cost)||0), 0);
+    document.getElementById('po-total').textContent = '$' + total.toFixed(2);
+  }
+  function updatePOLine(i, k, v) {
+    poLines[i][k] = (k === 'part_id') ? parseInt(v) || '' : parseFloat(v) || 0;
+    renderPOLines();
+  }
+  async function submitPO() {
+    const supplier = document.getElementById('po-supplier').value.trim();
+    if (!supplier) { toast('Supplier required.', 'error'); return; }
+    const lines = poLines.filter(l => l.part_id && l.quantity > 0);
+    if (!lines.length) { toast('Add at least one line with part + quantity.', 'error'); return; }
+    try {
+      await api('POST', '/api/admin/purchase-orders', { supplier, lines });
+      toast('PO created', 'success');
+      toggleNewPO();
+      loadPOs();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+  async function loadPOs() {
+    try {
+      const pos = await api('GET', '/api/admin/purchase-orders');
+      const wrap = document.getElementById('po-list');
+      if (!pos.length) { wrap.innerHTML = '<div style="color:var(--muted);font-size:12px;">No purchase orders yet.</div>'; return; }
+      wrap.innerHTML = pos.map(po => {
+        const s = po.status;
+        const sc = s==='closed' ? 'background:#d1fae5;color:#065f46;' : s==='received' ? 'background:#dbeafe;color:#1e40af;' : s==='sent' ? 'background:#fef3c7;color:#92400e;' : 'background:#e5e7eb;color:#374151;';
+        return `<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+            <div><strong>${escHtml(po.po_number)}</strong> · ${escHtml(po.supplier)} · $${(po.expected_total||0).toFixed(2)}</div>
+            <span class="badge" style="${sc}">${escHtml(s.toUpperCase())}</span>
+          </div>
+          <div style="display:flex;gap:6px;margin-top:8px;">
+            ${s==='draft' && can('po:send') ? `<button class="btn btn-ghost btn-sm" onclick="sendPO(${po.id})">Send to supplier</button>` : ''}
+            ${(s==='sent'||s==='draft') && can('po:receive') ? `<button class="btn btn-ghost btn-sm" onclick="receivePO(${po.id})">Receive items</button>` : ''}
+            ${s==='received' && can('po:close_out') ? `<button class="btn btn-primary btn-sm" onclick="closePO(${po.id})">Close out (3-way match)</button>` : ''}
+            <button class="btn btn-ghost btn-sm" onclick="viewPO(${po.id})">Details</button>
+          </div>
+        </div>`;
+      }).join('');
+    } catch (e) { toast(e.message, 'error'); }
+  }
+  async function sendPO(id) {
+    if (!confirm('Mark this PO as sent to the supplier?')) return;
+    try { await api('PUT', `/api/admin/purchase-orders/${id}/send`); toast('PO sent', 'success'); loadPOs(); }
+    catch (e) { toast(e.message, 'error'); }
+  }
+  async function viewPO(id) {
+    try {
+      const po = await api('GET', `/api/admin/purchase-orders/${id}`);
+      const lines = po.lines.map(l =>
+        `${l.sku} ${l.part_name}: ordered ${l.quantity}, received ${l.received_qty}, @ $${l.expected_unit_cost.toFixed(2)}`
+      ).join('\n');
+      const grns = (po.received || []).map(g =>
+        `  GRN: ${g.sku} ${g.quantity} @ $${g.actual_unit_cost.toFixed(2)} on ${g.received_at}`
+      ).join('\n');
+      alert(`PO ${po.po_number}\nSupplier: ${po.supplier}\nStatus: ${po.status}\nExpected: $${po.expected_total.toFixed(2)}\nReceived total: $${(po.received_total||0).toFixed(2)}\n${po.invoice_number ? `Invoice: ${po.invoice_number} ($${po.invoice_total.toFixed(2)})\n` : ''}\nLines:\n${lines}\n\n${grns||''}`);
+    } catch (e) { toast(e.message, 'error'); }
+  }
+  async function receivePO(id) {
+    try {
+      const po = await api('GET', `/api/admin/purchase-orders/${id}`);
+      const pending = po.lines.filter(l => l.received_qty < l.quantity);
+      if (!pending.length) { toast('All lines already received.', 'error'); return; }
+      const choices = pending.map((l,i) => `${i+1}) ${l.sku} ${l.part_name} — remaining ${l.quantity - l.received_qty}`).join('\n');
+      const pick = prompt(`Receive which line?\n${choices}\nEnter line # (1-${pending.length}):`);
+      const idx = parseInt(pick) - 1;
+      if (isNaN(idx) || idx < 0 || idx >= pending.length) return;
+      const line = pending[idx];
+      const qty  = parseFloat(prompt(`Quantity received (remaining: ${line.quantity - line.received_qty}):`));
+      if (!qty || qty <= 0) return;
+      const cost = parseFloat(prompt(`Actual unit cost (expected $${line.expected_unit_cost.toFixed(2)}):`, line.expected_unit_cost));
+      if (isNaN(cost) || cost < 0) return;
+      await api('POST', `/api/admin/purchase-orders/${id}/receive`, {
+        po_line_id: line.id, quantity: qty, actual_unit_cost: cost, notes: ''
+      });
+      toast('Receipt recorded', 'success');
+      loadPOs();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+  async function closePO(id) {
+    try {
+      const po = await api('GET', `/api/admin/purchase-orders/${id}`);
+      const inv = prompt(`Supplier invoice number for ${po.po_number}:`);
+      if (!inv) return;
+      const total = parseFloat(prompt(`Supplier invoice total (received total: $${po.received_total.toFixed(2)}):`));
+      if (isNaN(total) || total < 0) return;
+      let note = '';
+      const expectedMatch = Math.abs(po.expected_total - po.received_total) < 0.01 * Math.max(po.expected_total, po.received_total, 1);
+      const invMatch      = Math.abs(po.received_total - total) < 0.01 * Math.max(po.received_total, total, 1);
+      if (!expectedMatch || !invMatch) {
+        note = prompt(`Variance detected (PO $${po.expected_total.toFixed(2)} / GRN $${po.received_total.toFixed(2)} / Invoice $${total.toFixed(2)}). Explain (required):`) || '';
+        if (!note.trim()) { toast('Variance note required.', 'error'); return; }
+      }
+      const res = await api('PUT', `/api/admin/purchase-orders/${id}/close`, {
+        invoice_number: inv, invoice_total: total, variance_note: note,
+      });
+      toast(res.matched ? 'PO closed (three-way match ✓)' : 'PO closed with variance — security alert raised', 'success');
+      loadPOs();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  // Physical counts
+  function toggleNewCount() {
+    const c = document.getElementById('count-create-card');
+    c.style.display = c.style.display === 'none' ? '' : 'none';
+  }
+  function populateCountPartSelect() {
+    const sel = document.getElementById('count-part');
+    if (!sel || !allParts) return;
+    sel.innerHTML = '<option value="">Select part…</option>' +
+      allParts.map(p => `<option value="${p.id}">${escHtml(p.sku)} — ${escHtml(p.name)} (system: ${formatQty(p.quantity)})</option>`).join('');
+  }
+  async function submitCount() {
+    const partId = parseInt(document.getElementById('count-part').value);
+    const qty    = parseFloat(document.getElementById('count-qty').value);
+    if (!partId || isNaN(qty) || qty < 0) { toast('Pick a part and enter the counted quantity.', 'error'); return; }
+    try {
+      const res = await api('POST', '/api/admin/physical-counts', { part_id: partId, counted_qty: qty });
+      toast(res.status === 'escalated'
+        ? `Variance ${res.variance_pct}% — escalated to manager`
+        : `Count recorded (variance ${res.variance_pct}%)`,
+        res.status === 'escalated' ? 'error' : 'success');
+      toggleNewCount();
+      loadCounts();
+      refreshSecurityBanner();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+  async function loadCounts() {
+    try {
+      const rows = await api('GET', '/api/admin/physical-counts');
+      const wrap = document.getElementById('count-list');
+      if (!rows.length) { wrap.innerHTML = '<div style="color:var(--muted);font-size:12px;">No counts recorded yet.</div>'; return; }
+      wrap.innerHTML = rows.map(c => {
+        const sc = c.status==='approved' ? 'background:#d1fae5;color:#065f46;' : c.status==='escalated' ? 'background:#fee2e2;color:#991b1b;' : 'background:#fef3c7;color:#92400e;';
+        const canApprove = can('count:approve') && c.status !== 'approved' && c.counted_by !== currentAdmin.id;
+        const sameOwner  = c.counted_by === currentAdmin.id && c.status !== 'approved';
+        return `<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div><strong>${escHtml(c.sku)}</strong> ${escHtml(c.part_name)} · system ${c.system_qty} / counted ${c.counted_qty} · <strong>${c.variance_pct}%</strong></div>
+            <span class="badge" style="${sc}">${escHtml(c.status.toUpperCase())}</span>
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px;">${escHtml(c.counted_at)}</div>
+          ${canApprove ? `<button class="btn btn-primary btn-sm" onclick="approveCount(${c.id})" style="margin-top:8px;">Approve &amp; adjust stock</button>` : ''}
+          ${sameOwner ? `<div style="font-size:11px;color:#991b1b;margin-top:6px;">You recorded this count — a manager must approve it.</div>` : ''}
+          ${c.approval_note ? `<div style="font-size:12px;margin-top:6px;color:var(--muted);">Note: ${escHtml(c.approval_note)}</div>` : ''}
+        </div>`;
+      }).join('');
+    } catch (e) { toast(e.message, 'error'); }
+  }
+  async function approveCount(id) {
+    const note = prompt('Approval note (optional):', '') || '';
+    try {
+      await api('PUT', `/api/admin/physical-counts/${id}/approve`, { note, adjust_stock: true });
+      toast('Count approved, stock adjusted', 'success');
+      loadCounts();
+      loadInventory();
+    } catch (e) { toast(e.message, 'error'); }
+  }
 
   async function loadInventory() {
     if (!can('inventory:view')) return;

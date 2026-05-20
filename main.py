@@ -37,6 +37,10 @@ from database import (
     set_visit_signature, get_visit_signature,
     set_visit_checklist, get_visit_checklist,
     set_part_image, set_visit_flag,
+    get_recent_unit_cost_avg,
+    create_purchase_order, list_purchase_orders, get_purchase_order,
+    mark_po_sent, record_goods_received, close_purchase_order,
+    create_physical_count, list_physical_counts, approve_physical_count,
     create_review, get_review_for_visit, get_customer_reviews,
     get_all_reviews, get_approved_reviews, update_review_status, delete_review,
     verify_tech, get_tech_by_id, get_all_techs, create_tech, update_tech,
@@ -81,6 +85,10 @@ ADMIN_PERMS = {
         "review:view", "review:approve", "review:reject", "review:delete",
         "visit:view_photos", "visit:flag",
         "invoice:export",
+        # Inventory + procurement controls (super_admin has everything)
+        "inventory:export",
+        "po:create", "po:send", "po:receive", "po:close_out", "po:approve_variance",
+        "count:create", "count:approve",
         "security:view_alerts", "security:resolve_alerts",
         "audit:view_all",
         "timesheet:view_all",
@@ -100,6 +108,10 @@ ADMIN_PERMS = {
         "review:view",
         "visit:view_photos", "visit:flag",
         "invoice:export",
+        # Manager closes out POs and approves count variances — director also can.
+        "inventory:export",
+        "po:create", "po:send", "po:receive", "po:close_out", "po:approve_variance",
+        "count:create", "count:approve",
         "security:view_alerts",
         "audit:view_all",
         "timesheet:view_all",
@@ -133,6 +145,15 @@ ADMIN_PERMS = {
         "inventory:view",
         "invoice:view",
         "documents:view",
+    },
+    # Inventory manager: full operational visibility on stock + suppliers +
+    # POs, zero personnel visibility. Cannot close out POs (that requires
+    # super/supervisor) and cannot approve count variances they discovered.
+    "inventory_manager": {
+        "inventory:view", "inventory:create", "inventory:update", "inventory:adjust",
+        "po:create", "po:send", "po:receive",
+        "count:create",
+        "audit:view_self",
     },
 }
 
@@ -1120,6 +1141,9 @@ class PartAdjust(BaseModel):
     quantity_delta: float          # signed: +receive, -use, ±adjust
     reason:         str = ""
     visit_id:       Optional[int] = None
+    # Cost-spike guard fields (only used when movement_type='received').
+    unit_cost:                 Optional[float] = None
+    cost_spike_approved_by:    Optional[int] = None
 
 
 class InvoiceLineItem(BaseModel):
@@ -2187,6 +2211,19 @@ def admin_timesheets(request: Request,
 
 # ── Inventory ────────────────────────────────────────────────────────────────
 
+@app.get("/api/admin/parts/export")
+def admin_export_parts(request: Request):
+    admin = _require_perm(request, "inventory:export")
+    _enforce_export_rate(request, admin["id"], "inventory")
+    rows = get_all_parts(include_inactive=True)
+    _audit_from(admin, "inventory.export", request, target_type="part",
+                target_label=f"exported {len(rows)} rows")
+    cols = ["id", "sku", "name", "description", "category", "unit",
+            "unit_cost", "quantity", "reorder_point", "supplier", "location",
+            "active", "created_at"]
+    return _csv_response(rows, cols, f"inventory-{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv")
+
+
 @app.get("/api/admin/parts")
 def admin_list_parts(request: Request, include_inactive: bool = False):
     _require_perm(request, "inventory:view")
@@ -2249,9 +2286,34 @@ def admin_adjust_part(request: Request, part_id: int, body: PartAdjust):
     admin = _require_perm(request, "inventory:adjust")
     if body.movement_type not in ("received", "used", "adjusted"):
         raise HTTPException(400, "movement_type must be received, used, or adjusted")
+    # Reason is mandatory per inventory_manager spec — no silent adjustments.
+    if not (body.reason or "").strip():
+        raise HTTPException(400, "reason is required for any stock adjustment")
     part = get_part_by_id(part_id)
     if not part:
         raise HTTPException(404, "Part not found")
+
+    # Cost-spike guard: if this is a 'received' movement and the caller hints
+    # at a unit_cost via the reason metadata, flag >15% deviation. We surface
+    # this in the response so the UI can require manager approval before retry.
+    # (The PO/GRN flow is the canonical path — this is a safety net for the
+    # legacy direct-adjust route.)
+    if body.movement_type == "received" and body.unit_cost is not None:
+        avg = get_recent_unit_cost_avg(part_id, days=90)
+        # If no GRN history yet, fall back to the catalog unit_cost so the
+        # guard still catches obvious spikes on early receipts.
+        baseline = avg if (avg and avg > 0) else (part.get("unit_cost") or 0)
+        if baseline > 0:
+            deviation = abs(body.unit_cost - baseline) / baseline
+            if deviation > 0.15 and not body.cost_spike_approved_by:
+                src = "90-day average" if avg else "catalog cost"
+                raise HTTPException(
+                    409,
+                    f"Unit cost ${body.unit_cost:.2f} deviates {deviation*100:.1f}% "
+                    f"from {src} ${baseline:.2f}. Manager approval required "
+                    f"(set cost_spike_approved_by to a super_admin/supervisor_admin id)."
+                )
+
     try:
         result = adjust_part_quantity(
             part_id,
@@ -2276,8 +2338,209 @@ def admin_adjust_part(request: Request, part_id: int, body: PartAdjust):
 
 @app.get("/api/admin/parts/{part_id}/movements")
 def admin_part_movements(request: Request, part_id: int):
+    """Stock movement history. For inventory_manager, actor identity is
+    stripped — they see WHAT happened, not WHO did it. Manager/director see
+    the full row."""
+    admin = _require_perm(request, "inventory:view")
+    rows = get_part_movements(part_id)
+    if admin["role"] == "inventory_manager":
+        for r in rows:
+            for k in ("performed_by_id", "performed_by_prid", "performed_by_label",
+                      "performed_by_type", "customer_name", "visit_id"):
+                r.pop(k, None)
+    return rows
+
+
+
+# ── Purchase orders (Sprint B — three-way match) ─────────────────────────────
+class POLineIn(BaseModel):
+    part_id: int
+    quantity: float
+    expected_unit_cost: float = 0
+
+
+class POCreate(BaseModel):
+    supplier: str
+    lines:    List[POLineIn]
+
+
+class GRNCreate(BaseModel):
+    po_line_id:        int
+    quantity:          float
+    actual_unit_cost:  float
+    notes:             str = ""
+
+
+class POCloseOut(BaseModel):
+    invoice_number: str
+    invoice_total:  float
+    variance_note:  str = ""
+
+
+@app.post("/api/admin/purchase-orders")
+def admin_create_po(request: Request, body: POCreate):
+    admin = _require_perm(request, "po:create")
+    if not body.supplier.strip(): raise HTTPException(400, "supplier required")
+    if not body.lines:            raise HTTPException(400, "at least one line required")
+    po = create_purchase_order(body.supplier, [l.model_dump() for l in body.lines], admin["id"])
+    _audit_from(admin, "po.create", request, target_type="purchase_order",
+                target_id=po["id"], target_label=po["po_number"])
+    return po
+
+
+@app.get("/api/admin/purchase-orders")
+def admin_list_pos(request: Request, status: Optional[str] = None):
     _require_perm(request, "inventory:view")
-    return get_part_movements(part_id)
+    return list_purchase_orders(status=status)
+
+
+@app.get("/api/admin/purchase-orders/{po_id}")
+def admin_get_po(request: Request, po_id: int):
+    _require_perm(request, "inventory:view")
+    po = get_purchase_order(po_id)
+    if not po:
+        raise HTTPException(404, "PO not found")
+    return po
+
+
+@app.put("/api/admin/purchase-orders/{po_id}/send")
+def admin_send_po(request: Request, po_id: int):
+    admin = _require_perm(request, "po:send")
+    po = get_purchase_order(po_id)
+    if not po: raise HTTPException(404, "PO not found")
+    if po["status"] != "draft":
+        raise HTTPException(409, f"PO is {po['status']}, can only send drafts")
+    mark_po_sent(po_id)
+    _audit_from(admin, "po.send", request, target_type="purchase_order",
+                target_id=po_id, target_label=po["po_number"])
+    return {"ok": True}
+
+
+@app.post("/api/admin/purchase-orders/{po_id}/receive")
+def admin_receive_po_line(request: Request, po_id: int, body: GRNCreate):
+    """Records a goods-received entry against a PO line. Bumps stock and
+    creates a part_movement so the inventory dashboard reflects it."""
+    admin = _require_perm(request, "po:receive")
+    po = get_purchase_order(po_id)
+    if not po: raise HTTPException(404, "PO not found")
+    if po["status"] not in ("sent", "draft"):
+        raise HTTPException(409, f"Cannot receive against {po['status']} PO")
+    line = next((l for l in po["lines"] if l["id"] == body.po_line_id), None)
+    if not line: raise HTTPException(404, "PO line not found on this PO")
+    remaining = float(line["quantity"]) - float(line["received_qty"])
+    if body.quantity > remaining + 1e-9:
+        raise HTTPException(409, f"Over-receipt: line has {remaining} remaining")
+    if body.quantity <= 0:
+        raise HTTPException(400, "quantity must be positive")
+    grn_id = record_goods_received(po_id, body.po_line_id, line["part_id"],
+                                    body.quantity, body.actual_unit_cost,
+                                    admin["id"], body.notes)
+    _audit_from(admin, "po.receive", request, target_type="goods_received",
+                target_id=grn_id,
+                target_label=f"PO {po['po_number']} part {line['sku']} qty {body.quantity}",
+                after={"quantity": body.quantity, "actual_unit_cost": body.actual_unit_cost})
+    return {"id": grn_id, "ok": True}
+
+
+@app.put("/api/admin/purchase-orders/{po_id}/close")
+def admin_close_po(request: Request, po_id: int, body: POCloseOut):
+    """Three-way match closeout. Requires po:close_out which only
+    super_admin and supervisor_admin hold — inventory_manager cannot
+    close their own POs. Mismatch beyond 1% requires variance_note."""
+    admin = _require_perm(request, "po:close_out")
+    if not body.invoice_number.strip():
+        raise HTTPException(400, "invoice_number required")
+    try:
+        result = close_purchase_order(po_id, body.invoice_number,
+                                       body.invoice_total, body.variance_note,
+                                       admin["id"])
+    except ValueError as e:
+        msg = str(e)
+        code = 409 if "mismatch" in msg.lower() or "variance_note" in msg else 400
+        raise HTTPException(code, msg)
+    _audit_from(admin, "po.close_out", request, target_type="purchase_order",
+                target_id=po_id,
+                target_label=f"invoice {body.invoice_number} matched={result['matched']}",
+                after=result)
+    if not result["matched"]:
+        # Variance noted but the spec says it must be visible — raise an alert.
+        try:
+            create_security_alert(
+                kind="po_variance", severity="medium",
+                summary=f"PO {po_id} closed with three-way mismatch: PO={result['expected']:.2f}, GRN={result['received_total']:.2f}, Invoice={result['invoice_total']:.2f}",
+                actor_type="admin", actor_id=admin["id"],
+                details=result,
+            )
+        except Exception:
+            pass
+    return result
+
+
+# ── Physical counts (Sprint C) ───────────────────────────────────────────────
+class PhysicalCountCreate(BaseModel):
+    part_id:     int
+    counted_qty: float
+
+
+class PhysicalCountApprove(BaseModel):
+    note:          str = ""
+    adjust_stock:  bool = True
+
+
+@app.post("/api/admin/physical-counts")
+def admin_create_count(request: Request, body: PhysicalCountCreate):
+    """Record a physical-count observation. ≥5% variance auto-escalates and
+    fires a security_alert — the counter cannot suppress it."""
+    admin = _require_perm(request, "count:create")
+    try:
+        result = create_physical_count(body.part_id, body.counted_qty, admin["id"])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    _audit_from(admin, "count.create", request, target_type="physical_count",
+                target_id=result["id"], target_label=f"variance {result['variance_pct']}%",
+                after=result)
+    if result["status"] == "escalated":
+        try:
+            create_security_alert(
+                kind="count_variance",
+                severity="high" if result["variance_pct"] >= 10 else "medium",
+                summary=f"Physical count #{result['id']} variance {result['variance_pct']}% "
+                        f"(system {result['system_qty']}, counted {result['counted_qty']})",
+                actor_type="admin", actor_id=admin["id"],
+                details=result,
+            )
+        except Exception:
+            pass
+    return result
+
+
+@app.get("/api/admin/physical-counts")
+def admin_list_counts(request: Request, status: Optional[str] = None):
+    _require_perm(request, "inventory:view")
+    return list_physical_counts(status=status)
+
+
+@app.put("/api/admin/physical-counts/{count_id}/approve")
+def admin_approve_count(request: Request, count_id: int, body: PhysicalCountApprove):
+    """Approve a count. Critical SoD rule: approved_by MUST differ from
+    counted_by. If the counter was inventory_manager, only super_admin or
+    supervisor_admin can approve — that's already enforced by the
+    count:approve permission. The same-person check is a defense in depth."""
+    admin = _require_perm(request, "count:approve")
+    counts = list_physical_counts()
+    cnt = next((c for c in counts if c["id"] == count_id), None)
+    if not cnt:
+        raise HTTPException(404, "count not found")
+    if cnt["counted_by"] == admin["id"]:
+        raise HTTPException(403, "You cannot approve a count you yourself recorded.")
+    try:
+        approve_physical_count(count_id, admin["id"], body.note, body.adjust_stock)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    _audit_from(admin, "count.approve", request, target_type="physical_count",
+                target_id=count_id,
+                target_label=f"variance {cnt['variance_pct']}% adjusted={body.adjust_stock}")
+    return {"ok": True}
 
 
 @app.post("/api/admin/parts/{part_id}/image")

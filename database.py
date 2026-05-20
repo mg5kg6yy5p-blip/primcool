@@ -617,6 +617,76 @@ def init_db():
         )
     """)
 
+    # ── Purchase orders + goods received + physical counts (SoD controls) ──
+    # The flow: inventory_manager drafts a PO → "sends" it → goods physically
+    # arrive and someone records a goods_received entry against the PO line →
+    # supervisor/super_admin closes out the PO with a supplier invoice ref.
+    # All three numbers (PO total, GRN total, invoice total) must agree or a
+    # variance note is required and audit-logged.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS purchase_orders (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            po_number       TEXT NOT NULL UNIQUE,
+            supplier        TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'draft',   -- draft|sent|received|closed|cancelled
+            expected_total  REAL NOT NULL DEFAULT 0,
+            invoice_number  TEXT,
+            invoice_total   REAL,
+            variance_note   TEXT,
+            created_by      INTEGER,
+            created_at      TEXT NOT NULL,
+            sent_at         TEXT,
+            closed_by       INTEGER,
+            closed_at       TEXT
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_po_status ON purchase_orders(status, created_at)")
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS purchase_order_lines (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            po_id           INTEGER NOT NULL REFERENCES purchase_orders(id),
+            part_id         INTEGER NOT NULL REFERENCES parts(id),
+            quantity        REAL NOT NULL,
+            expected_unit_cost REAL NOT NULL DEFAULT 0,
+            received_qty    REAL NOT NULL DEFAULT 0
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_po_lines_po ON purchase_order_lines(po_id)")
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS goods_received (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            po_id           INTEGER NOT NULL REFERENCES purchase_orders(id),
+            po_line_id      INTEGER NOT NULL REFERENCES purchase_order_lines(id),
+            part_id         INTEGER NOT NULL REFERENCES parts(id),
+            quantity        REAL NOT NULL,
+            actual_unit_cost REAL NOT NULL,
+            received_by     INTEGER,
+            received_at     TEXT NOT NULL,
+            notes           TEXT
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_grn_po ON goods_received(po_id)")
+
+    # Physical counts. counted_by NEVER also approves — enforced at endpoint level.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS physical_counts (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            part_id         INTEGER NOT NULL REFERENCES parts(id),
+            system_qty      REAL NOT NULL,
+            counted_qty     REAL NOT NULL,
+            variance_pct    REAL NOT NULL,
+            counted_by      INTEGER NOT NULL,
+            counted_at      TEXT NOT NULL,
+            approved_by     INTEGER,
+            approved_at     TEXT,
+            approval_note   TEXT,
+            status          TEXT NOT NULL DEFAULT 'pending'   -- pending|approved|escalated
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_counts_status ON physical_counts(status, counted_at)")
+
     # Pre-visit checklist (lightweight: completion of items kept as JSON blob).
     con.execute("""
         CREATE TABLE IF NOT EXISTS visit_checklists (
@@ -3122,6 +3192,277 @@ def set_part_image(part_id: int, filename: str):
         "UPDATE parts SET image_filename = ?, updated_at = ? WHERE id = ?",
         (filename, datetime.now(timezone.utc).isoformat(), part_id),
     )
+    con.commit()
+    con.close()
+
+
+# ── Inventory cost-spike guard ───────────────────────────────────────────────
+def get_recent_unit_cost_avg(part_id: int, days: int = 90):
+    """Mean unit_cost of received movements over the trailing window.
+    Used to flag suspicious cost-per-unit spikes. Returns None if no history."""
+    from datetime import timedelta as _td
+    cutoff = (datetime.now(timezone.utc) - _td(days=days)).isoformat()
+    con = _con()
+    row = con.execute(
+        """SELECT AVG(actual_unit_cost) AS avg_cost
+           FROM goods_received WHERE part_id = ? AND received_at >= ?""",
+        (part_id, cutoff),
+    ).fetchone()
+    con.close()
+    return row["avg_cost"] if row and row["avg_cost"] is not None else None
+
+
+# ── Purchase orders ──────────────────────────────────────────────────────────
+def _next_po_number():
+    con = _con()
+    today = datetime.now(timezone.utc).strftime("%Y%m%d")
+    n = con.execute(
+        "SELECT COUNT(*) AS n FROM purchase_orders WHERE po_number LIKE ?",
+        (f"PO-{today}-%",),
+    ).fetchone()["n"]
+    con.close()
+    return f"PO-{today}-{n+1:03d}"
+
+
+def create_purchase_order(supplier: str, lines: list, created_by: int) -> dict:
+    """Lines: [{part_id, quantity, expected_unit_cost}]. Returns the new PO."""
+    po_num = _next_po_number()
+    expected_total = sum(float(l["quantity"]) * float(l.get("expected_unit_cost", 0)) for l in lines)
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    cur = con.execute(
+        """INSERT INTO purchase_orders
+            (po_number, supplier, status, expected_total, created_by, created_at)
+           VALUES (?, ?, 'draft', ?, ?, ?)""",
+        (po_num, supplier.strip(), expected_total, created_by, now),
+    )
+    po_id = cur.lastrowid
+    for l in lines:
+        con.execute(
+            """INSERT INTO purchase_order_lines
+                (po_id, part_id, quantity, expected_unit_cost)
+               VALUES (?, ?, ?, ?)""",
+            (po_id, int(l["part_id"]), float(l["quantity"]),
+             float(l.get("expected_unit_cost", 0))),
+        )
+    con.commit()
+    con.close()
+    return {"id": po_id, "po_number": po_num, "expected_total": expected_total}
+
+
+def list_purchase_orders(status: str = None):
+    sql = "SELECT * FROM purchase_orders"
+    args = []
+    if status:
+        sql += " WHERE status = ?"; args.append(status)
+    sql += " ORDER BY created_at DESC LIMIT 500"
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def get_purchase_order(po_id: int):
+    con = _con()
+    po = con.execute("SELECT * FROM purchase_orders WHERE id = ?", (po_id,)).fetchone()
+    if not po:
+        con.close()
+        return None
+    out = dict(po)
+    lines = con.execute(
+        """SELECT pol.*, p.sku, p.name AS part_name
+           FROM purchase_order_lines pol JOIN parts p ON pol.part_id = p.id
+           WHERE pol.po_id = ?""",
+        (po_id,),
+    ).fetchall()
+    grn = con.execute(
+        """SELECT g.*, p.sku, p.name AS part_name
+           FROM goods_received g JOIN parts p ON g.part_id = p.id
+           WHERE g.po_id = ?""",
+        (po_id,),
+    ).fetchall()
+    con.close()
+    out["lines"]    = [dict(r) for r in lines]
+    out["received"] = [dict(r) for r in grn]
+    out["received_total"] = sum(r["quantity"] * r["actual_unit_cost"] for r in out["received"])
+    return out
+
+
+def mark_po_sent(po_id: int):
+    con = _con()
+    con.execute(
+        "UPDATE purchase_orders SET status='sent', sent_at=? WHERE id=? AND status='draft'",
+        (datetime.now(timezone.utc).isoformat(), po_id),
+    )
+    con.commit()
+    con.close()
+
+
+def record_goods_received(po_id: int, po_line_id: int, part_id: int,
+                           quantity: float, actual_unit_cost: float,
+                           received_by: int, notes: str = "") -> int:
+    """Records a GRN row AND updates the PO line's received_qty + the part
+    inventory quantity. Also writes a part_movement row so the existing
+    inventory dashboards reflect the receipt."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    # Update PO line
+    con.execute(
+        "UPDATE purchase_order_lines SET received_qty = received_qty + ? WHERE id = ?",
+        (float(quantity), po_line_id),
+    )
+    # Update stock
+    con.execute(
+        "UPDATE parts SET quantity = quantity + ?, updated_at = ? WHERE id = ?",
+        (float(quantity), now, part_id),
+    )
+    # Insert GRN
+    cur = con.execute(
+        """INSERT INTO goods_received
+            (po_id, po_line_id, part_id, quantity, actual_unit_cost,
+             received_by, received_at, notes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (po_id, po_line_id, part_id, float(quantity),
+         float(actual_unit_cost), received_by, now, notes or ""),
+    )
+    grn_id = cur.lastrowid
+    # Mirror as a part_movement so movement reports still show the receipt
+    con.execute(
+        """INSERT INTO part_movements
+            (part_id, movement_type, quantity_delta, reason, visit_id,
+             performed_by_type, performed_by_id, created_at)
+           VALUES (?, 'received', ?, ?, NULL, 'admin', ?, ?)""",
+        (part_id, float(quantity), f"PO {po_id} GRN #{grn_id}", received_by, now),
+    )
+    # If all lines fully received, flip PO to 'received'
+    pending = con.execute(
+        """SELECT COUNT(*) AS n FROM purchase_order_lines
+           WHERE po_id = ? AND received_qty < quantity""",
+        (po_id,),
+    ).fetchone()["n"]
+    if pending == 0:
+        con.execute("UPDATE purchase_orders SET status='received' WHERE id=? AND status IN ('sent','draft')",
+                    (po_id,))
+    con.commit()
+    con.close()
+    return grn_id
+
+
+def close_purchase_order(po_id: int, invoice_number: str, invoice_total: float,
+                          variance_note: str, closed_by: int) -> dict:
+    """Three-way match: PO expected_total ↔ GRN actual total ↔ supplier invoice.
+    If any of the three diverge beyond 1%, variance_note becomes mandatory."""
+    po = get_purchase_order(po_id)
+    if not po:
+        raise ValueError("PO not found")
+    if po["status"] == "closed":
+        raise ValueError("PO already closed")
+    expected = float(po["expected_total"])
+    grn_tot  = float(po["received_total"])
+    inv_tot  = float(invoice_total)
+    matched  = all(abs(a - b) <= max(0.01 * max(a, b, 1), 0.01)
+                   for a, b in ((expected, grn_tot), (grn_tot, inv_tot), (expected, inv_tot)))
+    if not matched and not variance_note.strip():
+        raise ValueError(
+            f"Three-way mismatch (PO={expected:.2f}, GRN={grn_tot:.2f}, Invoice={inv_tot:.2f}). "
+            "variance_note is required."
+        )
+    con = _con()
+    con.execute(
+        """UPDATE purchase_orders SET
+              status='closed', invoice_number=?, invoice_total=?,
+              variance_note=?, closed_by=?, closed_at=?
+            WHERE id=?""",
+        (invoice_number.strip(), inv_tot, variance_note.strip() or None,
+         closed_by, datetime.now(timezone.utc).isoformat(), po_id),
+    )
+    con.commit()
+    con.close()
+    return {"matched": matched, "expected": expected,
+            "received_total": grn_tot, "invoice_total": inv_tot}
+
+
+# ── Physical counts (segregation: counted_by ≠ approved_by) ──────────────────
+def create_physical_count(part_id: int, counted_qty: float, counted_by: int) -> dict:
+    """Snapshots the system quantity at count time and computes variance.
+    ≥5% variance flips status to 'escalated' so it can't be silently approved."""
+    con = _con()
+    row = con.execute("SELECT quantity FROM parts WHERE id = ?", (part_id,)).fetchone()
+    if not row:
+        con.close()
+        raise ValueError("part not found")
+    sys_qty = float(row["quantity"])
+    cnt_qty = float(counted_qty)
+    if sys_qty == 0 and cnt_qty == 0:
+        variance = 0.0
+    elif sys_qty == 0:
+        variance = 100.0
+    else:
+        variance = abs(cnt_qty - sys_qty) / sys_qty * 100.0
+    status = "escalated" if variance >= 5.0 else "pending"
+    cur = con.execute(
+        """INSERT INTO physical_counts
+            (part_id, system_qty, counted_qty, variance_pct,
+             counted_by, counted_at, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (part_id, sys_qty, cnt_qty, round(variance, 2),
+         counted_by, datetime.now(timezone.utc).isoformat(), status),
+    )
+    cid = cur.lastrowid
+    con.commit()
+    con.close()
+    return {"id": cid, "variance_pct": round(variance, 2), "status": status,
+            "system_qty": sys_qty, "counted_qty": cnt_qty}
+
+
+def list_physical_counts(status: str = None):
+    sql = """SELECT pc.*, p.sku, p.name AS part_name
+             FROM physical_counts pc JOIN parts p ON pc.part_id = p.id"""
+    args = []
+    if status:
+        sql += " WHERE pc.status = ?"; args.append(status)
+    sql += " ORDER BY pc.counted_at DESC LIMIT 200"
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def approve_physical_count(count_id: int, approved_by: int, note: str = "",
+                            adjust_stock: bool = True):
+    """Approves a count and (optionally) adjusts the system stock to match.
+    Caller must verify approved_by != counted_by — endpoint enforces this."""
+    con = _con()
+    row = con.execute("SELECT * FROM physical_counts WHERE id = ?", (count_id,)).fetchone()
+    if not row:
+        con.close()
+        raise ValueError("count not found")
+    r = dict(row)
+    if r["status"] == "approved":
+        con.close()
+        raise ValueError("already approved")
+    now = datetime.now(timezone.utc).isoformat()
+    con.execute(
+        """UPDATE physical_counts SET status='approved',
+              approved_by=?, approved_at=?, approval_note=? WHERE id=?""",
+        (approved_by, now, note or "", count_id),
+    )
+    if adjust_stock:
+        delta = float(r["counted_qty"]) - float(r["system_qty"])
+        if delta != 0:
+            con.execute(
+                "UPDATE parts SET quantity = ?, updated_at = ? WHERE id = ?",
+                (float(r["counted_qty"]), now, r["part_id"]),
+            )
+            con.execute(
+                """INSERT INTO part_movements
+                    (part_id, movement_type, quantity_delta, reason,
+                     performed_by_type, performed_by_id, created_at)
+                   VALUES (?, 'adjusted', ?, ?, 'admin', ?, ?)""",
+                (r["part_id"], delta,
+                 f"Physical count #{count_id} approved (variance {r['variance_pct']}%)",
+                 approved_by, now),
+            )
     con.commit()
     con.close()
 
