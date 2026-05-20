@@ -407,7 +407,13 @@ TIER_LABELS = {
     "unsure":      "Not sure — need an assessment",
 }
 
-JWT_SECRET    = os.environ.get("JWT_SECRET", "change-me-in-production-set-JWT_SECRET-env-var")
+JWT_SECRET    = os.environ.get("JWT_SECRET")
+if not JWT_SECRET or len(JWT_SECRET) < 32:
+    raise RuntimeError(
+        "JWT_SECRET environment variable must be set to a random string of at "
+        "least 32 characters. Refusing to start with a default/weak secret — a "
+        "fallback secret in code lets anyone with repo access forge tokens."
+    )
 JWT_ALGORITHM = "HS256"
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").lower() == "true"  # set to true in prod (HTTPS)
 
@@ -603,10 +609,13 @@ def _decode_token(token: str, expected_type: str, require_session: bool = True) 
     if data.get("type") != expected_type:
         raise HTTPException(403, "Forbidden")
     # Server-side session check — a JWT whose row has been revoked, expired,
-    # or idled past its per-role limit is rejected.
+    # idled past its per-role limit, OR whose subject_type doesn't match the
+    # token's claimed type (i.e. someone with the signing key forged a
+    # type-flipped token) is rejected.
     if require_session:
         jti = data.get("jti")
-        if not jti or not is_session_active(jti, IDLE_TIMEOUT):
+        if not jti or not is_session_active(jti, IDLE_TIMEOUT,
+                                             expected_subject_type=expected_type):
             raise HTTPException(401, "Session no longer valid — please sign in again")
     return data
 
@@ -2874,14 +2883,32 @@ def admin_adjust_part(request: Request, part_id: int, body: PartAdjust):
         baseline = avg if (avg and avg > 0) else (part.get("unit_cost") or 0)
         if baseline > 0:
             deviation = abs(body.unit_cost - baseline) / baseline
-            if deviation > 0.15 and not body.cost_spike_approved_by:
+            if deviation > 0.15:
                 src = "90-day average" if avg else "catalog cost"
-                raise HTTPException(
-                    409,
+                generic = (
                     f"Unit cost ${body.unit_cost:.2f} deviates {deviation*100:.1f}% "
                     f"from {src} ${baseline:.2f}. Manager approval required "
                     f"(set cost_spike_approved_by to a super_admin/supervisor_admin id)."
                 )
+                if not body.cost_spike_approved_by:
+                    raise HTTPException(409, generic)
+                # Validate the named approver: must be a different, active admin
+                # with po:approve_variance (super_admin or supervisor_admin).
+                if int(body.cost_spike_approved_by) == int(admin["id"]):
+                    raise HTTPException(
+                        403,
+                        "Cost-spike approver cannot be the same person submitting the "
+                        "receipt. Have a different super_admin or supervisor_admin approve."
+                    )
+                approver = get_admin_user_by_id(int(body.cost_spike_approved_by))
+                if not approver or not approver.get("active"):
+                    raise HTTPException(400, "cost_spike_approved_by is not a valid active admin id")
+                if not _admin_can(approver["role"], "po:approve_variance"):
+                    raise HTTPException(
+                        403,
+                        f"cost_spike_approved_by must be a super_admin or supervisor_admin "
+                        f"(id {approver['id']} is {approver['role']})."
+                    )
 
     try:
         result = adjust_part_quantity(

@@ -2608,11 +2608,16 @@ def get_session_by_jti(jti: str):
     return dict(row) if row else None
 
 
-def is_session_active(jti: str, idle_timeout_by_type: dict = None) -> bool:
+def is_session_active(jti: str, idle_timeout_by_type: dict = None,
+                       expected_subject_type: str = None) -> bool:
     """Returns True if the session row exists, isn't revoked, isn't past expiry,
-    and (optionally) hasn't been idle past its per-type limit. Bumps last_seen_at
-    on success. Auto-revokes the row on idle timeout so subsequent calls fail
-    fast without re-checking the clock.
+    matches expected_subject_type if supplied, and (optionally) hasn't been
+    idle past its per-type limit. Bumps last_seen_at on success.
+
+    expected_subject_type is the second layer of token-type defense: a JWT
+    whose 'type' claim has been tampered to claim another actor type is
+    rejected here even if the signature is valid, because the original
+    session row was created with the real subject_type.
 
     idle_timeout_by_type: {'admin': 1800, 'tech': 0, 'customer': 0} — 0 disables.
     """
@@ -2634,6 +2639,10 @@ def is_session_active(jti: str, idle_timeout_by_type: dict = None) -> bool:
         con.close()
         return False
     if r["expires_at"] and r["expires_at"] < now_iso:
+        con.close()
+        return False
+    # Subject_type cross-check — defense against type-flip JWT tampering.
+    if expected_subject_type and r["subject_type"] != expected_subject_type:
         con.close()
         return False
     # Idle timeout check — based on per-role configuration
