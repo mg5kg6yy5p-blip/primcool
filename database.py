@@ -4,22 +4,68 @@ import secrets
 import sqlite3
 from datetime import datetime, timezone
 
+try:
+    from argon2 import PasswordHasher
+    from argon2.exceptions import VerifyMismatchError, InvalidHashError
+    _argon2 = PasswordHasher()
+    _ARGON2_AVAILABLE = True
+except ImportError:
+    _argon2 = None
+    _ARGON2_AVAILABLE = False
+
 DB_PATH = "submissions.db"
 
 
-def _hash_pin(pin: str, salt: str = None) -> str:
-    """Returns 'salt$hash'. Generates a new salt if none provided."""
-    if salt is None:
-        salt = secrets.token_hex(8)
-    digest = hashlib.pbkdf2_hmac("sha256", pin.encode(), salt.encode(), 50_000).hex()
+def _legacy_hash_pbkdf2(secret: str, salt: str, iterations: int = 50_000) -> str:
+    """Legacy pbkdf2 format used before Argon2 migration. Kept for backward
+    verification only — new hashes always use Argon2.
+
+    Historically PINs used 50k iterations and admin passwords used 100k.
+    The hash format doesn't encode the iteration count, so verification
+    needs to try both (see _verify_pin)."""
+    digest = hashlib.pbkdf2_hmac("sha256", secret.encode(), salt.encode(), iterations).hex()
     return f"{salt}${digest}"
 
 
+def _hash_pin(pin: str) -> str:
+    """Hashes a PIN/password with Argon2id (falls back to pbkdf2 if argon2 is
+    unavailable — should never happen in prod since it's in requirements.txt)."""
+    if _ARGON2_AVAILABLE:
+        return _argon2.hash(pin)
+    # Fallback path — should be unreachable
+    salt = secrets.token_hex(8)
+    return _legacy_hash_pbkdf2(pin, salt)
+
+
 def _verify_pin(pin: str, stored: str) -> bool:
-    if not stored or "$" not in stored:
+    """Accepts both Argon2 ($argon2…) and legacy pbkdf2 (salt$hash) formats."""
+    if not stored:
         return False
-    salt, _ = stored.split("$", 1)
-    return secrets.compare_digest(_hash_pin(pin, salt), stored)
+    if stored.startswith("$argon2") and _ARGON2_AVAILABLE:
+        try:
+            _argon2.verify(stored, pin)
+            return True
+        except (VerifyMismatchError, InvalidHashError):
+            return False
+    # Legacy pbkdf2 format — try both historical iteration counts (50k for PINs, 100k for admin passwords)
+    if "$" in stored:
+        salt, _ = stored.split("$", 1)
+        for iters in (50_000, 100_000):
+            if secrets.compare_digest(_legacy_hash_pbkdf2(pin, salt, iters), stored):
+                return True
+    return False
+
+
+def _needs_rehash(stored: str) -> bool:
+    """Returns True if the stored hash should be upgraded to current Argon2 params."""
+    if not _ARGON2_AVAILABLE:
+        return False
+    if not stored or not stored.startswith("$argon2"):
+        return True   # legacy pbkdf2 → upgrade
+    try:
+        return _argon2.check_needs_rehash(stored)
+    except Exception:
+        return True
 
 
 def _initials_from_name(name: str) -> str:
@@ -493,6 +539,8 @@ def verify_customer(code: str, pin: str):
         return None
     if not _verify_pin(pin, cust["pin_hash"]):
         return None
+    if _needs_rehash(cust["pin_hash"]):
+        set_customer_pin(cust["id"], pin)
     return cust
 
 
@@ -547,6 +595,28 @@ def consume_customer_pin_reset(token: str):
     con.commit()
     con.close()
     return row["customer_id"]
+
+
+def update_customer(customer_id: int, data: dict):
+    con = _con()
+    con.execute(
+        """
+        UPDATE customers SET
+            name = ?, company = ?, email = ?, phone = ?, address = ?, notes = ?
+        WHERE id = ?
+        """,
+        (
+            data["name"].strip(),
+            data.get("company", "").strip(),
+            data.get("email", "").strip(),
+            data.get("phone", "").strip(),
+            data.get("address", "").strip(),
+            data.get("notes", "").strip(),
+            customer_id,
+        ),
+    )
+    con.commit()
+    con.close()
 
 
 def delete_customer(customer_id: int):
@@ -911,6 +981,8 @@ def verify_tech(code: str, pin: str):
     tech = get_tech_by_code(code)
     if not tech or not _verify_pin(pin, tech["pin_hash"]):
         return None
+    if _needs_rehash(tech["pin_hash"]):
+        set_tech_pin(tech["id"], pin)
     return tech
 
 
@@ -1084,18 +1156,13 @@ def delete_photo(photo_id: int):
 
 # ── Admin Users ───────────────────────────────────────────────────────────────
 
-def _hash_password(pw: str, salt: str = None) -> str:
-    if salt is None:
-        salt = secrets.token_hex(12)
-    digest = hashlib.pbkdf2_hmac("sha256", pw.encode(), salt.encode(), 100_000).hex()
-    return f"{salt}${digest}"
+def _hash_password(pw: str) -> str:
+    """Argon2id is the modern default. Pbkdf2 legacy verification kept for migration."""
+    return _hash_pin(pw)  # same Argon2 hasher for passwords + PINs
 
 
 def _verify_password(pw: str, stored: str) -> bool:
-    if not stored or "$" not in stored:
-        return False
-    salt, _ = stored.split("$", 1)
-    return secrets.compare_digest(_hash_password(pw, salt), stored)
+    return _verify_pin(pw, stored)
 
 
 def get_admin_user_by_username(username: str):
@@ -1119,6 +1186,9 @@ def verify_admin_user(username: str, password: str):
     admin = get_admin_user_by_username(username)
     if not admin or not _verify_password(password, admin["password_hash"]):
         return None
+    # Transparent rehash if stored format is outdated
+    if _needs_rehash(admin["password_hash"]):
+        set_admin_password(admin["id"], password)
     return admin
 
 

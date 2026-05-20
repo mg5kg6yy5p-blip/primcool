@@ -4,11 +4,16 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, List
 from datetime import datetime as _dt
 from pathlib import Path
+from collections import deque
+from threading import Lock
+import time
+import hmac
+import hashlib
 import uuid
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import jwt
@@ -106,6 +111,48 @@ ALLOWED_PHOTO_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
 INVOICE_CURRENCY = os.environ.get("INVOICE_CURRENCY", "JMD")
 INVOICE_TAX_RATE = float(os.environ.get("INVOICE_TAX_RATE", "0.15"))   # Jamaica GCT standard
 
+# ── Rate limiting (in-memory sliding window) ──────────────────────────────────
+# Buckets reset on process restart. Single-process deployments only.
+_rate_buckets: dict = {}
+_rate_lock = Lock()
+
+
+def _client_ip(request: Request) -> str:
+    # Honor X-Forwarded-For when behind a proxy (Railway sets this)
+    fwd = request.headers.get("x-forwarded-for", "")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else "?"
+
+
+def _rate_check(key: str, max_attempts: int, window_seconds: int) -> bool:
+    """Returns True if the request is allowed; False if it exceeds the limit.
+    Records the attempt timestamp on success."""
+    now = time.time()
+    cutoff = now - window_seconds
+    with _rate_lock:
+        bucket = _rate_buckets.setdefault(key, deque())
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if len(bucket) >= max_attempts:
+            return False
+        bucket.append(now)
+        return True
+
+
+def _enforce_login_rate(request: Request, identity: str = ""):
+    """Raises 429 if too many login attempts from this IP+identity within window."""
+    ip = _client_ip(request)
+    key = f"login:{ip}:{identity.lower()}"
+    if not _rate_check(key, max_attempts=8, window_seconds=15 * 60):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many sign-in attempts. Please wait 15 minutes and try again.",
+        )
+
+
+# Signed photo URL helpers are defined further down — after JWT_SECRET.
+
 # Jamaica tax reference — values change annually, verify with Tax Administration Jamaica (TAJ).
 # Used to auto-fill invoice GCT and as a reference for future payroll calculations.
 JAMAICA_TAX_REFERENCE = {
@@ -158,6 +205,41 @@ TIER_LABELS = {
 
 JWT_SECRET    = os.environ.get("JWT_SECRET", "change-me-in-production-set-JWT_SECRET-env-var")
 JWT_ALGORITHM = "HS256"
+COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").lower() == "true"  # set to true in prod (HTTPS)
+
+COOKIE_ADMIN    = "pc_admin_session"
+COOKIE_TECH     = "pc_tech_session"
+COOKIE_CUSTOMER = "pc_customer_session"
+
+PHOTO_URL_SECRET  = os.environ.get("PHOTO_URL_SECRET", JWT_SECRET)
+PHOTO_URL_TTL_SEC = int(os.environ.get("PHOTO_URL_TTL_SEC", "1800"))   # 30 min default
+
+
+def _sign_photo_url(filename: str, ttl_seconds: int = None) -> str:
+    ttl = ttl_seconds if ttl_seconds is not None else PHOTO_URL_TTL_SEC
+    expires = int(time.time()) + ttl
+    payload = f"{filename}:{expires}"
+    sig = hmac.new(PHOTO_URL_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:32]
+    return f"/photos/{filename}?exp={expires}&sig={sig}"
+
+
+def _verify_photo_signature(filename: str, expires: int, sig: str) -> bool:
+    if int(time.time()) > expires:
+        return False
+    payload = f"{filename}:{expires}"
+    expected = hmac.new(PHOTO_URL_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:32]
+    return hmac.compare_digest(sig, expected)
+
+
+def _enrich_photos(photos: list) -> list:
+    """Adds a freshly signed `url` to each photo dict."""
+    out = []
+    for p in (photos or []):
+        p = dict(p)
+        if p.get("filename"):
+            p["url"] = _sign_photo_url(p["filename"])
+        out.append(p)
+    return out
 
 
 def _make_token(payload: dict, expires: timedelta) -> str:
@@ -167,52 +249,64 @@ def _make_token(payload: dict, expires: timedelta) -> str:
     )
 
 
-def _require_customer(request: Request) -> int:
+def _set_session_cookie(response: Response, name: str, token: str, max_age_seconds: int):
+    """Sets an HttpOnly + SameSite=Strict session cookie."""
+    response.set_cookie(
+        key=name,
+        value=token,
+        max_age=max_age_seconds,
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite="strict",
+        path="/",
+    )
+
+
+def _clear_session_cookie(response: Response, name: str):
+    response.delete_cookie(name, path="/", samesite="strict")
+
+
+def _read_token(request: Request, cookie_name: str) -> Optional[str]:
+    """Reads JWT from HttpOnly cookie first, then falls back to Authorization header."""
+    cookie = request.cookies.get(cookie_name)
+    if cookie:
+        return cookie
     auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
+    if auth.startswith("Bearer "):
+        return auth[7:]
+    return None
+
+
+def _decode_token(token: str, expected_type: str) -> dict:
+    if not token:
         raise HTTPException(401, "Unauthorized")
     try:
-        data = jwt.decode(auth[7:], JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        if data.get("type") != "customer":
-            raise HTTPException(403, "Forbidden")
-        return int(data["sub"])  # stored as str, return as int
+        data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
     except jwt.ExpiredSignatureError:
-        raise HTTPException(401, "Token expired")
+        raise HTTPException(401, "Session expired")
     except jwt.InvalidTokenError:
-        raise HTTPException(401, "Invalid token")
+        raise HTTPException(401, "Invalid session")
+    if data.get("type") != expected_type:
+        raise HTTPException(403, "Forbidden")
+    return data
+
+
+def _require_customer(request: Request) -> int:
+    data = _decode_token(_read_token(request, COOKIE_CUSTOMER), "customer")
+    return int(data["sub"])
 
 
 def _require_tech(request: Request) -> int:
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        raise HTTPException(401, "Unauthorized")
-    try:
-        data = jwt.decode(auth[7:], JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        if data.get("type") != "tech":
-            raise HTTPException(403, "Forbidden")
-        return int(data["sub"])
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(401, "Token expired")
-    except jwt.InvalidTokenError:
-        raise HTTPException(401, "Invalid token")
+    data = _decode_token(_read_token(request, COOKIE_TECH), "tech")
+    return int(data["sub"])
 
 
 def _require_admin(request: Request):
     """Returns the admin_user dict for the authenticated admin."""
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        raise HTTPException(401, "Unauthorized")
-    try:
-        data = jwt.decode(auth[7:], JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        if data.get("type") != "admin":
-            raise HTTPException(403, "Forbidden")
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(401, "Token expired")
-    except jwt.InvalidTokenError:
-        raise HTTPException(401, "Invalid token")
+    data = _decode_token(_read_token(request, COOKIE_ADMIN), "admin")
     admin_id = data.get("sub")
     if not admin_id:
-        raise HTTPException(401, "Invalid token")
+        raise HTTPException(401, "Invalid session")
     admin = get_admin_user_by_id(int(admin_id))
     if not admin or not admin.get("active"):
         raise HTTPException(403, "Account inactive or deleted")
@@ -265,8 +359,26 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 app.mount("/images", StaticFiles(directory="images"), name="images")
-app.mount("/photos", StaticFiles(directory=str(PHOTOS_DIR)), name="photos")
+# /photos is intentionally NOT mounted as public static — it serves through
+# /photos/{filename} below, which verifies a short-lived signature.
 app.mount("/icons",  StaticFiles(directory="icons"),  name="icons")
+
+
+@app.get("/photos/{filename}")
+def serve_photo(filename: str, exp: int = 0, sig: str = ""):
+    """Time-limited, signed photo access. URLs are generated server-side by
+    _sign_photo_url() and embedded in API responses. Anyone with the URL has
+    access until the expiry timestamp; refresh by re-fetching the parent
+    resource."""
+    # Block any path-traversal attempt
+    if "/" in filename or ".." in filename or filename.startswith("."):
+        raise HTTPException(400, "Invalid filename")
+    if not exp or not sig or not _verify_photo_signature(filename, exp, sig):
+        raise HTTPException(403, "Link expired or invalid")
+    path = PHOTOS_DIR / filename
+    if not path.exists():
+        raise HTTPException(404, "Photo not found")
+    return FileResponse(str(path))
 
 app.add_middleware(
     CORSMiddleware,
@@ -600,16 +712,23 @@ async def submit_consult(req: ConsultRequest):
 # ── Portal (customer) routes ──────────────────────────────────────────────────
 
 @app.post("/api/portal/login")
-def portal_login(req: PortalLoginRequest):
+def portal_login(req: PortalLoginRequest, request: Request, response: Response):
+    _enforce_login_rate(request, req.code)
     customer = verify_customer(req.code, req.pin)
     if not customer:
-        # Distinguish "no PIN set" so the customer can contact us, but only after code is valid
         existing = get_customer_by_code(req.code)
         if existing and not existing.get("pin_hash"):
             raise HTTPException(403, "No PIN set on your account yet. Please contact PrimeCool to set one up.")
         raise HTTPException(401, "Invalid customer ID or PIN")
     token = _make_token({"sub": str(customer["id"]), "type": "customer"}, timedelta(days=30))
+    _set_session_cookie(response, COOKIE_CUSTOMER, token, 30 * 24 * 3600)
     return {"token": token, "name": customer["name"]}
+
+
+@app.post("/api/portal/logout")
+def portal_logout(response: Response):
+    _clear_session_cookie(response, COOKIE_CUSTOMER)
+    return {"ok": True}
 
 
 @app.post("/api/portal/forgot-pin")
@@ -673,7 +792,7 @@ def portal_me(request: Request):
     visits    = get_customer_visits(customer_id)
     reviews   = get_customer_reviews(customer_id)
     for v in visits:
-        v["photos"] = get_visit_photos(v["id"])
+        v["photos"] = _enrich_photos(get_visit_photos(v["id"]))
     return {"customer": customer, "equipment": equipment, "visits": visits, "reviews": reviews}
 
 
@@ -743,12 +862,20 @@ def public_reviews(limit: Optional[int] = None):
 # ── Tech routes ───────────────────────────────────────────────────────────────
 
 @app.post("/api/tech/login")
-def tech_login(req: TechLogin):
+def tech_login(req: TechLogin, request: Request, response: Response):
+    _enforce_login_rate(request, req.tech_code)
     tech = verify_tech(req.tech_code, req.pin)
     if not tech:
         raise HTTPException(401, "Invalid tech code or PIN")
     token = _make_token({"sub": str(tech["id"]), "type": "tech"}, timedelta(days=7))
+    _set_session_cookie(response, COOKIE_TECH, token, 7 * 24 * 3600)
     return {"token": token, "name": tech["name"], "tech_code": tech["tech_code"]}
+
+
+@app.post("/api/tech/logout")
+def tech_logout(response: Response):
+    _clear_session_cookie(response, COOKIE_TECH)
+    return {"ok": True}
 
 
 @app.post("/api/tech/forgot-pin")
@@ -810,7 +937,7 @@ def tech_me(request: Request):
         raise HTTPException(404, "Tech not found")
     jobs = get_tech_jobs(tech_id)
     for j in jobs:
-        j["photos"] = get_visit_photos(j["id"])
+        j["photos"] = _enrich_photos(get_visit_photos(j["id"]))
     return {
         "tech": {"id": tech["id"], "name": tech["name"], "tech_code": tech["tech_code"]},
         "jobs": jobs,
@@ -823,7 +950,7 @@ def tech_get_job(request: Request, visit_id: int):
     visit   = get_visit_by_id(visit_id, with_parts=True)
     if not visit or visit.get("assigned_tech_id") != tech_id:
         raise HTTPException(404, "Job not found")
-    visit["photos"] = get_visit_photos(visit_id)
+    visit["photos"] = _enrich_photos(get_visit_photos(visit_id))
     return visit
 
 
@@ -944,7 +1071,7 @@ async def tech_upload_photo(
     out_path.write_bytes(body)
 
     photo_id = create_photo(visit_id, category, fname, tech_id)
-    return {"id": photo_id, "filename": fname, "url": f"/photos/{fname}", "category": category}
+    return {"id": photo_id, "filename": fname, "url": _sign_photo_url(fname), "category": category}
 
 
 @app.delete("/api/tech/photos/{photo_id}")
@@ -967,15 +1094,17 @@ def tech_delete_photo(request: Request, photo_id: int):
 # ── Admin routes ──────────────────────────────────────────────────────────────
 
 @app.post("/api/admin/login")
-def admin_login(req: AdminLoginRequest, request: Request):
+def admin_login(req: AdminLoginRequest, request: Request, response: Response):
     if not req.username:
         raise HTTPException(400, "Username is required")
+    _enforce_login_rate(request, req.username)
     admin = verify_admin_user(req.username, req.password)
     if not admin:
         raise HTTPException(401, "Invalid username or password")
     if not admin.get("active"):
         raise HTTPException(403, "Account is deactivated")
     token = _make_token({"sub": str(admin["id"]), "type": "admin"}, timedelta(hours=12))
+    _set_session_cookie(response, COOKIE_ADMIN, token, 12 * 3600)
     log_audit(
         actor_type="admin",
         actor_id=admin["id"],
@@ -992,6 +1121,23 @@ def admin_login(req: AdminLoginRequest, request: Request):
         "role":     admin["role"],
         "prid":     admin.get("prid"),
     }
+
+
+@app.post("/api/admin/logout")
+def admin_logout(request: Request, response: Response):
+    # Log the logout if a valid session exists (best-effort)
+    try:
+        admin = _require_admin(request)
+        log_audit(
+            actor_type="admin", actor_id=admin["id"],
+            actor_prid=admin.get("prid"), actor_label=admin.get("name"),
+            actor_role=admin.get("role"), action="admin.logout",
+            ip_address=_client_ip(request),
+        )
+    except Exception:
+        pass
+    _clear_session_cookie(response, COOKIE_ADMIN)
+    return {"ok": True}
 
 
 @app.get("/api/admin/me")
@@ -1668,7 +1814,7 @@ def admin_delete_tech(request: Request, tech_id: int):
 @app.get("/api/admin/visits/{visit_id}/photos")
 def admin_get_visit_photos(request: Request, visit_id: int):
     _require_admin(request)
-    return get_visit_photos(visit_id)
+    return _enrich_photos(get_visit_photos(visit_id))
 
 
 @app.delete("/api/admin/photos/{photo_id}")

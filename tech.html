@@ -533,7 +533,13 @@
     err.textContent = msg; err.style.display = 'block';
   }
 
-  function doLogout() {
+  async function doLogout() {
+    try {
+      await fetch('/api/tech/logout', {
+        method: 'POST',
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+      });
+    } catch {}
     localStorage.removeItem('pc_tech_token');
     token = null;
     document.getElementById('app').style.display = 'none';
@@ -900,10 +906,10 @@
 
   function photoTile(p, canDelete) {
     return `
-      <div class="photo-item" onclick="event.target.tagName==='BUTTON'||openLightbox('/photos/${p.filename}')">
+      <div class="photo-item" onclick="event.target.tagName==='BUTTON'||openLightbox('${p.url}')">
         <span class="photo-cat">${p.category}</span>
         ${canDelete ? `<button class="photo-del" onclick="event.stopPropagation();deletePhoto(${p.id})">×</button>` : ''}
-        <img src="/photos/${p.filename}" alt="${p.category}" loading="lazy">
+        <img src="${p.url}" alt="${p.category}" loading="lazy">
       </div>`;
   }
 

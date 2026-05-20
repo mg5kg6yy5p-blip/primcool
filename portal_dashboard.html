@@ -489,7 +489,13 @@
     let reviewContext = null;
     let reviewRating  = 0;
 
-    function logout() {
+    async function logout() {
+      try {
+        await fetch('/api/portal/logout', {
+          method: 'POST',
+          headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+        });
+      } catch {}
       localStorage.removeItem('pc_token');
       localStorage.removeItem('pc_name');
       window.location.replace('/portal');
@@ -605,9 +611,9 @@
       const before = photos.filter(p => p.category === 'before');
       const after  = photos.filter(p => p.category === 'after');
       const tile = p => `
-        <div class="photo-tile" onclick="event.stopPropagation();openLightbox('/photos/${p.filename}')">
+        <div class="photo-tile" onclick="event.stopPropagation();openLightbox('${p.url}')">
           <span class="cat">${p.category}</span>
-          <img src="/photos/${p.filename}" alt="${p.category} photo" loading="lazy">
+          <img src="${p.url}" alt="${p.category} photo" loading="lazy">
         </div>`;
       let html = '<div class="photo-block">';
       html += '<div class="photo-block-title">Site Photos</div>';

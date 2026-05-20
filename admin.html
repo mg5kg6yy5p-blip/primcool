@@ -1259,7 +1259,13 @@
     }
   }
 
-  function adminLogout() {
+  async function adminLogout() {
+    try {
+      await fetch('/api/admin/logout', {
+        method: 'POST',
+        headers: adminToken ? { 'Authorization': `Bearer ${adminToken}` } : {},
+      });
+    } catch {}
     localStorage.removeItem('pc_admin_token');
     adminToken = null;
     currentAdmin = null;
