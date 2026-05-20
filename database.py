@@ -173,6 +173,11 @@ def init_db():
         ("mfa_enabled",    "ALTER TABLE customers ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 0"),
         ("backup_codes",   "ALTER TABLE customers ADD COLUMN backup_codes TEXT"),
         ("deletion_requested_at", "ALTER TABLE customers ADD COLUMN deletion_requested_at TEXT"),
+        # Soft-close at contract end. active=0 keeps records (statutory
+        # retention) but kills portal access. terminated_at records when.
+        ("active",         "ALTER TABLE customers ADD COLUMN active INTEGER NOT NULL DEFAULT 1"),
+        ("terminated_at",  "ALTER TABLE customers ADD COLUMN terminated_at TEXT"),
+        ("last_login_at",  "ALTER TABLE customers ADD COLUMN last_login_at TEXT"),
     ):
         if col not in cust_cols:
             try: con.execute(sql)
@@ -240,6 +245,10 @@ def init_db():
         # Supervisor relationship — manager's admin_user.id, NULL if reports
         # directly to director. Drives team-scoped audit visibility.
         ("supervisor_id", "ALTER TABLE technicians ADD COLUMN supervisor_id INTEGER"),
+        # Access-lifecycle tracking. terminated_at is the hard-off switch;
+        # last_login_at drives dormant-account detection.
+        ("terminated_at", "ALTER TABLE technicians ADD COLUMN terminated_at TEXT"),
+        ("last_login_at", "ALTER TABLE technicians ADD COLUMN last_login_at TEXT"),
     ):
         if name not in tech_cols:
             try: con.execute(sql)
@@ -272,6 +281,8 @@ def init_db():
         ("mfa_enabled",   "ALTER TABLE admin_users ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 0"),
         ("backup_codes",  "ALTER TABLE admin_users ADD COLUMN backup_codes TEXT"),
         ("supervisor_id", "ALTER TABLE admin_users ADD COLUMN supervisor_id INTEGER REFERENCES admin_users(id)"),
+        ("terminated_at", "ALTER TABLE admin_users ADD COLUMN terminated_at TEXT"),
+        ("last_login_at", "ALTER TABLE admin_users ADD COLUMN last_login_at TEXT"),
     ):
         if col not in admin_cols:
             try: con.execute(sql)
@@ -3968,3 +3979,156 @@ def get_customer_visits_portal(customer_id: int):
     ).fetchall()
     con.close()
     return [dict(r) for r in rows]
+
+
+# ── Access lifecycle ─────────────────────────────────────────────────────────
+# Single module governing every state transition: hire/promote/demote already
+# live in their own helpers; the destructive transitions (terminate, soft-close,
+# dormant detection) all funnel through here so we can audit, revoke, and
+# enforce consistently.
+
+def bump_last_login(subject_type: str, subject_id: int):
+    """Stamp last_login_at on the actor's row. Called by login endpoints
+    after a successful auth + MFA pass. Used by dormant-account sweeps."""
+    table = {"admin": "admin_users", "tech": "technicians",
+             "customer": "customers"}.get(subject_type)
+    if not table:
+        return
+    con = _con()
+    con.execute(f"UPDATE {table} SET last_login_at = ? WHERE id = ?",
+                (datetime.now(timezone.utc).isoformat(), int(subject_id)))
+    con.commit()
+    con.close()
+
+
+def terminate_account(subject_type: str, subject_id: int) -> dict:
+    """Hard-off: flips active=0, stamps terminated_at, and immediately revokes
+    every session for this principal. Caller is responsible for audit + perm
+    check. Returns counts so the endpoint can report what was killed."""
+    table = {"admin": "admin_users", "tech": "technicians",
+             "customer": "customers"}.get(subject_type)
+    if not table:
+        raise ValueError("unknown subject_type")
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    con.execute(f"UPDATE {table} SET active = 0, terminated_at = ? WHERE id = ?",
+                (now, int(subject_id)))
+    con.commit()
+    con.close()
+    sessions_killed = revoke_all_sessions_for(subject_type, subject_id)
+    return {"terminated_at": now, "sessions_revoked": sessions_killed}
+
+
+def reinstate_account(subject_type: str, subject_id: int):
+    """Reverses terminate_account — clears terminated_at and re-activates.
+    Sessions remain revoked; user must sign in again."""
+    table = {"admin": "admin_users", "tech": "technicians",
+             "customer": "customers"}.get(subject_type)
+    if not table:
+        raise ValueError("unknown subject_type")
+    con = _con()
+    con.execute(f"UPDATE {table} SET active = 1, terminated_at = NULL WHERE id = ?",
+                (int(subject_id),))
+    con.commit()
+    con.close()
+
+
+def find_dormant_accounts(days: int = 90) -> dict:
+    """Returns {admin: [...], tech: [...], customer: [...]} of active accounts
+    that haven't logged in for `days` or more. Accounts that have never logged
+    in are included once they're older than `days` (created_at as fallback)."""
+    from datetime import timedelta as _td
+    cutoff = (datetime.now(timezone.utc) - _td(days=days)).isoformat()
+    con = _con()
+    out = {}
+    for subj, table, label_col in (
+        ("admin",    "admin_users",  "username"),
+        ("tech",     "technicians",  "tech_code"),
+        ("customer", "customers",    "customer_code"),
+    ):
+        rows = con.execute(
+            f"""SELECT id, {label_col} AS label, last_login_at, created_at
+                  FROM {table}
+                 WHERE active = 1
+                   AND (last_login_at IS NULL OR last_login_at < ?)
+                   AND created_at < ?""",
+            (cutoff, cutoff),
+        ).fetchall()
+        out[subj] = [dict(r) for r in rows]
+    con.close()
+    return out
+
+
+def get_account_exit_report(subject_type: str, subject_id: int, days: int = 30) -> dict:
+    """Surface for the S3 'did they take anything' question. Aggregates the
+    last `days` of activity for one principal: read counts, distinct
+    customers touched, exports, accounts created/edited, last login.
+    All from existing audit_log + access_log — no new data store."""
+    from datetime import timedelta as _td
+    since = (datetime.now(timezone.utc) - _td(days=days)).isoformat()
+    con = _con()
+    # Mutations
+    mutations = con.execute(
+        """SELECT action, COUNT(*) AS n FROM audit_log
+            WHERE actor_type = ? AND actor_id = ? AND created_at >= ?
+            GROUP BY action ORDER BY n DESC""",
+        (subject_type, int(subject_id), since),
+    ).fetchall()
+    # Reads: total, distinct customers, distinct visits
+    reads_total = con.execute(
+        """SELECT COUNT(*) AS n FROM access_log
+            WHERE actor_type = ? AND actor_id = ? AND method = 'GET'
+              AND status_code >= 200 AND status_code < 300
+              AND created_at >= ?""",
+        (subject_type, int(subject_id), since),
+    ).fetchone()["n"]
+    # Distinct customers touched (via path)
+    paths = con.execute(
+        """SELECT path FROM access_log
+            WHERE actor_type = ? AND actor_id = ? AND method = 'GET'
+              AND status_code >= 200 AND status_code < 300
+              AND created_at >= ?
+              AND (path LIKE '/api/admin/customers/%' OR path LIKE '/api/tech/customers/%')""",
+        (subject_type, int(subject_id), since),
+    ).fetchall()
+    import re as _re
+    rx = _re.compile(r"/customers/(\d+)")
+    customer_ids = set()
+    for r in paths:
+        m = rx.search(r["path"] or "")
+        if m: customer_ids.add(int(m.group(1)))
+    # Exports + account-mutation events (the high-signal "preparing to leave" actions)
+    exports = con.execute(
+        """SELECT action, target_label, created_at FROM audit_log
+            WHERE actor_type = ? AND actor_id = ? AND created_at >= ?
+              AND action LIKE '%.export'
+            ORDER BY created_at DESC LIMIT 200""",
+        (subject_type, int(subject_id), since),
+    ).fetchall()
+    account_changes = con.execute(
+        """SELECT action, target_type, target_id, target_label, created_at
+             FROM audit_log
+            WHERE actor_type = ? AND actor_id = ? AND created_at >= ?
+              AND (action LIKE 'admin.%' OR action LIKE 'tech.set_supervisor%')
+            ORDER BY created_at DESC LIMIT 200""",
+        (subject_type, int(subject_id), since),
+    ).fetchall()
+    # Last login from the user's table
+    table = {"admin":"admin_users","tech":"technicians","customer":"customers"}.get(subject_type)
+    last_login = None
+    if table:
+        row = con.execute(f"SELECT last_login_at FROM {table} WHERE id = ?",
+                          (int(subject_id),)).fetchone()
+        if row: last_login = row["last_login_at"]
+    con.close()
+    return {
+        "subject_type":          subject_type,
+        "subject_id":            int(subject_id),
+        "window_days":           days,
+        "last_login_at":         last_login,
+        "reads_total":           int(reads_total or 0),
+        "distinct_customers":    len(customer_ids),
+        "mutations_by_action":   [dict(r) for r in mutations],
+        "exports":               [dict(r) for r in exports],
+        "account_changes":       [dict(r) for r in account_changes],
+    }

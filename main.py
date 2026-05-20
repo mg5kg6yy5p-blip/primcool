@@ -75,6 +75,8 @@ from database import (
     get_customer_full_export, get_customer_visits_portal,
     create_service_request, list_service_requests, get_service_request,
     update_service_request_status, set_visit_work_summary,
+    bump_last_login, terminate_account, reinstate_account,
+    find_dormant_accounts, get_account_exit_report,
     create_security_alert, recent_alert_exists, list_security_alerts,
     count_open_security_alerts, resolve_security_alert, detect_anomalies_for_actor,
     create_session, get_session_by_jti, is_session_active,
@@ -761,6 +763,35 @@ async def lifespan(app: FastAPI):
                       after_value={"count": n, "days": access_retain_days})
     except Exception as e:
         print(f"access_log purge skipped: {e}")
+    # Dormant-account sweep. Surfaces inactive-but-still-credentialed
+    # accounts so they can be reviewed for soft-close. Does NOT auto-suspend
+    # — per spec, this flags, a human decides.
+    dormant_days = int(os.environ.get("DORMANT_DAYS", "90"))
+    try:
+        dormant = find_dormant_accounts(days=dormant_days)
+        total = sum(len(v) for v in dormant.values())
+        if total > 0:
+            print(f"⚠ {total} dormant account(s) (>{dormant_days}d): "
+                  f"{len(dormant['admin'])} admin, {len(dormant['tech'])} tech, "
+                  f"{len(dormant['customer'])} customer")
+            try:
+                create_security_alert(
+                    kind="dormant_accounts", severity="medium",
+                    summary=f"{total} active accounts have not logged in for "
+                            f"{dormant_days}+ days",
+                    actor_type="system", actor_id=None,
+                    details={"counts": {k: len(v) for k, v in dormant.items()},
+                             "threshold_days": dormant_days},
+                )
+            except Exception: pass
+            log_audit(actor_type="system", action="system.dormant_flagged",
+                      target_label=f"{total} accounts >{dormant_days}d idle",
+                      after_value={k: [a["label"] for a in v] for k, v in dormant.items()})
+        else:
+            print(f"✓ dormant sweep: no accounts idle >{dormant_days}d")
+    except Exception as e:
+        print(f"dormant sweep skipped: {e}")
+
     try:
         r = purge_old_audit_log(financial_days=fin_retain_days,
                                  operational_days=ops_retain_days)
@@ -951,6 +982,18 @@ async def access_log_middleware(request: Request, call_next):
                 print(f"watcher_log error: {e}")
     except Exception as e:
         print(f"access_log error: {e}")
+    return response
+
+
+@app.middleware("http")
+async def no_store_api_responses(request: Request, call_next):
+    """Tell browsers never to cache /api/* responses. Without this, the back
+    button can replay a previous user's data on a shared device after they
+    sign out. Scenario 7."""
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+        response.headers["Pragma"] = "no-cache"
     return response
 
 
@@ -1436,6 +1479,14 @@ def portal_login(req: PortalLoginRequest, request: Request, response: Response):
     # to avoid enumerating valid customer codes.
     INVALID = "Invalid customer ID or credentials"
 
+    # Soft-closed accounts (contract ended) return the same generic error
+    # as a wrong code/PIN — no enumeration of inactive accounts.
+    if existing and not existing.get("active", 1):
+        _audit_anon("auth.login_failed", request,
+                    attempted_identity=req.code, actor_type="customer",
+                    target_label="account inactive")
+        raise HTTPException(401, INVALID)
+
     customer = None
     if existing:
         if existing.get("auth_mode") == "password":
@@ -1483,6 +1534,7 @@ def portal_login(req: PortalLoginRequest, request: Request, response: Response):
     # 20-min idle limit enforced by IDLE_TIMEOUT["customer"].
     token, _ = _issue_session("customer", customer["id"], timedelta(hours=24), request)
     _set_session_cookie(response, COOKIE_CUSTOMER, token, 24 * 3600)
+    bump_last_login("customer", customer["id"])
     _audit_customer(customer, "portal.login", request)
     return {"token": token, "name": customer["name"],
             "customer_type": customer.get("customer_type", "residential"),
@@ -1541,6 +1593,7 @@ def portal_login_mfa(body: dict, request: Request, response: Response):
         raise HTTPException(401, "Invalid MFA code")
     token, _ = _issue_session("customer", cust["id"], timedelta(hours=24), request)
     _set_session_cookie(response, COOKIE_CUSTOMER, token, 24 * 3600)
+    bump_last_login("customer", cust["id"])
     _audit_customer(cust, "portal.login", request, target_label="mfa")
     return {"token": token, "name": cust["name"]}
 
@@ -1583,6 +1636,7 @@ def portal_mfa_confirm(body: CustomerMfaEnable, request: Request, response: Resp
     if was_enrol:
         token, _ = _issue_session("customer", cust["id"], timedelta(hours=24), request)
         _set_session_cookie(response, COOKIE_CUSTOMER, token, 24 * 3600)
+        bump_last_login("customer", cust["id"])
         out["token"] = token
         out["name"]  = cust["name"]
     return out
@@ -1805,6 +1859,7 @@ def tech_login(req: TechLogin, request: Request, response: Response):
         raise HTTPException(401, "Invalid tech code or PIN")
     token, _ = _issue_session("tech", tech["id"], timedelta(days=7), request)
     _set_session_cookie(response, COOKIE_TECH, token, 7 * 24 * 3600)
+    bump_last_login("tech", tech["id"])
     return {"token": token, "name": tech["name"], "tech_code": tech["tech_code"]}
 
 
@@ -2154,6 +2209,7 @@ def admin_login(req: AdminLoginRequest, request: Request, response: Response):
 
     token, _ = _issue_session("admin", admin["id"], timedelta(hours=12), request)
     _set_session_cookie(response, COOKIE_ADMIN, token, 12 * 3600)
+    bump_last_login("admin", admin["id"])
     _audit_from(admin, "admin.login", request)
     return {
         "token":    token,
@@ -2192,6 +2248,7 @@ def admin_mfa_verify(body: MfaVerify, request: Request, response: Response):
     # Stamp the session as having just passed MFA — used to gate Tier-3 access.
     mark_session_mfa_verified(jti)
     _set_session_cookie(response, COOKIE_ADMIN, token, 12 * 3600)
+    bump_last_login("admin", admin["id"])
     _audit_from(admin, "admin.login.mfa_ok", request)
     return {
         "token":    token,
@@ -2524,10 +2581,154 @@ def admin_change_active(request: Request, user_id: int, body: AdminActiveChange)
         raise HTTPException(400, "You cannot deactivate your own account")
     before = {"active": bool(target["active"])}
     set_admin_active(user_id, body.active)
+    sessions_killed = 0
+    if not body.active:
+        # Deactivation must take effect immediately — revoke every live
+        # session for this principal so an existing JWT can't outlive the
+        # set_active flip.
+        sessions_killed = revoke_all_sessions_for("admin", user_id)
     _audit_from(admin, "admin.set_active", request,
                 target_type="admin", target_id=user_id, target_label=target["username"],
-                before=before, after={"active": body.active})
+                before=before, after={"active": body.active,
+                                       "sessions_revoked": sessions_killed})
+    return {"ok": True, "sessions_revoked": sessions_killed}
+
+
+# ── Access lifecycle endpoints (cross-role transitions) ──────────────────────
+class TerminateBody(BaseModel):
+    reason: str = ""
+
+
+@app.post("/api/admin/users/{user_id}/terminate")
+def admin_terminate_admin(request: Request, user_id: int, body: TerminateBody):
+    """Hard-off for an admin: active=0, terminated_at stamped, every session
+    force-killed. The combined one-action control the spec mandates for
+    Scenario 1. Restricted to admin:set_active (super_admin only)."""
+    admin = _require_perm(request, "admin:set_active")
+    target = get_admin_user_by_id(user_id)
+    if not target:
+        raise HTTPException(404, "Admin not found")
+    if admin["id"] == user_id:
+        raise HTTPException(400, "You cannot terminate your own account")
+    if target["role"] == "super_admin" and count_active_admins("super_admin") <= 1:
+        raise HTTPException(400, "Cannot terminate the last active super_admin")
+    result = terminate_account("admin", user_id)
+    _audit_from(admin, "account.terminated", request,
+                target_type="admin", target_id=user_id,
+                target_label=target.get("username") or target.get("prid"),
+                after={"reason": body.reason, **result})
+    return {"ok": True, **result}
+
+
+@app.post("/api/admin/users/{user_id}/reinstate")
+def admin_reinstate_admin(request: Request, user_id: int):
+    admin = _require_perm(request, "admin:set_active")
+    target = get_admin_user_by_id(user_id)
+    if not target:
+        raise HTTPException(404, "Admin not found")
+    reinstate_account("admin", user_id)
+    _audit_from(admin, "account.reinstated", request,
+                target_type="admin", target_id=user_id,
+                target_label=target.get("username") or target.get("prid"))
     return {"ok": True}
+
+
+@app.post("/api/admin/techs/{tech_id}/terminate")
+def admin_terminate_tech(request: Request, tech_id: int, body: TerminateBody):
+    """Tech termination — the Scenario 1 show-stopper. Audit log surfaces
+    the final 30d via /exit-report so the manager can spot 'preparing to
+    walk' behavior."""
+    admin = _require_perm(request, "tech:delete")
+    target = get_tech_by_id(tech_id)
+    if not target:
+        raise HTTPException(404, "Tech not found")
+    result = terminate_account("tech", tech_id)
+    _audit_from(admin, "account.terminated", request,
+                target_type="tech", target_id=tech_id,
+                target_label=target.get("name") or target.get("prid"),
+                after={"reason": body.reason, **result})
+    return {"ok": True, **result}
+
+
+@app.post("/api/admin/techs/{tech_id}/reinstate")
+def admin_reinstate_tech(request: Request, tech_id: int):
+    admin = _require_perm(request, "tech:delete")
+    target = get_tech_by_id(tech_id)
+    if not target:
+        raise HTTPException(404, "Tech not found")
+    reinstate_account("tech", tech_id)
+    _audit_from(admin, "account.reinstated", request,
+                target_type="tech", target_id=tech_id,
+                target_label=target.get("name"))
+    return {"ok": True}
+
+
+@app.post("/api/admin/customers/{customer_id}/close")
+def admin_close_customer(request: Request, customer_id: int, body: TerminateBody):
+    """Soft-close at contract end (Scenario 4). active=0 + sessions revoked,
+    but the record stays for statutory retention. Use deletion-request
+    workflow if the customer asks for actual removal."""
+    admin = _require_perm(request, "customer:delete")
+    target = get_customer_by_id(customer_id)
+    if not target:
+        raise HTTPException(404, "Customer not found")
+    result = terminate_account("customer", customer_id)
+    _audit_from(admin, "account.terminated", request,
+                target_type="customer", target_id=customer_id,
+                target_label=target.get("name") or target.get("customer_code"),
+                after={"reason": body.reason, **result})
+    return {"ok": True, **result}
+
+
+@app.post("/api/admin/customers/{customer_id}/reopen")
+def admin_reopen_customer(request: Request, customer_id: int):
+    admin = _require_perm(request, "customer:delete")
+    target = get_customer_by_id(customer_id)
+    if not target:
+        raise HTTPException(404, "Customer not found")
+    reinstate_account("customer", customer_id)
+    _audit_from(admin, "account.reinstated", request,
+                target_type="customer", target_id=customer_id,
+                target_label=target.get("name") or target.get("customer_code"))
+    return {"ok": True}
+
+
+@app.get("/api/admin/users/{user_id}/exit-report")
+def admin_exit_report_admin(request: Request, user_id: int, days: int = 30):
+    """Final-30-days activity for a departing admin. The S3 'did they take
+    anything' surface — counts, distinct customers viewed, exports, accounts
+    they created or modified, last login. Visible to anyone with audit:view_all
+    so the director and the manager doing the offboarding can both see it."""
+    admin = _require_admin(request)
+    if not (_admin_can(admin["role"], "audit:view_all") or admin["id"] == user_id):
+        raise HTTPException(403, "Forbidden")
+    return get_account_exit_report("admin", user_id, days=days)
+
+
+@app.get("/api/admin/techs/{tech_id}/exit-report")
+def admin_exit_report_tech(request: Request, tech_id: int, days: int = 30):
+    admin = _require_admin(request)
+    if not _admin_can(admin["role"], "audit:view_all"):
+        raise HTTPException(403, "Forbidden")
+    return get_account_exit_report("tech", tech_id, days=days)
+
+
+@app.get("/api/admin/customers/{customer_id}/exit-report")
+def admin_exit_report_customer(request: Request, customer_id: int, days: int = 30):
+    admin = _require_admin(request)
+    if not _admin_can(admin["role"], "audit:view_all"):
+        raise HTTPException(403, "Forbidden")
+    return get_account_exit_report("customer", customer_id, days=days)
+
+
+@app.get("/api/admin/access-lifecycle/dormant")
+def admin_list_dormant(request: Request, days: int = 90):
+    """Active accounts (any type) that haven't logged in for >= days. Spec's
+    Scenario 5. Does not auto-suspend — surfaces for review."""
+    admin = _require_admin(request)
+    if not _admin_can(admin["role"], "audit:view_all"):
+        raise HTTPException(403, "Forbidden")
+    return find_dormant_accounts(days=days)
 
 
 @app.put("/api/admin/users/{user_id}/password")

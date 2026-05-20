@@ -540,12 +540,14 @@
         headers: token ? { 'Authorization': `Bearer ${token}` } : {},
       });
     } catch {}
+    // Clear every client-side trace of the prior identity before the next
+    // tech signs in on the same device (shared-tablet handover, spec S7).
     localStorage.removeItem('pc_tech_token');
     token = null;
-    document.getElementById('app').style.display = 'none';
-    document.getElementById('loginScreen').style.display = 'flex';
-    document.getElementById('techCode').value = '';
-    document.getElementById('techPin').value  = '';
+    try { sessionStorage.clear(); } catch {}
+    // Full reload flushes in-memory job lists, parts catalog, and any cached
+    // images so the back button can't replay the previous user's session.
+    window.location.replace('/tech');
   }
 
   async function showApp() {

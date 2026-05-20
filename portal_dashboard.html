@@ -584,8 +584,13 @@
           headers: token ? { 'Authorization': `Bearer ${token}` } : {},
         });
       } catch {}
+      // Scrub all client-side trace of the prior identity before redirect.
       localStorage.removeItem('pc_token');
       localStorage.removeItem('pc_name');
+      localStorage.removeItem('pc_mfa_enrol');
+      try { sessionStorage.clear(); } catch {}
+      // window.location.replace() ensures the dashboard isn't reachable
+      // via the back button after sign-out (shared-device safety, spec S7).
       window.location.replace('/portal');
     }
 
