@@ -71,6 +71,18 @@ hits = db.detect_anomalies_for_actor("tech", PROBER)
 kinds = [h[0] for h in hits]
 check("permission_probe fires after 12 × 403", "permission_probe" in kinds)
 
+print("\n── Rule B: off_hours (≥50 reads outside JA 07–20 today) ──")
+# Jamaica = UTC-5 no-DST → off-hours JA = 01:00–12:00 UTC.
+# Seed 55 reads at 04:00 UTC today.
+today_utc = datetime.now(timezone.utc).date().isoformat()
+NIGHT_OWL = 42004
+for cid in range(300, 355):
+    when = f"{today_utc}T04:{cid % 60:02d}:00+00:00"
+    insert_access(NIGHT_OWL, f"/api/admin/visits/{cid}", when=when)
+hits = db.detect_anomalies_for_actor("tech", NIGHT_OWL)
+kinds = [h[0] for h in hits]
+check("off_hours fires after 55 reads at 04:00 UTC (= 23:00 JA)", "off_hours" in kinds)
+
 print("\n── Counter-example: no alert below threshold ──")
 QUIET = 42003
 for cid in range(200, 205):    # only 5 customers — under the 20-distinct threshold
