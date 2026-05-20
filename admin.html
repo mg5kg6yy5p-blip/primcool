@@ -984,6 +984,11 @@
       <button class="modal-close" onclick="closeModal('addTech')">×</button>
     </div>
     <div class="modal-body">
+      <div id="t-edit-id-banner" style="display:none;background:var(--light);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:12px;color:var(--muted);">
+        Editing <strong id="t-edit-prid" style="color:var(--navy);font-family:'Courier New',monospace;"></strong> ·
+        <span id="t-edit-tech-code" style="color:var(--muted);"></span>
+        — to change PIN use the Reset PIN button instead.
+      </div>
       <div class="field"><label>Full Name *</label><input id="t-name" placeholder="Marcus Reid"></div>
       <div class="field-row">
         <div class="field"><label>Phone</label><input id="t-phone" placeholder="+1 868 ..."></div>
@@ -1003,12 +1008,12 @@
           <input id="t-rate" type="number" step="0.01" min="0" placeholder="0.00">
         </div>
       </div>
-      <div class="field-row">
+      <div class="field-row" id="t-onboard-row">
         <div class="field"><label>Hire Date *</label><input id="t-hire" type="date"></div>
         <div class="field"><label>Initial PIN (4–8 digits) *</label><input id="t-pin" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="••••" style="letter-spacing:6px;font-family:'Courier New',monospace;"></div>
       </div>
       <div class="form-error" id="err-addTech"></div>
-      <p style="font-size:12px;color:var(--muted);">PRID is auto-generated from initials + hire date (e.g. <strong>PCMR200526</strong>) and used as their sign-in code at <strong>/tech</strong>.</p>
+      <p id="t-onboard-hint" style="font-size:12px;color:var(--muted);">PRID is auto-generated from initials + hire date (e.g. <strong>PCMR200526</strong>) and used as their sign-in code at <strong>/tech</strong>.</p>
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('addTech')">Cancel</button>
@@ -1198,8 +1203,8 @@
   let allReviews   = [];
   let reviewFilter = 'pending';
   let allTechs     = [];
-  let editingTechId = null;
   let resetPinTechId = null;
+  let editingTechId = null;
   let resetPinCustomerId = null;
   let currentAdmin = null;       // { id, role, name, ... }
   let allAdmins    = [];
@@ -2960,7 +2965,8 @@
         <td>${t.active_jobs > 0 ? `<span class="badge badge-in_progress">${t.active_jobs} active</span>` : '<span style="color:var(--muted);">0</span>'}</td>
         <td>${t.active ? '<span class="badge badge-confirmed">Active</span>' : '<span class="badge" style="background:#f3f4f6;color:var(--muted);">Inactive</span>'}</td>
         <td style="white-space:nowrap;">
-          <button class="btn btn-edit btn-sm" onclick="openResetPin(${t.id},'${escHtml(t.name)}')">Reset PIN</button>
+          <button class="btn btn-edit btn-sm" onclick="openEditTech(${t.id})">Edit</button>
+          <button class="btn btn-edit btn-sm" onclick="openResetPin(${t.id},'${escHtml(t.name)}')" style="margin-left:6px;">Reset PIN</button>
           <button class="btn btn-ghost btn-sm" onclick="toggleTechActive(${t.id},${t.active ? 0 : 1})" style="margin-left:6px;">${t.active ? 'Deactivate' : 'Activate'}</button>
           <button class="btn btn-danger btn-sm" onclick="removeTech(${t.id},'${escHtml(t.name)}')" style="margin-left:6px;">Delete</button>
         </td>
@@ -2976,9 +2982,67 @@
     if (current) sel.value = current;
   }
 
+  function openEditTech(id) {
+    const t = allTechs.find(x => x.id === id);
+    if (!t) return;
+    editingTechId = id;
+    document.getElementById('techModalTitle').textContent = 'Edit Technician';
+    document.getElementById('techSubmitBtn').textContent = 'Save Changes';
+    // Hide the onboarding-only fields
+    document.getElementById('t-onboard-row').style.display = 'none';
+    document.getElementById('t-onboard-hint').style.display = 'none';
+    // Show the read-only PRID / tech code banner
+    document.getElementById('t-edit-id-banner').style.display = 'block';
+    document.getElementById('t-edit-prid').textContent = t.prid || '—';
+    document.getElementById('t-edit-tech-code').textContent = t.tech_code;
+    // Pre-fill editable fields
+    document.getElementById('t-name').value  = t.name  || '';
+    document.getElementById('t-phone').value = t.phone || '';
+    document.getElementById('t-email').value = t.email || '';
+    document.getElementById('t-role').value  = t.role  || 'tech';
+    document.getElementById('t-rate').value  = t.hourly_rate || 0;
+    document.getElementById('err-addTech').style.display = 'none';
+    document.getElementById('modal-addTech').classList.add('open');
+  }
+
+  function resetTechForm() {
+    editingTechId = null;
+    document.getElementById('techModalTitle').textContent = 'Onboard Technician';
+    document.getElementById('techSubmitBtn').textContent  = 'Generate PRID & Create';
+    document.getElementById('t-onboard-row').style.display  = 'grid';
+    document.getElementById('t-onboard-hint').style.display = 'block';
+    document.getElementById('t-edit-id-banner').style.display = 'none';
+    ['t-pin','t-name','t-phone','t-email','t-hire','t-rate'].forEach(id => document.getElementById(id).value = '');
+    document.getElementById('t-role').value = 'tech';
+    document.getElementById('err-addTech').style.display = 'none';
+  }
+
   async function submitAddTech() {
     const err = document.getElementById('err-addTech');
     err.style.display = 'none';
+
+    if (editingTechId) {
+      // Edit path — name + phone + email + role + hourly_rate, keeps active state
+      const t = allTechs.find(x => x.id === editingTechId);
+      const body = {
+        name:        document.getElementById('t-name').value.trim(),
+        phone:       document.getElementById('t-phone').value.trim(),
+        email:       document.getElementById('t-email').value.trim(),
+        role:        document.getElementById('t-role').value || 'tech',
+        hourly_rate: parseFloat(document.getElementById('t-rate').value) || 0,
+        active:      !!(t && t.active),
+      };
+      if (!body.name) { showErr('err-addTech','Name is required.'); return; }
+      try {
+        await api('PUT', `/api/admin/techs/${editingTechId}`, body);
+        closeModal('addTech');
+        resetTechForm();
+        await loadTechs();
+      } catch(e) { showErr('err-addTech', e.message); }
+      return;
+    }
+
+    // Create path
     const body = {
       pin:         document.getElementById('t-pin').value.trim(),
       name:        document.getElementById('t-name').value.trim(),
@@ -2993,8 +3057,7 @@
     try {
       const res = await api('POST', '/api/admin/techs', body);
       closeModal('addTech');
-      ['t-pin','t-name','t-phone','t-email','t-hire','t-rate'].forEach(id => document.getElementById(id).value = '');
-      document.getElementById('t-role').value = 'tech';
+      resetTechForm();
       await loadTechs();
       showPridModal(res.prid, `${body.name} signs in at <strong>/tech</strong> with their PRID as the code, plus the PIN you set.`);
     } catch(e) { showErr('err-addTech', e.message); }
@@ -3056,7 +3119,7 @@
   openModal = function(name, visitId) {
     const r = _origOpen.apply(this, arguments);
     if (name === 'addAdmin') defaultHireDate('au-hire');
-    if (name === 'addTech')  defaultHireDate('t-hire');
+    if (name === 'addTech')  { resetTechForm(); defaultHireDate('t-hire'); }
     if (name === 'addPart')  resetPartForm();
     return r;
   };
