@@ -418,6 +418,13 @@
       </div>
     </section>
 
+    <!-- Invoices -->
+    <section id="invoicesSection" style="display:none;">
+      <div class="section-title">Invoices</div>
+      <div id="invoicesSummary" style="background:white;border:1px solid var(--border);border-radius:12px;padding:18px 22px;margin-bottom:14px;"></div>
+      <div id="invoicesList" class="visit-list"></div>
+    </section>
+
     <!-- Annual company review CTA -->
     <section id="annualReviewSection" style="display:none;">
       <div class="section-title">Rate PrimeCool</div>
@@ -731,6 +738,9 @@
           historyEl.innerHTML = completed.map((v, i) => visitCard(v, offset + i)).join('');
         }
 
+        // Load customer invoices
+        loadCustomerInvoices().catch(() => {});
+
         // Annual company review eligibility
         const oneYearAgo = new Date();
         oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
@@ -839,6 +849,84 @@
       const err = document.getElementById('reviewError');
       err.textContent = msg;
       err.style.display = 'block';
+    }
+
+    // ── Invoices ─────────────────────────────────────────────────────────────
+    function fmtMoney(n, currency) {
+      n = Number(n) || 0;
+      const sym = currency === 'JMD' ? 'J$' : (currency === 'USD' ? '$' : (currency === 'TTD' ? 'TT$' : ''));
+      return sym + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    async function loadCustomerInvoices() {
+      const res = await fetch('/api/portal/invoices', {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const all = await res.json();
+      // Filter out drafts — customers shouldn't see those
+      const visible = all.filter(i => i.status !== 'draft');
+      if (!visible.length) return;
+
+      document.getElementById('invoicesSection').style.display = 'block';
+
+      const outstanding = visible
+        .filter(i => i.status === 'sent')
+        .reduce((s, i) => s + ((i.total || 0) - (i.amount_paid || 0)), 0);
+      const overdueCount = visible.filter(i => {
+        if (i.status !== 'sent') return false;
+        const bal = (i.total || 0) - (i.amount_paid || 0);
+        if (bal <= 0.005) return false;
+        return new Date(i.due_date) < new Date(new Date().toDateString());
+      }).length;
+      const currency = visible[0]?.currency || 'JMD';
+
+      const summary = document.getElementById('invoicesSummary');
+      if (outstanding > 0) {
+        summary.innerHTML = `
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:14px;">
+            <div>
+              <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.7px;font-weight:700;margin-bottom:4px;">Outstanding Balance</div>
+              <div style="font-size:26px;font-weight:800;color:#b45309;">${fmtMoney(outstanding, currency)}</div>
+              ${overdueCount ? `<div style="font-size:12px;color:#dc2626;margin-top:4px;font-weight:600;">${overdueCount} overdue</div>` : ''}
+            </div>
+            <div style="font-size:12px;color:var(--muted);text-align:right;max-width:240px;line-height:1.5;">
+              Contact PrimeCool to arrange payment:<br>
+              <strong style="color:var(--navy);">+1 (876) 315-9940</strong>
+            </div>
+          </div>`;
+      } else {
+        summary.innerHTML = `
+          <div style="text-align:center;color:#065f46;">
+            <div style="font-size:14px;font-weight:600;">✓ All invoices paid — thank you!</div>
+          </div>`;
+      }
+
+      const list = document.getElementById('invoicesList');
+      list.innerHTML = visible.map(i => {
+        const balance = (i.total || 0) - (i.amount_paid || 0);
+        const overdue = i.status === 'sent' && balance > 0.005 &&
+                        new Date(i.due_date) < new Date(new Date().toDateString());
+        const status = overdue ? 'overdue' : i.status;
+        const statusBg = {sent:'#fef3c7',overdue:'#fee2e2',paid:'#d1fae5',cancelled:'#e5e7eb'}[status] || '#f3f4f6';
+        const statusFg = {sent:'#92400e',overdue:'#991b1b',paid:'#065f46',cancelled:'#6b7280'}[status] || '#374151';
+        return `
+          <div class="visit-card">
+            <div class="visit-header" onclick="window.open('/portal/invoice/${i.id}', '_blank')" style="cursor:pointer;">
+              <div class="visit-left">
+                <div style="font-family:'Courier New',monospace;font-weight:700;color:var(--navy);background:#f0f4f8;padding:4px 10px;border-radius:6px;font-size:13px;">${i.invoice_number}</div>
+                <div class="visit-info">
+                  <div class="visit-date">${fmtMoney(i.total, i.currency)}</div>
+                  <div class="visit-sub">Issued ${fmt(i.issue_date)} · Due ${fmt(i.due_date)}${balance > 0.005 ? ` · Balance ${fmtMoney(balance, i.currency)}` : ''}</div>
+                </div>
+              </div>
+              <div class="visit-right">
+                <span class="badge" style="background:${statusBg};color:${statusFg};">${status}</span>
+                <span style="color:var(--teal);font-size:13px;font-weight:600;">View →</span>
+              </div>
+            </div>
+          </div>`;
+      }).join('');
     }
 
     load();

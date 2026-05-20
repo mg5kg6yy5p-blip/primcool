@@ -378,6 +378,11 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 11h-6"/><path d="M19 8v6"/></svg>
         Technicians
       </div>
+      <div class="nav-item" onclick="showPanel('invoices')" id="nav-invoices" style="display:none;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
+        Invoices
+        <span id="overdueBadge" style="margin-left:auto;background:var(--danger);color:white;font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px;display:none;"></span>
+      </div>
       <div class="nav-item" onclick="showPanel('inventory')" id="nav-inventory" style="display:none;">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
         Inventory
@@ -454,6 +459,39 @@
               </table>
             </div>
           </div>
+        </div>
+      </div>
+
+      <!-- ── Invoices panel ── -->
+      <div class="panel" id="panel-invoices">
+        <div class="top-bar">
+          <h2>Invoices</h2>
+          <button class="btn btn-primary" id="addInvoiceBtn" onclick="openInvoiceModal()" style="display:none;">+ New Invoice</button>
+        </div>
+
+        <div id="inv-totals" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:20px;"></div>
+
+        <div class="filter-bar" id="invoiceFilters" style="gap:8px;">
+          <button class="filter-btn active" data-f="all"       onclick="setInvoiceFilter('all',this)">All</button>
+          <button class="filter-btn"        data-f="draft"     onclick="setInvoiceFilter('draft',this)">Drafts</button>
+          <button class="filter-btn"        data-f="sent"      onclick="setInvoiceFilter('sent',this)">Sent</button>
+          <button class="filter-btn"        data-f="overdue"   onclick="setInvoiceFilter('overdue',this)">Overdue</button>
+          <button class="filter-btn"        data-f="paid"      onclick="setInvoiceFilter('paid',this)">Paid</button>
+          <button class="filter-btn"        data-f="cancelled" onclick="setInvoiceFilter('cancelled',this)">Cancelled</button>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Invoice #</th><th>Customer</th><th>Issued</th><th>Due</th><th>Total</th><th>Paid</th><th>Balance</th><th>Status</th><th>Actions</th>
+            </tr></thead>
+            <tbody id="invoiceTableBody"><tr><td colspan="9" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+
+        <div style="margin-top:24px;padding:14px 16px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;font-size:12px;color:#92400e;line-height:1.6;">
+          <strong>Jamaica tax reference</strong> — GCT 15% is applied by default on new invoices. Payroll deductions (PAYE, NIS, NHT, Education Tax, HEART) reference values are stored for future paystub generation.
+          <a href="#" onclick="event.preventDefault();showTaxReference();" style="color:var(--teal);font-weight:600;">View tax reference →</a>
         </div>
       </div>
 
@@ -662,6 +700,130 @@
 </div><!-- /#app -->
 
 <!-- ── Modals ── -->
+
+<!-- New / Edit Invoice -->
+<div class="modal-overlay" id="modal-invoice">
+  <div class="modal" style="max-width:780px;">
+    <div class="modal-header">
+      <h3 id="invoiceModalTitle">New Invoice</h3>
+      <button class="modal-close" onclick="closeModal('invoice')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field-row">
+        <div class="field">
+          <label>Customer *</label>
+          <select id="iv-customer" onchange="loadVisitsForInvoice()"><option value="">Select customer…</option></select>
+        </div>
+        <div class="field">
+          <label>Related Visit (optional)</label>
+          <select id="iv-visit"><option value="">— none —</option></select>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Issue Date *</label><input id="iv-issue" type="date"></div>
+        <div class="field"><label>Due Date *</label><input id="iv-due" type="date"></div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>GCT Rate</label>
+          <input id="iv-tax" type="number" step="0.001" min="0" max="1" value="0.15">
+          <span style="font-size:11px;color:var(--muted);margin-top:3px;">Default Jamaica GCT = 0.15 (15%)</span>
+        </div>
+        <div class="field">
+          <label>Currency</label>
+          <input id="iv-currency" value="JMD" maxlength="5" style="text-transform:uppercase;letter-spacing:1px;">
+        </div>
+      </div>
+
+      <div style="margin-top:8px;border-top:1px solid var(--border);padding-top:14px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <strong style="font-size:13px;color:var(--navy);">Line Items</strong>
+          <div style="display:flex;gap:6px;">
+            <button class="btn btn-ghost btn-sm" onclick="addLineItem('labor')">+ Labor</button>
+            <button class="btn btn-ghost btn-sm" onclick="addLineItem('part')">+ Part</button>
+            <button class="btn btn-ghost btn-sm" onclick="addLineItem('other')">+ Other</button>
+          </div>
+        </div>
+        <div id="iv-lines" style="display:flex;flex-direction:column;gap:8px;"></div>
+        <div id="iv-tracked-time-hint" style="font-size:12px;color:var(--muted);margin-top:8px;display:none;"></div>
+      </div>
+
+      <div style="margin-top:14px;padding:12px 14px;background:var(--light);border-radius:8px;">
+        <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--muted);"><span>Subtotal</span><span id="iv-subtotal">J$0.00</span></div>
+        <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--muted);margin-top:4px;"><span>GCT</span><span id="iv-taxamt">J$0.00</span></div>
+        <div style="display:flex;justify-content:space-between;font-size:16px;font-weight:700;color:var(--navy);margin-top:8px;padding-top:8px;border-top:1px solid var(--border);"><span>Total</span><span id="iv-total">J$0.00</span></div>
+      </div>
+
+      <div class="field" style="margin-top:14px;">
+        <label>Notes (optional)</label>
+        <textarea id="iv-notes" placeholder="Payment terms, thank-you note, special instructions…"></textarea>
+      </div>
+
+      <div class="form-error" id="err-invoice"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('invoice')">Cancel</button>
+      <button class="btn btn-primary" id="invoiceSubmitBtn" onclick="submitInvoice('draft')">Save as Draft</button>
+      <button class="btn btn-primary" id="invoiceSendBtn" onclick="submitInvoice('sent')" style="background:#059669;">Save &amp; Send</button>
+    </div>
+  </div>
+</div>
+
+<!-- Record Payment -->
+<div class="modal-overlay" id="modal-recordPayment">
+  <div class="modal" style="max-width:460px;">
+    <div class="modal-header">
+      <h3>Record Payment</h3>
+      <button class="modal-close" onclick="closeModal('recordPayment')">×</button>
+    </div>
+    <div class="modal-body">
+      <div style="background:var(--light);border-radius:8px;padding:12px 14px;margin-bottom:14px;">
+        <div style="font-weight:700;color:var(--navy);" id="pay-inv-label">—</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:2px;">Balance due: <strong id="pay-balance">—</strong></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Date *</label><input id="pay-date" type="date"></div>
+        <div class="field"><label>Amount *</label><input id="pay-amount" type="number" step="0.01" min="0.01" placeholder="0.00"></div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>Method</label>
+          <select id="pay-method">
+            <option value="">—</option>
+            <option value="cash">Cash</option>
+            <option value="cheque">Cheque</option>
+            <option value="transfer">Bank Transfer</option>
+            <option value="card">Card</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+        <div class="field"><label>Reference</label><input id="pay-reference" placeholder="Cheque #, txn ref…"></div>
+      </div>
+      <div class="field"><label>Notes</label><input id="pay-notes" placeholder="Optional"></div>
+      <div class="form-error" id="err-recordPayment"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('recordPayment')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitRecordPayment()">Record Payment</button>
+    </div>
+  </div>
+</div>
+
+<!-- Tax Reference -->
+<div class="modal-overlay" id="modal-taxReference">
+  <div class="modal" style="max-width:600px;">
+    <div class="modal-header">
+      <h3>Jamaica Tax Reference</h3>
+      <button class="modal-close" onclick="closeModal('taxReference')">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="taxRefContent">Loading…</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" onclick="closeModal('taxReference')">Close</button>
+    </div>
+  </div>
+</div>
 
 <!-- Add / Edit Part -->
 <div class="modal-overlay" id="modal-addPart">
@@ -1038,11 +1200,11 @@
   let resetAdminPwId = null;
 
   const ADMIN_PERMS = {
-    super_admin: new Set(['admin:create','admin:set_role','admin:set_active','admin:reset_password','admin:view_all','audit:view_all','tech:create','tech:delete','customer:create','customer:delete','visit:create','visit:delete','review:approve','review:delete','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','inventory:delete']),
-    supervisor_admin: new Set(['admin:view_all','audit:view_all','tech:update','customer:update','visit:update','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:adjust']),
-    system_admin: new Set(['tech:create','customer:create','visit:create','audit:view_self','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust']),
+    super_admin: new Set(['admin:create','admin:set_role','admin:set_active','admin:reset_password','admin:view_all','audit:view_all','tech:create','tech:delete','customer:create','customer:delete','visit:create','visit:delete','review:approve','review:delete','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','inventory:delete','invoice:view','invoice:create','invoice:update','invoice:delete','invoice:record_payment']),
+    supervisor_admin: new Set(['admin:view_all','audit:view_all','tech:update','customer:update','visit:update','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:adjust','invoice:view','invoice:update','invoice:record_payment']),
+    system_admin: new Set(['tech:create','customer:create','visit:create','audit:view_self','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','invoice:view','invoice:create','invoice:update','invoice:record_payment']),
     hr_admin: new Set(['tech:create','audit:view_self','timesheet:view_all']),
-    ceo_assistant: new Set(['audit:view_self','inventory:view']),
+    ceo_assistant: new Set(['audit:view_self','inventory:view','invoice:view']),
   };
   function can(perm) {
     return currentAdmin && ADMIN_PERMS[currentAdmin.role]?.has(perm);
@@ -1113,6 +1275,7 @@
     if (can('timesheet:view_all')) { initTimesheetWeek(); loadTimesheets(); }
     if (can('schedule:view')) { initScheduleWeek(); loadSchedule(); }
     if (can('inventory:view')) loadInventory();
+    if (can('invoice:view')) loadInvoices();
   }
 
   function applyRoleVisibility() {
@@ -1123,6 +1286,8 @@
     if (can('schedule:view')) document.getElementById('nav-schedule').style.display = 'flex';
     if (can('inventory:view')) document.getElementById('nav-inventory').style.display = 'flex';
     if (can('inventory:create')) document.getElementById('addPartBtn').style.display = '';
+    if (can('invoice:view')) document.getElementById('nav-invoices').style.display = 'flex';
+    if (can('invoice:create')) document.getElementById('addInvoiceBtn').style.display = '';
     if (can('admin:create')) document.getElementById('addAdminBtn').style.display = '';
     // Show current admin name + role
     const tag = document.querySelector('.admin-tag');
@@ -1768,6 +1933,385 @@
       closeModal('resetAdminPw');
       alert('Password saved. Share it privately with the admin.');
     } catch(e) { showErr('err-resetAdminPw', e.message); }
+  }
+
+  // ── Invoices ───────────────────────────────────────────────────────────────
+  let allInvoices = [];
+  let invoiceFilter = 'all';
+  let editingInvoiceId = null;
+  let currentLineItems = [];
+  let payingInvoice = null;
+  let invoiceCurrency = 'JMD';
+  let invoiceTaxRate  = 0.15;
+
+  function fmtMoney(n, currency) {
+    n = Number(n) || 0;
+    const sym = currency === 'JMD' ? 'J$' : (currency === 'USD' ? '$' : (currency === 'TTD' ? 'TT$' : ''));
+    return sym + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  function isOverdue(inv) {
+    if (inv.status !== 'sent') return false;
+    const balance = (inv.total || 0) - (inv.amount_paid || 0);
+    if (balance <= 0.005) return false;
+    return new Date(inv.due_date) < new Date(new Date().toDateString());
+  }
+
+  async function loadInvoices() {
+    if (!can('invoice:view')) return;
+    try {
+      allInvoices = await api('GET', '/api/admin/invoices');
+      renderInvoices();
+    } catch(e) {}
+  }
+
+  function setInvoiceFilter(f, btn) {
+    invoiceFilter = f;
+    document.querySelectorAll('#invoiceFilters .filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    renderInvoices();
+  }
+
+  function renderInvoices() {
+    let rows = allInvoices.slice();
+    if (invoiceFilter === 'overdue') rows = rows.filter(isOverdue);
+    else if (invoiceFilter !== 'all') rows = rows.filter(r => r.status === invoiceFilter);
+
+    // Summary cards over ALL invoices (not filtered)
+    const outstanding = allInvoices.filter(i => i.status === 'sent').reduce((s, i) => s + ((i.total || 0) - (i.amount_paid || 0)), 0);
+    const overdueCount = allInvoices.filter(isOverdue).length;
+    const thisMonth = new Date(); thisMonth.setDate(1); thisMonth.setHours(0,0,0,0);
+    const monthInvoiced = allInvoices
+      .filter(i => i.status !== 'draft' && new Date(i.issue_date) >= thisMonth)
+      .reduce((s, i) => s + (i.total || 0), 0);
+    const monthCollected = allInvoices
+      .filter(i => i.paid_at && new Date(i.paid_at) >= thisMonth)
+      .reduce((s, i) => s + (i.total || 0), 0);
+
+    document.getElementById('inv-totals').innerHTML = `
+      ${summaryCard('Outstanding',     fmtMoney(outstanding, invoiceCurrency), outstanding > 0 ? '#b45309' : '#94a3b8')}
+      ${summaryCard('Overdue',         overdueCount, overdueCount ? '#dc2626' : '#94a3b8')}
+      ${summaryCard('Invoiced (Month)', fmtMoney(monthInvoiced, invoiceCurrency), '#0B2545')}
+      ${summaryCard('Collected (Month)', fmtMoney(monthCollected, invoiceCurrency), '#059669')}
+    `;
+    const badge = document.getElementById('overdueBadge');
+    if (overdueCount) { badge.textContent = overdueCount; badge.style.display = 'inline-block'; }
+    else { badge.style.display = 'none'; }
+
+    const tbody = document.getElementById('invoiceTableBody');
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="9" class="empty">No invoices match this filter.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map(i => {
+      const balance = (i.total || 0) - (i.amount_paid || 0);
+      const overdue = isOverdue(i);
+      const statusLabel = overdue ? 'overdue' : i.status;
+      const statusBg = {
+        draft: '#f3f4f6', sent: '#fef3c7', overdue: '#fee2e2', paid: '#d1fae5', cancelled: '#e5e7eb'
+      }[statusLabel] || '#f3f4f6';
+      const statusFg = {
+        draft: '#374151', sent: '#92400e', overdue: '#991b1b', paid: '#065f46', cancelled: '#6b7280'
+      }[statusLabel] || '#374151';
+      return `
+        <tr>
+          <td><span class="code-pill">${escHtml(i.invoice_number)}</span></td>
+          <td><strong>${escHtml(i.customer_name)}</strong><br><span style="font-size:11px;color:var(--muted);">${escHtml(i.customer_code)}</span></td>
+          <td style="white-space:nowrap;">${fmtDate(i.issue_date)}</td>
+          <td style="white-space:nowrap;">${fmtDate(i.due_date)}</td>
+          <td style="white-space:nowrap;">${fmtMoney(i.total, i.currency)}</td>
+          <td style="white-space:nowrap;color:#059669;">${i.amount_paid > 0 ? fmtMoney(i.amount_paid, i.currency) : '—'}</td>
+          <td style="white-space:nowrap;font-weight:600;color:${balance > 0.005 ? '#b45309' : 'var(--muted)'};">${balance > 0.005 ? fmtMoney(balance, i.currency) : '—'}</td>
+          <td><span class="badge" style="background:${statusBg};color:${statusFg};">${statusLabel}</span></td>
+          <td style="white-space:nowrap;">
+            <button class="btn btn-ghost btn-sm" onclick="window.open('/admin/invoice/${i.id}','_blank')">View</button>
+            ${(i.status === 'draft' || i.status === 'sent') && can('invoice:update') ? `<button class="btn btn-edit btn-sm" onclick="openInvoiceModal(${i.id})" style="margin-left:4px;">Edit</button>` : ''}
+            ${i.status === 'draft' && can('invoice:update') ? `<button class="btn btn-primary btn-sm" onclick="markInvoiceStatus(${i.id},'sent')" style="margin-left:4px;background:#059669;">Send</button>` : ''}
+            ${(i.status === 'sent' || overdue) && balance > 0.005 && can('invoice:record_payment') ? `<button class="btn btn-primary btn-sm" onclick="openPaymentModal(${i.id})" style="margin-left:4px;">+ Payment</button>` : ''}
+            ${(i.status === 'draft' || i.status === 'cancelled') && can('invoice:delete') ? `<button class="btn btn-danger btn-sm" onclick="deleteInvoiceCmd(${i.id},'${escHtml(i.invoice_number)}')" style="margin-left:4px;">Delete</button>` : ''}
+          </td>
+        </tr>`;
+    }).join('');
+  }
+
+  // ── Invoice create/edit modal ──
+  async function openInvoiceModal(invoiceId) {
+    editingInvoiceId = invoiceId || null;
+    currentLineItems = [];
+    document.getElementById('err-invoice').style.display = 'none';
+    document.getElementById('invoiceModalTitle').textContent = invoiceId ? 'Edit Invoice' : 'New Invoice';
+
+    // Populate customer dropdown
+    const custSel = document.getElementById('iv-customer');
+    custSel.innerHTML = '<option value="">Select customer…</option>' +
+      allCustomers.map(c => `<option value="${c.id}">${escHtml(c.name)} (${c.customer_code})</option>`).join('');
+
+    // Defaults
+    document.getElementById('iv-issue').value = new Date().toISOString().slice(0, 10);
+    const due = new Date(); due.setDate(due.getDate() + 30);
+    document.getElementById('iv-due').value = due.toISOString().slice(0, 10);
+    document.getElementById('iv-tax').value      = '0.15';
+    document.getElementById('iv-currency').value = 'JMD';
+    document.getElementById('iv-notes').value    = '';
+    document.getElementById('iv-visit').innerHTML = '<option value="">— none —</option>';
+    document.getElementById('iv-tracked-time-hint').style.display = 'none';
+
+    if (invoiceId) {
+      try {
+        const inv = await api('GET', `/api/admin/invoices/${invoiceId}`);
+        custSel.value = inv.customer_id;
+        await loadVisitsForInvoice(inv.visit_id);
+        document.getElementById('iv-issue').value = inv.issue_date || '';
+        document.getElementById('iv-due').value   = inv.due_date || '';
+        document.getElementById('iv-tax').value   = inv.tax_rate;
+        document.getElementById('iv-currency').value = inv.currency || 'JMD';
+        document.getElementById('iv-notes').value = inv.notes || '';
+        currentLineItems = (inv.line_items || []).map(li => ({
+          line_type: li.line_type, part_id: li.part_id, description: li.description,
+          quantity: li.quantity, unit_price: li.unit_price,
+        }));
+      } catch(e) {
+        showErr('err-invoice', e.message); return;
+      }
+    }
+
+    renderLineItems();
+    document.getElementById('modal-invoice').classList.add('open');
+  }
+
+  async function loadVisitsForInvoice(selectVisitId) {
+    const cid = parseInt(document.getElementById('iv-customer').value);
+    const sel = document.getElementById('iv-visit');
+    sel.innerHTML = '<option value="">— none —</option>';
+    document.getElementById('iv-tracked-time-hint').style.display = 'none';
+    if (!cid) return;
+    const visits = allVisits.filter(v => v.customer_id === cid);
+    visits.forEach(v => {
+      const label = `${v.visit_type} · ${fmtDate(v.scheduled_date || v.completed_date || '')} · ${v.status}`;
+      const opt = document.createElement('option');
+      opt.value = v.id; opt.textContent = label;
+      if (v.id == selectVisitId) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    if (selectVisitId) showTrackedTimeHint();
+    sel.onchange = showTrackedTimeHint;
+  }
+
+  function showTrackedTimeHint() {
+    const visitId = parseInt(document.getElementById('iv-visit').value);
+    const hint = document.getElementById('iv-tracked-time-hint');
+    if (!visitId) { hint.style.display = 'none'; return; }
+    const v = allVisits.find(x => x.id === visitId);
+    if (v && v.start_time && v.end_time) {
+      const mins = Math.round((new Date(v.end_time) - new Date(v.start_time)) / 60000);
+      const h = Math.floor(mins / 60); const m = mins % 60;
+      hint.innerHTML = `Tracked time on this visit: <strong>${h}h ${m}m</strong> — use as reference for the Labor line.`;
+      hint.style.display = 'block';
+    } else {
+      hint.style.display = 'none';
+    }
+  }
+
+  function addLineItem(type) {
+    const li = { line_type: type, part_id: null, description: '', quantity: 1, unit_price: 0 };
+    if (type === 'labor') li.description = 'Labor — service visit';
+    if (type === 'other') li.description = '';
+    currentLineItems.push(li);
+    renderLineItems();
+  }
+
+  function removeLineItem(idx) {
+    currentLineItems.splice(idx, 1);
+    renderLineItems();
+  }
+
+  function updateLineItem(idx, field, value) {
+    currentLineItems[idx][field] = value;
+    recalcLineTotals();
+  }
+
+  function onPartSelected(idx, partIdStr) {
+    const pid = parseInt(partIdStr) || null;
+    currentLineItems[idx].part_id = pid;
+    if (pid) {
+      const p = allParts.find(x => x.id === pid);
+      if (p) {
+        currentLineItems[idx].description = `${p.sku} — ${p.name}`;
+        if (!currentLineItems[idx].unit_price) currentLineItems[idx].unit_price = p.unit_cost;
+        renderLineItems();
+        return;
+      }
+    }
+    renderLineItems();
+  }
+
+  function renderLineItems() {
+    const wrap = document.getElementById('iv-lines');
+    if (!currentLineItems.length) {
+      wrap.innerHTML = '<div style="text-align:center;padding:20px;color:var(--muted);font-size:12px;border:1px dashed var(--border);border-radius:8px;">No line items yet — add labor, parts, or other charges above.</div>';
+      recalcLineTotals();
+      return;
+    }
+    const partOptions = '<option value="">Pick a part…</option>' +
+      (allParts || []).filter(p => p.active).map(p => `<option value="${p.id}">${escHtml(p.sku)} — ${escHtml(p.name)} (${formatQty(p.quantity)} ${escHtml(p.unit||'')} avail, J$${Number(p.unit_cost).toFixed(2)})</option>`).join('');
+
+    wrap.innerHTML = currentLineItems.map((li, idx) => {
+      const typeClass = `type-${li.line_type}`;
+      const partRow = li.line_type === 'part' ? `
+        <select onchange="onPartSelected(${idx}, this.value)" style="grid-column:1/-1;padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;margin-bottom:4px;">
+          ${partOptions.replace(`value="${li.part_id || ''}"`, `value="${li.part_id || ''}" selected`)}
+        </select>` : '';
+      const total = (Number(li.quantity) || 0) * (Number(li.unit_price) || 0);
+      return `
+        <div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:white;">
+          <div style="display:grid;grid-template-columns:auto 1fr 80px 110px 110px 30px;gap:8px;align-items:center;">
+            <span class="badge ${typeClass}" style="font-size:9px;padding:2px 8px;text-transform:uppercase;font-weight:700;">${li.line_type}</span>
+            ${partRow}
+            <input type="text" placeholder="Description" value="${escHtml(li.description)}" oninput="updateLineItem(${idx}, 'description', this.value)" style="grid-column:${li.line_type === 'part' ? '1/-5' : '2/-5'};padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
+            <input type="number" step="0.01" min="0" value="${li.quantity}" oninput="updateLineItem(${idx}, 'quantity', parseFloat(this.value)||0)" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;text-align:right;" title="Quantity">
+            <input type="number" step="0.01" min="0" value="${li.unit_price}" oninput="updateLineItem(${idx}, 'unit_price', parseFloat(this.value)||0)" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;text-align:right;" title="Unit price">
+            <span style="text-align:right;font-weight:700;color:var(--navy);font-size:13px;">${fmtMoney(total, 'JMD')}</span>
+            <button onclick="removeLineItem(${idx})" style="background:none;border:none;color:var(--danger);font-size:18px;cursor:pointer;padding:0;line-height:1;">×</button>
+          </div>
+        </div>`;
+    }).join('');
+    recalcLineTotals();
+  }
+
+  function recalcLineTotals() {
+    const subtotal = currentLineItems.reduce((s, li) => s + (Number(li.quantity) || 0) * (Number(li.unit_price) || 0), 0);
+    const rate = parseFloat(document.getElementById('iv-tax').value) || 0;
+    const tax  = subtotal * rate;
+    const total = subtotal + tax;
+    const cur = document.getElementById('iv-currency').value || 'JMD';
+    document.getElementById('iv-subtotal').textContent = fmtMoney(subtotal, cur);
+    document.getElementById('iv-taxamt').textContent   = fmtMoney(tax, cur);
+    document.getElementById('iv-total').textContent    = fmtMoney(total, cur);
+  }
+  document.getElementById('iv-tax').addEventListener('input', recalcLineTotals);
+  document.getElementById('iv-currency').addEventListener('input', recalcLineTotals);
+
+  async function submitInvoice(saveAs) {
+    const err = document.getElementById('err-invoice');
+    err.style.display = 'none';
+    const body = {
+      customer_id: parseInt(document.getElementById('iv-customer').value),
+      visit_id:    parseInt(document.getElementById('iv-visit').value) || null,
+      issue_date:  document.getElementById('iv-issue').value,
+      due_date:    document.getElementById('iv-due').value,
+      tax_rate:    parseFloat(document.getElementById('iv-tax').value) || 0,
+      currency:    document.getElementById('iv-currency').value.trim().toUpperCase() || 'JMD',
+      notes:       document.getElementById('iv-notes').value.trim(),
+      line_items:  currentLineItems.map(li => ({
+        line_type: li.line_type,
+        part_id: li.part_id || null,
+        description: li.description,
+        quantity: Number(li.quantity) || 0,
+        unit_price: Number(li.unit_price) || 0,
+      })),
+    };
+    if (!body.customer_id) { showErr('err-invoice', 'Select a customer.'); return; }
+    if (!body.issue_date || !body.due_date) { showErr('err-invoice', 'Issue date and due date are required.'); return; }
+    if (!body.line_items.length) { showErr('err-invoice', 'Add at least one line item.'); return; }
+
+    try {
+      let invId = editingInvoiceId;
+      if (editingInvoiceId) {
+        await api('PUT', `/api/admin/invoices/${editingInvoiceId}`, body);
+      } else {
+        const res = await api('POST', '/api/admin/invoices', body);
+        invId = res.id;
+      }
+      if (saveAs === 'sent') {
+        await api('PUT', `/api/admin/invoices/${invId}/status`, { status: 'sent' });
+      }
+      closeModal('invoice');
+      await loadInvoices();
+    } catch(e) { showErr('err-invoice', e.message); }
+  }
+
+  async function markInvoiceStatus(id, status) {
+    if (status === 'cancelled' && !confirm('Cancel this invoice? It will no longer count toward outstanding totals.')) return;
+    try {
+      await api('PUT', `/api/admin/invoices/${id}/status`, { status });
+      await loadInvoices();
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  async function deleteInvoiceCmd(id, num) {
+    if (!confirm(`Delete invoice ${num}? This cannot be undone.`)) return;
+    try {
+      await api('DELETE', `/api/admin/invoices/${id}`);
+      await loadInvoices();
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  // ── Record payment ──
+  function openPaymentModal(invoiceId) {
+    payingInvoice = allInvoices.find(i => i.id === invoiceId);
+    if (!payingInvoice) return;
+    const balance = (payingInvoice.total || 0) - (payingInvoice.amount_paid || 0);
+    document.getElementById('pay-inv-label').textContent =
+      `${payingInvoice.invoice_number} — ${payingInvoice.customer_name}`;
+    document.getElementById('pay-balance').textContent = fmtMoney(balance, payingInvoice.currency);
+    document.getElementById('pay-date').value   = new Date().toISOString().slice(0, 10);
+    document.getElementById('pay-amount').value = balance > 0 ? balance.toFixed(2) : '';
+    document.getElementById('pay-method').value    = '';
+    document.getElementById('pay-reference').value = '';
+    document.getElementById('pay-notes').value     = '';
+    document.getElementById('err-recordPayment').style.display = 'none';
+    document.getElementById('modal-recordPayment').classList.add('open');
+  }
+
+  async function submitRecordPayment() {
+    const body = {
+      payment_date: document.getElementById('pay-date').value,
+      amount:       parseFloat(document.getElementById('pay-amount').value) || 0,
+      method:       document.getElementById('pay-method').value,
+      reference:    document.getElementById('pay-reference').value.trim(),
+      notes:        document.getElementById('pay-notes').value.trim(),
+    };
+    if (!body.payment_date) { showErr('err-recordPayment', 'Date is required.'); return; }
+    if (!body.amount || body.amount <= 0) { showErr('err-recordPayment', 'Amount must be positive.'); return; }
+    try {
+      await api('POST', `/api/admin/invoices/${payingInvoice.id}/payments`, body);
+      closeModal('recordPayment');
+      await loadInvoices();
+    } catch(e) { showErr('err-recordPayment', e.message); }
+  }
+
+  // ── Tax reference ──
+  async function showTaxReference() {
+    document.getElementById('modal-taxReference').classList.add('open');
+    document.getElementById('taxRefContent').innerHTML = 'Loading…';
+    try {
+      const ref = await api('GET', '/api/admin/tax-reference');
+      const p = ref.payroll;
+      document.getElementById('taxRefContent').innerHTML = `
+        <div style="background:#fffbeb;border:1px solid #fde68a;color:#92400e;padding:10px 14px;border-radius:8px;font-size:12px;line-height:1.5;margin-bottom:16px;">
+          <strong>⚠️ Disclaimer:</strong> ${escHtml(ref.disclaimer)}
+          <br><a href="${escHtml(ref.source)}" target="_blank" style="color:#92400e;font-weight:600;">${escHtml(ref.source)}</a>
+        </div>
+        <h4 style="font-size:13px;color:var(--navy);margin-bottom:8px;">${escHtml(ref.gct.label)}</h4>
+        <table style="width:100%;font-size:12px;margin-bottom:18px;">
+          <tr><td style="padding:6px 0;">Standard rate</td><td style="text-align:right;font-weight:700;">${(ref.gct.standard_rate * 100).toFixed(1)}%</td></tr>
+          <tr><td style="padding:6px 0;">Tourism rate</td><td style="text-align:right;">${(ref.gct.tourism_rate * 100).toFixed(1)}%</td></tr>
+        </table>
+        <h4 style="font-size:13px;color:var(--navy);margin-bottom:8px;">Payroll Deductions</h4>
+        <table style="width:100%;font-size:12px;border-collapse:collapse;">
+          <thead><tr style="border-bottom:1px solid var(--border);"><th style="text-align:left;padding:6px 4px;color:var(--muted);font-size:11px;">Tax</th><th style="text-align:right;padding:6px 4px;color:var(--muted);font-size:11px;">Employee</th><th style="text-align:right;padding:6px 4px;color:var(--muted);font-size:11px;">Employer</th></tr></thead>
+          <tbody>
+            <tr><td style="padding:6px 4px;"><strong>${escHtml(p.paye.label)}</strong><br><span style="font-size:10px;color:var(--muted);">Threshold J$${p.paye.annual_threshold.toLocaleString()} · 25% band 1 · 30% above J$${p.paye.band2_min_annual.toLocaleString()}</span></td><td style="text-align:right;padding:6px 4px;">progressive</td><td style="text-align:right;padding:6px 4px;">—</td></tr>
+            <tr><td style="padding:6px 4px;">${escHtml(p.nis.label)}</td><td style="text-align:right;padding:6px 4px;">${(p.nis.employee_rate*100).toFixed(2)}%</td><td style="text-align:right;padding:6px 4px;">${(p.nis.employer_rate*100).toFixed(2)}%</td></tr>
+            <tr><td style="padding:6px 4px;">${escHtml(p.nht.label)}</td><td style="text-align:right;padding:6px 4px;">${(p.nht.employee_rate*100).toFixed(2)}%</td><td style="text-align:right;padding:6px 4px;">${(p.nht.employer_rate*100).toFixed(2)}%</td></tr>
+            <tr><td style="padding:6px 4px;">${escHtml(p.education_tax.label)}</td><td style="text-align:right;padding:6px 4px;">${(p.education_tax.employee_rate*100).toFixed(2)}%</td><td style="text-align:right;padding:6px 4px;">${(p.education_tax.employer_rate*100).toFixed(2)}%</td></tr>
+            <tr><td style="padding:6px 4px;">${escHtml(p.heart_trust.label)}</td><td style="text-align:right;padding:6px 4px;">—</td><td style="text-align:right;padding:6px 4px;">${(p.heart_trust.employer_rate*100).toFixed(2)}%</td></tr>
+          </tbody>
+        </table>
+      `;
+    } catch(e) {
+      document.getElementById('taxRefContent').innerHTML = `<div style="color:var(--danger);">Error: ${e.message}</div>`;
+    }
   }
 
   // ── Inventory ──────────────────────────────────────────────────────────────

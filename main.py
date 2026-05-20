@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime as _dt
 from pathlib import Path
 import uuid
@@ -32,6 +32,8 @@ from database import (
     get_timesheet_data,
     get_all_parts, get_part_by_id, create_part, update_part, delete_part,
     adjust_part_quantity, get_part_movements,
+    create_invoice, update_invoice, get_invoice_by_id, get_all_invoices,
+    get_customer_invoices, set_invoice_status, delete_invoice, record_invoice_payment,
     # Admin users + audit
     verify_admin_user, get_admin_user_by_id, get_all_admin_users,
     create_admin_user, update_admin_user, set_admin_role, set_admin_active,
@@ -54,6 +56,8 @@ ADMIN_PERMS = {
         "schedule:view", "schedule:edit",
         "inventory:view", "inventory:create", "inventory:update",
         "inventory:adjust", "inventory:delete",
+        "invoice:view", "invoice:create", "invoice:update", "invoice:delete",
+        "invoice:record_payment",
     },
     "supervisor_admin": {
         "admin:view_all",
@@ -64,6 +68,7 @@ ADMIN_PERMS = {
         "timesheet:view_all",
         "schedule:view", "schedule:edit",
         "inventory:view", "inventory:adjust",
+        "invoice:view", "invoice:update", "invoice:record_payment",
     },
     "system_admin": {
         "tech:create", "tech:update", "tech:reset_pin",
@@ -73,6 +78,7 @@ ADMIN_PERMS = {
         "timesheet:view_all",
         "schedule:view", "schedule:edit",
         "inventory:view", "inventory:create", "inventory:update", "inventory:adjust",
+        "invoice:view", "invoice:create", "invoice:update", "invoice:record_payment",
     },
     "hr_admin": {
         "tech:create", "tech:update", "tech:reset_pin",
@@ -82,6 +88,7 @@ ADMIN_PERMS = {
     "ceo_assistant": {
         "audit:view_self",
         "inventory:view",
+        "invoice:view",
     },
 }
 
@@ -93,6 +100,52 @@ PHOTOS_DIR = Path(os.environ.get("PHOTOS_DIR", "uploads/photos"))
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 MAX_PHOTO_SIZE = 12 * 1024 * 1024  # 12 MB
 ALLOWED_PHOTO_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
+
+INVOICE_CURRENCY = os.environ.get("INVOICE_CURRENCY", "JMD")
+INVOICE_TAX_RATE = float(os.environ.get("INVOICE_TAX_RATE", "0.15"))   # Jamaica GCT standard
+
+# Jamaica tax reference — values change annually, verify with Tax Administration Jamaica (TAJ).
+# Used to auto-fill invoice GCT and as a reference for future payroll calculations.
+JAMAICA_TAX_REFERENCE = {
+    "currency": "JMD",
+    "currency_symbol": "J$",
+    "gct": {
+        "standard_rate": 0.15,
+        "tourism_rate":  0.10,
+        "label":         "General Consumption Tax (GCT)",
+    },
+    "payroll": {
+        "paye": {
+            "annual_threshold":   1_700_000,  # tax-free annual income
+            "band1_rate":         0.25,        # threshold → ~JMD 6M
+            "band2_rate":         0.30,        # above ~JMD 6M
+            "band2_min_annual":   6_000_000,
+            "label":              "Pay-As-You-Earn (PAYE)",
+        },
+        "nis": {
+            "employee_rate":      0.03,
+            "employer_rate":      0.03,
+            "label":              "National Insurance Scheme (NIS)",
+        },
+        "nht": {
+            "employee_rate":      0.02,
+            "employer_rate":      0.03,
+            "label":              "National Housing Trust (NHT)",
+        },
+        "education_tax": {
+            "employee_rate":      0.0225,
+            "employer_rate":      0.035,
+            "label":              "Education Tax",
+        },
+        "heart_trust": {
+            "employer_rate":      0.03,
+            "label":              "HEART Trust NTA",
+        },
+    },
+    "disclaimer": "Rates above reflect publicly known Jamaica statutory rates and change annually. "
+                  "Verify current rates with Tax Administration Jamaica (TAJ) before use.",
+    "source":     "https://www.jamaicatax.gov.jm",
+}
 
 TIER_LABELS = {
     "residential": "Residential — Home & Property",
@@ -405,6 +458,47 @@ class PartAdjust(BaseModel):
     quantity_delta: float          # signed: +receive, -use, ±adjust
     reason:         str = ""
     visit_id:       Optional[int] = None
+
+
+class InvoiceLineItem(BaseModel):
+    line_type:   str            # 'labor' | 'part' | 'other'
+    part_id:     Optional[int] = None
+    description: str
+    quantity:    float = 1
+    unit_price:  float = 0
+
+
+class InvoiceCreate(BaseModel):
+    customer_id: int
+    visit_id:    Optional[int] = None
+    issue_date:  str
+    due_date:    str
+    tax_rate:    float = 0.15
+    currency:    str = "JMD"
+    notes:       str = ""
+    line_items:  List[InvoiceLineItem] = []
+
+
+class InvoiceUpdate(BaseModel):
+    customer_id: int
+    visit_id:    Optional[int] = None
+    issue_date:  str
+    due_date:    str
+    tax_rate:    float = 0.15
+    notes:       str = ""
+    line_items:  List[InvoiceLineItem] = []
+
+
+class InvoiceStatusChange(BaseModel):
+    status: str   # 'draft' | 'sent' | 'paid' | 'cancelled'
+
+
+class InvoicePayment(BaseModel):
+    payment_date: str
+    amount:       float
+    method:       str = ""
+    reference:    str = ""
+    notes:        str = ""
 
 
 class TechForgotPin(BaseModel):
@@ -1134,6 +1228,138 @@ def admin_part_movements(request: Request, part_id: int):
     return get_part_movements(part_id)
 
 
+# ── Invoices ─────────────────────────────────────────────────────────────────
+
+@app.get("/api/admin/tax-reference")
+def admin_tax_reference(request: Request):
+    _require_admin(request)
+    return JAMAICA_TAX_REFERENCE
+
+
+@app.get("/api/admin/invoices")
+def admin_list_invoices(request: Request, status: Optional[str] = None):
+    _require_perm(request, "invoice:view")
+    return get_all_invoices(status=status)
+
+
+@app.get("/api/admin/invoices/{invoice_id}")
+def admin_get_invoice(request: Request, invoice_id: int):
+    _require_perm(request, "invoice:view")
+    inv = get_invoice_by_id(invoice_id)
+    if not inv:
+        raise HTTPException(404, "Invoice not found")
+    return inv
+
+
+@app.post("/api/admin/invoices")
+def admin_create_invoice(request: Request, body: InvoiceCreate):
+    admin = _require_perm(request, "invoice:create")
+    data = body.model_dump()
+    data["line_items"] = [li if isinstance(li, dict) else li.model_dump()
+                          for li in data.get("line_items", [])]
+    invoice_id = create_invoice(data, created_by=admin["id"])
+    inv = get_invoice_by_id(invoice_id, with_lines=False)
+    _audit_from(admin, "invoice.create", request,
+                target_type="invoice", target_id=invoice_id,
+                target_label=inv["invoice_number"],
+                after={"customer_id": body.customer_id, "total": inv["total"]})
+    return {"id": invoice_id, "invoice_number": inv["invoice_number"]}
+
+
+@app.put("/api/admin/invoices/{invoice_id}")
+def admin_update_invoice(request: Request, invoice_id: int, body: InvoiceUpdate):
+    admin = _require_perm(request, "invoice:update")
+    before = get_invoice_by_id(invoice_id, with_lines=False)
+    if not before:
+        raise HTTPException(404, "Invoice not found")
+    if before["status"] not in ("draft", "sent"):
+        raise HTTPException(400, f"Cannot edit a {before['status']} invoice")
+    data = body.model_dump()
+    data["line_items"] = [li if isinstance(li, dict) else li.model_dump()
+                          for li in data.get("line_items", [])]
+    update_invoice(invoice_id, data)
+    after = get_invoice_by_id(invoice_id, with_lines=False)
+    _audit_from(admin, "invoice.update", request,
+                target_type="invoice", target_id=invoice_id,
+                target_label=before["invoice_number"],
+                before={"total": before["total"]},
+                after={"total": after["total"]})
+    return {"ok": True}
+
+
+@app.put("/api/admin/invoices/{invoice_id}/status")
+def admin_invoice_status(request: Request, invoice_id: int, body: InvoiceStatusChange):
+    admin = _require_perm(request, "invoice:update")
+    inv = get_invoice_by_id(invoice_id, with_lines=False)
+    if not inv:
+        raise HTTPException(404, "Invoice not found")
+    if body.status not in ("draft", "sent", "paid", "cancelled"):
+        raise HTTPException(400, "Invalid status")
+    set_invoice_status(invoice_id, body.status)
+    _audit_from(admin, f"invoice.{body.status}", request,
+                target_type="invoice", target_id=invoice_id,
+                target_label=inv["invoice_number"],
+                before={"status": inv["status"]}, after={"status": body.status})
+    return {"ok": True}
+
+
+@app.delete("/api/admin/invoices/{invoice_id}")
+def admin_delete_invoice(request: Request, invoice_id: int):
+    admin = _require_perm(request, "invoice:delete")
+    inv = get_invoice_by_id(invoice_id, with_lines=False)
+    if not inv:
+        raise HTTPException(404, "Invoice not found")
+    if inv["status"] not in ("draft", "cancelled"):
+        raise HTTPException(400, "Only draft or cancelled invoices can be deleted")
+    delete_invoice(invoice_id)
+    _audit_from(admin, "invoice.delete", request,
+                target_type="invoice", target_id=invoice_id,
+                target_label=inv["invoice_number"], before=inv)
+    return {"ok": True}
+
+
+@app.post("/api/admin/invoices/{invoice_id}/payments")
+def admin_record_payment(request: Request, invoice_id: int, body: InvoicePayment):
+    admin = _require_perm(request, "invoice:record_payment")
+    inv = get_invoice_by_id(invoice_id, with_lines=False)
+    if not inv:
+        raise HTTPException(404, "Invoice not found")
+    if body.amount <= 0:
+        raise HTTPException(400, "Payment amount must be positive")
+    payment_id = record_invoice_payment(
+        invoice_id, body.model_dump(),
+        recorded_by=admin["id"],
+        recorded_by_label=admin.get("name"),
+        recorded_by_prid=admin.get("prid"),
+    )
+    after = get_invoice_by_id(invoice_id, with_lines=False)
+    _audit_from(admin, "invoice.payment", request,
+                target_type="invoice", target_id=invoice_id,
+                target_label=inv["invoice_number"],
+                after={"amount": body.amount, "method": body.method,
+                       "new_balance": round(after["total"] - after["amount_paid"], 2)})
+    return {"id": payment_id, "amount_paid": after["amount_paid"], "status": after["status"]}
+
+
+# Customer-side invoice access
+@app.get("/api/portal/invoices")
+def portal_invoices(request: Request):
+    customer_id = _require_customer(request)
+    return get_customer_invoices(customer_id)
+
+
+@app.get("/api/portal/invoices/{invoice_id}")
+def portal_invoice_detail(request: Request, invoice_id: int):
+    customer_id = _require_customer(request)
+    inv = get_invoice_by_id(invoice_id)
+    if not inv or inv["customer_id"] != customer_id:
+        raise HTTPException(404, "Invoice not found")
+    # Customers should not see drafts
+    if inv["status"] == "draft":
+        raise HTTPException(404, "Invoice not found")
+    return inv
+
+
 # ── Audit log ─────────────────────────────────────────────────────────────────
 
 @app.get("/api/admin/audit")
@@ -1411,6 +1637,16 @@ def admin_page():
 @app.get("/admin/reset")
 def admin_reset_page():
     return FileResponse("admin_reset.html")
+
+
+@app.get("/admin/invoice/{invoice_id}")
+def admin_invoice_print_page(invoice_id: int):
+    return FileResponse("invoice_print.html")
+
+
+@app.get("/portal/invoice/{invoice_id}")
+def portal_invoice_print_page(invoice_id: int):
+    return FileResponse("invoice_print.html")
 
 
 @app.get("/tech")

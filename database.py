@@ -227,6 +227,62 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_part_movements_part ON part_movements(part_id, created_at)")
 
     con.execute("""
+        CREATE TABLE IF NOT EXISTS invoices (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            invoice_number  TEXT NOT NULL UNIQUE,
+            customer_id     INTEGER NOT NULL REFERENCES customers(id),
+            visit_id        INTEGER REFERENCES maintenance_visits(id),
+            issue_date      TEXT NOT NULL,
+            due_date        TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'draft',
+            subtotal        REAL NOT NULL DEFAULT 0,
+            tax_rate        REAL NOT NULL DEFAULT 0,
+            tax_amount      REAL NOT NULL DEFAULT 0,
+            total           REAL NOT NULL DEFAULT 0,
+            amount_paid     REAL NOT NULL DEFAULT 0,
+            currency        TEXT NOT NULL DEFAULT 'TTD',
+            notes           TEXT,
+            sent_at         TEXT,
+            paid_at         TEXT,
+            created_by      INTEGER REFERENCES admin_users(id),
+            created_at      TEXT NOT NULL,
+            updated_at      TEXT NOT NULL
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS invoice_line_items (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            invoice_id    INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+            line_type     TEXT NOT NULL,
+            part_id       INTEGER REFERENCES parts(id),
+            description   TEXT NOT NULL,
+            quantity      REAL NOT NULL DEFAULT 1,
+            unit_price    REAL NOT NULL DEFAULT 0,
+            line_total    REAL NOT NULL DEFAULT 0,
+            sort_order    INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS invoice_payments (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            invoice_id    INTEGER NOT NULL REFERENCES invoices(id),
+            payment_date  TEXT NOT NULL,
+            amount        REAL NOT NULL,
+            method        TEXT,
+            reference     TEXT,
+            notes         TEXT,
+            recorded_by   INTEGER REFERENCES admin_users(id),
+            recorded_by_label TEXT,
+            recorded_by_prid  TEXT,
+            created_at    TEXT NOT NULL
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_invoices_customer ON invoices(customer_id, created_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_invoices_status   ON invoices(status, due_date)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_invoice_lines     ON invoice_line_items(invoice_id, sort_order)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_invoice_payments  ON invoice_payments(invoice_id, payment_date)")
+
+    con.execute("""
         CREATE TABLE IF NOT EXISTS audit_log (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             actor_type   TEXT NOT NULL,
@@ -1429,6 +1485,249 @@ def get_part_movements(part_id: int, limit: int = 100):
     ).fetchall()
     con.close()
     return [dict(r) for r in rows]
+
+
+# ── Invoices ─────────────────────────────────────────────────────────────────
+
+def _next_invoice_number() -> str:
+    """Sequential year-prefixed: INV-2026-0001."""
+    year = datetime.now(timezone.utc).year
+    prefix = f"INV-{year}-"
+    con = _con()
+    row = con.execute(
+        "SELECT MAX(CAST(SUBSTR(invoice_number, ?) AS INTEGER)) AS max_seq "
+        "FROM invoices WHERE invoice_number LIKE ?",
+        (len(prefix) + 1, f"{prefix}%"),
+    ).fetchone()
+    con.close()
+    next_seq = (row["max_seq"] or 0) + 1
+    return f"{prefix}{next_seq:04d}"
+
+
+def _recompute_invoice_totals(con, invoice_id: int):
+    """Recompute subtotal, tax_amount, total from line items + tax_rate.
+    Caller is responsible for committing."""
+    inv = con.execute("SELECT tax_rate FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
+    if not inv:
+        return
+    tax_rate = float(inv["tax_rate"] or 0)
+    subtotal = con.execute(
+        "SELECT COALESCE(SUM(line_total), 0) AS s FROM invoice_line_items WHERE invoice_id = ?",
+        (invoice_id,),
+    ).fetchone()["s"]
+    subtotal = round(float(subtotal), 2)
+    tax_amount = round(subtotal * tax_rate, 2)
+    total      = round(subtotal + tax_amount, 2)
+    paid = con.execute(
+        "SELECT COALESCE(SUM(amount), 0) AS p FROM invoice_payments WHERE invoice_id = ?",
+        (invoice_id,),
+    ).fetchone()["p"]
+    paid = round(float(paid), 2)
+    con.execute(
+        "UPDATE invoices SET subtotal=?, tax_amount=?, total=?, amount_paid=?, updated_at=? WHERE id=?",
+        (subtotal, tax_amount, total, paid, datetime.now(timezone.utc).isoformat(), invoice_id),
+    )
+
+
+def create_invoice(data: dict, created_by: int = None) -> int:
+    now = datetime.now(timezone.utc).isoformat()
+    inv_no = _next_invoice_number()
+    con = _con()
+    cur = con.execute(
+        """
+        INSERT INTO invoices
+            (invoice_number, customer_id, visit_id, issue_date, due_date,
+             status, tax_rate, currency, notes, created_by, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            inv_no,
+            int(data["customer_id"]),
+            data.get("visit_id") or None,
+            data["issue_date"],
+            data["due_date"],
+            float(data.get("tax_rate") or 0),
+            data.get("currency") or "TTD",
+            data.get("notes", ""),
+            created_by, now, now,
+        ),
+    )
+    invoice_id = cur.lastrowid
+    for idx, li in enumerate(data.get("line_items", []) or []):
+        qty   = float(li.get("quantity") or 0)
+        price = float(li.get("unit_price") or 0)
+        con.execute(
+            """
+            INSERT INTO invoice_line_items
+                (invoice_id, line_type, part_id, description, quantity, unit_price, line_total, sort_order)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (invoice_id, li.get("line_type", "other"), li.get("part_id") or None,
+             li.get("description", ""), qty, price, round(qty * price, 2), idx),
+        )
+    _recompute_invoice_totals(con, invoice_id)
+    con.commit()
+    con.close()
+    return invoice_id
+
+
+def update_invoice(invoice_id: int, data: dict):
+    """Replaces line items wholesale and updates header fields."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    con.execute(
+        """
+        UPDATE invoices SET
+            customer_id = ?, visit_id = ?, issue_date = ?, due_date = ?,
+            tax_rate = ?, notes = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            int(data["customer_id"]),
+            data.get("visit_id") or None,
+            data["issue_date"],
+            data["due_date"],
+            float(data.get("tax_rate") or 0),
+            data.get("notes", ""),
+            now, invoice_id,
+        ),
+    )
+    con.execute("DELETE FROM invoice_line_items WHERE invoice_id = ?", (invoice_id,))
+    for idx, li in enumerate(data.get("line_items", []) or []):
+        qty   = float(li.get("quantity") or 0)
+        price = float(li.get("unit_price") or 0)
+        con.execute(
+            """
+            INSERT INTO invoice_line_items
+                (invoice_id, line_type, part_id, description, quantity, unit_price, line_total, sort_order)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (invoice_id, li.get("line_type", "other"), li.get("part_id") or None,
+             li.get("description", ""), qty, price, round(qty * price, 2), idx),
+        )
+    _recompute_invoice_totals(con, invoice_id)
+    con.commit()
+    con.close()
+
+
+def get_invoice_by_id(invoice_id: int, with_lines: bool = True):
+    con = _con()
+    row = con.execute(
+        """
+        SELECT i.*, c.name AS customer_name, c.company AS customer_company,
+               c.customer_code, c.email AS customer_email, c.phone AS customer_phone,
+               c.address AS customer_address
+        FROM invoices i
+        JOIN customers c ON i.customer_id = c.id
+        WHERE i.id = ?
+        """,
+        (invoice_id,),
+    ).fetchone()
+    if not row:
+        con.close()
+        return None
+    inv = dict(row)
+    if with_lines:
+        inv["line_items"] = [dict(r) for r in con.execute(
+            "SELECT * FROM invoice_line_items WHERE invoice_id = ? ORDER BY sort_order, id",
+            (invoice_id,),
+        ).fetchall()]
+        inv["payments"] = [dict(r) for r in con.execute(
+            "SELECT * FROM invoice_payments WHERE invoice_id = ? ORDER BY payment_date, id",
+            (invoice_id,),
+        ).fetchall()]
+    con.close()
+    return inv
+
+
+def get_all_invoices(status: str = None, customer_id: int = None):
+    con = _con()
+    sql = """
+        SELECT i.*, c.name AS customer_name, c.customer_code
+        FROM invoices i
+        JOIN customers c ON i.customer_id = c.id
+    """
+    args = []
+    where = []
+    if status:
+        where.append("i.status = ?"); args.append(status)
+    if customer_id is not None:
+        where.append("i.customer_id = ?"); args.append(customer_id)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY i.created_at DESC"
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def get_customer_invoices(customer_id: int):
+    return get_all_invoices(customer_id=customer_id)
+
+
+def set_invoice_status(invoice_id: int, status: str):
+    now = datetime.now(timezone.utc).isoformat()
+    extra_sql = ""
+    extra_args = ()
+    if status == "sent":
+        extra_sql = ", sent_at = COALESCE(sent_at, ?)"
+        extra_args = (now,)
+    elif status == "paid":
+        extra_sql = ", paid_at = COALESCE(paid_at, ?)"
+        extra_args = (now,)
+    con = _con()
+    con.execute(
+        f"UPDATE invoices SET status = ?, updated_at = ? {extra_sql} WHERE id = ?",
+        (status, now, *extra_args, invoice_id),
+    )
+    con.commit()
+    con.close()
+
+
+def delete_invoice(invoice_id: int):
+    con = _con()
+    con.execute("DELETE FROM invoice_payments  WHERE invoice_id = ?", (invoice_id,))
+    con.execute("DELETE FROM invoice_line_items WHERE invoice_id = ?", (invoice_id,))
+    con.execute("DELETE FROM invoices WHERE id = ?", (invoice_id,))
+    con.commit()
+    con.close()
+
+
+def record_invoice_payment(invoice_id: int, data: dict,
+                            recorded_by: int = None,
+                            recorded_by_label: str = None,
+                            recorded_by_prid: str = None) -> int:
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    cur = con.execute(
+        """
+        INSERT INTO invoice_payments
+            (invoice_id, payment_date, amount, method, reference, notes,
+             recorded_by, recorded_by_label, recorded_by_prid, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            invoice_id,
+            data["payment_date"],
+            float(data["amount"]),
+            data.get("method", ""),
+            data.get("reference", ""),
+            data.get("notes", ""),
+            recorded_by, recorded_by_label, recorded_by_prid, now,
+        ),
+    )
+    payment_id = cur.lastrowid
+    _recompute_invoice_totals(con, invoice_id)
+    # Auto-flip to paid if fully covered
+    row = con.execute("SELECT total, amount_paid FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
+    if row and float(row["amount_paid"]) >= float(row["total"]) - 0.005 and float(row["total"]) > 0:
+        con.execute(
+            "UPDATE invoices SET status='paid', paid_at = COALESCE(paid_at, ?), updated_at=? WHERE id=?",
+            (now, now, invoice_id),
+        )
+    con.commit()
+    con.close()
+    return payment_id
 
 
 # ── Bootstrap first super admin ──────────────────────────────────────────────
