@@ -1,14 +1,18 @@
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone, timedelta
-
-from typing import Optional, List
-from datetime import datetime as _dt
-from pathlib import Path
 from collections import deque
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from threading import Lock
-import time
-import hmac
+from typing import Optional, List
+
+import base64
 import hashlib
+import hmac
+import io
+import json as _json
+import os
+import secrets as _secrets
+import time
 import uuid
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form, Response
@@ -17,14 +21,9 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import jwt
-import os
-import io
-import base64
-import json as _json
-import secrets as _secrets
-import resend as resend_lib
 import pyotp
 import qrcode
+import resend as resend_lib
 
 from database import (
     init_db, save_submission, bootstrap_super_admin,
@@ -411,7 +410,7 @@ def _require_recent_mfa(request: Request, admin: dict, max_age_seconds: int = No
         raise HTTPException(status_code=401, detail="Recent MFA required",
                             headers={"X-Require-MFA-Reauth": "true"})
     try:
-        last = _dt.fromisoformat(mfa_at.replace("Z", "+00:00"))
+        last = datetime.fromisoformat(mfa_at.replace("Z", "+00:00"))
         age = (datetime.now(timezone.utc) - last).total_seconds()
     except Exception:
         age = max_age + 1
@@ -1338,7 +1337,7 @@ def tech_start_job(request: Request, visit_id: int):
     if visit["status"] == "completed":
         raise HTTPException(400, "Job already completed")
 
-    now_iso = _dt.now(timezone.utc).isoformat()
+    now_iso = datetime.now(timezone.utc).isoformat()
     update_visit_time(visit_id, "start_time", now_iso)
     # bump status to in_progress
     update_visit(visit_id, {
@@ -1356,7 +1355,7 @@ def tech_complete_job(request: Request, visit_id: int, body: TechCompleteVisit):
     if not visit or visit.get("assigned_tech_id") != tech_id:
         raise HTTPException(404, "Job not found")
 
-    now      = _dt.now(timezone.utc)
+    now      = datetime.now(timezone.utc)
     end_iso  = now.isoformat()
     today    = now.date().isoformat()
     tech_complete_visit(
@@ -1439,22 +1438,12 @@ def admin_login(req: AdminLoginRequest, request: Request, response: Response):
             {"sub": str(admin["id"]), "type": "admin_pre_mfa"},
             MFA_TOKEN_TTL,
         )
-        log_audit(
-            actor_type="admin", actor_id=admin["id"],
-            actor_prid=admin.get("prid"), actor_label=admin.get("name"),
-            actor_role=admin.get("role"), action="admin.login.password_ok",
-            ip_address=_client_ip(request),
-        )
+        _audit_from(admin, "admin.login.password_ok", request)
         return {"requires_mfa": True, "mfa_token": mfa_token, "name": admin["name"]}
 
     token, _ = _issue_session("admin", admin["id"], timedelta(hours=12), request)
     _set_session_cookie(response, COOKIE_ADMIN, token, 12 * 3600)
-    log_audit(
-        actor_type="admin", actor_id=admin["id"],
-        actor_prid=admin.get("prid"), actor_label=admin.get("name"),
-        actor_role=admin.get("role"), action="admin.login",
-        ip_address=_client_ip(request),
-    )
+    _audit_from(admin, "admin.login", request)
     return {
         "token":    token,
         "name":     admin["name"],
@@ -1485,24 +1474,14 @@ def admin_mfa_verify(body: MfaVerify, request: Request, response: Response):
         raise HTTPException(401, "MFA not configured")
 
     if not _verify_admin_totp_or_backup(admin, body.code):
-        log_audit(
-            actor_type="admin", actor_id=admin["id"],
-            actor_prid=admin.get("prid"), actor_label=admin.get("name"),
-            actor_role=admin.get("role"), action="admin.mfa.fail",
-            ip_address=_client_ip(request),
-        )
+        _audit_from(admin, "admin.mfa.fail", request)
         raise HTTPException(401, "Incorrect code")
 
     token, jti = _issue_session("admin", admin["id"], timedelta(hours=12), request)
     # Stamp the session as having just passed MFA — used to gate Tier-3 access.
     mark_session_mfa_verified(jti)
     _set_session_cookie(response, COOKIE_ADMIN, token, 12 * 3600)
-    log_audit(
-        actor_type="admin", actor_id=admin["id"],
-        actor_prid=admin.get("prid"), actor_label=admin.get("name"),
-        actor_role=admin.get("role"), action="admin.login.mfa_ok",
-        ip_address=_client_ip(request),
-    )
+    _audit_from(admin, "admin.login.mfa_ok", request)
     return {
         "token":    token,
         "name":     admin["name"],
@@ -1526,12 +1505,7 @@ def admin_mfa_reauth(request: Request, body: MfaActivate):
                   max_attempts=10, window_seconds=15 * 60,
                   message="Too many MFA attempts. Please wait and try again.")
     if not _verify_admin_totp_or_backup(admin, body.code):
-        log_audit(
-            actor_type="admin", actor_id=admin["id"],
-            actor_prid=admin.get("prid"), actor_label=admin.get("name"),
-            actor_role=admin.get("role"), action="admin.mfa.reauth_fail",
-            ip_address=_client_ip(request),
-        )
+        _audit_from(admin, "admin.mfa.reauth_fail", request)
         raise HTTPException(401, "Incorrect MFA code")
     jti = _current_session_jti(request, COOKIE_ADMIN)
     if jti:
@@ -1633,12 +1607,7 @@ def admin_logout(request: Request, response: Response):
     admin = None
     try:
         admin = _require_admin(request)
-        log_audit(
-            actor_type="admin", actor_id=admin["id"],
-            actor_prid=admin.get("prid"), actor_label=admin.get("name"),
-            actor_role=admin.get("role"), action="admin.logout",
-            ip_address=_client_ip(request),
-        )
+        _audit_from(admin, "admin.logout", request)
     except Exception:
         pass
     # Revoke the session row so the JWT can't be reused
@@ -1661,13 +1630,8 @@ def admin_logout_everywhere(request: Request, response: Response):
     admin = _require_admin(request)
     n = revoke_all_sessions_for("admin", admin["id"])
     _clear_session_cookie(response, COOKIE_ADMIN)
-    log_audit(
-        actor_type="admin", actor_id=admin["id"],
-        actor_prid=admin.get("prid"), actor_label=admin.get("name"),
-        actor_role=admin.get("role"), action="admin.logout_everywhere",
-        ip_address=_client_ip(request),
-        after_value={"revoked_count": n},
-    )
+    _audit_from(admin, "admin.logout_everywhere", request,
+                after={"revoked_count": n})
     return {"ok": True, "revoked": n}
 
 
@@ -1679,14 +1643,9 @@ def admin_revoke_session(request: Request, jti: str):
     if not sess or sess["subject_type"] != "admin" or sess["subject_id"] != admin["id"]:
         raise HTTPException(404, "Session not found")
     revoke_session(jti)
-    log_audit(
-        actor_type="admin", actor_id=admin["id"],
-        actor_prid=admin.get("prid"), actor_label=admin.get("name"),
-        actor_role=admin.get("role"), action="admin.session.revoke",
-        target_type="session", target_id=sess["id"],
-        target_label=(sess.get("user_agent") or "")[:50],
-        ip_address=_client_ip(request),
-    )
+    _audit_from(admin, "admin.session.revoke", request,
+                target_type="session", target_id=sess["id"],
+                target_label=(sess.get("user_agent") or "")[:50])
     return {"ok": True}
 
 
@@ -1888,8 +1847,8 @@ def admin_timesheets(request: Request,
     _require_perm(request, "timesheet:view_all")
     try:
         # Convert to ISO datetime at UTC midnight
-        start_iso = _dt.fromisoformat(start).replace(tzinfo=timezone.utc).isoformat()
-        end_iso   = _dt.fromisoformat(end).replace(tzinfo=timezone.utc).isoformat()
+        start_iso = datetime.fromisoformat(start).replace(tzinfo=timezone.utc).isoformat()
+        end_iso   = datetime.fromisoformat(end).replace(tzinfo=timezone.utc).isoformat()
     except ValueError:
         raise HTTPException(400, "start and end must be ISO dates (YYYY-MM-DD)")
     rows = get_timesheet_data(start_iso, end_iso, tech_id=tech_id)
@@ -1897,8 +1856,8 @@ def admin_timesheets(request: Request,
     for r in rows:
         if r.get("start_time") and r.get("end_time"):
             try:
-                s = _dt.fromisoformat(r["start_time"].replace("Z", "+00:00"))
-                e = _dt.fromisoformat(r["end_time"].replace("Z", "+00:00"))
+                s = datetime.fromisoformat(r["start_time"].replace("Z", "+00:00"))
+                e = datetime.fromisoformat(r["end_time"].replace("Z", "+00:00"))
                 r["duration_minutes"] = int((e - s).total_seconds() / 60)
             except Exception:
                 r["duration_minutes"] = None
@@ -2217,7 +2176,7 @@ async def admin_upload_document(
     expiry_clean = (expiry_date or "").strip()
     if expiry_clean:
         try:
-            _dt.fromisoformat(expiry_clean)
+            datetime.fromisoformat(expiry_clean)
         except ValueError:
             raise HTTPException(400, "expiry_date must be YYYY-MM-DD")
 
