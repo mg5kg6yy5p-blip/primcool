@@ -58,7 +58,7 @@ from database import (
     touch_document_accessed, soft_delete_document, hard_delete_document,
     get_expiring_documents,
     log_audit, query_audit_log, verify_audit_chain,
-    log_access, query_access_log, aggregate_access_by_target,
+    log_access, query_access_log, aggregate_access_by_target, purge_old_access_log,
     create_security_alert, recent_alert_exists, list_security_alerts,
     count_open_security_alerts, resolve_security_alert, detect_anomalies_for_actor,
     create_session, get_session_by_jti, is_session_active,
@@ -634,6 +634,16 @@ async def lifespan(app: FastAPI):
         if result:
             new_id, prid = result
             print(f"✓ Bootstrapped super_admin '{bs_user}' (id={new_id}, PRID={prid})")
+
+    # Data retention: purge access_log entries older than ACCESS_LOG_RETAIN_DAYS.
+    # Runs once on startup so server reboots double as a daily cron. Default 90
+    # days matches the audit-spec recommendation; override for tighter compliance.
+    retain_days = int(os.environ.get("ACCESS_LOG_RETAIN_DAYS", "90"))
+    try:
+        purge_old_access_log(days=retain_days)
+        print(f"✓ access_log retention: kept last {retain_days} days")
+    except Exception as e:
+        print(f"access_log purge skipped: {e}")
     yield
 
 
@@ -2167,6 +2177,21 @@ def admin_list_invoices(request: Request, status: Optional[str] = None):
     return get_all_invoices(status=status)
 
 
+@app.get("/api/admin/invoices/export")
+def admin_export_invoices(request: Request,
+                          status: Optional[str] = None,
+                          customer_id: Optional[int] = None):
+    admin = _require_perm(request, "invoice:export")
+    _enforce_export_rate(request, admin["id"], "invoice")
+    rows = get_all_invoices(status=status, customer_id=customer_id)
+    _audit_from(admin, "invoice.export", request, target_type="invoice",
+                target_label=f"exported {len(rows)} rows")
+    cols = ["id", "invoice_number", "customer_id", "visit_id", "issue_date",
+            "due_date", "subtotal", "gct_amount", "total", "amount_paid",
+            "status", "created_at"]
+    return _csv_response(rows, cols, f"invoices-{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv")
+
+
 @app.get("/api/admin/invoices/{invoice_id}")
 def admin_get_invoice(request: Request, invoice_id: int):
     _require_perm(request, "invoice:view")
@@ -2644,21 +2669,6 @@ def admin_export_visits(request: Request):
             "service_type", "status", "equipment_name", "work_performed",
             "created_at"]
     return _csv_response(rows, cols, f"visits-{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv")
-
-
-@app.get("/api/admin/invoices/export")
-def admin_export_invoices(request: Request,
-                          status: Optional[str] = None,
-                          customer_id: Optional[int] = None):
-    admin = _require_perm(request, "invoice:export")
-    _enforce_export_rate(request, admin["id"], "invoice")
-    rows = get_all_invoices(status=status, customer_id=customer_id)
-    _audit_from(admin, "invoice.export", request, target_type="invoice",
-                target_label=f"exported {len(rows)} rows")
-    cols = ["id", "invoice_number", "customer_id", "visit_id", "issue_date",
-            "due_date", "subtotal", "gct_amount", "total", "amount_paid",
-            "status", "created_at"]
-    return _csv_response(rows, cols, f"invoices-{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv")
 
 
 @app.get("/api/admin/audit")
