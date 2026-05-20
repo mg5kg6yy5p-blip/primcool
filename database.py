@@ -222,6 +222,9 @@ def init_db():
         ("prid",        "ALTER TABLE technicians ADD COLUMN prid TEXT"),
         ("hire_date",   "ALTER TABLE technicians ADD COLUMN hire_date TEXT"),
         ("hourly_rate", "ALTER TABLE technicians ADD COLUMN hourly_rate REAL NOT NULL DEFAULT 0"),
+        # Supervisor relationship — manager's admin_user.id, NULL if reports
+        # directly to director. Drives team-scoped audit visibility.
+        ("supervisor_id", "ALTER TABLE technicians ADD COLUMN supervisor_id INTEGER"),
     ):
         if name not in tech_cols:
             try: con.execute(sql)
@@ -253,6 +256,7 @@ def init_db():
         ("mfa_secret",    "ALTER TABLE admin_users ADD COLUMN mfa_secret TEXT"),
         ("mfa_enabled",   "ALTER TABLE admin_users ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 0"),
         ("backup_codes",  "ALTER TABLE admin_users ADD COLUMN backup_codes TEXT"),
+        ("supervisor_id", "ALTER TABLE admin_users ADD COLUMN supervisor_id INTEGER REFERENCES admin_users(id)"),
     ):
         if col not in admin_cols:
             try: con.execute(sql)
@@ -440,6 +444,12 @@ def init_db():
     if "chain_hash" not in audit_cols:
         try: con.execute("ALTER TABLE audit_log ADD COLUMN chain_hash TEXT")
         except sqlite3.OperationalError: pass
+    # retention_class: 'financial' (7yr) | 'operational' (24mo) | 'system' (kept).
+    # Set at write time by log_audit based on action prefix.
+    if "retention_class" not in audit_cols:
+        try: con.execute("ALTER TABLE audit_log ADD COLUMN retention_class TEXT NOT NULL DEFAULT 'operational'")
+        except sqlite3.OperationalError: pass
+    con.execute("CREATE INDEX IF NOT EXISTS idx_audit_retention ON audit_log(retention_class, created_at)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_audit_actor   ON audit_log(actor_id, created_at)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_audit_action  ON audit_log(action, created_at)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_audit_target  ON audit_log(target_type, target_id)")
@@ -1758,6 +1768,22 @@ def _audit_compute_hash(prev_hash: str, row: dict) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _classify_retention(action: str) -> str:
+    """Per audit spec, financial/legal-grade events are retained ~7 years;
+    operational events are retained ~24 months. Anything labelled 'system'
+    (retention purges, schema bootstraps) is kept indefinitely so we always
+    know what was discarded and when."""
+    a = (action or "").lower()
+    if a.startswith(("system.", "auth.", "admin.login", "admin.logout",
+                     "admin.mfa", "security.")):
+        return "system"
+    if a.startswith(("invoice.", "payment.", "po.", "count.",
+                     "inventory.received", "inventory.export",
+                     "customer.export", "tech.export", "visit.export")):
+        return "financial"
+    return "operational"
+
+
 def log_audit(
     actor_type: str,
     actor_id: int = None,
@@ -1787,6 +1813,7 @@ def log_audit(
         "ip_address":   ip_address,
         "created_at":   datetime.now(timezone.utc).isoformat(),
     }
+    retention_class = _classify_retention(action)
 
     # Serialize prev-read + insert so concurrent writers can't break the chain
     with _audit_lock:
@@ -1801,15 +1828,16 @@ def log_audit(
             INSERT INTO audit_log
                 (actor_type, actor_id, actor_prid, actor_label, actor_role,
                  action, target_type, target_id, target_label,
-                 before_value, after_value, ip_address, created_at, chain_hash)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 before_value, after_value, ip_address, created_at, chain_hash,
+                 retention_class)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 row["actor_type"],   row["actor_id"],   row["actor_prid"],
                 row["actor_label"],  row["actor_role"], row["action"],
                 row["target_type"],  row["target_id"],  row["target_label"],
                 row["before_value"], row["after_value"],row["ip_address"],
-                row["created_at"],   chain_hash,
+                row["created_at"],   chain_hash,        retention_class,
             ),
         )
         con.commit()
@@ -2696,13 +2724,222 @@ def aggregate_access_by_target(since: str = None, until: str = None,
     return out[:limit]
 
 
-def purge_old_access_log(days: int = 90):
+def purge_old_access_log(days: int = 90) -> int:
+    """Deletes access_log rows older than `days` and returns the count deleted.
+    Caller is responsible for writing the meta-audit row."""
     from datetime import timedelta as _td
     cutoff = (datetime.now(timezone.utc) - _td(days=days)).isoformat()
     con = _con()
+    n = con.execute("SELECT COUNT(*) AS n FROM access_log WHERE created_at < ?", (cutoff,)).fetchone()["n"]
     con.execute("DELETE FROM access_log WHERE created_at < ?", (cutoff,))
     con.commit()
     con.close()
+    return int(n)
+
+
+def purge_old_audit_log(financial_days: int = 365*7, operational_days: int = 365*2) -> dict:
+    """Two-tier audit-log retention. Financial/legal-class rows are kept the
+    full statutory window; operational rows roll off sooner. 'system' rows
+    (retention purges, security events) are NEVER purged — we always keep the
+    record that the record was deleted."""
+    from datetime import timedelta as _td
+    now = datetime.now(timezone.utc)
+    fin_cutoff = (now - _td(days=financial_days)).isoformat()
+    ops_cutoff = (now - _td(days=operational_days)).isoformat()
+    con = _con()
+    n_fin = con.execute(
+        "SELECT COUNT(*) AS n FROM audit_log WHERE retention_class='financial' AND created_at < ?",
+        (fin_cutoff,),
+    ).fetchone()["n"]
+    n_ops = con.execute(
+        "SELECT COUNT(*) AS n FROM audit_log WHERE retention_class='operational' AND created_at < ?",
+        (ops_cutoff,),
+    ).fetchone()["n"]
+    con.execute("DELETE FROM audit_log WHERE retention_class='financial'   AND created_at < ?", (fin_cutoff,))
+    con.execute("DELETE FROM audit_log WHERE retention_class='operational' AND created_at < ?", (ops_cutoff,))
+    con.commit()
+    con.close()
+    return {"financial_purged": int(n_fin), "operational_purged": int(n_ops),
+            "financial_cutoff": fin_cutoff, "operational_cutoff": ops_cutoff}
+
+
+def get_entity_history(target_type: str, target_id: int, limit: int = 500):
+    """Merge audit_log mutations + access_log reads for a given entity into a
+    single time-sorted timeline. For "customer" the lifecycle cascades to the
+    customer's equipment, visits, and invoices so the timeline matches the
+    spec's example: 'every hand that touched [the client], in order'.
+    The access_log doesn't carry target_type/id — we parse the path."""
+    import re as _re
+    con = _con()
+    # Build the set of (target_type, target_id) pairs to look up.
+    target_pairs = [(target_type, int(target_id))]
+    if target_type == "customer":
+        for eq in con.execute("SELECT id FROM equipment WHERE customer_id = ?", (int(target_id),)).fetchall():
+            target_pairs.append(("equipment", eq["id"]))
+        for v in con.execute("SELECT id FROM maintenance_visits WHERE customer_id = ?", (int(target_id),)).fetchall():
+            target_pairs.append(("visit", v["id"]))
+        try:
+            for i in con.execute("SELECT id FROM invoices WHERE customer_id = ?", (int(target_id),)).fetchall():
+                target_pairs.append(("invoice", i["id"]))
+        except Exception:
+            pass   # invoices table may not exist in very old test DBs
+    # Mutations: indexed by target_type+target_id directly.
+    where_pairs = " OR ".join(["(target_type=? AND target_id=?)"] * len(target_pairs))
+    pair_args = [v for pair in target_pairs for v in pair]
+    audits = con.execute(
+        f"""SELECT id, actor_type, actor_id, actor_prid, actor_label, actor_role,
+                  action, target_type, target_id, target_label,
+                  before_value, after_value, ip_address, created_at, chain_hash,
+                  retention_class
+             FROM audit_log
+            WHERE {where_pairs}
+            ORDER BY created_at DESC LIMIT ?""",
+        (*pair_args, limit),
+    ).fetchall()
+    # Reads: paths that mention this entity.
+    # Map target_type → URL path patterns.
+    path_map = {
+        "customer": ["/api/admin/customers/%d", "/api/admin/customers/%d/%%",
+                      "/api/tech/customers/%d"],
+        "visit":    ["/api/admin/visits/%d", "/api/admin/visits/%d/%%",
+                      "/api/tech/visits/%d", "/api/tech/jobs/%d"],
+        "tech":     ["/api/admin/techs/%d", "/api/admin/techs/%d/%%"],
+        "invoice":  ["/api/admin/invoices/%d", "/api/admin/invoices/%d/%%"],
+        "part":     ["/api/admin/parts/%d", "/api/admin/parts/%d/%%"],
+        "purchase_order": ["/api/admin/purchase-orders/%d", "/api/admin/purchase-orders/%d/%%"],
+        "review":   ["/api/admin/reviews/%d", "/api/admin/reviews/%d/%%"],
+        "document": ["/api/documents/%d", "/api/documents/%d/%%"],
+    }
+    patterns = [pat % int(target_id) for pat in path_map.get(target_type, [])]
+    reads = []
+    if patterns:
+        ph = " OR ".join("path LIKE ?" for _ in patterns)
+        reads = con.execute(
+            f"""SELECT id, actor_type, actor_id, actor_prid, actor_label,
+                       method, path, status_code, ip_address, created_at
+                  FROM access_log
+                 WHERE ({ph})
+                 ORDER BY created_at DESC LIMIT ?""",
+            (*patterns, limit),
+        ).fetchall()
+    con.close()
+    # Merge into a uniform shape.
+    out = []
+    for r in audits:
+        d = dict(r); d["event_kind"] = "mutation"; out.append(d)
+    for r in reads:
+        d = dict(r)
+        d["event_kind"]  = "read"
+        d["action"]      = f"read.{d.get('method','GET')}"
+        d["target_type"] = target_type
+        d["target_id"]   = int(target_id)
+        d["target_label"] = d.get("path")
+        out.append(d)
+    out.sort(key=lambda e: e["created_at"], reverse=True)
+    return out[:limit]
+
+
+# ── Watcher logging (debounced) ──────────────────────────────────────────────
+# Logging the act of querying the audit log itself, per spec. We debounce by
+# (actor, action_kind) so refreshing the audit tab doesn't fill the chain
+# with one row per HTTP refresh.
+_WATCHER_DEBOUNCE_SEC = 30
+_watcher_seen: dict = {}
+_watcher_lock = threading.Lock()
+
+
+def watcher_should_log(actor_id: int, kind: str) -> bool:
+    """Returns True if this (actor, kind) pair hasn't been logged in the last
+    _WATCHER_DEBOUNCE_SEC seconds. Updates the cache as a side effect."""
+    import time as _time
+    now = _time.time()
+    key = (actor_id or 0, kind)
+    with _watcher_lock:
+        last = _watcher_seen.get(key, 0)
+        if now - last < _WATCHER_DEBOUNCE_SEC:
+            return False
+        _watcher_seen[key] = now
+        # Prune occasionally to keep memory bounded
+        if len(_watcher_seen) > 1000:
+            cutoff = now - 3600
+            for k in list(_watcher_seen.keys()):
+                if _watcher_seen[k] < cutoff:
+                    del _watcher_seen[k]
+    return True
+
+
+# ── Supervisor relationship (team-scoped audit view) ─────────────────────────
+def subordinate_ids_for(supervisor_admin_id: int) -> dict:
+    """Returns {admin_ids: [...], tech_ids: [...]} of users reporting to this
+    supervisor. Used to scope audit:view_all for supervisor_admin."""
+    con = _con()
+    admin_rows = con.execute(
+        "SELECT id FROM admin_users WHERE supervisor_id = ?", (supervisor_admin_id,),
+    ).fetchall()
+    tech_rows = con.execute(
+        "SELECT id FROM technicians WHERE supervisor_id = ?", (supervisor_admin_id,),
+    ).fetchall()
+    con.close()
+    return {
+        "admin_ids": [r["id"] for r in admin_rows],
+        "tech_ids":  [r["id"] for r in tech_rows],
+    }
+
+
+def set_admin_supervisor(admin_id: int, supervisor_id):
+    con = _con()
+    con.execute("UPDATE admin_users SET supervisor_id = ? WHERE id = ?",
+                (int(supervisor_id) if supervisor_id else None, admin_id))
+    con.commit()
+    con.close()
+
+
+def set_tech_supervisor(tech_id: int, supervisor_id):
+    con = _con()
+    con.execute("UPDATE technicians SET supervisor_id = ? WHERE id = ?",
+                (int(supervisor_id) if supervisor_id else None, tech_id))
+    con.commit()
+    con.close()
+
+
+def query_audit_log_team(supervisor_admin_id: int, action_prefix: str = None,
+                          target_type: str = None, since: str = None,
+                          until: str = None, limit: int = 200):
+    """Same shape as query_audit_log but filtered to actions by this
+    supervisor's subordinates OR by themselves. Admin-side and tech-side
+    subordinates both included."""
+    subs = subordinate_ids_for(supervisor_admin_id)
+    admin_ids = subs["admin_ids"] + [supervisor_admin_id]
+    tech_ids  = subs["tech_ids"]
+    where = []
+    args  = []
+    # Build the actor filter: (actor_type='admin' AND actor_id IN admin_ids)
+    #                      OR (actor_type='tech'  AND actor_id IN tech_ids)
+    clauses = []
+    if admin_ids:
+        clauses.append(f"(actor_type='admin' AND actor_id IN ({','.join(['?']*len(admin_ids))}))")
+        args.extend(admin_ids)
+    if tech_ids:
+        clauses.append(f"(actor_type='tech'  AND actor_id IN ({','.join(['?']*len(tech_ids))}))")
+        args.extend(tech_ids)
+    if not clauses:
+        # No subordinates and somehow no self-id: nothing visible
+        return []
+    where.append("(" + " OR ".join(clauses) + ")")
+    if action_prefix:
+        where.append("action LIKE ?"); args.append(action_prefix + "%")
+    if target_type:
+        where.append("target_type = ?"); args.append(target_type)
+    if since:
+        where.append("created_at >= ?"); args.append(since)
+    if until:
+        where.append("created_at <= ?"); args.append(until)
+    sql = "SELECT * FROM audit_log WHERE " + " AND ".join(where) + " ORDER BY created_at DESC LIMIT ?"
+    args.append(int(limit))
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
 
 
 # ── Security alerts (anomaly detection) ──────────────────────────────────────

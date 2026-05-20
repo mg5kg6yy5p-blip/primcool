@@ -66,7 +66,10 @@ from database import (
     touch_document_accessed, soft_delete_document, hard_delete_document,
     get_expiring_documents,
     log_audit, query_audit_log, verify_audit_chain,
-    log_access, query_access_log, aggregate_access_by_target, purge_old_access_log,
+    log_access, query_access_log, aggregate_access_by_target,
+    purge_old_access_log, purge_old_audit_log,
+    get_entity_history, watcher_should_log, query_audit_log_team,
+    set_admin_supervisor, set_tech_supervisor, subordinate_ids_for,
     create_security_alert, recent_alert_exists, list_security_alerts,
     count_open_security_alerts, resolve_security_alert, detect_anomalies_for_actor,
     create_session, get_session_by_jti, is_session_active,
@@ -628,6 +631,25 @@ def _require_perm(request: Request, perm: str):
     return admin
 
 
+def _audit_anon(action: str, request: Request, *,
+                attempted_identity: str = "",
+                actor_type: str = "anonymous",
+                target_label: str = None):
+    """Audit-log a sensitive event with no authenticated actor — failed
+    logins, lockouts, etc. attempted_identity is the username/PRID the
+    caller tried, preserved as actor_label for later forensics."""
+    log_audit(
+        actor_type=actor_type,
+        actor_id=None,
+        actor_prid=None,
+        actor_label=(attempted_identity or "")[:80] or None,
+        actor_role=None,
+        action=action,
+        target_label=target_label,
+        ip_address=_client_ip(request),
+    )
+
+
 def _audit_from(admin: dict, action: str, request: Request,
                 target_type: str = None, target_id: int = None,
                 target_label: str = None, before=None, after=None):
@@ -662,15 +684,42 @@ async def lifespan(app: FastAPI):
             new_id, prid = result
             print(f"✓ Bootstrapped super_admin '{bs_user}' (id={new_id}, PRID={prid})")
 
-    # Data retention: purge access_log entries older than ACCESS_LOG_RETAIN_DAYS.
-    # Runs once on startup so server reboots double as a daily cron. Default 90
-    # days matches the audit-spec recommendation; override for tighter compliance.
-    retain_days = int(os.environ.get("ACCESS_LOG_RETAIN_DAYS", "90"))
+    # Data retention. Two-tier audit policy per spec:
+    #   - financial/legal events (invoices, POs, counts, exports): 7 years
+    #   - operational events (CRUD on records, schedule edits, etc):  24 months
+    #   - access_log reads:                                            90 days
+    # 'system' rows (login/logout/security/retention itself) are NEVER purged.
+    # Each purge writes a system.retention_purge audit row so we keep the
+    # record that the record was discarded.
+    access_retain_days = int(os.environ.get("ACCESS_LOG_RETAIN_DAYS", "90"))
+    fin_retain_days    = int(os.environ.get("AUDIT_FINANCIAL_RETAIN_DAYS",   str(365 * 7)))
+    ops_retain_days    = int(os.environ.get("AUDIT_OPERATIONAL_RETAIN_DAYS", str(365 * 2)))
     try:
-        purge_old_access_log(days=retain_days)
-        print(f"✓ access_log retention: kept last {retain_days} days")
+        n = purge_old_access_log(days=access_retain_days)
+        print(f"✓ access_log retention: kept last {access_retain_days} days "
+              f"({n} rows purged)")
+        if n > 0:
+            log_audit(actor_type="system", action="system.retention_purge",
+                      target_type="access_log",
+                      target_label=f"purged {n} rows older than {access_retain_days}d",
+                      after_value={"count": n, "days": access_retain_days})
     except Exception as e:
         print(f"access_log purge skipped: {e}")
+    try:
+        r = purge_old_audit_log(financial_days=fin_retain_days,
+                                 operational_days=ops_retain_days)
+        if r["financial_purged"] or r["operational_purged"]:
+            print(f"✓ audit_log retention: purged {r['financial_purged']} financial "
+                  f"+ {r['operational_purged']} operational rows")
+            log_audit(actor_type="system", action="system.retention_purge",
+                      target_type="audit_log",
+                      target_label=f"financial>{fin_retain_days}d → {r['financial_purged']}; "
+                                   f"operational>{ops_retain_days}d → {r['operational_purged']}",
+                      after_value=r)
+        else:
+            print(f"✓ audit_log retention: nothing to purge")
+    except Exception as e:
+        print(f"audit_log purge skipped: {e}")
     yield
 
 
@@ -685,13 +734,22 @@ _ACCESS_LOG_SKIP_PREFIXES = (
 # Endpoints whose own purpose is reading the logs themselves — skipping them
 # prevents the access log from filling up just from the Audit tab refreshing.
 _ACCESS_LOG_SKIP_EXACT = {
-    "/api/admin/audit",
-    "/api/admin/audit/verify",
-    "/api/admin/access",
-    "/api/admin/access/aggregate",
-    "/api/admin/security/alerts",
+    # These endpoints emit their OWN audit_log row (watcher logging) so they
+    # don't need to clutter access_log too. Sessions probe is high-noise and
+    # not security-sensitive.
     "/api/admin/security/alerts/summary",
     "/api/admin/sessions",
+}
+
+# Endpoints whose access we want recorded in audit_log (not just access_log)
+# because looking at the audit trail must itself leave a footprint.
+# Debounced per-actor by watcher_should_log() to avoid refresh-spam.
+_AUDIT_WATCHER_PATHS = {
+    "/api/admin/audit":                "audit.viewed",
+    "/api/admin/audit/verify":         "audit.chain_verified",
+    "/api/admin/access":               "audit.access_log_viewed",
+    "/api/admin/access/aggregate":     "audit.aggregate_viewed",
+    "/api/admin/security/alerts":      "audit.alerts_viewed",
 }
 
 
@@ -819,6 +877,22 @@ async def access_log_middleware(request: Request, call_next):
             user_agent=(request.headers.get("user-agent", "") or "")[:255],
         )
         _run_anomaly_detector(actor.get("actor_type"), actor.get("actor_id"))
+        # Watcher logging: looking at the audit/security trail must leave a
+        # footprint in the audit log itself. Debounced so refresh ≠ spam.
+        if path in _AUDIT_WATCHER_PATHS and 200 <= response.status_code < 300:
+            try:
+                if watcher_should_log(actor.get("actor_id"), path):
+                    log_audit(
+                        actor_type=actor.get("actor_type"),
+                        actor_id=actor.get("actor_id"),
+                        actor_prid=actor.get("actor_prid"),
+                        actor_label=actor.get("actor_label"),
+                        action=_AUDIT_WATCHER_PATHS[path],
+                        target_label=str(request.url.query)[:255] or None,
+                        ip_address=_client_ip(request),
+                    )
+            except Exception as e:
+                print(f"watcher_log error: {e}")
     except Exception as e:
         print(f"access_log error: {e}")
     return response
@@ -1282,7 +1356,13 @@ def portal_login(req: PortalLoginRequest, request: Request, response: Response):
     if not customer:
         existing = get_customer_by_code(req.code)
         if existing and not existing.get("pin_hash"):
+            _audit_anon("auth.login_failed", request,
+                        attempted_identity=req.code, actor_type="customer",
+                        target_label="no PIN set")
             raise HTTPException(403, "No PIN set on your account yet. Please contact PrimeCool to set one up.")
+        _audit_anon("auth.login_failed", request,
+                    attempted_identity=req.code, actor_type="customer",
+                    target_label="invalid code or PIN")
         raise HTTPException(401, "Invalid customer ID or PIN")
     token, _ = _issue_session("customer", customer["id"], timedelta(days=30), request)
     _set_session_cookie(response, COOKIE_CUSTOMER, token, 30 * 24 * 3600)
@@ -1442,6 +1522,10 @@ def tech_login(req: TechLogin, request: Request, response: Response):
     _enforce_login_rate(request, req.tech_code)
     tech = verify_tech(req.tech_code, req.pin)
     if not tech:
+        _audit_anon("auth.login_failed", request,
+                    attempted_identity=req.tech_code,
+                    actor_type="tech",
+                    target_label="invalid PRID or PIN")
         raise HTTPException(401, "Invalid tech code or PIN")
     token, _ = _issue_session("tech", tech["id"], timedelta(days=7), request)
     _set_session_cookie(response, COOKIE_TECH, token, 7 * 24 * 3600)
@@ -1769,8 +1853,16 @@ def admin_login(req: AdminLoginRequest, request: Request, response: Response):
     _enforce_login_rate(request, req.username)
     admin = verify_admin_user(req.username, req.password)
     if not admin:
+        _audit_anon("auth.login_failed", request,
+                    attempted_identity=req.username,
+                    actor_type="admin",
+                    target_label="invalid credentials")
         raise HTTPException(401, "Invalid username or password")
     if not admin.get("active"):
+        _audit_anon("auth.login_failed", request,
+                    attempted_identity=req.username,
+                    actor_type="admin",
+                    target_label="account deactivated")
         raise HTTPException(403, "Account is deactivated")
 
     # MFA gate
@@ -3117,6 +3209,15 @@ def admin_audit(request: Request,
                 until: Optional[str] = None,
                 limit: int = 200):
     admin = _require_admin(request)
+    # super_admin (director) sees everything. supervisor_admin (manager) sees
+    # only actions by their subordinates — the spec requires the visibility
+    # to drop one level. Others fall through to view_self.
+    if admin["role"] == "super_admin" and _admin_can(admin["role"], "audit:view_all"):
+        return query_audit_log(actor_id=actor_id, action_prefix=action_prefix,
+                               target_type=target_type, since=since, until=until, limit=limit)
+    if admin["role"] == "supervisor_admin" and _admin_can(admin["role"], "audit:view_all"):
+        return query_audit_log_team(admin["id"], action_prefix=action_prefix,
+                                     target_type=target_type, since=since, until=until, limit=limit)
     if _admin_can(admin["role"], "audit:view_all"):
         return query_audit_log(actor_id=actor_id, action_prefix=action_prefix,
                                target_type=target_type, since=since, until=until, limit=limit)
@@ -3124,6 +3225,59 @@ def admin_audit(request: Request,
         return query_audit_log(actor_id=admin["id"], action_prefix=action_prefix,
                                target_type=target_type, since=since, until=until, limit=limit)
     raise HTTPException(403, "Forbidden")
+
+
+@app.get("/api/admin/history/{target_type}/{target_id}")
+def admin_entity_history(request: Request, target_type: str, target_id: int,
+                          limit: int = 500):
+    """Per-entity timeline: every mutation AND every read of this object,
+    merged and time-sorted. The spec's "pull up any client/job/part/user
+    and see its entire lifecycle" requirement. Same role gating as audit
+    view — supervisor sees only their team's involvement; super_admin sees
+    everything; view_self sees only the actor's own activity."""
+    admin = _require_admin(request)
+    rows = get_entity_history(target_type, target_id, limit=limit)
+    if admin["role"] == "super_admin" and _admin_can(admin["role"], "audit:view_all"):
+        return rows
+    if admin["role"] == "supervisor_admin" and _admin_can(admin["role"], "audit:view_all"):
+        subs = subordinate_ids_for(admin["id"])
+        admin_ids = set(subs["admin_ids"] + [admin["id"]])
+        tech_ids  = set(subs["tech_ids"])
+        return [r for r in rows if
+                (r.get("actor_type") == "admin" and r.get("actor_id") in admin_ids)
+             or (r.get("actor_type") == "tech"  and r.get("actor_id") in tech_ids)
+             or (r.get("actor_type") == "anonymous")]
+    if _admin_can(admin["role"], "audit:view_self"):
+        return [r for r in rows if r.get("actor_id") == admin["id"]]
+    raise HTTPException(403, "Forbidden")
+
+
+class SupervisorAssign(BaseModel):
+    supervisor_id: Optional[int] = None
+
+
+@app.put("/api/admin/users/{user_id}/supervisor")
+def admin_set_admin_supervisor(request: Request, user_id: int, body: SupervisorAssign):
+    """Assign or clear an admin's supervisor (manager). Used to drive
+    team-scoped audit visibility. Only super_admin can change reporting lines."""
+    admin = _require_perm(request, "admin:set_role")
+    if user_id == body.supervisor_id:
+        raise HTTPException(400, "An admin cannot supervise themselves.")
+    set_admin_supervisor(user_id, body.supervisor_id)
+    _audit_from(admin, "admin.set_supervisor", request,
+                target_type="admin_user", target_id=user_id,
+                after={"supervisor_id": body.supervisor_id})
+    return {"ok": True}
+
+
+@app.put("/api/admin/techs/{tech_id}/supervisor")
+def admin_set_tech_supervisor(request: Request, tech_id: int, body: SupervisorAssign):
+    admin = _require_perm(request, "tech:update")
+    set_tech_supervisor(tech_id, body.supervisor_id)
+    _audit_from(admin, "tech.set_supervisor", request,
+                target_type="tech", target_id=tech_id,
+                after={"supervisor_id": body.supervisor_id})
+    return {"ok": True}
 
 
 @app.get("/api/admin/customers")
