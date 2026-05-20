@@ -684,8 +684,9 @@
     const photosBefore = (j.photos || []).filter(p => p.category === 'before');
     const photosAfter  = (j.photos || []).filter(p => p.category === 'after');
 
-    const phoneClean = (j.customer_phone || '').replace(/[^\d+]/g, '');
+    const contactPhoneClean = (j.contact_person_phone || '').replace(/[^\d+]/g, '');
     const mapsLink   = j.customer_address ? `https://maps.google.com/?q=${encodeURIComponent(j.customer_address)}` : null;
+    const isLocked   = !!j.submitted_at;
 
     view.innerHTML = `
       <div class="detail">
@@ -698,14 +699,51 @@
           </div>
         </div>
 
-        <!-- Customer card -->
+        ${isLocked ? `
+        <div class="detail-card" style="background:#fef3c7;border-left:4px solid #d97706;">
+          <h3 style="color:#92400e;">🔒 Submitted — locked</h3>
+          <p style="font-size:13px;color:#92400e;line-height:1.5;margin:0;">
+            This job report was submitted on ${fmtTimeFull(j.submitted_at)}.
+            You cannot edit it. If a correction is needed, ask a manager to flag it for review.
+          </p>
+          ${j.flagged_for_review ? `<p style="font-size:13px;color:#991b1b;margin-top:8px;"><strong>Flagged for review:</strong> ${esc(j.review_note || '')}</p>` : ''}
+        </div>` : ''}
+
+        <!-- Customer card (phone intentionally omitted — see contact person below) -->
         <div class="detail-card">
           <h3>Customer</h3>
           <div class="detail-row"><span class="l">Name</span><span class="v">${esc(j.customer_name)}</span></div>
           ${j.customer_company ? `<div class="detail-row"><span class="l">Company</span><span class="v">${esc(j.customer_company)}</span></div>` : ''}
-          ${j.customer_phone ? `<div class="detail-row"><span class="l">Phone</span><span class="v"><a href="tel:${phoneClean}">📞 ${esc(j.customer_phone)}</a></span></div>` : ''}
           ${j.customer_address ? `<div class="detail-row"><span class="l">Address</span><span class="v"><a href="${mapsLink}" target="_blank">📍 ${esc(j.customer_address)}</a></span></div>` : ''}
         </div>
+
+        ${(j.contact_person_name || j.contact_person_phone) ? `
+        <div class="detail-card">
+          <h3>On-site Contact</h3>
+          ${j.contact_person_name ? `<div class="detail-row"><span class="l">Name</span><span class="v">${esc(j.contact_person_name)}</span></div>` : ''}
+          ${j.contact_person_phone ? `<div class="detail-row"><span class="l">Phone</span><span class="v"><a href="tel:${contactPhoneClean}">📞 ${esc(j.contact_person_phone)}</a></span></div>` : ''}
+        </div>` : ''}
+
+        ${(j.scope_of_work || j.estimated_duration_min) ? `
+        <div class="detail-card">
+          <h3>Job Brief</h3>
+          ${j.scope_of_work ? `<div style="font-size:14px;line-height:1.6;margin-bottom:8px;">${esc(j.scope_of_work).replace(/\n/g,'<br>')}</div>` : ''}
+          ${j.estimated_duration_min ? `<div class="detail-row"><span class="l">Est. duration</span><span class="v">${j.estimated_duration_min} min</span></div>` : ''}
+        </div>` : ''}
+
+        ${j.hazards ? `
+        <div class="detail-card" style="background:#fee2e2;border-left:4px solid #dc2626;">
+          <h3 style="color:#991b1b;">⚠ Site Hazards</h3>
+          <div style="font-size:14px;line-height:1.6;color:#991b1b;">${esc(j.hazards).replace(/\n/g,'<br>')}</div>
+        </div>` : ''}
+
+        ${j.access_codes ? `
+        <div class="detail-card" style="border-left:4px solid #6366f1;">
+          <h3>🔐 Access Code</h3>
+          <details style="font-size:14px;"><summary style="cursor:pointer;color:var(--teal);font-weight:600;">Tap to reveal</summary>
+            <div style="font-family:monospace;font-size:16px;padding:8px 0;letter-spacing:2px;">${esc(j.access_codes)}</div>
+          </details>
+        </div>` : ''}
 
         <!-- Equipment card -->
         ${j.equipment_name ? `
@@ -727,13 +765,13 @@
           ${j.start_time && j.end_time ? `<div class="detail-row"><span class="l">Duration</span><span class="v">${duration(j.start_time, j.end_time)}</span></div>` : ''}
         </div>` : ''}
 
-        <!-- Start Job button -->
-        ${j.status !== 'in_progress' && j.status !== 'completed' ? `
+        <!-- Start Job button (hidden when locked) -->
+        ${!isLocked && j.status !== 'in_progress' && j.status !== 'completed' ? `
           <button class="big-btn btn-start" onclick="startJob()">▶ Start Job</button>
         ` : ''}
 
-        <!-- Work form (in_progress only) -->
-        ${j.status === 'in_progress' ? `
+        <!-- Work form (in_progress only, only if not locked) -->
+        ${!isLocked && j.status === 'in_progress' ? `
           <div class="detail-card">
             <h3>Work Performed</h3>
             <div class="field-detail">
@@ -789,7 +827,51 @@
               <div class="photo-grid">${photosAfter.map(p => photoTile(p, true)).join('')}</div>` : ''}
           </div>
 
-          <button class="big-btn btn-end" onclick="endJob()">✓ End Job &amp; Mark Complete</button>
+          <div class="detail-card">
+            <h3>Field Readings</h3>
+            <p style="font-size:11px;color:var(--muted);margin:0 0 10px;line-height:1.4;">Enter what you measured. Numbers only — leave blank if not applicable.</p>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+              <div class="field-detail"><label>High pressure (psi)</label><input id="r-pressure_high" type="number" step="0.1" inputmode="decimal"></div>
+              <div class="field-detail"><label>Low pressure (psi)</label><input id="r-pressure_low" type="number" step="0.1" inputmode="decimal"></div>
+              <div class="field-detail"><label>Supply temp (°F)</label><input id="r-temp_supply" type="number" step="0.1" inputmode="decimal"></div>
+              <div class="field-detail"><label>Return temp (°F)</label><input id="r-temp_return" type="number" step="0.1" inputmode="decimal"></div>
+              <div class="field-detail"><label>Δ-T</label><input id="r-delta_t" type="number" step="0.1" inputmode="decimal"></div>
+              <div class="field-detail"><label>Superheat (°F)</label><input id="r-superheat" type="number" step="0.1" inputmode="decimal"></div>
+              <div class="field-detail"><label>Subcool (°F)</label><input id="r-subcool" type="number" step="0.1" inputmode="decimal"></div>
+              <div class="field-detail"><label>Approach (°F)</label><input id="r-approach_temp" type="number" step="0.1" inputmode="decimal"></div>
+            </div>
+            <button onclick="saveReading()" style="padding:9px 16px;background:var(--navy);color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;margin-top:8px;">Save reading</button>
+            <div id="savedReadings" style="margin-top:12px;font-size:12px;color:var(--muted);">
+              ${(j.readings||[]).length ? `${(j.readings||[]).length} reading${(j.readings||[]).length===1?'':'s'} saved` : 'No readings saved yet.'}
+            </div>
+          </div>
+
+          <div class="detail-card">
+            <h3>Next PM Due</h3>
+            <div class="field-detail" style="margin-bottom:0;">
+              <label>Date for next preventive maintenance</label>
+              <input id="f-next-pm" type="date" value="${esc(j.next_pm_due||'')}" style="padding:9px 10px;border:2px solid var(--border);border-radius:8px;font-size:14px;width:100%;">
+            </div>
+          </div>
+
+          <div class="detail-card">
+            <h3>Client Signature ${j.signature_captured ? '<span style="color:#065f46;font-size:12px;">✓ captured</span>' : '<span style="color:#991b1b;font-size:12px;">required</span>'}</h3>
+            ${j.signature_captured ? `
+              <p style="font-size:13px;color:var(--muted);margin:0;">Signed by <strong>${esc(j.signer_name||'')}</strong>. Signature cannot be replaced.</p>
+            ` : `
+              <div class="field-detail">
+                <label>Signer's name</label>
+                <input id="sig-name" type="text" placeholder="Full name of person signing">
+              </div>
+              <canvas id="sigCanvas" width="600" height="180" style="width:100%;height:180px;border:2px dashed var(--border);border-radius:8px;background:white;touch-action:none;"></canvas>
+              <div style="display:flex;gap:8px;margin-top:8px;">
+                <button onclick="clearSignature()" style="flex:1;padding:9px;background:white;color:var(--navy);border:2px solid var(--border);border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;">Clear</button>
+                <button onclick="saveSignature()" style="flex:2;padding:9px;background:var(--teal);color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;">Capture signature</button>
+              </div>
+            `}
+          </div>
+
+          <button class="big-btn btn-end" onclick="endJob()">✓ End Job &amp; Submit Report</button>
         ` : ''}
 
         <!-- Read-only completed view -->
@@ -806,6 +888,24 @@
             </div>` : ''}
           ${j.parts_replaced ? `<div class="detail-card"><h3>Notes on Parts</h3><p style="font-size:14px;line-height:1.6;">${esc(j.parts_replaced).replace(/\n/g,'<br>')}</p></div>` : ''}
           ${j.notes ? `<div class="detail-card"><h3>Notes</h3><p style="font-size:14px;line-height:1.6;">${esc(j.notes).replace(/\n/g,'<br>')}</p></div>` : ''}
+          ${(j.readings || []).length ? `
+            <div class="detail-card">
+              <h3>Field Readings</h3>
+              ${(j.readings || []).map(r => `
+                <div style="border-bottom:1px solid var(--border);padding:6px 0;font-size:13px;line-height:1.5;">
+                  <div style="font-size:11px;color:var(--muted);">${fmtTimeFull(r.recorded_at)}</div>
+                  ${r.pressure_high != null ? `High: ${r.pressure_high} psi ` : ''}
+                  ${r.pressure_low  != null ? `Low: ${r.pressure_low} psi ` : ''}
+                  ${r.temp_supply   != null ? `Supply: ${r.temp_supply}°F ` : ''}
+                  ${r.temp_return   != null ? `Return: ${r.temp_return}°F ` : ''}
+                  ${r.delta_t       != null ? `Δ-T: ${r.delta_t} ` : ''}
+                  ${r.superheat     != null ? `SH: ${r.superheat}°F ` : ''}
+                  ${r.subcool       != null ? `SC: ${r.subcool}°F ` : ''}
+                  ${r.approach_temp != null ? `Approach: ${r.approach_temp}°F ` : ''}
+                </div>`).join('')}
+            </div>` : ''}
+          ${j.signature_captured ? `<div class="detail-card"><h3>Client Signature</h3><p style="font-size:14px;">Signed by <strong>${esc(j.signer_name||'')}</strong></p></div>` : ''}
+          ${j.next_pm_due ? `<div class="detail-card"><h3>Next PM Due</h3><p style="font-size:14px;">${fmtDate(j.next_pm_due)}</p></div>` : ''}
           ${(photosBefore.length || photosAfter.length) ? `
             <div class="detail-card">
               <h3>Photos</h3>
@@ -825,9 +925,10 @@
       }, 1000);
     }
 
-    if (j.status === 'in_progress') {
+    if (j.status === 'in_progress' && !isLocked) {
       renderPartsUsed();
       loadPartsCatalog();
+      initSigPad();
     }
   }
 
@@ -848,8 +949,36 @@
         const stockNote = p.quantity <= 0 ? ' · OUT OF STOCK'
                         : p.quantity <= p.reorder_point ? ` · low (${formatQty(p.quantity)} ${p.unit||''})`
                         : ` · ${formatQty(p.quantity)} ${p.unit||''} in stock`;
-        return `<option value="${p.id}" ${p.quantity<=0?'disabled':''}>${esc(p.sku)} — ${esc(p.name)}${stockNote}</option>`;
+        const locNote = p.location ? ` · @ ${p.location}` : '';
+        return `<option value="${p.id}" ${p.quantity<=0?'disabled':''}>${esc(p.sku)} — ${esc(p.name)}${stockNote}${locNote}</option>`;
       }).join('');
+    sel.onchange = renderPartPreview;
+    renderPartPreview();
+  }
+  function renderPartPreview() {
+    const sel = document.getElementById('partPicker');
+    if (!sel) return;
+    let preview = document.getElementById('partPreview');
+    if (!preview) {
+      preview = document.createElement('div');
+      preview.id = 'partPreview';
+      preview.style.cssText = 'grid-column:1/-1;margin-top:8px;display:none;background:white;border:1px solid var(--border);border-radius:8px;padding:10px;font-size:12px;';
+      sel.closest('[style*="grid"]').appendChild(preview);
+    }
+    const p = partsCatalog.find(x => String(x.id) === sel.value);
+    if (!p) { preview.style.display = 'none'; return; }
+    preview.style.display = 'block';
+    preview.innerHTML = `
+      <div style="display:flex;gap:10px;align-items:flex-start;">
+        ${p.image_url ? `<img src="${p.image_url}" alt="${esc(p.name)}" style="width:80px;height:80px;object-fit:cover;border-radius:6px;border:1px solid var(--border);">` : `<div style="width:80px;height:80px;border-radius:6px;background:#f3f4f6;display:flex;align-items:center;justify-content:center;color:#9ca3af;font-size:24px;">📦</div>`}
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:700;color:var(--navy);">${esc(p.name)}</div>
+          <div style="color:var(--muted);font-size:11px;">SKU ${esc(p.sku)}${p.category ? ' · '+esc(p.category) : ''}</div>
+          ${p.description ? `<div style="margin-top:4px;line-height:1.4;">${esc(p.description)}</div>` : ''}
+          ${p.location ? `<div style="margin-top:4px;color:var(--teal);font-weight:600;">📍 ${esc(p.location)}</div>` : ''}
+          <div style="margin-top:4px;">${formatQty(p.quantity)} ${esc(p.unit||'')} in stock</div>
+        </div>
+      </div>`;
   }
   function formatQty(n) { return (Number(n) % 1 === 0) ? String(Number(n)) : Number(n).toFixed(2); }
 
@@ -924,18 +1053,97 @@
     } catch (e) { toast(e.message, 'error'); }
   }
 
+  async function saveReading() {
+    const num = (id) => {
+      const v = document.getElementById(id)?.value;
+      return v === '' || v == null ? null : parseFloat(v);
+    };
+    const body = {
+      pressure_high: num('r-pressure_high'),
+      pressure_low:  num('r-pressure_low'),
+      temp_supply:   num('r-temp_supply'),
+      temp_return:   num('r-temp_return'),
+      delta_t:       num('r-delta_t'),
+      superheat:     num('r-superheat'),
+      subcool:       num('r-subcool'),
+      approach_temp: num('r-approach_temp'),
+      notes:         ''
+    };
+    if (Object.values(body).filter(v => v !== null && v !== '').length === 0) {
+      toast('Enter at least one reading.', 'error'); return;
+    }
+    try {
+      await api('POST', `/api/tech/jobs/${currentJob.id}/readings`, body);
+      toast('Reading saved', 'success');
+      currentJob = await api('GET', `/api/tech/jobs/${currentJob.id}`);
+      renderDetail();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  // ── Signature pad ──────────────────────────────────────────────────────
+  let sigPad = { drawing: false, last: null, hasInk: false };
+  function initSigPad() {
+    const c = document.getElementById('sigCanvas');
+    if (!c) return;
+    const ctx = c.getContext('2d');
+    ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.strokeStyle = '#0f172a';
+    const pos = (e) => {
+      const r = c.getBoundingClientRect();
+      const t = e.touches ? e.touches[0] : e;
+      return { x: (t.clientX - r.left) * (c.width / r.width),
+               y: (t.clientY - r.top)  * (c.height / r.height) };
+    };
+    const start = (e) => { e.preventDefault(); sigPad.drawing = true; sigPad.last = pos(e); };
+    const move  = (e) => {
+      if (!sigPad.drawing) return;
+      e.preventDefault();
+      const p = pos(e);
+      ctx.beginPath(); ctx.moveTo(sigPad.last.x, sigPad.last.y);
+      ctx.lineTo(p.x, p.y); ctx.stroke();
+      sigPad.last = p; sigPad.hasInk = true;
+    };
+    const end = () => { sigPad.drawing = false; };
+    c.addEventListener('mousedown', start);  c.addEventListener('mousemove', move);  c.addEventListener('mouseup', end); c.addEventListener('mouseleave', end);
+    c.addEventListener('touchstart', start, {passive:false}); c.addEventListener('touchmove', move, {passive:false}); c.addEventListener('touchend', end);
+  }
+  function clearSignature() {
+    const c = document.getElementById('sigCanvas');
+    if (!c) return;
+    c.getContext('2d').clearRect(0,0,c.width,c.height);
+    sigPad.hasInk = false;
+  }
+  async function saveSignature() {
+    const name = document.getElementById('sig-name')?.value.trim();
+    const c    = document.getElementById('sigCanvas');
+    if (!name) { toast('Enter the signer\'s name.', 'error'); return; }
+    if (!sigPad.hasInk) { toast('Please sign the canvas.', 'error'); return; }
+    const dataUrl = c.toDataURL('image/png');
+    try {
+      await api('POST', `/api/tech/jobs/${currentJob.id}/signature`, {
+        signer_name: name, signature_b64: dataUrl,
+      });
+      toast('Signature captured ✓', 'success');
+      currentJob = await api('GET', `/api/tech/jobs/${currentJob.id}`);
+      renderDetail();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
   async function endJob() {
     const work  = document.getElementById('f-work').value.trim();
     const parts = document.getElementById('f-parts').value.trim();
     const notes = document.getElementById('f-notes').value.trim();
+    const nextPm = document.getElementById('f-next-pm')?.value || null;
+    if (!currentJob.signature_captured) {
+      toast('Capture the client signature before submitting.', 'error'); return;
+    }
     if (!work) {
-      if (!confirm('No work description entered. End the job anyway?')) return;
+      if (!confirm('No work description entered. Submit the report anyway?')) return;
     } else {
-      if (!confirm('End this job and mark it complete? You cannot edit photos after.')) return;
+      if (!confirm('Submit this job report? Once submitted you cannot edit it.')) return;
     }
     try {
       await api('PUT', `/api/tech/jobs/${currentJob.id}/complete`, {
-        work_done: work, parts_replaced: parts, notes
+        work_done: work, parts_replaced: parts, notes, next_pm_due: nextPm
       });
       toast('Job completed ✓', 'success');
       currentJob = await api('GET', `/api/tech/jobs/${currentJob.id}`);

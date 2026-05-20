@@ -33,6 +33,10 @@ from database import (
     get_customer_equipment, get_equipment_by_id, create_equipment, delete_equipment,
     get_customer_visits, get_all_visits, create_visit, update_visit, delete_visit,
     get_visit_by_id, update_visit_time, tech_complete_visit, get_tech_jobs,
+    add_visit_reading, get_visit_readings,
+    set_visit_signature, get_visit_signature,
+    set_visit_checklist, get_visit_checklist,
+    set_part_image, set_visit_flag,
     create_review, get_review_for_visit, get_customer_reviews,
     get_all_reviews, get_approved_reviews, update_review_status, delete_review,
     verify_tech, get_tech_by_id, get_all_techs, create_tech, update_tech,
@@ -75,6 +79,7 @@ ADMIN_PERMS = {
         "customer:view", "customer:create", "customer:update", "customer:delete", "customer:export",
         "visit:view", "visit:create", "visit:update", "visit:delete", "visit:export",
         "review:view", "review:approve", "review:reject", "review:delete",
+        "visit:view_photos", "visit:flag",
         "invoice:export",
         "security:view_alerts", "security:resolve_alerts",
         "audit:view_all",
@@ -93,6 +98,7 @@ ADMIN_PERMS = {
         "customer:view", "customer:update", "customer:export",
         "visit:view", "visit:update", "visit:export",
         "review:view",
+        "visit:view_photos", "visit:flag",
         "invoice:export",
         "security:view_alerts",
         "audit:view_all",
@@ -988,6 +994,13 @@ class VisitCreate(BaseModel):
     parts_replaced:   str = ""
     notes:            str = ""
     assigned_tech_id: Optional[int] = None
+    # Phase 2 — in-field context
+    scope_of_work:           str = ""
+    estimated_duration_min:  Optional[int] = None
+    contact_person_name:     str = ""
+    contact_person_phone:    str = ""
+    hazards:                 str = ""
+    access_codes:            str = ""
 
 
 class VisitUpdate(BaseModel):
@@ -1002,6 +1015,12 @@ class VisitUpdate(BaseModel):
     parts_replaced:   str = ""
     notes:            str = ""
     assigned_tech_id: Optional[int] = None
+    scope_of_work:           str = ""
+    estimated_duration_min:  Optional[int] = None
+    contact_person_name:     str = ""
+    contact_person_phone:    str = ""
+    hazards:                 str = ""
+    access_codes:            str = ""
 
 
 class TechLogin(BaseModel):
@@ -1042,6 +1061,33 @@ class TechCompleteVisit(BaseModel):
     work_done:      str = ""
     parts_replaced: str = ""
     notes:          str = ""
+    next_pm_due:    Optional[str] = None
+
+
+class TechReadingCreate(BaseModel):
+    pressure_high: Optional[float] = None
+    pressure_low:  Optional[float] = None
+    temp_supply:   Optional[float] = None
+    temp_return:   Optional[float] = None
+    delta_t:       Optional[float] = None
+    superheat:     Optional[float] = None
+    subcool:       Optional[float] = None
+    approach_temp: Optional[float] = None
+    notes:         str = ""
+
+
+class TechSignatureCreate(BaseModel):
+    signer_name:   str
+    signature_b64: str   # data:image/png;base64,...
+
+
+class TechChecklistSet(BaseModel):
+    items: List[dict]    # [{label, checked, note}]
+
+
+class FlagForReview(BaseModel):
+    flagged: bool
+    note:    str = ""
 
 
 class PartCreate(BaseModel):
@@ -1054,6 +1100,7 @@ class PartCreate(BaseModel):
     quantity:      float = 0
     reorder_point: float = 0
     supplier:      str = ""
+    location:      str = ""
 
 
 class PartUpdate(BaseModel):
@@ -1064,6 +1111,7 @@ class PartUpdate(BaseModel):
     unit_cost:     float = 0
     reorder_point: float = 0
     supplier:      str = ""
+    location:      str = ""
     active:        bool = True
 
 
@@ -1457,21 +1505,52 @@ def tech_me(request: Request):
     }
 
 
+def _tech_redact_visit(visit: dict) -> dict:
+    """Strip fields the tech is not supposed to see — client's primary phone,
+    tech hourly_rate, anything cost/finance-adjacent that may live on the
+    visit row in the future. Contact person fields are kept."""
+    for k in ("customer_phone", "tech_hourly_rate"):
+        visit.pop(k, None)
+    if visit.get("parts_used"):
+        for p in visit["parts_used"]:
+            for k in ("unit_cost", "unit_price"):
+                p.pop(k, None)
+    return visit
+
+
 @app.get("/api/tech/jobs/{visit_id}")
 def tech_get_job(request: Request, visit_id: int):
     tech_id = _require_tech(request)
     visit   = get_visit_by_id(visit_id, with_parts=True)
     if not visit or visit.get("assigned_tech_id") != tech_id:
         raise HTTPException(404, "Job not found")
-    visit["photos"] = _enrich_photos(get_visit_photos(visit_id))
-    return visit
+    visit["photos"]    = _enrich_photos(get_visit_photos(visit_id))
+    visit["readings"]  = get_visit_readings(visit_id)
+    sig = get_visit_signature(visit_id)
+    visit["signature_captured"] = bool(sig)
+    visit["signer_name"] = sig.get("signer_name") if sig else None
+    cl = get_visit_checklist(visit_id)
+    visit["checklist"] = cl.get("items") if cl else None
+    return _tech_redact_visit(visit)
 
 
 @app.get("/api/tech/parts")
 def tech_parts_catalog(request: Request):
+    """Active parts only, with image + location for visual confirmation.
+    unit_cost and supplier are stripped — tech sees what to grab and where,
+    not what it cost the company."""
     _require_tech(request)
-    # Only active parts
-    return [p for p in get_all_parts() if p.get("active")]
+    out = []
+    for p in get_all_parts():
+        if not p.get("active"):
+            continue
+        p = dict(p)
+        p.pop("unit_cost", None)
+        p.pop("supplier",  None)
+        if p.get("image_filename"):
+            p["image_url"] = _sign_photo_url(p["image_filename"])
+        out.append(p)
+    return out
 
 
 @app.post("/api/tech/jobs/{visit_id}/parts")
@@ -1541,6 +1620,14 @@ def tech_complete_job(request: Request, visit_id: int, body: TechCompleteVisit):
     visit   = get_visit_by_id(visit_id)
     if not visit or visit.get("assigned_tech_id") != tech_id:
         raise HTTPException(404, "Job not found")
+    # Submission lock — once submitted_at is set, the tech can't re-submit.
+    # Manager can flag-for-review (separate endpoint) but no edits from here.
+    if visit.get("submitted_at"):
+        raise HTTPException(409, "Job report already submitted — locked. "
+                                  "Ask a manager to flag for review if a correction is needed.")
+    # Spec: client signature is part of the job report — block submission if missing.
+    if not get_visit_signature(visit_id):
+        raise HTTPException(400, "Client signature required before submission.")
 
     now      = datetime.now(timezone.utc)
     end_iso  = now.isoformat()
@@ -1552,8 +1639,53 @@ def tech_complete_job(request: Request, visit_id: int, body: TechCompleteVisit):
         body.notes.strip(),
         end_iso,
         today,
+        next_pm_due=(body.next_pm_due or None),
     )
-    return {"ok": True, "end_time": end_iso}
+    return {"ok": True, "end_time": end_iso, "submitted_at": end_iso}
+
+
+@app.post("/api/tech/jobs/{visit_id}/readings")
+def tech_add_reading(request: Request, visit_id: int, body: TechReadingCreate):
+    tech_id = _require_tech(request)
+    visit = get_visit_by_id(visit_id)
+    if not visit or visit.get("assigned_tech_id") != tech_id:
+        raise HTTPException(404, "Job not found")
+    if visit.get("submitted_at"):
+        raise HTTPException(409, "Job locked — cannot add readings after submission")
+    rid = add_visit_reading(visit_id, tech_id, body.model_dump())
+    return {"id": rid}
+
+
+@app.post("/api/tech/jobs/{visit_id}/signature")
+def tech_capture_signature(request: Request, visit_id: int, body: TechSignatureCreate):
+    tech_id = _require_tech(request)
+    visit = get_visit_by_id(visit_id)
+    if not visit or visit.get("assigned_tech_id") != tech_id:
+        raise HTTPException(404, "Job not found")
+    if visit.get("submitted_at"):
+        raise HTTPException(409, "Job locked — signature cannot be replaced")
+    if get_visit_signature(visit_id):
+        raise HTTPException(409, "Signature already captured for this visit")
+    if not body.signer_name.strip():
+        raise HTTPException(400, "signer_name is required")
+    if not body.signature_b64.startswith("data:image/"):
+        raise HTTPException(400, "signature_b64 must be a data:image/...;base64,... URL")
+    if len(body.signature_b64) > 200_000:
+        raise HTTPException(413, "signature payload too large")
+    sid = set_visit_signature(visit_id, body.signer_name, body.signature_b64, tech_id)
+    return {"id": sid}
+
+
+@app.post("/api/tech/jobs/{visit_id}/checklist")
+def tech_set_checklist(request: Request, visit_id: int, body: TechChecklistSet):
+    tech_id = _require_tech(request)
+    visit = get_visit_by_id(visit_id)
+    if not visit or visit.get("assigned_tech_id") != tech_id:
+        raise HTTPException(404, "Job not found")
+    if visit.get("submitted_at"):
+        raise HTTPException(409, "Job locked")
+    set_visit_checklist(visit_id, body.items, tech_id)
+    return {"ok": True}
 
 
 @app.post("/api/tech/jobs/{visit_id}/photos")
@@ -2146,6 +2278,48 @@ def admin_adjust_part(request: Request, part_id: int, body: PartAdjust):
 def admin_part_movements(request: Request, part_id: int):
     _require_perm(request, "inventory:view")
     return get_part_movements(part_id)
+
+
+@app.post("/api/admin/parts/{part_id}/image")
+async def admin_upload_part_image(request: Request, part_id: int, file: UploadFile = File(...)):
+    """Upload a high-res photo for a part so techs can visually confirm
+    they're pulling the right component. Stored under uploads/photos and
+    served via the same signed-URL mechanism as visit photos."""
+    admin = _require_perm(request, "inventory:update")
+    part = get_part_by_id(part_id)
+    if not part:
+        raise HTTPException(404, "Part not found")
+    body = await file.read()
+    if not body:
+        raise HTTPException(400, "empty upload")
+    if len(body) > MAX_PHOTO_SIZE:
+        raise HTTPException(413, f"file too large (max {MAX_PHOTO_SIZE // (1024*1024)} MB)")
+    ext = (Path(file.filename or "").suffix or "").lower()
+    if ext not in ALLOWED_PHOTO_EXTS:
+        raise HTTPException(400, f"unsupported file type: {ext}")
+    filename = f"part-{part_id}-{uuid.uuid4().hex}{ext}"
+    (PHOTOS_DIR / filename).write_bytes(body)
+    set_part_image(part_id, filename)
+    _audit_from(admin, "part.image_uploaded", request, target_type="part",
+                target_id=part_id, target_label=filename)
+    return {"ok": True, "image_url": _sign_photo_url(filename)}
+
+
+@app.put("/api/admin/visits/{visit_id}/flag")
+def admin_flag_visit(request: Request, visit_id: int, body: FlagForReview):
+    """Manager flag-for-review. A submitted visit stays locked from tech
+    edits, but a manager can mark it for follow-up. This does NOT unlock
+    the tech-side complete endpoint — corrections are admin-only by design."""
+    admin = _require_perm(request, "visit:update")
+    visit = get_visit_by_id(visit_id)
+    if not visit:
+        raise HTTPException(404, "Visit not found")
+    set_visit_flag(visit_id, body.flagged, body.note)
+    _audit_from(admin,
+                "visit.flag" if body.flagged else "visit.unflag",
+                request, target_type="visit", target_id=visit_id,
+                target_label=body.note or "")
+    return {"ok": True}
 
 
 # ── Invoices ─────────────────────────────────────────────────────────────────
@@ -2920,13 +3094,13 @@ def admin_delete_tech(request: Request, tech_id: int):
 
 @app.get("/api/admin/visits/{visit_id}/photos")
 def admin_get_visit_photos(request: Request, visit_id: int):
-    _require_admin(request)
+    _require_perm(request, "visit:view_photos")
     return _enrich_photos(get_visit_photos(visit_id))
 
 
 @app.delete("/api/admin/photos/{photo_id}")
 def admin_delete_photo(request: Request, photo_id: int):
-    _require_admin(request)
+    _require_perm(request, "visit:view_photos")
     photo = get_photo_by_id(photo_id)
     if not photo:
         raise HTTPException(404, "Photo not found")

@@ -550,14 +550,83 @@ def init_db():
     # Idempotent column additions for existing DBs
     existing_cols = {row[1] for row in con.execute("PRAGMA table_info(maintenance_visits)")}
     for col_sql in (
-        ("assigned_tech_id", "ALTER TABLE maintenance_visits ADD COLUMN assigned_tech_id INTEGER REFERENCES technicians(id)"),
-        ("start_time",       "ALTER TABLE maintenance_visits ADD COLUMN start_time TEXT"),
-        ("end_time",         "ALTER TABLE maintenance_visits ADD COLUMN end_time TEXT"),
-        ("scheduled_time",   "ALTER TABLE maintenance_visits ADD COLUMN scheduled_time TEXT"),
+        ("assigned_tech_id",       "ALTER TABLE maintenance_visits ADD COLUMN assigned_tech_id INTEGER REFERENCES technicians(id)"),
+        ("start_time",             "ALTER TABLE maintenance_visits ADD COLUMN start_time TEXT"),
+        ("end_time",               "ALTER TABLE maintenance_visits ADD COLUMN end_time TEXT"),
+        ("scheduled_time",         "ALTER TABLE maintenance_visits ADD COLUMN scheduled_time TEXT"),
+        # Phase 1 — submission lock
+        ("submitted_at",           "ALTER TABLE maintenance_visits ADD COLUMN submitted_at TEXT"),
+        # Phase 2 — execution context fields the tech needs in-field
+        ("scope_of_work",          "ALTER TABLE maintenance_visits ADD COLUMN scope_of_work TEXT"),
+        ("estimated_duration_min", "ALTER TABLE maintenance_visits ADD COLUMN estimated_duration_min INTEGER"),
+        ("next_pm_due",            "ALTER TABLE maintenance_visits ADD COLUMN next_pm_due TEXT"),
+        ("contact_person_name",    "ALTER TABLE maintenance_visits ADD COLUMN contact_person_name TEXT"),
+        ("contact_person_phone",   "ALTER TABLE maintenance_visits ADD COLUMN contact_person_phone TEXT"),
+        ("hazards",                "ALTER TABLE maintenance_visits ADD COLUMN hazards TEXT"),
+        ("access_codes",           "ALTER TABLE maintenance_visits ADD COLUMN access_codes TEXT"),
+        # Phase 3 — manager flag-for-review
+        ("flagged_for_review",     "ALTER TABLE maintenance_visits ADD COLUMN flagged_for_review INTEGER NOT NULL DEFAULT 0"),
+        ("review_note",            "ALTER TABLE maintenance_visits ADD COLUMN review_note TEXT"),
     ):
         if col_sql[0] not in existing_cols:
             try: con.execute(col_sql[1])
             except sqlite3.OperationalError: pass
+
+    # Parts: image + location for tech in-field visual confirmation
+    part_cols = {row[1] for row in con.execute("PRAGMA table_info(parts)")}
+    for c, sql in (
+        ("image_filename", "ALTER TABLE parts ADD COLUMN image_filename TEXT"),
+        ("location",       "ALTER TABLE parts ADD COLUMN location TEXT"),
+    ):
+        if c not in part_cols:
+            try: con.execute(sql)
+            except sqlite3.OperationalError: pass
+
+    # Structured field readings per visit (multiple rows allowed for re-checks).
+    # Free-text "work_done" stays; this captures the numbers the spec mandates.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS visit_readings (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            visit_id          INTEGER NOT NULL REFERENCES maintenance_visits(id),
+            pressure_high     REAL,
+            pressure_low      REAL,
+            temp_supply       REAL,
+            temp_return       REAL,
+            delta_t           REAL,
+            superheat         REAL,
+            subcool           REAL,
+            approach_temp     REAL,
+            notes             TEXT,
+            recorded_by       INTEGER REFERENCES technicians(id),
+            recorded_at       TEXT NOT NULL
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_readings_visit ON visit_readings(visit_id)")
+
+    # Digital client signature — write-once. One row per visit, hash stored
+    # so any future tamper is detectable.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS visit_signatures (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            visit_id        INTEGER NOT NULL UNIQUE REFERENCES maintenance_visits(id),
+            signer_name     TEXT NOT NULL,
+            signature_b64   TEXT NOT NULL,     -- PNG dataURL captured client-side
+            signature_sha256 TEXT NOT NULL,
+            captured_by     INTEGER REFERENCES technicians(id),
+            captured_at     TEXT NOT NULL
+        )
+    """)
+
+    # Pre-visit checklist (lightweight: completion of items kept as JSON blob).
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS visit_checklists (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            visit_id        INTEGER NOT NULL UNIQUE REFERENCES maintenance_visits(id),
+            items_json      TEXT NOT NULL,
+            completed_at    TEXT NOT NULL,
+            completed_by    INTEGER REFERENCES technicians(id)
+        )
+    """)
 
     con.commit()
     con.close()
@@ -843,8 +912,10 @@ def create_visit(data: dict) -> int:
         INSERT INTO maintenance_visits
             (customer_id, equipment_id, visit_type, status, scheduled_date,
              scheduled_time, completed_date, technician, work_done, parts_replaced,
-             notes, assigned_tech_id, start_time, end_time, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             notes, assigned_tech_id, start_time, end_time, created_at,
+             scope_of_work, estimated_duration_min, contact_person_name,
+             contact_person_phone, hazards, access_codes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             data["customer_id"],
@@ -862,6 +933,12 @@ def create_visit(data: dict) -> int:
             data.get("start_time") or None,
             data.get("end_time") or None,
             datetime.now(timezone.utc).isoformat(),
+            data.get("scope_of_work", ""),
+            data.get("estimated_duration_min") or None,
+            data.get("contact_person_name", ""),
+            data.get("contact_person_phone", ""),
+            data.get("hazards", ""),
+            data.get("access_codes", ""),
         ),
     )
     visit_id = cur.lastrowid
@@ -875,17 +952,23 @@ def update_visit(visit_id: int, data: dict):
     con.execute(
         """
         UPDATE maintenance_visits SET
-            equipment_id     = ?,
-            visit_type       = ?,
-            status           = ?,
-            scheduled_date   = ?,
-            scheduled_time   = ?,
-            completed_date   = ?,
-            technician       = ?,
-            work_done        = ?,
-            parts_replaced   = ?,
-            notes            = ?,
-            assigned_tech_id = ?
+            equipment_id           = ?,
+            visit_type             = ?,
+            status                 = ?,
+            scheduled_date         = ?,
+            scheduled_time         = ?,
+            completed_date         = ?,
+            technician             = ?,
+            work_done              = ?,
+            parts_replaced         = ?,
+            notes                  = ?,
+            assigned_tech_id       = ?,
+            scope_of_work          = ?,
+            estimated_duration_min = ?,
+            contact_person_name    = ?,
+            contact_person_phone   = ?,
+            hazards                = ?,
+            access_codes           = ?
         WHERE id = ?
         """,
         (
@@ -900,6 +983,12 @@ def update_visit(visit_id: int, data: dict):
             data.get("parts_replaced", ""),
             data.get("notes", ""),
             data.get("assigned_tech_id") or None,
+            data.get("scope_of_work", ""),
+            data.get("estimated_duration_min") or None,
+            data.get("contact_person_name", ""),
+            data.get("contact_person_phone", ""),
+            data.get("hazards", ""),
+            data.get("access_codes", ""),
             visit_id,
         ),
     )
@@ -943,7 +1032,11 @@ def update_visit_time(visit_id: int, field: str, value: str):
     con.close()
 
 
-def tech_complete_visit(visit_id: int, work_done: str, parts: str, notes: str, end_time: str, completed_date: str):
+def tech_complete_visit(visit_id: int, work_done: str, parts: str, notes: str,
+                        end_time: str, completed_date: str,
+                        next_pm_due: str = None):
+    """Marks the visit completed AND submitted. submitted_at is the lock:
+    once set, the tech-side complete endpoint refuses further edits."""
     con = _con()
     con.execute(
         """
@@ -953,22 +1046,34 @@ def tech_complete_visit(visit_id: int, work_done: str, parts: str, notes: str, e
             parts_replaced = ?,
             notes          = ?,
             end_time       = ?,
-            completed_date = ?
+            completed_date = ?,
+            next_pm_due    = COALESCE(?, next_pm_due),
+            submitted_at   = COALESCE(submitted_at, ?)
         WHERE id = ?
         """,
-        (work_done, parts, notes, end_time, completed_date, visit_id),
+        (work_done, parts, notes, end_time, completed_date, next_pm_due, end_time, visit_id),
     )
     con.commit()
     con.close()
 
 
 def get_tech_jobs(tech_id: int):
+    """Tech-facing job list. Customer phone is intentionally NOT included —
+    per spec the tech only sees the contact_person fields on the visit,
+    never the client's primary phone. The address is included for routing."""
     con = _con()
     rows = con.execute(
         """
-        SELECT v.*, c.name AS customer_name, c.company AS customer_company,
-               c.phone AS customer_phone, c.address AS customer_address,
-               c.customer_code, e.name AS equipment_name
+        SELECT v.id, v.customer_id, v.equipment_id, v.visit_type, v.status,
+               v.scheduled_date, v.scheduled_time, v.completed_date,
+               v.start_time, v.end_time, v.work_done, v.parts_replaced,
+               v.notes, v.assigned_tech_id, v.created_at,
+               v.submitted_at, v.scope_of_work, v.estimated_duration_min,
+               v.next_pm_due, v.contact_person_name, v.contact_person_phone,
+               v.hazards, v.access_codes, v.flagged_for_review, v.review_note,
+               c.name AS customer_name, c.company AS customer_company,
+               c.address AS customer_address, c.customer_code,
+               e.name AS equipment_name
         FROM maintenance_visits v
         JOIN customers c ON v.customer_id = c.id
         LEFT JOIN equipment e ON v.equipment_id = e.id
@@ -1799,8 +1904,8 @@ def create_part(data: dict) -> int:
         """
         INSERT INTO parts
             (sku, name, description, category, unit, unit_cost, quantity,
-             reorder_point, supplier, active, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+             reorder_point, supplier, location, active, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
         """,
         (
             data["sku"].strip().upper(),
@@ -1812,6 +1917,7 @@ def create_part(data: dict) -> int:
             float(data.get("quantity") or 0),
             float(data.get("reorder_point") or 0),
             data.get("supplier", "").strip(),
+            data.get("location", "").strip(),
             now, now,
         ),
     )
@@ -1827,7 +1933,7 @@ def update_part(part_id: int, data: dict):
         """
         UPDATE parts SET
             name = ?, description = ?, category = ?, unit = ?,
-            unit_cost = ?, reorder_point = ?, supplier = ?,
+            unit_cost = ?, reorder_point = ?, supplier = ?, location = ?,
             active = ?, updated_at = ?
         WHERE id = ?
         """,
@@ -1839,6 +1945,7 @@ def update_part(part_id: int, data: dict):
             float(data.get("unit_cost") or 0),
             float(data.get("reorder_point") or 0),
             data.get("supplier", "").strip(),
+            data.get("location", "").strip(),
             1 if data.get("active", True) else 0,
             datetime.now(timezone.utc).isoformat(),
             part_id,
@@ -2907,3 +3014,126 @@ def bootstrap_super_admin(username: str, password: str, name: str, email: str):
         },
         created_by=None,
     )
+
+
+# ── Visit readings (structured HVAC measurements) ────────────────────────────
+def add_visit_reading(visit_id: int, tech_id: int, data: dict) -> int:
+    """One reading row per recording — multiple allowed per visit so a tech
+    can capture before-service and after-service numbers."""
+    con = _con()
+    cur = con.execute(
+        """INSERT INTO visit_readings
+            (visit_id, pressure_high, pressure_low, temp_supply, temp_return,
+             delta_t, superheat, subcool, approach_temp, notes,
+             recorded_by, recorded_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (visit_id,
+         data.get("pressure_high"), data.get("pressure_low"),
+         data.get("temp_supply"),  data.get("temp_return"),
+         data.get("delta_t"),      data.get("superheat"),
+         data.get("subcool"),      data.get("approach_temp"),
+         data.get("notes") or "",
+         tech_id, datetime.now(timezone.utc).isoformat()),
+    )
+    rid = cur.lastrowid
+    con.commit()
+    con.close()
+    return rid
+
+
+def get_visit_readings(visit_id: int):
+    con = _con()
+    rows = con.execute(
+        "SELECT * FROM visit_readings WHERE visit_id = ? ORDER BY recorded_at ASC",
+        (visit_id,),
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+# ── Visit signatures (write-once digital signature from client) ──────────────
+def set_visit_signature(visit_id: int, signer_name: str,
+                         signature_b64: str, captured_by: int) -> int:
+    """Insert-only — UNIQUE constraint on visit_id prevents overwrite even
+    if the endpoint is called twice. Stores SHA-256 of the PNG bytes so
+    tampering is detectable."""
+    import hashlib as _h
+    digest = _h.sha256(signature_b64.encode("utf-8")).hexdigest()
+    con = _con()
+    cur = con.execute(
+        """INSERT INTO visit_signatures
+            (visit_id, signer_name, signature_b64, signature_sha256,
+             captured_by, captured_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (visit_id, signer_name.strip(), signature_b64, digest,
+         captured_by, datetime.now(timezone.utc).isoformat()),
+    )
+    sid = cur.lastrowid
+    con.commit()
+    con.close()
+    return sid
+
+
+def get_visit_signature(visit_id: int):
+    con = _con()
+    row = con.execute(
+        "SELECT * FROM visit_signatures WHERE visit_id = ?", (visit_id,),
+    ).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
+# ── Visit checklists (pre-visit) ─────────────────────────────────────────────
+def set_visit_checklist(visit_id: int, items: list, tech_id: int):
+    import json as _json
+    con = _con()
+    con.execute(
+        """INSERT OR REPLACE INTO visit_checklists
+            (visit_id, items_json, completed_at, completed_by)
+           VALUES (?, ?, ?, ?)""",
+        (visit_id, _json.dumps(items),
+         datetime.now(timezone.utc).isoformat(), tech_id),
+    )
+    con.commit()
+    con.close()
+
+
+def get_visit_checklist(visit_id: int):
+    import json as _json
+    con = _con()
+    row = con.execute(
+        "SELECT * FROM visit_checklists WHERE visit_id = ?", (visit_id,),
+    ).fetchone()
+    con.close()
+    if not row:
+        return None
+    out = dict(row)
+    try:
+        out["items"] = _json.loads(out["items_json"])
+    except Exception:
+        out["items"] = []
+    return out
+
+
+# ── Part image filename helper ───────────────────────────────────────────────
+def set_part_image(part_id: int, filename: str):
+    con = _con()
+    con.execute(
+        "UPDATE parts SET image_filename = ?, updated_at = ? WHERE id = ?",
+        (filename, datetime.now(timezone.utc).isoformat(), part_id),
+    )
+    con.commit()
+    con.close()
+
+
+# ── Flag for review (manager only) ───────────────────────────────────────────
+def set_visit_flag(visit_id: int, flagged: bool, note: str = ""):
+    con = _con()
+    con.execute(
+        """UPDATE maintenance_visits
+              SET flagged_for_review = ?, review_note = ?
+            WHERE id = ?""",
+        (1 if flagged else 0, note or "", visit_id),
+    )
+    con.commit()
+    con.close()

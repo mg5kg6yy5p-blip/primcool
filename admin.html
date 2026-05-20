@@ -1017,7 +1017,20 @@
         <div class="field"><label>Quantity on Hand</label><input id="p-qty" type="number" step="0.01" min="0" placeholder="0"></div>
         <div class="field"><label>Reorder Point</label><input id="p-reorder" type="number" step="0.01" min="0" placeholder="0"></div>
       </div>
-      <div class="field"><label>Supplier</label><input id="p-supplier" placeholder="ABC Parts Ltd."></div>
+      <div class="field-row">
+        <div class="field"><label>Supplier</label><input id="p-supplier" placeholder="ABC Parts Ltd."></div>
+        <div class="field"><label>Location (warehouse/vehicle)</label><input id="p-location" placeholder="Shelf A-3 / Van 2"></div>
+      </div>
+      <div class="field" id="partImageField" style="display:none;">
+        <label>Part image (techs see this in the picker)</label>
+        <div style="display:flex;gap:10px;align-items:center;">
+          <div id="partImagePreview" style="width:80px;height:80px;border-radius:6px;border:1px solid var(--border);background:#f3f4f6;display:flex;align-items:center;justify-content:center;color:#9ca3af;font-size:22px;">📦</div>
+          <label class="btn btn-ghost btn-sm" style="cursor:pointer;">Upload photo
+            <input type="file" id="p-image" accept="image/*" style="display:none;" onchange="uploadPartImage(this)">
+          </label>
+        </div>
+        <p style="font-size:11px;color:var(--muted);margin-top:6px;">Save the part first, then upload an image. Max 12 MB.</p>
+      </div>
       <div class="form-error" id="err-addPart"></div>
     </div>
     <div class="modal-footer">
@@ -1396,6 +1409,19 @@
       </div>
       <div class="field"><label>Completed Date</label><input id="v-completed-date" type="date"></div>
       <div class="field"><label>Technician</label><input id="v-technician" placeholder="Technician name"></div>
+
+      <fieldset style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:14px;">
+        <legend style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:0.6px;text-transform:uppercase;padding:0 6px;">In-field context (visible to tech)</legend>
+        <div class="field"><label>Scope of work (plain language)</label><textarea id="v-scope" placeholder="What the tech should accomplish, in customer-friendly terms…"></textarea></div>
+        <div class="field-row">
+          <div class="field"><label>Est. duration (min)</label><input id="v-duration" type="number" min="0" step="15"></div>
+          <div class="field"><label>Contact person — name</label><input id="v-contact-name" placeholder="On-site contact"></div>
+        </div>
+        <div class="field"><label>Contact person — phone</label><input id="v-contact-phone" placeholder="876…"></div>
+        <div class="field"><label>Site hazards (rendered in red banner)</label><textarea id="v-hazards" placeholder="E.g. roof access, electrical risks, dogs on premises…"></textarea></div>
+        <div class="field"><label>Access codes (gate/door)</label><input id="v-access" placeholder="Code or note for the tech"></div>
+      </fieldset>
+
       <div class="field"><label>Work Performed</label><textarea id="v-work-done" placeholder="Describe work carried out…"></textarea></div>
       <div class="field"><label>Parts Replaced</label><textarea id="v-parts" placeholder="List any parts replaced…"></textarea></div>
       <div class="field"><label>Notes</label><textarea id="v-notes" placeholder="Additional notes…"></textarea></div>
@@ -2097,11 +2123,27 @@
         <td>${v.equipment_name || '—'}</td>
         <td style="white-space:nowrap;">
           <button class="btn btn-edit btn-sm" onclick="openEditVisit(${v.id})">Edit</button>
+          ${v.status === 'completed' && can('visit:flag') ? `<button class="btn btn-ghost btn-sm" onclick="toggleVisitFlag(${v.id}, ${v.flagged_for_review ? 'false' : 'true'})" style="margin-left:6px;${v.flagged_for_review ? 'background:#fef3c7;color:#92400e;border-color:#fcd34d;' : ''}">${v.flagged_for_review ? '🚩 Flagged' : 'Flag for review'}</button>` : ''}
           ${v.status === 'completed' && can('invoice:create') ? `<button class="btn btn-primary btn-sm" onclick="generateInvoiceFromVisit(${v.id})" style="margin-left:6px;background:#059669;">+ Invoice</button>` : ''}
           <button class="btn btn-danger btn-sm" onclick="deleteVisit(${v.id})" style="margin-left:6px;">Delete</button>
         </td>
       </tr>`;
     }).join('');
+  }
+
+  async function toggleVisitFlag(visitId, flagged) {
+    let note = '';
+    if (flagged) {
+      note = prompt('Reason for flagging (visible to manager and admin only):', '');
+      if (note === null) return;
+    } else {
+      if (!confirm('Remove the flag from this visit?')) return;
+    }
+    try {
+      await api('PUT', `/api/admin/visits/${visitId}/flag`, { flagged, note });
+      toast(flagged ? 'Visit flagged for review' : 'Flag removed', 'success');
+      loadAllVisits();
+    } catch (e) { toast(e.message, 'error'); }
   }
 
   async function generateInvoiceFromVisit(visitId) {
@@ -2201,6 +2243,12 @@
     document.getElementById('v-work-done').value      = v.work_done      || '';
     document.getElementById('v-parts').value          = v.parts_replaced || '';
     document.getElementById('v-notes').value          = v.notes          || '';
+    document.getElementById('v-scope').value          = v.scope_of_work  || '';
+    document.getElementById('v-duration').value       = v.estimated_duration_min || '';
+    document.getElementById('v-contact-name').value   = v.contact_person_name || '';
+    document.getElementById('v-contact-phone').value  = v.contact_person_phone || '';
+    document.getElementById('v-hazards').value        = v.hazards        || '';
+    document.getElementById('v-access').value         = v.access_codes   || '';
     document.getElementById('modal-addVisit').classList.add('open');
   }
 
@@ -2230,6 +2278,12 @@
       work_done:      document.getElementById('v-work-done').value.trim(),
       parts_replaced: document.getElementById('v-parts').value.trim(),
       notes:          document.getElementById('v-notes').value.trim(),
+      scope_of_work:          document.getElementById('v-scope').value.trim(),
+      estimated_duration_min: document.getElementById('v-duration').value ? parseInt(document.getElementById('v-duration').value) : null,
+      contact_person_name:    document.getElementById('v-contact-name').value.trim(),
+      contact_person_phone:   document.getElementById('v-contact-phone').value.trim(),
+      hazards:                document.getElementById('v-hazards').value.trim(),
+      access_codes:           document.getElementById('v-access').value.trim(),
     };
     try {
       if (currentVisitId) {
@@ -3253,8 +3307,33 @@
     document.getElementById('p-qty').disabled      = true;  // adjust via Adjust button
     document.getElementById('p-reorder').value     = p.reorder_point;
     document.getElementById('p-supplier').value    = p.supplier || '';
+    document.getElementById('p-location').value    = p.location || '';
     document.getElementById('err-addPart').style.display = 'none';
+    document.getElementById('partImageField').style.display = '';
+    const prev = document.getElementById('partImagePreview');
+    if (p.image_filename) {
+      prev.innerHTML = `<img src="/photos/${p.image_filename}" alt="${p.name}" style="width:100%;height:100%;object-fit:cover;border-radius:6px;" onerror="this.parentElement.innerHTML='📦';">`;
+    } else {
+      prev.innerHTML = '📦';
+    }
     document.getElementById('modal-addPart').classList.add('open');
+  }
+
+  async function uploadPartImage(input) {
+    if (!editingPartId) { toast('Save the part first, then upload an image.', 'error'); input.value=''; return; }
+    const file = input.files[0]; if (!file) return;
+    if (file.size > 12 * 1024 * 1024) { toast('Image too large (max 12 MB)', 'error'); input.value=''; return; }
+    const fd = new FormData(); fd.append('file', file);
+    try {
+      const res = await fetch(`/api/admin/parts/${editingPartId}/image`, { method: 'POST', credentials: 'include', body: fd });
+      if (!res.ok) { const t = await res.text().catch(()=> ''); throw new Error(t || res.statusText); }
+      const data = await res.json();
+      document.getElementById('partImagePreview').innerHTML =
+        `<img src="${data.image_url}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:6px;">`;
+      toast('Image uploaded', 'success');
+      await loadInventory();
+    } catch (e) { toast(e.message, 'error'); }
+    input.value = '';
   }
 
   async function submitPart() {
@@ -3270,6 +3349,7 @@
       quantity:      parseFloat(document.getElementById('p-qty').value) || 0,
       reorder_point: parseFloat(document.getElementById('p-reorder').value) || 0,
       supplier:      document.getElementById('p-supplier').value.trim(),
+      location:      document.getElementById('p-location').value.trim(),
     };
     if (!body.sku || !body.name) { showErr('err-addPart', 'SKU and name are required.'); return; }
     try {
@@ -3292,9 +3372,13 @@
     document.getElementById('partModalTitle').textContent = 'Add Part';
     document.getElementById('p-sku').disabled = false;
     document.getElementById('p-qty').disabled = false;
-    ['p-sku','p-name','p-description','p-category','p-supplier','p-cost','p-qty','p-reorder']
-      .forEach(id => document.getElementById(id).value = '');
+    ['p-sku','p-name','p-description','p-category','p-supplier','p-location','p-cost','p-qty','p-reorder']
+      .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
     document.getElementById('p-unit').value = 'each';
+    const imgField = document.getElementById('partImageField');
+    if (imgField) imgField.style.display = 'none';
+    const prev = document.getElementById('partImagePreview');
+    if (prev) prev.innerHTML = '📦';
   }
 
   async function removePart(id, sku) {
@@ -4096,8 +4180,9 @@
       const el = document.getElementById(id);
       if (el && el.tagName === 'SELECT') el.selectedIndex = 0;
     });
-    ['v-scheduled-date','v-scheduled-time','v-completed-date','v-technician','v-work-done','v-parts','v-notes']
-      .forEach(id => { document.getElementById(id).value = ''; });
+    ['v-scheduled-date','v-scheduled-time','v-completed-date','v-technician','v-work-done','v-parts','v-notes',
+     'v-scope','v-duration','v-contact-name','v-contact-phone','v-hazards','v-access']
+      .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
     document.getElementById('err-addVisit').style.display = 'none';
   }
   function clearForm(ids) { ids.forEach(id => { document.getElementById(id).value = ''; }); }
