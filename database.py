@@ -372,13 +372,20 @@ def init_db():
             uploaded_by_prid    TEXT,
             uploaded_by_label   TEXT,
             uploaded_at         TEXT NOT NULL,
+            expiry_date         TEXT,             -- YYYY-MM-DD; nullable
             last_accessed_at    TEXT,
             deleted_at          TEXT
         )
     """)
+    # Idempotent column addition for the expiry field (applies to certs, licenses, insurance, etc.)
+    doc_cols = {row[1] for row in con.execute("PRAGMA table_info(documents)")}
+    if "expiry_date" not in doc_cols:
+        try: con.execute("ALTER TABLE documents ADD COLUMN expiry_date TEXT")
+        except sqlite3.OperationalError: pass
     con.execute("CREATE INDEX IF NOT EXISTS idx_doc_linked  ON documents(linked_to_type, linked_to_id)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_doc_sensitivity ON documents(sensitivity)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_doc_uploaded ON documents(uploaded_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_doc_expiry   ON documents(expiry_date)")
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS audit_log (
@@ -2123,8 +2130,8 @@ def create_document(data: dict) -> int:
              sensitivity, document_type, title, description,
              linked_to_type, linked_to_id, linked_to_label,
              uploaded_by_type, uploaded_by_id, uploaded_by_prid, uploaded_by_label,
-             uploaded_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             uploaded_at, expiry_date)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             data["stored_filename"],
@@ -2143,12 +2150,46 @@ def create_document(data: dict) -> int:
             data.get("uploaded_by_prid"),
             data.get("uploaded_by_label"),
             now,
+            data.get("expiry_date") or None,
         ),
     )
     doc_id = cur.lastrowid
     con.commit()
     con.close()
     return doc_id
+
+
+def get_expiring_documents(sensitivity_in: list, within_days: int = 30):
+    """Returns docs whose expiry_date is within the next N days OR already past,
+    sorted by expiry_date asc. Includes a `days_to_expiry` (negative = expired)."""
+    from datetime import date as _d, timedelta as _td
+    today      = _d.today()
+    cutoff_iso = (today + _td(days=within_days)).isoformat()
+    placeholders = ",".join("?" for _ in sensitivity_in)
+    con = _con()
+    rows = con.execute(
+        f"""
+        SELECT * FROM documents
+        WHERE deleted_at IS NULL
+          AND expiry_date IS NOT NULL
+          AND expiry_date != ''
+          AND expiry_date <= ?
+          AND sensitivity IN ({placeholders})
+        ORDER BY expiry_date ASC
+        """,
+        (cutoff_iso, *sensitivity_in),
+    ).fetchall()
+    con.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            exp = _d.fromisoformat(d["expiry_date"][:10])
+            d["days_to_expiry"] = (exp - today).days
+        except Exception:
+            d["days_to_expiry"] = None
+        out.append(d)
+    return out
 
 
 def get_document_by_id(doc_id: int, include_deleted: bool = False):

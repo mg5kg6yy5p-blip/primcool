@@ -413,6 +413,7 @@
       <div class="nav-item" onclick="showPanel('documents')" id="nav-documents" style="display:none;">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
         Documents
+        <span id="docsExpiringBadge" style="margin-left:auto;background:var(--danger);color:white;font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px;display:none;"></span>
       </div>
       <div class="nav-item" onclick="showPanel('inventory')" id="nav-inventory" style="display:none;">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
@@ -544,6 +545,7 @@
           <button class="filter-btn" data-f="public"             onclick="setDocFilter('sensitivity','public',this)">Public</button>
           <button class="filter-btn" data-f="confidential"       onclick="setDocFilter('sensitivity','confidential',this)">Confidential</button>
           <button class="filter-btn" data-f="highly_sensitive" id="docHighlySensitiveBtn"  onclick="setDocFilter('sensitivity','highly_sensitive',this)" style="display:none;">Highly Sensitive</button>
+          <button class="filter-btn" data-f="expiring"           onclick="setDocFilter('view','expiring',this)" style="background:#fef3c7;color:#92400e;border-color:#fde68a;">⚠ Expiring</button>
           <select id="doc-type-filter" onchange="loadDocuments()" style="margin-left:8px;padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
             <option value="">All types</option>
           </select>
@@ -553,9 +555,9 @@
         <div class="table-wrap">
           <table>
             <thead><tr>
-              <th>Title</th><th>Type</th><th>Sensitivity</th><th>Linked To</th><th>Size</th><th>Uploaded</th><th>By</th><th>Actions</th>
+              <th>Title</th><th>Type</th><th>Sensitivity</th><th>Linked To</th><th>Expires</th><th>Size</th><th>Uploaded</th><th>By</th><th>Actions</th>
             </tr></thead>
-            <tbody id="docTableBody"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+            <tbody id="docTableBody"><tr><td colspan="9" class="empty">Loading…</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -811,6 +813,13 @@
       </div>
       <div class="field"><label>Description</label>
         <textarea id="doc-desc" placeholder="Brief description (optional)"></textarea>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>Expiry Date <span style="text-transform:none;font-weight:400;color:var(--muted);">(for certs, licences, contracts)</span></label>
+          <input id="doc-expiry" type="date">
+        </div>
+        <div class="field"></div>
       </div>
       <div class="field-row">
         <div class="field">
@@ -2360,7 +2369,7 @@
   }
 
   // ── Documents ──────────────────────────────────────────────────────────────
-  let docState = { sensitivity: '', document_type: '', search: '' };
+  let docState = { sensitivity: '', document_type: '', search: '', view: 'all' };
   let _docSearchTimer = null;
 
   const DOC_TYPE_LABELS = {
@@ -2372,6 +2381,8 @@
   };
 
   function setDocFilter(field, value, btn) {
+    // Selecting any "sensitivity" pill takes us back to the normal view
+    if (field === 'sensitivity') docState.view = 'all';
     docState[field] = value;
     document.querySelectorAll('#docFilters .filter-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
@@ -2398,6 +2409,21 @@
     }
     docState.document_type = sel.value || '';
 
+    // Refresh the expiring badge regardless of current view
+    loadExpiringBadge();
+
+    if (docState.view === 'expiring') {
+      try {
+        const res = await api('GET', '/api/admin/documents/expiring?within_days=30');
+        const rows = [...(res.expired || []), ...(res.expiring_soon || [])];
+        renderDocuments(rows);
+      } catch(e) {
+        document.getElementById('docTableBody').innerHTML =
+          `<tr><td colspan="9" class="empty">Error: ${escHtml(e.message)}</td></tr>`;
+      }
+      return;
+    }
+
     const params = new URLSearchParams();
     if (docState.sensitivity)  params.set('sensitivity',  docState.sensitivity);
     if (docState.document_type) params.set('document_type', docState.document_type);
@@ -2407,14 +2433,30 @@
       renderDocuments(rows);
     } catch(e) {
       document.getElementById('docTableBody').innerHTML =
-        `<tr><td colspan="8" class="empty">Error: ${escHtml(e.message)}</td></tr>`;
+        `<tr><td colspan="9" class="empty">Error: ${escHtml(e.message)}</td></tr>`;
     }
+  }
+
+  async function loadExpiringBadge() {
+    if (!can('documents:view')) return;
+    try {
+      const res = await api('GET', '/api/admin/documents/expiring?within_days=30');
+      const total = (res.expired?.length || 0) + (res.expiring_soon?.length || 0);
+      const badge = document.getElementById('docsExpiringBadge');
+      if (total > 0) {
+        badge.textContent = total;
+        badge.style.display = 'inline-block';
+        badge.title = `${res.expired?.length || 0} expired, ${res.expiring_soon?.length || 0} expiring soon`;
+      } else {
+        badge.style.display = 'none';
+      }
+    } catch {}
   }
 
   function renderDocuments(rows) {
     const tbody = document.getElementById('docTableBody');
     if (!rows.length) {
-      tbody.innerHTML = '<tr><td colspan="8" class="empty">No documents found.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="9" class="empty">No documents found.</td></tr>';
       return;
     }
     const sensitivityBadge = (s) => {
@@ -2430,12 +2472,29 @@
       if (n < 1024 * 1024) return `${(n/1024).toFixed(1)} KB`;
       return `${(n/1024/1024).toFixed(1)} MB`;
     };
+    const expiryCell = (d) => {
+      if (!d.expiry_date) return '<span style="color:var(--muted);">—</span>';
+      // Compute days client-side too (in case row came from the standard list)
+      let days = d.days_to_expiry;
+      if (days == null) {
+        const exp = new Date(d.expiry_date + 'T00:00:00');
+        const today = new Date(new Date().toDateString());
+        days = Math.round((exp - today) / (1000 * 60 * 60 * 24));
+      }
+      const dateStr = new Date(d.expiry_date + 'T00:00:00').toLocaleDateString('en-JM', {day:'2-digit',month:'short',year:'numeric'});
+      let bg, fg, label;
+      if (days < 0)        { bg = '#fee2e2'; fg = '#991b1b'; label = `Expired ${-days}d ago`; }
+      else if (days <= 30) { bg = '#fef3c7'; fg = '#92400e'; label = `In ${days}d`; }
+      else                  { bg = '#d1fae5'; fg = '#065f46'; label = `In ${days}d`; }
+      return `<div style="font-size:12px;font-weight:600;">${dateStr}</div><span class="badge" style="background:${bg};color:${fg};font-size:9px;margin-top:2px;display:inline-block;">${label}</span>`;
+    };
     tbody.innerHTML = rows.map(d => `
       <tr>
         <td><strong>${escHtml(d.title)}</strong>${d.description ? `<br><span style="font-size:11px;color:var(--muted);">${escHtml(d.description)}</span>` : ''}<br><span style="font-size:11px;color:var(--muted);font-family:'Courier New',monospace;">${escHtml(d.original_filename)}</span></td>
         <td>${escHtml(DOC_TYPE_LABELS[d.document_type] || d.document_type)}</td>
         <td>${sensitivityBadge(d.sensitivity)}</td>
         <td>${d.linked_to_label ? escHtml(d.linked_to_label) : '<span style="color:var(--muted);">—</span>'}</td>
+        <td>${expiryCell(d)}</td>
         <td style="white-space:nowrap;">${fmtBytes(d.size_bytes)}</td>
         <td style="white-space:nowrap;font-size:12px;color:var(--muted);">${(d.uploaded_at||'').slice(0,16).replace('T',' ')}</td>
         <td><span style="font-size:11px;">${escHtml(d.uploaded_by_label || '?')}</span><br><span style="font-size:10px;color:var(--muted);font-family:'Courier New',monospace;">${escHtml(d.uploaded_by_prid||'')}</span></td>
@@ -2515,6 +2574,8 @@
     if (!type)  { showErr('err-uploadDoc', 'Pick a document type.'); return; }
     if (file.size > 25 * 1024 * 1024) { showErr('err-uploadDoc','File is too large (max 25 MB).'); return; }
 
+    const expiry = document.getElementById('doc-expiry').value;
+
     const fd = new FormData();
     fd.append('file', file);
     fd.append('title', title);
@@ -2523,6 +2584,7 @@
     fd.append('description', desc);
     fd.append('linked_to_type', linkType);
     fd.append('linked_to_id', linkId || '0');
+    if (expiry) fd.append('expiry_date', expiry);
 
     const btn = document.getElementById('uploadDocSubmitBtn');
     btn.disabled = true; btn.textContent = 'Uploading…';
@@ -2539,7 +2601,7 @@
       }
       closeModal('uploadDoc');
       // Reset form
-      ['doc-file','doc-title','doc-desc'].forEach(id => document.getElementById(id).value = '');
+      ['doc-file','doc-title','doc-desc','doc-expiry'].forEach(id => document.getElementById(id).value = '');
       document.getElementById('doc-type').value = '';
       document.getElementById('doc-sensitivity').value = 'confidential';
       document.getElementById('doc-link-type').value = '';

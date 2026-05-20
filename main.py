@@ -57,6 +57,7 @@ from database import (
     get_admin_backup_codes_status, _hash_pin,
     create_document, get_document_by_id, query_documents,
     touch_document_accessed, soft_delete_document, hard_delete_document,
+    get_expiring_documents,
     log_audit, query_audit_log,
 )
 
@@ -1888,6 +1889,7 @@ async def admin_upload_document(
     description:      str  = Form(""),
     linked_to_type:   str  = Form(""),
     linked_to_id:     int  = Form(0),
+    expiry_date:      str  = Form(""),
 ):
     admin = _require_perm(request, "documents:upload")
 
@@ -1930,6 +1932,14 @@ async def admin_upload_document(
             v = get_visit_by_id(linked_to_id)
             if v: linked_label = f"{v['visit_type']} visit for {v.get('customer_name','?')}"
 
+    # Validate expiry date format if provided (YYYY-MM-DD)
+    expiry_clean = (expiry_date or "").strip()
+    if expiry_clean:
+        try:
+            _dt.fromisoformat(expiry_clean)
+        except ValueError:
+            raise HTTPException(400, "expiry_date must be YYYY-MM-DD")
+
     doc_id = create_document({
         "stored_filename":   stored_filename,
         "original_filename": file.filename,
@@ -1946,6 +1956,7 @@ async def admin_upload_document(
         "uploaded_by_id":    admin["id"],
         "uploaded_by_prid":  admin.get("prid"),
         "uploaded_by_label": admin.get("name"),
+        "expiry_date":       expiry_clean or None,
     })
 
     _audit_from(admin, "document.upload", request,
@@ -1982,6 +1993,20 @@ def admin_list_documents(
         linked_to_id=linked_to_id,
         search=search,
     )
+
+
+@app.get("/api/admin/documents/expiring")
+def admin_documents_expiring(request: Request, within_days: int = 30):
+    """Returns documents with an expiry_date already past OR within `within_days`,
+    scoped to the caller's allowed sensitivity tiers."""
+    admin = _require_perm(request, "documents:view")
+    allowed = _allowed_sensitivities_for(admin)
+    if not allowed:
+        return {"expired": [], "expiring_soon": [], "total": 0}
+    rows = get_expiring_documents(allowed, within_days=max(1, min(within_days, 365)))
+    expired = [r for r in rows if (r.get("days_to_expiry") is not None and r["days_to_expiry"] < 0)]
+    soon    = [r for r in rows if (r.get("days_to_expiry") is not None and r["days_to_expiry"] >= 0)]
+    return {"expired": expired, "expiring_soon": soon, "total": len(rows)}
 
 
 @app.get("/api/admin/documents/{doc_id}/download")
