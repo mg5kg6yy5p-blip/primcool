@@ -232,16 +232,25 @@ def init_db():
             role          TEXT NOT NULL,
             prid          TEXT UNIQUE,
             hire_date     TEXT,
+            mfa_secret    TEXT,
+            mfa_enabled   INTEGER NOT NULL DEFAULT 0,
+            backup_codes  TEXT,
             active        INTEGER NOT NULL DEFAULT 1,
             created_by    INTEGER REFERENCES admin_users(id),
             created_at    TEXT NOT NULL
         )
     """)
-    # Idempotent column addition for existing admin DBs
+    # Idempotent column additions for existing admin DBs
     admin_cols = {row[1] for row in con.execute("PRAGMA table_info(admin_users)")}
-    if "hire_date" not in admin_cols:
-        try: con.execute("ALTER TABLE admin_users ADD COLUMN hire_date TEXT")
-        except sqlite3.OperationalError: pass
+    for col, sql in (
+        ("hire_date",     "ALTER TABLE admin_users ADD COLUMN hire_date TEXT"),
+        ("mfa_secret",    "ALTER TABLE admin_users ADD COLUMN mfa_secret TEXT"),
+        ("mfa_enabled",   "ALTER TABLE admin_users ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 0"),
+        ("backup_codes",  "ALTER TABLE admin_users ADD COLUMN backup_codes TEXT"),
+    ):
+        if col not in admin_cols:
+            try: con.execute(sql)
+            except sqlite3.OperationalError: pass
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS admin_password_resets (
@@ -1284,6 +1293,96 @@ def set_admin_password(admin_id: int, password: str):
     )
     con.commit()
     con.close()
+
+
+# ── Admin MFA ────────────────────────────────────────────────────────────────
+
+def set_admin_mfa_pending(admin_id: int, secret: str):
+    """Stores the candidate secret. mfa_enabled stays 0 until activated."""
+    con = _con()
+    con.execute(
+        "UPDATE admin_users SET mfa_secret = ?, mfa_enabled = 0 WHERE id = ?",
+        (secret, admin_id),
+    )
+    con.commit()
+    con.close()
+
+
+def activate_admin_mfa(admin_id: int, backup_code_hashes: list):
+    """Flips mfa_enabled to 1 and stores hashed backup codes (JSON list)."""
+    import json as _json
+    con = _con()
+    con.execute(
+        "UPDATE admin_users SET mfa_enabled = 1, backup_codes = ? WHERE id = ?",
+        (_json.dumps([{"hash": h, "used_at": None} for h in backup_code_hashes]), admin_id),
+    )
+    con.commit()
+    con.close()
+
+
+def disable_admin_mfa(admin_id: int):
+    con = _con()
+    con.execute(
+        "UPDATE admin_users SET mfa_secret = NULL, mfa_enabled = 0, backup_codes = NULL WHERE id = ?",
+        (admin_id,),
+    )
+    con.commit()
+    con.close()
+
+
+def replace_admin_backup_codes(admin_id: int, backup_code_hashes: list):
+    import json as _json
+    con = _con()
+    con.execute(
+        "UPDATE admin_users SET backup_codes = ? WHERE id = ?",
+        (_json.dumps([{"hash": h, "used_at": None} for h in backup_code_hashes]), admin_id),
+    )
+    con.commit()
+    con.close()
+
+
+def consume_admin_backup_code(admin_id: int, code: str) -> bool:
+    """Returns True if the code matches an unused stored code and marks it used."""
+    import json as _json
+    admin = get_admin_user_by_id(admin_id)
+    if not admin or not admin.get("backup_codes"):
+        return False
+    try:
+        codes = _json.loads(admin["backup_codes"])
+    except Exception:
+        return False
+    matched_idx = None
+    for i, entry in enumerate(codes):
+        if entry.get("used_at"):
+            continue
+        if _verify_pin(code, entry.get("hash", "")):
+            matched_idx = i
+            break
+    if matched_idx is None:
+        return False
+    codes[matched_idx]["used_at"] = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    con.execute(
+        "UPDATE admin_users SET backup_codes = ? WHERE id = ?",
+        (_json.dumps(codes), admin_id),
+    )
+    con.commit()
+    con.close()
+    return True
+
+
+def get_admin_backup_codes_status(admin_id: int):
+    """Returns {total, unused, used} counts (does NOT return the codes themselves)."""
+    import json as _json
+    admin = get_admin_user_by_id(admin_id)
+    if not admin or not admin.get("backup_codes"):
+        return {"total": 0, "unused": 0, "used": 0}
+    try:
+        codes = _json.loads(admin["backup_codes"])
+    except Exception:
+        return {"total": 0, "unused": 0, "used": 0}
+    used = sum(1 for c in codes if c.get("used_at"))
+    return {"total": len(codes), "unused": len(codes) - used, "used": used}
 
 
 def get_admin_by_email(email: str):

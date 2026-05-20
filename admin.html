@@ -337,6 +337,30 @@
   </div>
 </div>
 
+<!-- ── Step 2: MFA prompt ── -->
+<div id="mfaScreen" style="display:none;min-height:100vh;align-items:center;justify-content:center;padding:24px;">
+  <div class="login-card">
+    <h1>Two-Factor Authentication</h1>
+    <p>Open your authenticator app and enter the 6-digit code.</p>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:18px;">Welcome back, <strong id="mfa-greeting" style="color:var(--navy);"></strong>.</p>
+    <div class="field">
+      <label>Verification Code</label>
+      <input type="text" id="mfaCode" inputmode="numeric" autocomplete="one-time-code" maxlength="9" placeholder="123 456" style="text-align:center;font-size:22px;letter-spacing:6px;font-family:'Courier New',monospace;">
+    </div>
+    <div class="form-error" id="mfaError"></div>
+    <button class="btn btn-primary" style="width:100%;margin-top:14px;" id="mfaSubmitBtn" onclick="submitMfa()">Verify →</button>
+    <p style="text-align:center;margin-top:14px;font-size:13px;color:var(--muted);">
+      Lost your authenticator? <a href="#" onclick="event.preventDefault();toggleBackupCodeHint()" style="color:var(--teal);text-decoration:none;font-weight:600;">Use a backup code</a>
+    </p>
+    <p id="backupHint" style="display:none;text-align:center;margin-top:8px;font-size:12px;color:var(--muted);line-height:1.5;">
+      Enter one of your 8-character backup codes (e.g. <code>A3F2-9D81</code>) in the field above.
+    </p>
+    <p style="text-align:center;margin-top:18px;font-size:13px;">
+      <a href="#" onclick="event.preventDefault();cancelMfa()" style="color:var(--muted);text-decoration:none;">← Cancel</a>
+    </p>
+  </div>
+</div>
+
 <!-- Admin forgot password modal -->
 <div id="adminForgotModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:500;align-items:center;justify-content:center;padding:20px;">
   <div style="background:white;border-radius:16px;width:100%;max-width:400px;padding:32px 28px;box-shadow:0 8px 40px rgba(0,0,0,0.2);">
@@ -361,7 +385,10 @@
       <span class="logo">Prime<span>Cool</span> Services</span>
       <span class="admin-tag">Admin</span>
     </div>
-    <button class="logout-btn" onclick="adminLogout()">Sign out</button>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <button class="logout-btn" id="securityBtn" onclick="openSecurityModal()" title="Account security">🔒 Security</button>
+      <button class="logout-btn" onclick="adminLogout()">Sign out</button>
+    </div>
   </header>
 
   <div class="layout">
@@ -1022,6 +1049,52 @@
   </div>
 </div>
 
+<!-- Security / MFA modal -->
+<div class="modal-overlay" id="modal-security">
+  <div class="modal" style="max-width:540px;">
+    <div class="modal-header">
+      <h3>🔒 Account Security</h3>
+      <button class="modal-close" onclick="closeModal('security')">×</button>
+    </div>
+    <div class="modal-body" id="securityBody">Loading…</div>
+  </div>
+</div>
+
+<!-- MFA enrollment (QR + activation) -->
+<div class="modal-overlay" id="modal-mfaEnroll">
+  <div class="modal" style="max-width:500px;">
+    <div class="modal-header">
+      <h3>Set Up Two-Factor Authentication</h3>
+      <button class="modal-close" onclick="closeModal('mfaEnroll')">×</button>
+    </div>
+    <div class="modal-body" id="mfaEnrollBody">Loading…</div>
+  </div>
+</div>
+
+<!-- MFA backup codes display (one-time) -->
+<div class="modal-overlay" id="modal-mfaBackup">
+  <div class="modal" style="max-width:480px;">
+    <div class="modal-header" style="background:var(--teal);color:white;">
+      <h3 style="color:white;">✓ Save These Backup Codes</h3>
+      <button class="modal-close" style="color:white;" onclick="closeModal('mfaBackup');loadSecurityModal();">×</button>
+    </div>
+    <div class="modal-body">
+      <div style="background:#fffbeb;border:1px solid #fde68a;color:#92400e;padding:12px 14px;border-radius:8px;font-size:13px;line-height:1.5;margin-bottom:14px;">
+        <strong>⚠️ This is the only time these will be shown.</strong> Save them in a password manager or print them.
+        Each code can be used once if you lose access to your authenticator.
+      </div>
+      <div id="backupCodesList" style="background:var(--light);border-radius:8px;padding:14px;font-family:'Courier New',monospace;font-size:15px;line-height:2;text-align:center;letter-spacing:2px;"></div>
+      <div style="display:flex;gap:10px;margin-top:14px;">
+        <button class="btn btn-ghost" onclick="copyBackupCodes()" style="flex:1;">📋 Copy</button>
+        <button class="btn btn-ghost" onclick="printBackupCodes()" style="flex:1;">🖨 Print</button>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" style="width:100%;" onclick="closeModal('mfaBackup');loadSecurityModal();">I've saved them</button>
+    </div>
+  </div>
+</div>
+
 <!-- Add Admin User -->
 <div class="modal-overlay" id="modal-addAdmin">
   <div class="modal">
@@ -1226,6 +1299,9 @@
     if (adminToken) showApp();
   }
 
+  let pendingMfaToken = null;
+  let pendingMfaName  = null;
+
   async function doAdminLogin() {
     const user = document.getElementById('adminUser').value.trim();
     const pw   = document.getElementById('adminPw').value;
@@ -1249,6 +1325,21 @@
         return;
       }
       const data = await res.json();
+
+      // Step-2 MFA required?
+      if (data.requires_mfa) {
+        pendingMfaToken = data.mfa_token;
+        pendingMfaName  = data.name;
+        document.getElementById('mfa-greeting').textContent = data.name || 'admin';
+        document.getElementById('mfaCode').value = '';
+        document.getElementById('mfaError').style.display = 'none';
+        document.getElementById('loginScreen').style.display = 'none';
+        document.getElementById('mfaScreen').style.display = 'flex';
+        setTimeout(() => document.getElementById('mfaCode').focus(), 50);
+        return;
+      }
+
+      // No MFA — straight in
       adminToken = data.token;
       localStorage.setItem('pc_admin_token', adminToken);
       currentAdmin = { id: null, role: data.role, name: data.name, username: data.username, prid: data.prid };
@@ -1258,6 +1349,57 @@
       err.style.display = 'block';
     }
   }
+
+  async function submitMfa() {
+    const code = document.getElementById('mfaCode').value.trim();
+    const err  = document.getElementById('mfaError');
+    const btn  = document.getElementById('mfaSubmitBtn');
+    err.style.display = 'none';
+    if (!code) { err.textContent = 'Enter your code.'; err.style.display = 'block'; return; }
+    btn.disabled = true; btn.textContent = 'Verifying…';
+    try {
+      const res = await fetch('/api/admin/mfa/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mfa_token: pendingMfaToken, code }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        err.textContent = d.detail || 'Verification failed.';
+        err.style.display = 'block';
+        return;
+      }
+      const data = await res.json();
+      adminToken = data.token;
+      localStorage.setItem('pc_admin_token', adminToken);
+      currentAdmin = { id: null, role: data.role, name: data.name, username: data.username, prid: data.prid };
+      pendingMfaToken = null;
+      document.getElementById('mfaScreen').style.display = 'none';
+      document.getElementById('loginScreen').style.display = 'flex';
+      showApp();
+    } catch {
+      err.textContent = 'Connection error.';
+      err.style.display = 'block';
+    } finally {
+      btn.disabled = false; btn.textContent = 'Verify →';
+    }
+  }
+
+  function cancelMfa() {
+    pendingMfaToken = null;
+    document.getElementById('mfaScreen').style.display = 'none';
+    document.getElementById('loginScreen').style.display = 'flex';
+    document.getElementById('adminPw').value = '';
+  }
+
+  function toggleBackupCodeHint() {
+    const h = document.getElementById('backupHint');
+    h.style.display = h.style.display === 'none' ? 'block' : 'none';
+  }
+
+  document.getElementById('mfaCode').addEventListener('keydown', e => {
+    if (e.key === 'Enter') submitMfa();
+  });
 
   async function adminLogout() {
     try {
@@ -1312,6 +1454,151 @@
       tag.textContent = currentAdmin.role.replace(/_/g,' ');
       tag.title = `${currentAdmin.name} (${currentAdmin.prid || ''})`;
     }
+  }
+
+  // ── Account security / MFA ────────────────────────────────────────────────
+  async function openSecurityModal() {
+    document.getElementById('modal-security').classList.add('open');
+    await loadSecurityModal();
+  }
+
+  async function loadSecurityModal() {
+    const wrap = document.getElementById('securityBody');
+    wrap.innerHTML = 'Loading…';
+    try {
+      const s = await api('GET', '/api/admin/mfa/status');
+      const me = currentAdmin || {};
+      if (s.enabled) {
+        const codes = s.backup_codes || {};
+        wrap.innerHTML = `
+          <div style="display:flex;align-items:center;gap:12px;padding:14px;background:#d1fae5;border-left:4px solid #059669;border-radius:8px;margin-bottom:18px;">
+            <div style="font-size:24px;">✓</div>
+            <div>
+              <div style="font-weight:700;color:#065f46;">Two-Factor Authentication is ON</div>
+              <div style="font-size:12px;color:#065f46;">Your account is protected by an authenticator app.</div>
+            </div>
+          </div>
+          <div style="background:var(--light);padding:14px;border-radius:8px;margin-bottom:14px;">
+            <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:6px;">Backup Codes</div>
+            <div style="font-size:13px;color:var(--text);">
+              <strong>${codes.unused}</strong> of ${codes.total} unused
+              ${codes.unused <= 2 ? '<span style="color:var(--danger);margin-left:8px;">⚠️ Low — regenerate soon</span>' : ''}
+            </div>
+            <button class="btn btn-edit btn-sm" onclick="regenerateBackupCodes()" style="margin-top:10px;">Regenerate Codes</button>
+          </div>
+          <div style="border-top:1px solid var(--border);padding-top:14px;">
+            <button class="btn btn-danger" onclick="disableMfa()">Disable Two-Factor Auth</button>
+            <p style="font-size:12px;color:var(--muted);margin-top:8px;line-height:1.5;">
+              Disabling MFA reduces your account security. You'll need to enter your password + current MFA code to disable.
+            </p>
+          </div>`;
+      } else {
+        wrap.innerHTML = `
+          <div style="display:flex;align-items:center;gap:12px;padding:14px;background:#fef3c7;border-left:4px solid #f59e0b;border-radius:8px;margin-bottom:18px;">
+            <div style="font-size:24px;">⚠️</div>
+            <div>
+              <div style="font-weight:700;color:#92400e;">Two-Factor Authentication is OFF</div>
+              <div style="font-size:12px;color:#92400e;">Your account is protected only by your password. Strongly recommended for ${me.role || 'admin'} accounts.</div>
+            </div>
+          </div>
+          <p style="font-size:13px;line-height:1.6;color:var(--text);margin-bottom:14px;">
+            With MFA enabled, signing in requires both your password and a 6-digit code from an authenticator app
+            (Google Authenticator, Authy, 1Password, etc.). Even if your password is stolen, your account stays secure.
+          </p>
+          <button class="btn btn-primary" onclick="startMfaEnrollment()" style="width:100%;">Set Up Two-Factor Authentication →</button>`;
+      }
+    } catch(e) {
+      wrap.innerHTML = `<div style="color:var(--danger);">Error: ${e.message}</div>`;
+    }
+  }
+
+  let _enrollData = null;
+
+  async function startMfaEnrollment() {
+    document.getElementById('modal-security').classList.remove('open');
+    document.getElementById('modal-mfaEnroll').classList.add('open');
+    const wrap = document.getElementById('mfaEnrollBody');
+    wrap.innerHTML = 'Setting up…';
+    try {
+      _enrollData = await api('POST', '/api/admin/mfa/setup');
+      wrap.innerHTML = `
+        <ol style="padding-left:20px;font-size:14px;line-height:1.7;color:var(--text);margin-bottom:18px;">
+          <li>Open an authenticator app (Google Authenticator, Authy, 1Password, etc.)</li>
+          <li>Scan the QR code below or enter the setup key manually</li>
+          <li>Enter the 6-digit code shown in your app to confirm</li>
+        </ol>
+        <div style="text-align:center;background:white;padding:16px;border:1px solid var(--border);border-radius:8px;margin-bottom:14px;">
+          <img src="${_enrollData.qr_data_uri}" alt="MFA QR code" style="max-width:220px;width:100%;display:block;margin:0 auto;">
+          <div style="margin-top:12px;font-size:11px;color:var(--muted);">Setup key (manual entry):</div>
+          <code style="display:inline-block;margin-top:4px;padding:6px 10px;background:var(--light);border-radius:6px;font-size:12px;letter-spacing:2px;word-break:break-all;">${_enrollData.secret}</code>
+        </div>
+        <div class="field">
+          <label>Code from your app</label>
+          <input id="mfa-confirm-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456" style="text-align:center;font-size:22px;letter-spacing:6px;font-family:'Courier New',monospace;padding:11px;border:2px solid var(--border);border-radius:8px;width:100%;outline:none;">
+        </div>
+        <div class="form-error" id="err-mfaEnroll"></div>
+        <div style="display:flex;gap:10px;margin-top:14px;">
+          <button class="btn btn-ghost" style="flex:1;" onclick="closeModal('mfaEnroll');loadSecurityModal();document.getElementById('modal-security').classList.add('open');">Cancel</button>
+          <button class="btn btn-primary" style="flex:1;" onclick="activateMfa()">Enable MFA</button>
+        </div>`;
+      setTimeout(() => document.getElementById('mfa-confirm-code')?.focus(), 50);
+    } catch(e) {
+      wrap.innerHTML = `<div style="color:var(--danger);">Error: ${e.message}</div>`;
+    }
+  }
+
+  async function activateMfa() {
+    const code = document.getElementById('mfa-confirm-code').value.trim();
+    const err = document.getElementById('err-mfaEnroll');
+    err.style.display = 'none';
+    if (!/^\d{6}$/.test(code)) { showErr('err-mfaEnroll', 'Enter the 6-digit code from your app.'); return; }
+    try {
+      const res = await api('POST', '/api/admin/mfa/activate', { code });
+      closeModal('mfaEnroll');
+      showBackupCodes(res.backup_codes);
+    } catch(e) { showErr('err-mfaEnroll', e.message); }
+  }
+
+  function showBackupCodes(codes) {
+    document.getElementById('backupCodesList').innerHTML =
+      codes.map(c => `<div>${c}</div>`).join('');
+    document.getElementById('modal-mfaBackup').classList.add('open');
+  }
+
+  async function copyBackupCodes() {
+    const codes = [...document.getElementById('backupCodesList').children].map(d => d.textContent).join('\n');
+    try {
+      await navigator.clipboard.writeText(codes);
+      alert('Backup codes copied to clipboard.');
+    } catch { alert('Copy failed — please save them manually.'); }
+  }
+
+  function printBackupCodes() {
+    const codes = [...document.getElementById('backupCodesList').children].map(d => d.textContent).join('\n');
+    const w = window.open('', '_blank');
+    w.document.write(`<pre style="font-size:18px;letter-spacing:2px;padding:40px;">PrimeCool Admin — MFA Backup Codes\n\n${codes}\n\nUse each code once. Save in a secure place.</pre>`);
+    w.print();
+  }
+
+  async function regenerateBackupCodes() {
+    const code = prompt('Enter your current 6-digit MFA code (or a backup code) to confirm:');
+    if (!code) return;
+    try {
+      const res = await api('POST', '/api/admin/mfa/regenerate-backup-codes', { mfa_token: '', code });
+      document.getElementById('modal-security').classList.remove('open');
+      showBackupCodes(res.backup_codes);
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  async function disableMfa() {
+    const pw = prompt('Confirm by entering your password:');
+    if (!pw) return;
+    const code = prompt('Enter a current 6-digit MFA code (or a backup code):');
+    if (!code) return;
+    try {
+      await api('POST', '/api/admin/mfa/disable', { password: pw, code });
+      await loadSecurityModal();
+    } catch(e) { alert('Error: ' + e.message); }
   }
 
   // ── Forgot admin password ──

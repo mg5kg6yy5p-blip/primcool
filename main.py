@@ -18,7 +18,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import jwt
 import os
+import io
+import base64
+import json as _json
+import secrets as _secrets
 import resend as resend_lib
+import pyotp
+import qrcode
 
 from database import (
     init_db, save_submission, bootstrap_super_admin,
@@ -46,6 +52,9 @@ from database import (
     create_admin_user, update_admin_user, set_admin_role, set_admin_active,
     set_admin_password, count_active_admins, get_admin_by_email,
     create_admin_password_reset, consume_admin_password_reset,
+    set_admin_mfa_pending, activate_admin_mfa, disable_admin_mfa,
+    replace_admin_backup_codes, consume_admin_backup_code,
+    get_admin_backup_codes_status, _hash_pin,
     log_audit, query_audit_log,
 )
 
@@ -213,6 +222,35 @@ COOKIE_CUSTOMER = "pc_customer_session"
 
 PHOTO_URL_SECRET  = os.environ.get("PHOTO_URL_SECRET", JWT_SECRET)
 PHOTO_URL_TTL_SEC = int(os.environ.get("PHOTO_URL_TTL_SEC", "1800"))   # 30 min default
+
+MFA_ISSUER       = os.environ.get("MFA_ISSUER", "PrimeCool Services")
+MFA_TOKEN_TTL    = timedelta(minutes=5)   # short-lived pre-MFA token
+
+
+def _generate_backup_codes(n: int = 10):
+    """Returns (plaintext_codes, hashed_codes). Plaintext shown to user once; hashed stored."""
+    plain = []
+    for _ in range(n):
+        raw = _secrets.token_hex(4).upper()
+        plain.append(f"{raw[:4]}-{raw[4:]}")
+    hashed = [_hash_pin(c) for c in plain]
+    return plain, hashed
+
+
+def _verify_admin_totp_or_backup(admin: dict, code: str) -> bool:
+    code = (code or "").strip().replace(" ", "").upper()
+    if not code:
+        return False
+    # TOTP path (6 digits)
+    if admin.get("mfa_secret"):
+        totp = pyotp.TOTP(admin["mfa_secret"])
+        if totp.verify(code, valid_window=1):
+            return True
+    # Backup code path (formatted like XXXX-XXXX)
+    if "-" in code and admin.get("backup_codes"):
+        if consume_admin_backup_code(admin["id"], code):
+            return True
+    return False
 
 
 def _sign_photo_url(filename: str, ttl_seconds: int = None) -> str:
@@ -460,6 +498,20 @@ class AdminResetPassword(BaseModel):
     token:            str
     password:         str
     confirm_password: str
+
+
+class MfaVerify(BaseModel):
+    mfa_token: str
+    code:      str    # 6-digit TOTP or backup code
+
+
+class MfaActivate(BaseModel):
+    code: str
+
+
+class MfaDisable(BaseModel):
+    password: str
+    code:     str    # current TOTP or backup code
 
 
 class CustomerCreate(BaseModel):
@@ -1103,16 +1155,30 @@ def admin_login(req: AdminLoginRequest, request: Request, response: Response):
         raise HTTPException(401, "Invalid username or password")
     if not admin.get("active"):
         raise HTTPException(403, "Account is deactivated")
+
+    # MFA gate
+    if admin.get("mfa_enabled"):
+        # Step 1 of two-step login — return a short-lived MFA token,
+        # NO session cookie set yet.
+        mfa_token = _make_token(
+            {"sub": str(admin["id"]), "type": "admin_pre_mfa"},
+            MFA_TOKEN_TTL,
+        )
+        log_audit(
+            actor_type="admin", actor_id=admin["id"],
+            actor_prid=admin.get("prid"), actor_label=admin.get("name"),
+            actor_role=admin.get("role"), action="admin.login.password_ok",
+            ip_address=_client_ip(request),
+        )
+        return {"requires_mfa": True, "mfa_token": mfa_token, "name": admin["name"]}
+
     token = _make_token({"sub": str(admin["id"]), "type": "admin"}, timedelta(hours=12))
     _set_session_cookie(response, COOKIE_ADMIN, token, 12 * 3600)
     log_audit(
-        actor_type="admin",
-        actor_id=admin["id"],
-        actor_prid=admin.get("prid"),
-        actor_label=admin.get("name"),
-        actor_role=admin.get("role"),
-        action="admin.login",
-        ip_address=request.client.host if request.client else None,
+        actor_type="admin", actor_id=admin["id"],
+        actor_prid=admin.get("prid"), actor_label=admin.get("name"),
+        actor_role=admin.get("role"), action="admin.login",
+        ip_address=_client_ip(request),
     )
     return {
         "token":    token,
@@ -1120,7 +1186,140 @@ def admin_login(req: AdminLoginRequest, request: Request, response: Response):
         "username": admin["username"],
         "role":     admin["role"],
         "prid":     admin.get("prid"),
+        "requires_mfa": False,
     }
+
+
+@app.post("/api/admin/mfa/verify")
+def admin_mfa_verify(body: MfaVerify, request: Request, response: Response):
+    # Decode the pre-MFA token
+    try:
+        data = jwt.decode(body.mfa_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(401, "MFA window expired — please sign in again")
+    except jwt.InvalidTokenError:
+        raise HTTPException(401, "Invalid MFA token")
+    if data.get("type") != "admin_pre_mfa":
+        raise HTTPException(403, "Forbidden")
+
+    _enforce_login_rate(request, f"mfa:{data.get('sub','')}")
+
+    admin_id = int(data["sub"])
+    admin = get_admin_user_by_id(admin_id)
+    if not admin or not admin.get("active") or not admin.get("mfa_enabled"):
+        raise HTTPException(401, "MFA not configured")
+
+    if not _verify_admin_totp_or_backup(admin, body.code):
+        log_audit(
+            actor_type="admin", actor_id=admin["id"],
+            actor_prid=admin.get("prid"), actor_label=admin.get("name"),
+            actor_role=admin.get("role"), action="admin.mfa.fail",
+            ip_address=_client_ip(request),
+        )
+        raise HTTPException(401, "Incorrect code")
+
+    token = _make_token({"sub": str(admin["id"]), "type": "admin"}, timedelta(hours=12))
+    _set_session_cookie(response, COOKIE_ADMIN, token, 12 * 3600)
+    log_audit(
+        actor_type="admin", actor_id=admin["id"],
+        actor_prid=admin.get("prid"), actor_label=admin.get("name"),
+        actor_role=admin.get("role"), action="admin.login.mfa_ok",
+        ip_address=_client_ip(request),
+    )
+    return {
+        "token":    token,
+        "name":     admin["name"],
+        "username": admin["username"],
+        "role":     admin["role"],
+        "prid":     admin.get("prid"),
+        "requires_mfa": False,
+    }
+
+
+@app.get("/api/admin/mfa/status")
+def admin_mfa_status(request: Request):
+    admin = _require_admin(request)
+    return {
+        "enabled": bool(admin.get("mfa_enabled")),
+        "backup_codes": get_admin_backup_codes_status(admin["id"]),
+    }
+
+
+@app.post("/api/admin/mfa/setup")
+def admin_mfa_setup(request: Request):
+    """Generates a candidate secret + QR code. Does NOT enable MFA until /activate."""
+    admin = _require_admin(request)
+    if admin.get("mfa_enabled"):
+        raise HTTPException(400, "MFA is already enabled. Disable it first to re-enroll.")
+    secret = pyotp.random_base32()
+    set_admin_mfa_pending(admin["id"], secret)
+    totp = pyotp.TOTP(secret)
+    uri = totp.provisioning_uri(name=admin["email"], issuer_name=MFA_ISSUER)
+    # Generate QR PNG → base64 data URI
+    img = qrcode.make(uri)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    qr_data_uri = f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode()}"
+    return {
+        "secret":           secret,        # for manual entry if QR doesn't scan
+        "provisioning_uri": uri,
+        "qr_data_uri":      qr_data_uri,
+        "issuer":           MFA_ISSUER,
+        "account":          admin["email"],
+    }
+
+
+@app.post("/api/admin/mfa/activate")
+def admin_mfa_activate(request: Request, body: MfaActivate):
+    """Verifies the user can produce a code from the candidate secret,
+    then enables MFA and returns one-time backup codes."""
+    admin = _require_admin(request)
+    if admin.get("mfa_enabled"):
+        raise HTTPException(400, "MFA is already enabled")
+    if not admin.get("mfa_secret"):
+        raise HTTPException(400, "No setup in progress — call /mfa/setup first")
+    totp = pyotp.TOTP(admin["mfa_secret"])
+    if not totp.verify((body.code or "").strip(), valid_window=1):
+        raise HTTPException(401, "Incorrect code — check your authenticator app and try again")
+    plain, hashed = _generate_backup_codes(10)
+    activate_admin_mfa(admin["id"], hashed)
+    _audit_from(admin, "admin.mfa.activated", request,
+                target_type="admin", target_id=admin["id"], target_label=admin["username"])
+    return {"ok": True, "backup_codes": plain}
+
+
+@app.post("/api/admin/mfa/regenerate-backup-codes")
+def admin_mfa_regenerate(request: Request, body: MfaVerify):
+    """Generates a new set of 10 backup codes (invalidates the old). Requires
+    a current TOTP or unused backup code to prevent silent compromise."""
+    admin = _require_admin(request)
+    if not admin.get("mfa_enabled"):
+        raise HTTPException(400, "MFA is not enabled")
+    if not _verify_admin_totp_or_backup(admin, body.code):
+        raise HTTPException(401, "Incorrect code")
+    plain, hashed = _generate_backup_codes(10)
+    replace_admin_backup_codes(admin["id"], hashed)
+    _audit_from(admin, "admin.mfa.backup_regenerated", request,
+                target_type="admin", target_id=admin["id"], target_label=admin["username"])
+    return {"ok": True, "backup_codes": plain}
+
+
+@app.post("/api/admin/mfa/disable")
+def admin_mfa_disable(request: Request, body: MfaDisable):
+    """Requires both the password AND a current TOTP/backup code."""
+    admin = _require_admin(request)
+    if not admin.get("mfa_enabled"):
+        raise HTTPException(400, "MFA is not enabled")
+    # Re-verify the password
+    from database import _verify_password
+    if not _verify_password(body.password, admin["password_hash"]):
+        raise HTTPException(401, "Incorrect password")
+    if not _verify_admin_totp_or_backup(admin, body.code):
+        raise HTTPException(401, "Incorrect MFA code")
+    disable_admin_mfa(admin["id"])
+    _audit_from(admin, "admin.mfa.disabled", request,
+                target_type="admin", target_id=admin["id"], target_label=admin["username"])
+    return {"ok": True}
 
 
 @app.post("/api/admin/logout")
