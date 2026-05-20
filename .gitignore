@@ -2,6 +2,8 @@
 submissions.db
 uploads/photos/*
 !uploads/photos/.gitkeep
+uploads/documents/*/*
+!uploads/documents/*/.gitkeep
 
 # Python
 __pycache__/

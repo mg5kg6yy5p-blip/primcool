@@ -55,6 +55,8 @@ from database import (
     set_admin_mfa_pending, activate_admin_mfa, disable_admin_mfa,
     replace_admin_backup_codes, consume_admin_backup_code,
     get_admin_backup_codes_status, _hash_pin,
+    create_document, get_document_by_id, query_documents,
+    touch_document_accessed, soft_delete_document, hard_delete_document,
     log_audit, query_audit_log,
 )
 
@@ -74,6 +76,8 @@ ADMIN_PERMS = {
         "inventory:adjust", "inventory:delete",
         "invoice:view", "invoice:create", "invoice:update", "invoice:delete",
         "invoice:record_payment",
+        "documents:upload", "documents:view", "documents:view_highly_sensitive",
+        "documents:delete", "documents:delete_highly_sensitive",
     },
     "supervisor_admin": {
         "admin:view_all",
@@ -85,6 +89,8 @@ ADMIN_PERMS = {
         "schedule:view", "schedule:edit",
         "inventory:view", "inventory:adjust",
         "invoice:view", "invoice:update", "invoice:record_payment",
+        "documents:upload", "documents:view", "documents:view_highly_sensitive",
+        "documents:delete",
     },
     "system_admin": {
         "tech:create", "tech:update", "tech:reset_pin",
@@ -95,16 +101,19 @@ ADMIN_PERMS = {
         "schedule:view", "schedule:edit",
         "inventory:view", "inventory:create", "inventory:update", "inventory:adjust",
         "invoice:view", "invoice:create", "invoice:update", "invoice:record_payment",
+        "documents:upload", "documents:view",
     },
     "hr_admin": {
         "tech:create", "tech:update", "tech:reset_pin",
         "audit:view_self",
         "timesheet:view_all",
+        "documents:upload", "documents:view", "documents:view_highly_sensitive",
     },
     "ceo_assistant": {
         "audit:view_self",
         "inventory:view",
         "invoice:view",
+        "documents:view",
     },
 }
 
@@ -116,6 +125,86 @@ PHOTOS_DIR = Path(os.environ.get("PHOTOS_DIR", "uploads/photos"))
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 MAX_PHOTO_SIZE = 12 * 1024 * 1024  # 12 MB
 ALLOWED_PHOTO_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
+
+# ── Document Management System ────────────────────────────────────────────────
+DOCUMENTS_DIR = Path(os.environ.get("DOCUMENTS_DIR", "uploads/documents"))
+DOC_TIERS = ("public", "confidential", "highly_sensitive")
+for _tier in DOC_TIERS:
+    (DOCUMENTS_DIR / _tier).mkdir(parents=True, exist_ok=True)
+
+MAX_DOC_SIZE = int(os.environ.get("MAX_DOC_SIZE_BYTES", str(25 * 1024 * 1024)))   # 25 MB
+ALLOWED_DOC_EXTS = {
+    ".jpg", ".jpeg", ".png", ".webp", ".heic", ".gif",
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".txt", ".csv",
+}
+# Map file extension → expected magic-byte prefixes (for cheap content-type sanity check).
+_DOC_MAGIC = {
+    ".jpg":  [b"\xff\xd8\xff"],
+    ".jpeg": [b"\xff\xd8\xff"],
+    ".png":  [b"\x89PNG\r\n\x1a\n"],
+    ".pdf":  [b"%PDF-"],
+    ".gif":  [b"GIF87a", b"GIF89a"],
+    ".docx": [b"PK\x03\x04"],   # zip-based office formats
+    ".xlsx": [b"PK\x03\x04"],
+    # extensions we don't sniff are accepted as-is (txt, csv, doc, xls, webp, heic)
+}
+
+DOC_TYPES = (
+    "id", "trn", "nis", "drivers_license", "passport", "police_record",
+    "certificate", "contract", "insurance", "invoice_receipt",
+    "service_report", "photo", "other",
+)
+# Document types that are always Highly Sensitive — enforced server-side
+HIGHLY_SENSITIVE_TYPES = {"trn", "passport", "police_record", "id", "nis"}
+
+
+def _validate_doc_upload(filename: str, body: bytes) -> tuple:
+    """Returns (ext, mime_type_guess). Raises HTTPException on failure."""
+    if not filename:
+        raise HTTPException(400, "Missing filename")
+    safe = filename.replace("\\", "/").split("/")[-1]
+    if not safe or safe.startswith(".") or len(safe) > 255:
+        raise HTTPException(400, "Invalid filename")
+    ext = Path(safe).suffix.lower()
+    if ext not in ALLOWED_DOC_EXTS:
+        raise HTTPException(400, f"File type {ext or '(none)'} not allowed")
+    if len(body) > MAX_DOC_SIZE:
+        raise HTTPException(413, f"File too large (max {MAX_DOC_SIZE // (1024*1024)} MB)")
+    if len(body) == 0:
+        raise HTTPException(400, "Empty file")
+    # Magic-byte sniff for the formats we know
+    if ext in _DOC_MAGIC:
+        if not any(body.startswith(prefix) for prefix in _DOC_MAGIC[ext]):
+            raise HTTPException(400, f"File content does not match a {ext} file")
+    # Virus scan hook (stubbed). Wire to ClamAV daemon by setting CLAMD_HOST / CLAMD_PORT.
+    # See https://github.com/CISOfy/python-clamd — out of scope for v1.
+    mime = {
+        ".pdf":  "application/pdf",
+        ".jpg":  "image/jpeg", ".jpeg": "image/jpeg",
+        ".png":  "image/png",  ".gif":  "image/gif",  ".webp": "image/webp", ".heic": "image/heic",
+        ".doc":  "application/msword",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".xls":  "application/vnd.ms-excel",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".txt":  "text/plain", ".csv": "text/csv",
+    }.get(ext, "application/octet-stream")
+    return ext, mime
+
+
+def _sign_document_url(stored_filename: str, tier: str, ttl_seconds: int = 600) -> str:
+    """Same HMAC scheme as photos. 10-min default expiry for documents."""
+    expires = int(time.time()) + ttl_seconds
+    payload = f"doc:{tier}:{stored_filename}:{expires}"
+    sig = hmac.new(PHOTO_URL_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:32]
+    return f"/documents/{tier}/{stored_filename}?exp={expires}&sig={sig}"
+
+
+def _verify_document_signature(stored_filename: str, tier: str, expires: int, sig: str) -> bool:
+    if int(time.time()) > expires:
+        return False
+    payload = f"doc:{tier}:{stored_filename}:{expires}"
+    expected = hmac.new(PHOTO_URL_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:32]
+    return hmac.compare_digest(sig, expected)
 
 INVOICE_CURRENCY = os.environ.get("INVOICE_CURRENCY", "JMD")
 INVOICE_TAX_RATE = float(os.environ.get("INVOICE_TAX_RATE", "0.15"))   # Jamaica GCT standard
@@ -1776,6 +1865,194 @@ def portal_invoice_detail(request: Request, invoice_id: int):
     if inv["status"] == "draft":
         raise HTTPException(404, "Invoice not found")
     return inv
+
+
+# ── Documents (DMS) ───────────────────────────────────────────────────────────
+
+def _allowed_sensitivities_for(admin: dict) -> list:
+    out = []
+    if _admin_can(admin["role"], "documents:view"):
+        out.extend(["public", "confidential"])
+    if _admin_can(admin["role"], "documents:view_highly_sensitive"):
+        out.append("highly_sensitive")
+    return out
+
+
+@app.post("/api/admin/documents")
+async def admin_upload_document(
+    request: Request,
+    file:             UploadFile = File(...),
+    title:            str  = Form(...),
+    document_type:    str  = Form(...),
+    sensitivity:      str  = Form(...),
+    description:      str  = Form(""),
+    linked_to_type:   str  = Form(""),
+    linked_to_id:     int  = Form(0),
+):
+    admin = _require_perm(request, "documents:upload")
+
+    if document_type not in DOC_TYPES:
+        raise HTTPException(400, f"Unknown document_type. Allowed: {', '.join(DOC_TYPES)}")
+    if sensitivity not in DOC_TIERS:
+        raise HTTPException(400, f"Unknown sensitivity. Allowed: {', '.join(DOC_TIERS)}")
+    # Force minimum sensitivity for certain document types
+    if document_type in HIGHLY_SENSITIVE_TYPES and sensitivity != "highly_sensitive":
+        sensitivity = "highly_sensitive"
+    if sensitivity == "highly_sensitive" and not _admin_can(admin["role"], "documents:view_highly_sensitive"):
+        raise HTTPException(403, "Your role cannot upload Highly Sensitive documents")
+
+    body = await file.read()
+    ext, mime = _validate_doc_upload(file.filename, body)
+
+    # Sanitize: rename to a random UUID. Original name kept in metadata only.
+    stored_filename = f"{uuid.uuid4().hex}{ext}"
+    out_path = DOCUMENTS_DIR / sensitivity / stored_filename
+    out_path.write_bytes(body)
+    # Lock down file permissions (owner read/write only)
+    try:
+        os.chmod(out_path, 0o600)
+    except Exception:
+        pass
+
+    # Resolve linked entity label snapshot
+    linked_label = None
+    if linked_to_type and linked_to_id:
+        if linked_to_type == "customer":
+            c = get_customer_by_id(linked_to_id)
+            if c: linked_label = f"{c['name']} ({c['customer_code']})"
+        elif linked_to_type == "tech":
+            t = get_tech_by_id(linked_to_id)
+            if t: linked_label = f"{t['name']} ({t['tech_code']})"
+        elif linked_to_type == "admin":
+            a = get_admin_user_by_id(linked_to_id)
+            if a: linked_label = f"{a['name']} ({a['username']})"
+        elif linked_to_type == "visit":
+            v = get_visit_by_id(linked_to_id)
+            if v: linked_label = f"{v['visit_type']} visit for {v.get('customer_name','?')}"
+
+    doc_id = create_document({
+        "stored_filename":   stored_filename,
+        "original_filename": file.filename,
+        "mime_type":         mime,
+        "size_bytes":        len(body),
+        "sensitivity":       sensitivity,
+        "document_type":     document_type,
+        "title":             title.strip(),
+        "description":       description.strip(),
+        "linked_to_type":    linked_to_type or None,
+        "linked_to_id":      linked_to_id   or None,
+        "linked_to_label":   linked_label,
+        "uploaded_by_type":  "admin",
+        "uploaded_by_id":    admin["id"],
+        "uploaded_by_prid":  admin.get("prid"),
+        "uploaded_by_label": admin.get("name"),
+    })
+
+    _audit_from(admin, "document.upload", request,
+                target_type="document", target_id=doc_id, target_label=title,
+                after={"document_type": document_type, "sensitivity": sensitivity,
+                       "size_bytes": len(body), "linked_to": linked_label})
+    return {"id": doc_id, "stored_filename": stored_filename}
+
+
+@app.get("/api/admin/documents")
+def admin_list_documents(
+    request: Request,
+    sensitivity:    Optional[str] = None,
+    document_type:  Optional[str] = None,
+    linked_to_type: Optional[str] = None,
+    linked_to_id:   Optional[int] = None,
+    search:         Optional[str] = None,
+):
+    admin = _require_perm(request, "documents:view")
+    allowed = _allowed_sensitivities_for(admin)
+    if not allowed:
+        raise HTTPException(403, "Forbidden")
+    # If user asks for a specific tier, intersect with what they're allowed to see
+    if sensitivity:
+        if sensitivity not in allowed:
+            raise HTTPException(403, "Your role cannot see that sensitivity tier")
+        tiers = [sensitivity]
+    else:
+        tiers = allowed
+    return query_documents(
+        sensitivity_in=tiers,
+        document_type=document_type,
+        linked_to_type=linked_to_type,
+        linked_to_id=linked_to_id,
+        search=search,
+    )
+
+
+@app.get("/api/admin/documents/{doc_id}/download")
+def admin_document_download(request: Request, doc_id: int):
+    """Returns a short-lived signed URL the browser can use to fetch the file.
+    Every call is audit-logged as a view; highly_sensitive logs separately."""
+    admin = _require_perm(request, "documents:view")
+    doc = get_document_by_id(doc_id)
+    if not doc:
+        raise HTTPException(404, "Document not found")
+    if doc["sensitivity"] == "highly_sensitive" and not _admin_can(admin["role"], "documents:view_highly_sensitive"):
+        raise HTTPException(403, "Your role cannot view Highly Sensitive documents")
+
+    touch_document_accessed(doc_id)
+    signed = _sign_document_url(doc["stored_filename"], doc["sensitivity"])
+
+    action = "document.view_highly_sensitive" if doc["sensitivity"] == "highly_sensitive" else "document.view"
+    _audit_from(admin, action, request,
+                target_type="document", target_id=doc_id, target_label=doc["title"],
+                after={"sensitivity": doc["sensitivity"], "document_type": doc["document_type"]})
+    return {
+        "url":               signed,
+        "original_filename": doc["original_filename"],
+        "mime_type":         doc["mime_type"],
+        "expires_in":        600,
+    }
+
+
+@app.delete("/api/admin/documents/{doc_id}")
+def admin_delete_document(request: Request, doc_id: int):
+    admin = _require_admin(request)
+    doc = get_document_by_id(doc_id)
+    if not doc:
+        raise HTTPException(404, "Document not found")
+    if doc["sensitivity"] == "highly_sensitive":
+        if not _admin_can(admin["role"], "documents:delete_highly_sensitive"):
+            raise HTTPException(403, "Only super_admin can delete Highly Sensitive documents")
+        # Soft delete + audit (keep file on disk for forensic retention)
+        soft_delete_document(doc_id)
+        _audit_from(admin, "document.delete_highly_sensitive", request,
+                    target_type="document", target_id=doc_id, target_label=doc["title"],
+                    before=doc)
+    else:
+        if not _admin_can(admin["role"], "documents:delete"):
+            raise HTTPException(403, "Your role cannot delete documents")
+        # Hard delete the file + row
+        try:
+            (DOCUMENTS_DIR / doc["sensitivity"] / doc["stored_filename"]).unlink(missing_ok=True)
+        except Exception:
+            pass
+        hard_delete_document(doc_id)
+        _audit_from(admin, "document.delete", request,
+                    target_type="document", target_id=doc_id, target_label=doc["title"],
+                    before=doc)
+    return {"ok": True}
+
+
+@app.get("/documents/{tier}/{filename}")
+def serve_document(tier: str, filename: str, exp: int = 0, sig: str = ""):
+    """Time-limited signed document fetch. URLs generated by
+    /api/admin/documents/{id}/download. No path traversal allowed."""
+    if tier not in DOC_TIERS:
+        raise HTTPException(404)
+    if "/" in filename or ".." in filename or filename.startswith("."):
+        raise HTTPException(400, "Invalid filename")
+    if not exp or not sig or not _verify_document_signature(filename, tier, exp, sig):
+        raise HTTPException(403, "Link expired or invalid")
+    path = DOCUMENTS_DIR / tier / filename
+    if not path.exists():
+        raise HTTPException(404, "Document not found")
+    return FileResponse(str(path))
 
 
 # ── Audit log ─────────────────────────────────────────────────────────────────

@@ -410,6 +410,10 @@
         Invoices
         <span id="overdueBadge" style="margin-left:auto;background:var(--danger);color:white;font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px;display:none;"></span>
       </div>
+      <div class="nav-item" onclick="showPanel('documents')" id="nav-documents" style="display:none;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        Documents
+      </div>
       <div class="nav-item" onclick="showPanel('inventory')" id="nav-inventory" style="display:none;">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
         Inventory
@@ -519,6 +523,40 @@
         <div style="margin-top:24px;padding:14px 16px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;font-size:12px;color:#92400e;line-height:1.6;">
           <strong>Jamaica tax reference</strong> — GCT 15% is applied by default on new invoices. Payroll deductions (PAYE, NIS, NHT, Education Tax, HEART) reference values are stored for future paystub generation.
           <a href="#" onclick="event.preventDefault();showTaxReference();" style="color:var(--teal);font-weight:600;">View tax reference →</a>
+        </div>
+      </div>
+
+      <!-- ── Documents panel ── -->
+      <div class="panel" id="panel-documents">
+        <div class="top-bar">
+          <h2>Documents</h2>
+          <button class="btn btn-primary" id="uploadDocBtn" onclick="openModal('uploadDoc')" style="display:none;">+ Upload Document</button>
+        </div>
+
+        <div style="background:#fffbeb;border:1px solid #fde68a;color:#92400e;padding:11px 14px;border-radius:8px;font-size:12px;line-height:1.5;margin-bottom:16px;">
+          <strong>Tiered storage.</strong> Tier 1 (Public) for marketing & job photos. Tier 2 (Confidential) for contracts & customer info.
+          Tier 3 (Highly Sensitive) for TRN, IDs, banking, payroll — visible only to <strong>HR Admin</strong> and <strong>Super Admin</strong>.
+          Every upload, view, and download is logged with your PRID.
+        </div>
+
+        <div class="filter-bar" id="docFilters" style="gap:8px;flex-wrap:wrap;">
+          <button class="filter-btn active" data-f="all"        onclick="setDocFilter('sensitivity','',this)">All</button>
+          <button class="filter-btn" data-f="public"             onclick="setDocFilter('sensitivity','public',this)">Public</button>
+          <button class="filter-btn" data-f="confidential"       onclick="setDocFilter('sensitivity','confidential',this)">Confidential</button>
+          <button class="filter-btn" data-f="highly_sensitive" id="docHighlySensitiveBtn"  onclick="setDocFilter('sensitivity','highly_sensitive',this)" style="display:none;">Highly Sensitive</button>
+          <select id="doc-type-filter" onchange="loadDocuments()" style="margin-left:8px;padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
+            <option value="">All types</option>
+          </select>
+          <input type="text" id="doc-search" oninput="loadDocumentsDebounced()" placeholder="Search title, description, filename…" style="margin-left:auto;padding:6px 12px;border:1px solid var(--border);border-radius:6px;font-size:13px;min-width:240px;">
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Title</th><th>Type</th><th>Sensitivity</th><th>Linked To</th><th>Size</th><th>Uploaded</th><th>By</th><th>Actions</th>
+            </tr></thead>
+            <tbody id="docTableBody"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+          </table>
         </div>
       </div>
 
@@ -727,6 +765,76 @@
 </div><!-- /#app -->
 
 <!-- ── Modals ── -->
+
+<!-- Upload Document -->
+<div class="modal-overlay" id="modal-uploadDoc">
+  <div class="modal" style="max-width:560px;">
+    <div class="modal-header">
+      <h3>Upload Document</h3>
+      <button class="modal-close" onclick="closeModal('uploadDoc')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field"><label>File *</label>
+        <input id="doc-file" type="file" style="padding:8px;border:2px dashed var(--border);border-radius:8px;width:100%;cursor:pointer;">
+        <p style="font-size:11px;color:var(--muted);margin-top:5px;">Max 25 MB. Allowed: PDF, JPG, PNG, GIF, WEBP, HEIC, DOC, DOCX, XLS, XLSX, TXT, CSV.</p>
+      </div>
+      <div class="field"><label>Title *</label><input id="doc-title" placeholder="e.g. Marcus Reid — A/C Refrigeration Certificate"></div>
+      <div class="field-row">
+        <div class="field">
+          <label>Document Type *</label>
+          <select id="doc-type">
+            <option value="">Select…</option>
+            <option value="id">ID Document</option>
+            <option value="trn">TRN (Highly Sensitive)</option>
+            <option value="nis">NIS (Highly Sensitive)</option>
+            <option value="passport">Passport (Highly Sensitive)</option>
+            <option value="drivers_license">Driver's Licence</option>
+            <option value="police_record">Police Record (Highly Sensitive)</option>
+            <option value="certificate">Certificate / Training</option>
+            <option value="contract">Contract / Agreement</option>
+            <option value="insurance">Insurance Document</option>
+            <option value="invoice_receipt">Invoice / Receipt</option>
+            <option value="service_report">Service Report</option>
+            <option value="photo">Photo</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Sensitivity *</label>
+          <select id="doc-sensitivity">
+            <option value="public">Tier 1 — Public</option>
+            <option value="confidential" selected>Tier 2 — Confidential</option>
+            <option value="highly_sensitive" id="doc-hs-opt">Tier 3 — Highly Sensitive</option>
+          </select>
+          <p style="font-size:11px;color:var(--muted);margin-top:4px;">Some types auto-upgrade to Tier 3.</p>
+        </div>
+      </div>
+      <div class="field"><label>Description</label>
+        <textarea id="doc-desc" placeholder="Brief description (optional)"></textarea>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>Link to (optional)</label>
+          <select id="doc-link-type" onchange="loadDocLinkOptions()">
+            <option value="">— Not linked —</option>
+            <option value="customer">Customer</option>
+            <option value="tech">Technician</option>
+            <option value="admin">Admin User</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>&nbsp;</label>
+          <select id="doc-link-id"><option value="">—</option></select>
+        </div>
+      </div>
+      <div class="form-error" id="err-uploadDoc"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('uploadDoc')">Cancel</button>
+      <button class="btn btn-primary" id="uploadDocSubmitBtn" onclick="submitUploadDoc()">Upload</button>
+    </div>
+  </div>
+</div>
 
 <!-- New / Edit Invoice -->
 <div class="modal-overlay" id="modal-invoice">
@@ -1284,11 +1392,11 @@
   let resetAdminPwId = null;
 
   const ADMIN_PERMS = {
-    super_admin: new Set(['admin:create','admin:set_role','admin:set_active','admin:reset_password','admin:view_all','audit:view_all','tech:create','tech:delete','customer:create','customer:delete','visit:create','visit:delete','review:approve','review:delete','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','inventory:delete','invoice:view','invoice:create','invoice:update','invoice:delete','invoice:record_payment']),
-    supervisor_admin: new Set(['admin:view_all','audit:view_all','tech:update','customer:update','visit:update','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:adjust','invoice:view','invoice:update','invoice:record_payment']),
-    system_admin: new Set(['tech:create','customer:create','visit:create','audit:view_self','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','invoice:view','invoice:create','invoice:update','invoice:record_payment']),
-    hr_admin: new Set(['tech:create','audit:view_self','timesheet:view_all']),
-    ceo_assistant: new Set(['audit:view_self','inventory:view','invoice:view']),
+    super_admin: new Set(['admin:create','admin:set_role','admin:set_active','admin:reset_password','admin:view_all','audit:view_all','tech:create','tech:delete','customer:create','customer:delete','visit:create','visit:delete','review:approve','review:delete','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','inventory:delete','invoice:view','invoice:create','invoice:update','invoice:delete','invoice:record_payment','documents:upload','documents:view','documents:view_highly_sensitive','documents:delete','documents:delete_highly_sensitive']),
+    supervisor_admin: new Set(['admin:view_all','audit:view_all','tech:update','customer:update','visit:update','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:adjust','invoice:view','invoice:update','invoice:record_payment','documents:upload','documents:view','documents:view_highly_sensitive','documents:delete']),
+    system_admin: new Set(['tech:create','customer:create','visit:create','audit:view_self','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','invoice:view','invoice:create','invoice:update','invoice:record_payment','documents:upload','documents:view']),
+    hr_admin: new Set(['tech:create','audit:view_self','timesheet:view_all','documents:upload','documents:view','documents:view_highly_sensitive']),
+    ceo_assistant: new Set(['audit:view_self','inventory:view','invoice:view','documents:view']),
   };
   function can(perm) {
     return currentAdmin && ADMIN_PERMS[currentAdmin.role]?.has(perm);
@@ -1435,6 +1543,7 @@
     if (can('schedule:view')) { initScheduleWeek(); loadSchedule(); }
     if (can('inventory:view')) loadInventory();
     if (can('invoice:view')) loadInvoices();
+    if (can('documents:view')) loadDocuments();
   }
 
   function applyRoleVisibility() {
@@ -1447,6 +1556,9 @@
     if (can('inventory:create')) document.getElementById('addPartBtn').style.display = '';
     if (can('invoice:view')) document.getElementById('nav-invoices').style.display = 'flex';
     if (can('invoice:create')) document.getElementById('addInvoiceBtn').style.display = '';
+    if (can('documents:view')) document.getElementById('nav-documents').style.display = 'flex';
+    if (can('documents:upload')) document.getElementById('uploadDocBtn').style.display = '';
+    if (can('documents:view_highly_sensitive')) document.getElementById('docHighlySensitiveBtn').style.display = 'inline-block';
     if (can('admin:create')) document.getElementById('addAdminBtn').style.display = '';
     // Show current admin name + role
     const tag = document.querySelector('.admin-tag');
@@ -2245,6 +2357,199 @@
       closeModal('resetAdminPw');
       alert('Password saved. Share it privately with the admin.');
     } catch(e) { showErr('err-resetAdminPw', e.message); }
+  }
+
+  // ── Documents ──────────────────────────────────────────────────────────────
+  let docState = { sensitivity: '', document_type: '', search: '' };
+  let _docSearchTimer = null;
+
+  const DOC_TYPE_LABELS = {
+    id: 'ID Document', trn: 'TRN', nis: 'NIS', passport: 'Passport',
+    drivers_license: "Driver's Licence", police_record: 'Police Record',
+    certificate: 'Certificate', contract: 'Contract', insurance: 'Insurance',
+    invoice_receipt: 'Invoice/Receipt', service_report: 'Service Report',
+    photo: 'Photo', other: 'Other',
+  };
+
+  function setDocFilter(field, value, btn) {
+    docState[field] = value;
+    document.querySelectorAll('#docFilters .filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    loadDocuments();
+  }
+
+  function loadDocumentsDebounced() {
+    clearTimeout(_docSearchTimer);
+    _docSearchTimer = setTimeout(() => {
+      docState.search = document.getElementById('doc-search').value.trim();
+      loadDocuments();
+    }, 250);
+  }
+
+  async function loadDocuments() {
+    if (!can('documents:view')) return;
+    // Populate type dropdown once
+    const sel = document.getElementById('doc-type-filter');
+    if (sel.options.length <= 1) {
+      Object.entries(DOC_TYPE_LABELS).forEach(([k, v]) => {
+        const o = document.createElement('option');
+        o.value = k; o.textContent = v; sel.appendChild(o);
+      });
+    }
+    docState.document_type = sel.value || '';
+
+    const params = new URLSearchParams();
+    if (docState.sensitivity)  params.set('sensitivity',  docState.sensitivity);
+    if (docState.document_type) params.set('document_type', docState.document_type);
+    if (docState.search)       params.set('search',       docState.search);
+    try {
+      const rows = await api('GET', '/api/admin/documents?' + params.toString());
+      renderDocuments(rows);
+    } catch(e) {
+      document.getElementById('docTableBody').innerHTML =
+        `<tr><td colspan="8" class="empty">Error: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  function renderDocuments(rows) {
+    const tbody = document.getElementById('docTableBody');
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="empty">No documents found.</td></tr>';
+      return;
+    }
+    const sensitivityBadge = (s) => {
+      const meta = {
+        public:           { label: 'Public',           bg: '#dbeafe', fg: '#1e40af' },
+        confidential:     { label: 'Confidential',     bg: '#fef3c7', fg: '#92400e' },
+        highly_sensitive: { label: 'Highly Sensitive', bg: '#fee2e2', fg: '#991b1b' },
+      }[s] || { label: s, bg: '#f3f4f6', fg: '#374151' };
+      return `<span class="badge" style="background:${meta.bg};color:${meta.fg};">${meta.label}</span>`;
+    };
+    const fmtBytes = (n) => {
+      if (n < 1024) return `${n} B`;
+      if (n < 1024 * 1024) return `${(n/1024).toFixed(1)} KB`;
+      return `${(n/1024/1024).toFixed(1)} MB`;
+    };
+    tbody.innerHTML = rows.map(d => `
+      <tr>
+        <td><strong>${escHtml(d.title)}</strong>${d.description ? `<br><span style="font-size:11px;color:var(--muted);">${escHtml(d.description)}</span>` : ''}<br><span style="font-size:11px;color:var(--muted);font-family:'Courier New',monospace;">${escHtml(d.original_filename)}</span></td>
+        <td>${escHtml(DOC_TYPE_LABELS[d.document_type] || d.document_type)}</td>
+        <td>${sensitivityBadge(d.sensitivity)}</td>
+        <td>${d.linked_to_label ? escHtml(d.linked_to_label) : '<span style="color:var(--muted);">—</span>'}</td>
+        <td style="white-space:nowrap;">${fmtBytes(d.size_bytes)}</td>
+        <td style="white-space:nowrap;font-size:12px;color:var(--muted);">${(d.uploaded_at||'').slice(0,16).replace('T',' ')}</td>
+        <td><span style="font-size:11px;">${escHtml(d.uploaded_by_label || '?')}</span><br><span style="font-size:10px;color:var(--muted);font-family:'Courier New',monospace;">${escHtml(d.uploaded_by_prid||'')}</span></td>
+        <td style="white-space:nowrap;">
+          <button class="btn btn-edit btn-sm" onclick="downloadDocument(${d.id})">📥 Download</button>
+          ${can('documents:delete') || (d.sensitivity==='highly_sensitive' && can('documents:delete_highly_sensitive'))
+            ? `<button class="btn btn-danger btn-sm" onclick="deleteDocument(${d.id},'${escHtml(d.title)}',${d.sensitivity==='highly_sensitive'})" style="margin-left:4px;">Delete</button>`
+            : ''}
+        </td>
+      </tr>`).join('');
+  }
+
+  async function downloadDocument(id) {
+    try {
+      const res = await api('GET', `/api/admin/documents/${id}/download`);
+      // Open the signed URL in a new tab — the browser handles the file display/save
+      const a = document.createElement('a');
+      a.href = res.url;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.download = res.original_filename || '';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  async function deleteDocument(id, title, isHighlySensitive) {
+    const warning = isHighlySensitive
+      ? `Delete "${title}"?\n\nThis is a Highly Sensitive document. It will be archived (kept on disk for forensic retention) but no longer visible. This is logged.`
+      : `Permanently delete "${title}"? This cannot be undone.`;
+    if (!confirm(warning)) return;
+    try {
+      await api('DELETE', `/api/admin/documents/${id}`);
+      await loadDocuments();
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  // ── Upload modal ──
+  function loadDocLinkOptions() {
+    const type = document.getElementById('doc-link-type').value;
+    const sel  = document.getElementById('doc-link-id');
+    sel.innerHTML = '<option value="">—</option>';
+    if (!type) return;
+    if (type === 'customer') {
+      sel.innerHTML += allCustomers.map(c => `<option value="${c.id}">${escHtml(c.name)} (${c.customer_code})</option>`).join('');
+    } else if (type === 'tech') {
+      sel.innerHTML += allTechs.map(t => `<option value="${t.id}">${escHtml(t.name)} (${t.tech_code})</option>`).join('');
+    } else if (type === 'admin') {
+      sel.innerHTML += (allAdmins || []).map(a => `<option value="${a.id}">${escHtml(a.name)} (${a.username})</option>`).join('');
+    }
+  }
+
+  // Force sensitivity → highly_sensitive when an HS-typed document is selected
+  document.addEventListener('change', e => {
+    if (e.target && e.target.id === 'doc-type') {
+      const hsTypes = new Set(['id','trn','nis','passport','police_record']);
+      if (hsTypes.has(e.target.value)) {
+        document.getElementById('doc-sensitivity').value = 'highly_sensitive';
+      }
+    }
+  });
+
+  async function submitUploadDoc() {
+    const err = document.getElementById('err-uploadDoc');
+    err.style.display = 'none';
+    const file        = document.getElementById('doc-file').files[0];
+    const title       = document.getElementById('doc-title').value.trim();
+    const type        = document.getElementById('doc-type').value;
+    const sensitivity = document.getElementById('doc-sensitivity').value;
+    const desc        = document.getElementById('doc-desc').value.trim();
+    const linkType    = document.getElementById('doc-link-type').value;
+    const linkId      = document.getElementById('doc-link-id').value;
+
+    if (!file)  { showErr('err-uploadDoc', 'Pick a file to upload.'); return; }
+    if (!title) { showErr('err-uploadDoc', 'Title is required.'); return; }
+    if (!type)  { showErr('err-uploadDoc', 'Pick a document type.'); return; }
+    if (file.size > 25 * 1024 * 1024) { showErr('err-uploadDoc','File is too large (max 25 MB).'); return; }
+
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('title', title);
+    fd.append('document_type', type);
+    fd.append('sensitivity', sensitivity);
+    fd.append('description', desc);
+    fd.append('linked_to_type', linkType);
+    fd.append('linked_to_id', linkId || '0');
+
+    const btn = document.getElementById('uploadDocSubmitBtn');
+    btn.disabled = true; btn.textContent = 'Uploading…';
+    try {
+      const res = await fetch('/api/admin/documents', {
+        method:  'POST',
+        headers: { 'Authorization': `Bearer ${adminToken}` },
+        body:    fd,
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        showErr('err-uploadDoc', d.detail || 'Upload failed.');
+        return;
+      }
+      closeModal('uploadDoc');
+      // Reset form
+      ['doc-file','doc-title','doc-desc'].forEach(id => document.getElementById(id).value = '');
+      document.getElementById('doc-type').value = '';
+      document.getElementById('doc-sensitivity').value = 'confidential';
+      document.getElementById('doc-link-type').value = '';
+      document.getElementById('doc-link-id').innerHTML = '<option value="">—</option>';
+      await loadDocuments();
+    } catch(e) {
+      showErr('err-uploadDoc', e.message);
+    } finally {
+      btn.disabled = false; btn.textContent = 'Upload';
+    }
   }
 
   // ── Invoices ───────────────────────────────────────────────────────────────

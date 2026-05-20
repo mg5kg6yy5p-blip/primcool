@@ -354,6 +354,33 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_invoice_payments  ON invoice_payments(invoice_id, payment_date)")
 
     con.execute("""
+        CREATE TABLE IF NOT EXISTS documents (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            stored_filename     TEXT NOT NULL UNIQUE,
+            original_filename   TEXT NOT NULL,
+            mime_type           TEXT,
+            size_bytes          INTEGER NOT NULL,
+            sensitivity         TEXT NOT NULL,    -- 'public' | 'confidential' | 'highly_sensitive'
+            document_type       TEXT NOT NULL,    -- 'id' | 'trn' | 'certificate' | 'contract' | ...
+            title               TEXT NOT NULL,
+            description         TEXT,
+            linked_to_type      TEXT,             -- 'customer' | 'tech' | 'admin' | 'visit' | NULL
+            linked_to_id        INTEGER,
+            linked_to_label     TEXT,             -- snapshot for display when linked entity is deleted/renamed
+            uploaded_by_type    TEXT NOT NULL,    -- 'admin' | 'tech'
+            uploaded_by_id      INTEGER NOT NULL,
+            uploaded_by_prid    TEXT,
+            uploaded_by_label   TEXT,
+            uploaded_at         TEXT NOT NULL,
+            last_accessed_at    TEXT,
+            deleted_at          TEXT
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_doc_linked  ON documents(linked_to_type, linked_to_id)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_doc_sensitivity ON documents(sensitivity)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_doc_uploaded ON documents(uploaded_at)")
+
+    con.execute("""
         CREATE TABLE IF NOT EXISTS audit_log (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             actor_type   TEXT NOT NULL,
@@ -2082,6 +2109,118 @@ def record_invoice_payment(invoice_id: int, data: dict,
     con.commit()
     con.close()
     return payment_id
+
+
+# ── Documents (DMS) ──────────────────────────────────────────────────────────
+
+def create_document(data: dict) -> int:
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    cur = con.execute(
+        """
+        INSERT INTO documents
+            (stored_filename, original_filename, mime_type, size_bytes,
+             sensitivity, document_type, title, description,
+             linked_to_type, linked_to_id, linked_to_label,
+             uploaded_by_type, uploaded_by_id, uploaded_by_prid, uploaded_by_label,
+             uploaded_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            data["stored_filename"],
+            data["original_filename"],
+            data.get("mime_type"),
+            int(data["size_bytes"]),
+            data["sensitivity"],
+            data["document_type"],
+            data["title"],
+            data.get("description", ""),
+            data.get("linked_to_type"),
+            data.get("linked_to_id"),
+            data.get("linked_to_label"),
+            data["uploaded_by_type"],
+            int(data["uploaded_by_id"]),
+            data.get("uploaded_by_prid"),
+            data.get("uploaded_by_label"),
+            now,
+        ),
+    )
+    doc_id = cur.lastrowid
+    con.commit()
+    con.close()
+    return doc_id
+
+
+def get_document_by_id(doc_id: int, include_deleted: bool = False):
+    con = _con()
+    if include_deleted:
+        row = con.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)).fetchone()
+    else:
+        row = con.execute("SELECT * FROM documents WHERE id = ? AND deleted_at IS NULL",
+                          (doc_id,)).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
+def query_documents(
+    sensitivity_in: list = None,
+    document_type: str = None,
+    linked_to_type: str = None,
+    linked_to_id: int = None,
+    search: str = None,
+    include_deleted: bool = False,
+    limit: int = 500,
+):
+    sql = "SELECT * FROM documents WHERE 1=1"
+    args = []
+    if not include_deleted:
+        sql += " AND deleted_at IS NULL"
+    if sensitivity_in:
+        placeholders = ",".join("?" for _ in sensitivity_in)
+        sql += f" AND sensitivity IN ({placeholders})"
+        args.extend(sensitivity_in)
+    if document_type:
+        sql += " AND document_type = ?"
+        args.append(document_type)
+    if linked_to_type:
+        sql += " AND linked_to_type = ?"
+        args.append(linked_to_type)
+    if linked_to_id is not None:
+        sql += " AND linked_to_id = ?"
+        args.append(linked_to_id)
+    if search:
+        sql += " AND (title LIKE ? OR description LIKE ? OR original_filename LIKE ?)"
+        like = f"%{search}%"
+        args.extend([like, like, like])
+    sql += " ORDER BY uploaded_at DESC LIMIT ?"
+    args.append(int(limit))
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def touch_document_accessed(doc_id: int):
+    con = _con()
+    con.execute("UPDATE documents SET last_accessed_at = ? WHERE id = ?",
+                (datetime.now(timezone.utc).isoformat(), doc_id))
+    con.commit()
+    con.close()
+
+
+def soft_delete_document(doc_id: int):
+    con = _con()
+    con.execute("UPDATE documents SET deleted_at = ? WHERE id = ?",
+                (datetime.now(timezone.utc).isoformat(), doc_id))
+    con.commit()
+    con.close()
+
+
+def hard_delete_document(doc_id: int):
+    con = _con()
+    con.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
+    con.commit()
+    con.close()
 
 
 # ── Bootstrap first super admin ──────────────────────────────────────────────
