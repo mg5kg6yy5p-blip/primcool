@@ -1888,10 +1888,15 @@ def _verify_password(pw: str, stored: str) -> bool:
 
 
 def get_admin_user_by_username(username: str):
+    """Accepts either the username (legacy / bootstrap admins) OR the PRID
+    (auto-generated for everyone else). One lookup, two columns, so an admin
+    never has to remember which identifier their account uses."""
     con = _con()
     row = con.execute(
-        "SELECT * FROM admin_users WHERE LOWER(username) = LOWER(?) AND active = 1",
-        (username.strip(),),
+        """SELECT * FROM admin_users
+             WHERE (LOWER(username) = LOWER(?) OR LOWER(prid) = LOWER(?))
+               AND active = 1""",
+        (username.strip(), username.strip()),
     ).fetchone()
     con.close()
     return _dec_row("admin_users", row)
