@@ -2108,15 +2108,39 @@ def get_visit_full_detail(visit_id: int):
         d["invoice"] = None
 
     # ── Callback linkage ──────────────────────────────────────────────────
-    # FIXME(callback-schema): the maintenance_visits table does not have a
-    # callback_of_visit_id column today. We surface a placeholder so the UI
-    # can render its empty state; add a real column + backfill before
-    # promising this feature in product comms.
+    parent_id = None
+    try:
+        cur_row = con.execute(
+            "SELECT callback_of_visit_id FROM maintenance_visits WHERE id = ?",
+            (visit_id,),
+        ).fetchone()
+        if cur_row and "callback_of_visit_id" in cur_row.keys():
+            parent_id = cur_row["callback_of_visit_id"]
+    except Exception:
+        parent_id = None
+    parent_row = None
+    if parent_id:
+        try:
+            p = con.execute(
+                "SELECT id, visit_type, status, completed_date, scheduled_date "
+                "FROM maintenance_visits WHERE id = ?", (parent_id,),
+            ).fetchone()
+            parent_row = dict(p) if p else None
+        except Exception:
+            parent_row = None
+    try:
+        children = con.execute(
+            "SELECT id, visit_type, status, completed_date, scheduled_date "
+            "FROM maintenance_visits WHERE callback_of_visit_id = ? "
+            "ORDER BY id ASC", (visit_id,),
+        ).fetchall()
+        child_rows = [dict(r) for r in children]
+    except Exception:
+        child_rows = []
     d["callback"] = {
-        "is_callback": False,
-        "callback_of": None,
-        "callbacks":   [],
-        "schema_note": "callback linkage column not present; tracking not yet implemented",
+        "is_callback":  parent_row is not None,
+        "callback_of":  parent_row,
+        "callbacks":    child_rows,
     }
 
     con.close()
@@ -7112,8 +7136,7 @@ def get_technician_jobs_paginated(tech_id: int, page: int = 1, limit: int = 20,
                                   filters: dict = None):
     """Reverse-chronological job history for the tech, paginated. Mirrors
     get_customer_visits_paginated. Filters: visit_type, date_from, date_to,
-    status. (callbacks_only filter is accepted but is a no-op until the
-    maintenance_visits.callback_of_visit_id column ships — FIXME below.)"""
+    status, callbacks_only (honors maintenance_visits.callback_of_visit_id)."""
     filters = filters or {}
     page  = max(1, int(page or 1))
     limit = max(1, min(100, int(limit or 20)))
@@ -7133,10 +7156,8 @@ def get_technician_jobs_paginated(tech_id: int, page: int = 1, limit: int = 20,
     if filters.get("date_to"):
         where.append("COALESCE(v.completed_date, v.scheduled_date, v.created_at) <= ?")
         args.append(filters["date_to"])
-    # FIXME(callbacks): maintenance_visits has no callback_of_visit_id column
-    # yet, so the callbacks_only filter is currently a no-op and returns "—"
-    # in the callback column. Surface a tooltip in the UI; light up once the
-    # schema migration lands.
+    if filters.get("callbacks_only"):
+        where.append("v.callback_of_visit_id IS NOT NULL")
     where_sql = " AND ".join(where)
 
     con = _con()
@@ -7150,6 +7171,7 @@ def get_technician_jobs_paginated(tech_id: int, page: int = 1, limit: int = 20,
                v.scheduled_date, v.scheduled_time, v.completed_date,
                v.created_at, v.start_time, v.end_time,
                v.scope_of_work, v.work_done_summary,
+               v.callback_of_visit_id,
                e.name AS equipment_name,
                c.name AS customer_name,
                c.customer_code AS customer_code
@@ -7193,7 +7215,7 @@ def get_technician_jobs_paginated(tech_id: int, page: int = 1, limit: int = 20,
                 d["duration_min"] = None
         else:
             d["duration_min"] = None
-        d["callback_of_visit_id"] = None   # FIXME(callbacks): no schema column
+        # callback_of_visit_id already populated from SELECT above
         out_rows.append(d)
     con.close()
     return {"rows": out_rows, "page": page, "limit": limit, "total": int(total or 0)}
@@ -7432,8 +7454,9 @@ def create_5s_override(exception_id: int, tech_id: int, reason: str,
 # ── Certifications + payroll summary (dependency-aware) ────────────────────
 def get_technician_certifications(tech_id: int):
     """Returns rows if a `certifications` table exists; else returns
-    {'available': False}. FIXME: when the certs module ships, define the
-    table schema (cert name, issuing body, expiry, etc.) and wire it here."""
+    {'available': False}.
+    FIXME(docs/FIXMES.md): certifications module pending — define schema
+    (cert name, issuing body, expiry) and wire it here when it ships."""
     con = _con()
     has = con.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='certifications'"
@@ -7483,7 +7506,7 @@ def get_technician_payroll_summary(tech_id: int, limit: int = 6):
     return {"available": True, "rows": [dict(r) for r in rows]}
 
 
-# ── Visit callback link (FIXME unblock for Visit Detail § 9) ────────────────
+# ── Visit callback link (Visit Detail § 9) ──────────────────────────────────
 def set_visit_callback_link(visit_id: int, originates_from_visit_id: int) -> None:
     """Mark `visit_id` as a callback generated by `originates_from_visit_id`.
     Both visits must exist; the link must not be self-referential. Idempotent —
@@ -7544,7 +7567,7 @@ def get_visit_callback_chain(visit_id: int) -> dict:
     }
 
 
-# ── 5S exception photos (FIXME unblock for tech.html queue) ─────────────────
+# ── 5S exception photos (tech.html queue) ───────────────────────────────────
 _FS_EXC_PHOTO_HASH_FIELDS = (
     "exception_id", "filename", "mime", "size_bytes",
     "uploaded_by_id", "uploaded_by_kind", "uploaded_at", "hub_id",
@@ -7656,7 +7679,7 @@ def search_parts_catalog(q: str, limit: int = 20) -> list:
                 (like, like, like, q_clean, int(limit or 20)),
             ).fetchall()
     except sqlite3.OperationalError:
-        # FIXME: parts table missing — inventory module not installed
+        # parts table missing → degrade gracefully (inventory module optional)
         con.close()
         return []
     con.close()

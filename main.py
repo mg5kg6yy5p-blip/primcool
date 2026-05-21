@@ -3,7 +3,7 @@ from collections import deque
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from threading import Lock
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 import base64
 import hashlib
@@ -132,7 +132,7 @@ from database import (
     list_kpi_threshold_overrides, create_kpi_threshold_override,
     list_5s_overrides, create_5s_override,
     get_technician_certifications, get_technician_payroll_summary,
-    # FIXME unblocks
+    # Visit callback chain + 5S exception photo uploads
     set_visit_callback_link, get_visit_callback_chain,
     create_exception_photo, list_exception_photos,
     # PrimeCool Invoicing Module
@@ -1292,6 +1292,20 @@ app.add_middleware(
 
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
+
+# Generic response envelopes — used as response_model on endpoints whose
+# returns are well-shaped enough to advertise in /docs without invasive
+# per-endpoint typing. Tighter shapes can replace these incrementally.
+# FIXME(docs/FIXMES.md): tighten response_model on Dict[str, Any] endpoints
+# (admin customer/visit/invoice/technician/delegation detail routes use
+# Dict[str, Any] as a transitional shape — see audit for the target schemas).
+class OkResponse(BaseModel):
+    ok: bool = True
+
+
+class IdResponse(BaseModel):
+    id: int
+
 
 class ConsultRequest(BaseModel):
     fname:   str
@@ -3051,7 +3065,7 @@ def admin_reinstate_tech(request: Request, tech_id: int):
     return {"ok": True}
 
 
-@app.post("/api/admin/customers/{customer_id}/close")
+@app.post("/api/admin/customers/{customer_id}/close", response_model=OkResponse)
 def admin_close_customer(request: Request, customer_id: int, body: TerminateBody):
     """Soft-close at contract end (Scenario 4). active=0 + sessions revoked,
     but the record stays for statutory retention. Use deletion-request
@@ -3068,7 +3082,7 @@ def admin_close_customer(request: Request, customer_id: int, body: TerminateBody
     return {"ok": True, **result}
 
 
-@app.post("/api/admin/customers/{customer_id}/reopen")
+@app.post("/api/admin/customers/{customer_id}/reopen", response_model=OkResponse)
 def admin_reopen_customer(request: Request, customer_id: int):
     admin = _require_perm(request, "customer:delete")
     target = get_customer_by_id(customer_id)
@@ -3101,7 +3115,7 @@ def admin_exit_report_tech(request: Request, tech_id: int, days: int = 30):
     return get_account_exit_report("tech", tech_id, days=days)
 
 
-@app.get("/api/admin/customers/{customer_id}/exit-report")
+@app.get("/api/admin/customers/{customer_id}/exit-report", response_model=Dict[str, Any])
 def admin_exit_report_customer(request: Request, customer_id: int, days: int = 30):
     admin = _require_admin(request)
     if not _admin_can(admin["role"], "audit:view_all"):
@@ -3747,7 +3761,7 @@ async def admin_upload_part_image(request: Request, part_id: int, file: UploadFi
     return {"ok": True, "image_url": _sign_photo_url(filename)}
 
 
-@app.put("/api/admin/visits/{visit_id}/flag")
+@app.put("/api/admin/visits/{visit_id}/flag", response_model=OkResponse)
 def admin_flag_visit(request: Request, visit_id: int, body: FlagForReview):
     """Manager flag-for-review. A submitted visit stays locked from tech
     edits, but a manager can mark it for follow-up. This does NOT unlock
@@ -3781,7 +3795,7 @@ def admin_list_hubs(request: Request):
     return list_hubs()
 
 
-@app.get("/api/admin/visits/{visit_id}/invoice-prefill")
+@app.get("/api/admin/visits/{visit_id}/invoice-prefill", response_model=Dict[str, Any])
 def admin_invoice_prefill(request: Request, visit_id: int):
     _require_perm(request, "invoice:create")
     payload = build_invoice_lines_from_visit(visit_id)
@@ -3790,7 +3804,7 @@ def admin_invoice_prefill(request: Request, visit_id: int):
     return payload
 
 
-@app.get("/api/admin/visits/{visit_id}/parts")
+@app.get("/api/admin/visits/{visit_id}/parts", response_model=Dict[str, Any])
 def admin_visit_parts(request: Request, visit_id: int):
     _require_perm(request, "visit:update")
     return get_visit_parts(visit_id)
@@ -3950,7 +3964,7 @@ def admin_fx_rate_history_pre(request: Request,
     return list_fx_rate_history(cu, limit=limit)
 
 
-@app.get("/api/admin/invoices/{invoice_id}")
+@app.get("/api/admin/invoices/{invoice_id}", response_model=Dict[str, Any])
 def admin_get_invoice(request: Request, invoice_id: int):
     _require_perm(request, "invoice:view")
     inv = get_invoice_by_id(invoice_id)
@@ -3974,7 +3988,7 @@ def admin_create_invoice(request: Request, body: InvoiceCreate):
     return {"id": invoice_id, "invoice_number": inv["invoice_number"]}
 
 
-@app.put("/api/admin/invoices/{invoice_id}")
+@app.put("/api/admin/invoices/{invoice_id}", response_model=Dict[str, Any])
 def admin_update_invoice(request: Request, invoice_id: int, body: InvoiceUpdate):
     admin = _require_record_access(request, "invoice", invoice_id, write=True)
     before = get_invoice_by_id(invoice_id, with_lines=False)
@@ -3995,7 +4009,7 @@ def admin_update_invoice(request: Request, invoice_id: int, body: InvoiceUpdate)
     return {"ok": True}
 
 
-@app.put("/api/admin/invoices/{invoice_id}/status")
+@app.put("/api/admin/invoices/{invoice_id}/status", response_model=Dict[str, Any])
 def admin_invoice_status(request: Request, invoice_id: int, body: InvoiceStatusChange):
     admin = _require_perm(request, "invoice:update")
     inv = get_invoice_by_id(invoice_id, with_lines=False)
@@ -4011,7 +4025,7 @@ def admin_invoice_status(request: Request, invoice_id: int, body: InvoiceStatusC
     return {"ok": True}
 
 
-@app.delete("/api/admin/invoices/{invoice_id}")
+@app.delete("/api/admin/invoices/{invoice_id}", response_model=OkResponse)
 def admin_delete_invoice(request: Request, invoice_id: int):
     admin = _require_perm(request, "invoice:delete")
     inv = get_invoice_by_id(invoice_id, with_lines=False)
@@ -4026,7 +4040,7 @@ def admin_delete_invoice(request: Request, invoice_id: int):
     return {"ok": True}
 
 
-@app.post("/api/admin/invoices/{invoice_id}/payments")
+@app.post("/api/admin/invoices/{invoice_id}/payments", response_model=Dict[str, Any])
 def admin_record_payment(request: Request, invoice_id: int, body: InvoicePayment):
     admin = _require_perm(request, "invoice:record_payment")
     inv = get_invoice_by_id(invoice_id, with_lines=False)
@@ -4072,7 +4086,7 @@ def _redact_pii_for_audit_safe(payload):
 
 
 # ── Full detail (super_admin Edit View loader) ─────────────────────────────
-@app.get("/api/admin/invoices/{invoice_id}/full")
+@app.get("/api/admin/invoices/{invoice_id}/full", response_model=Dict[str, Any])
 def admin_invoice_full(request: Request, invoice_id: int):
     """Full invoice payload for the Edit View: header + lines + payments +
     customer + visit ref + active fx rate. Honours delegation."""
@@ -4121,7 +4135,7 @@ async def admin_invoice_create_v2(request: Request):
     return {"id": invoice_id, "invoice_number": inv["invoice_number"]}
 
 
-@app.patch("/api/admin/invoices/{invoice_id}")
+@app.patch("/api/admin/invoices/{invoice_id}", response_model=Dict[str, Any])
 async def admin_invoice_patch(request: Request, invoice_id: int):
     """Atomic header + line replacement for the new column set."""
     admin = _require_super_admin(request)
@@ -4159,7 +4173,7 @@ async def admin_invoice_patch(request: Request, invoice_id: int):
     return {"ok": True}
 
 
-@app.post("/api/admin/invoices/{invoice_id}/send")
+@app.post("/api/admin/invoices/{invoice_id}/send", response_model=OkResponse)
 def admin_invoice_send(request: Request, invoice_id: int):
     """draft → sent transition with sent_at stamp."""
     admin = _require_super_admin(request)
@@ -4178,7 +4192,7 @@ def admin_invoice_send(request: Request, invoice_id: int):
     return {"ok": True, "status": "sent"}
 
 
-@app.post("/api/admin/invoices/{invoice_id}/cancel")
+@app.post("/api/admin/invoices/{invoice_id}/cancel", response_model=OkResponse)
 async def admin_invoice_cancel(request: Request, invoice_id: int):
     """Cancel an invoice. Reason is required and encrypted at rest."""
     admin = _require_super_admin(request)
@@ -4202,7 +4216,7 @@ async def admin_invoice_cancel(request: Request, invoice_id: int):
     return {"ok": True, "status": "cancelled"}
 
 
-@app.post("/api/admin/invoices/{invoice_id}/payments/v2")
+@app.post("/api/admin/invoices/{invoice_id}/payments/v2", response_model=Dict[str, Any])
 async def admin_invoice_payment_v2(request: Request, invoice_id: int):
     """Append-only, chain-hashed payment row. Body matches the modal:
        amount, payment_currency, payment_method, payment_date, notes,
@@ -4280,7 +4294,7 @@ async def admin_invoice_payment_v2(request: Request, invoice_id: int):
     }
 
 
-@app.get("/api/admin/invoices/{invoice_id}/payments")
+@app.get("/api/admin/invoices/{invoice_id}/payments", response_model=Dict[str, Any])
 def admin_invoice_payments_list(request: Request, invoice_id: int):
     _require_super_admin(request)
     inv = get_invoice_full(invoice_id)
@@ -4417,7 +4431,7 @@ class VisitWorkSummaryBody(BaseModel):
     summary: str
 
 
-@app.put("/api/admin/visits/{visit_id}/work-summary")
+@app.put("/api/admin/visits/{visit_id}/work-summary", response_model=OkResponse)
 def admin_set_visit_summary(request: Request, visit_id: int, body: VisitWorkSummaryBody):
     admin = _require_perm(request, "visit:update")
     visit = get_visit_by_id(visit_id)
@@ -4897,7 +4911,7 @@ def admin_create_customer(request: Request, body: CustomerCreate):
     return {"id": customer_id}
 
 
-@app.put("/api/admin/customers/{customer_id}/pin")
+@app.put("/api/admin/customers/{customer_id}/pin", response_model=OkResponse)
 def admin_reset_customer_pin(request: Request, customer_id: int, body: CustomerPinReset):
     admin = _require_perm(request, "customer:update")
     try:
@@ -4913,7 +4927,7 @@ def admin_reset_customer_pin(request: Request, customer_id: int, body: CustomerP
     return {"ok": True}
 
 
-@app.delete("/api/admin/customers/{customer_id}")
+@app.delete("/api/admin/customers/{customer_id}", response_model=OkResponse)
 def admin_delete_customer(request: Request, customer_id: int):
     admin = _require_perm(request, "customer:delete")
     cust = get_customer_by_id(customer_id)
@@ -4948,9 +4962,7 @@ def _require_super_admin(request: Request):
 # power) with permission_level ≥ required → ALLOW (audit delegation.accessed
 # when DELEGATION_VERBOSE_AUDIT != "0").
 # Otherwise 403. Audit-write failures NEVER raise — they log to stderr.
-# FIXME: Only the four detail/edit endpoint pairs (customers, visits,
-# invoices, technicians) have been retrofitted to honor delegation. Other
-# endpoints retain their existing super_admin gate.
+# FIXME(docs/FIXMES.md): delegation retrofit gap — only customer/visit/invoice/technician detail+edit endpoints honor delegation; other endpoints retain super_admin gate.
 def _require_record_access(request: Request, record_type: str,
                            record_id: int, write: bool = False):
     from database import lookup_record_delegation as _lookup_deleg
@@ -5018,7 +5030,7 @@ def _validate_customer_profile(body: CustomerProfileUpdate) -> list:
     return errs
 
 
-@app.get("/api/admin/customers/{customer_id}")
+@app.get("/api/admin/customers/{customer_id}", response_model=Dict[str, Any])
 def admin_customer_detail(request: Request, customer_id: int):
     """super_admin OR delegate-with-read: full decrypted customer profile."""
     admin = _require_record_access(request, "customer", customer_id, write=False)
@@ -5035,7 +5047,7 @@ def admin_customer_detail(request: Request, customer_id: int):
     return cust
 
 
-@app.post("/api/admin/customers/{customer_id}")
+@app.post("/api/admin/customers/{customer_id}", response_model=Dict[str, Any])
 def admin_customer_update(request: Request, customer_id: int, body: CustomerProfileUpdate):
     """super_admin OR delegate-with-read_write: edit customer profile."""
     admin = _require_record_access(request, "customer", customer_id, write=True)
@@ -5112,7 +5124,7 @@ def admin_customer_update(request: Request, customer_id: int, body: CustomerProf
     return {"ok": True, "customer": after}
 
 
-@app.get("/api/admin/customers/{customer_id}/equipment")
+@app.get("/api/admin/customers/{customer_id}/equipment", response_model=Dict[str, Any])
 def admin_list_equipment(request: Request, customer_id: int):
     """super_admin sees the enriched view (PM/CM dates + decrypted serial/
     location/notes) and an audit row is written. Other roles fall back to
@@ -5132,7 +5144,7 @@ def admin_list_equipment(request: Request, customer_id: int):
     return get_customer_equipment(customer_id)
 
 
-@app.get("/api/admin/customers/{customer_id}/visits")
+@app.get("/api/admin/customers/{customer_id}/visits", response_model=Dict[str, Any])
 def admin_customer_visits(request: Request, customer_id: int,
                           page: int = 1, limit: int = 10):
     """super_admin-only: paginated reverse-chronological service history."""
@@ -5188,7 +5200,7 @@ def _validate_invoice_payment(body: InvoicePaymentUpdate) -> list:
     return errs
 
 
-@app.get("/api/admin/visits/{visit_id}")
+@app.get("/api/admin/visits/{visit_id}", response_model=Dict[str, Any])
 def admin_visit_detail(request: Request, visit_id: int):
     """super_admin OR delegate-with-read: full decrypted visit detail."""
     admin = _require_record_access(request, "visit", visit_id, write=False)
@@ -5330,8 +5342,8 @@ _TECH_5S_OV_PII_FIELDS   = ("reason",)
 # 'apprentice'. The product spec asks for level_1/level_2/level_3/lead, but
 # changing the enum mid-flight would break the existing tech-management UI
 # and the verify_tech / get_all_techs surface. We accept the legacy enum
-# here and surface the spec labels in the UI dropdown. FIXME(role-rename):
-# coordinate a one-shot migration to rename role values once HR signs off.
+# here and surface the spec labels in the UI dropdown.
+# FIXME(docs/FIXMES.md): role-rename migration (legacy tech/lead_tech/apprentice → level_1/2/3/lead) pending HR sign-off.
 _TECH_ROLE_VALUES         = ("tech", "lead_tech", "apprentice")
 _TECH_EMPLOYMENT_VALUES   = ("active", "on_leave", "terminated")
 
@@ -5378,7 +5390,7 @@ def _redact_tech_for_audit(d: dict) -> dict:
     return out
 
 
-@app.get("/api/admin/technicians/{tech_id}")
+@app.get("/api/admin/technicians/{tech_id}", response_model=Dict[str, Any])
 def admin_technician_detail(request: Request, tech_id: int):
     """super_admin OR delegate-with-read: full decrypted technician profile
     + lightweight rollups (last job, last review)."""
@@ -5396,7 +5408,7 @@ def admin_technician_detail(request: Request, tech_id: int):
     return t
 
 
-@app.post("/api/admin/technicians/{tech_id}")
+@app.post("/api/admin/technicians/{tech_id}", response_model=Dict[str, Any])
 def admin_technician_update(request: Request, tech_id: int,
                             body: TechnicianProfileUpdate):
     """super_admin OR delegate-with-read_write: edit the four-surface tech
@@ -5445,7 +5457,7 @@ def admin_technician_update(request: Request, tech_id: int,
     return {"ok": True, "technician": after}
 
 
-@app.get("/api/admin/technicians/{tech_id}/jobs")
+@app.get("/api/admin/technicians/{tech_id}/jobs", response_model=Dict[str, Any])
 def admin_technician_jobs(request: Request, tech_id: int,
                           page: int = 1, limit: int = 20,
                           visit_type: Optional[str] = None,
@@ -5472,7 +5484,7 @@ def admin_technician_jobs(request: Request, tech_id: int,
     )
 
 
-@app.get("/api/admin/technicians/{tech_id}/kpi")
+@app.get("/api/admin/technicians/{tech_id}/kpi", response_model=Dict[str, Any])
 def admin_technician_kpi(request: Request, tech_id: int, window: int = 30):
     """super_admin-only: KPI dashboard payload. The KPI module is NOT yet
     shipped, so this returns a degraded stub. The threshold overrides
@@ -5486,7 +5498,7 @@ def admin_technician_kpi(request: Request, tech_id: int, window: int = 30):
                 target_type="technician", target_id=tech_id,
                 target_label=t.get("name"),
                 after={"window_days": window})
-    # FIXME(kpi-module): KPI ingest pending — see roadmap.
+    # FIXME(docs/FIXMES.md): KPI ingest module pending — endpoint returns available=false until then.
     return {
         "available": False,
         "message":   "KPI tracking not yet active — scores will populate "
@@ -5501,7 +5513,7 @@ def admin_technician_kpi(request: Request, tech_id: int, window: int = 30):
     }
 
 
-@app.get("/api/admin/technicians/{tech_id}/5s")
+@app.get("/api/admin/technicians/{tech_id}/5s", response_model=Dict[str, Any])
 def admin_technician_5s(request: Request, tech_id: int, window: int = 30):
     """super_admin-only: 5S compliance score + recent audits + open
     exceptions for the tech. Wraps the existing 5S helpers."""
@@ -5611,7 +5623,7 @@ def admin_technician_5s_override(request: Request, tech_id: int,
     return {"ok": True, "override_id": new_id}
 
 
-@app.get("/api/admin/technicians/{tech_id}/reviews")
+@app.get("/api/admin/technicians/{tech_id}/reviews", response_model=Dict[str, Any])
 def admin_technician_reviews_list(request: Request, tech_id: int,
                                   status: Optional[str] = None,
                                   limit: int = 50):
@@ -5731,7 +5743,7 @@ def admin_technician_review_update(request: Request, tech_id: int,
     return {"ok": True}
 
 
-@app.get("/api/admin/technicians/{tech_id}/certifications")
+@app.get("/api/admin/technicians/{tech_id}/certifications", response_model=Dict[str, Any])
 def admin_technician_certifications(request: Request, tech_id: int):
     admin = _require_super_admin(request)
     t = get_tech_by_id(tech_id)
@@ -5744,7 +5756,7 @@ def admin_technician_certifications(request: Request, tech_id: int):
     return payload
 
 
-@app.get("/api/admin/technicians/{tech_id}/payroll-summary")
+@app.get("/api/admin/technicians/{tech_id}/payroll-summary", response_model=Dict[str, Any])
 def admin_technician_payroll_summary(request: Request, tech_id: int,
                                      limit: int = 6):
     admin = _require_super_admin(request)
@@ -5799,7 +5811,7 @@ def admin_create_visit(request: Request, body: VisitCreate):
     return {"id": visit_id}
 
 
-@app.put("/api/admin/visits/{visit_id}")
+@app.put("/api/admin/visits/{visit_id}", response_model=Dict[str, Any])
 def admin_update_visit(request: Request, visit_id: int, body: VisitUpdate):
     admin = _require_record_access(request, "visit", visit_id, write=True)
     before = get_visit_by_id(visit_id)
@@ -5811,7 +5823,7 @@ def admin_update_visit(request: Request, visit_id: int, body: VisitUpdate):
     return {"ok": True}
 
 
-@app.delete("/api/admin/visits/{visit_id}")
+@app.delete("/api/admin/visits/{visit_id}", response_model=OkResponse)
 def admin_delete_visit(request: Request, visit_id: int):
     admin = _require_perm(request, "visit:delete")
     before = get_visit_by_id(visit_id)
@@ -6083,7 +6095,7 @@ def tech_fs_today(request: Request):
 FS_EXCEPTION_PHOTOS_DIR = Path(os.environ.get("FS_EXCEPTION_PHOTOS_DIR",
                                               "uploads/5s"))
 FS_EXCEPTION_PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
-MAX_FS_EXC_PHOTO_SIZE = 8 * 1024 * 1024  # 8 MB per the FIXME spec
+MAX_FS_EXC_PHOTO_SIZE = 8 * 1024 * 1024  # 8 MB hard cap for 5S exception photo uploads
 _FS_EXC_PHOTO_EXTS = {".jpg", ".jpeg", ".png"}
 _FS_EXC_PHOTO_MAGIC = {
     ".jpg":  [b"\xff\xd8\xff"],
@@ -6775,7 +6787,7 @@ def _can_grant_delegations(admin: dict) -> bool:
     return bool(admin.get("has_delegation_power"))
 
 
-@app.post("/api/admin/delegations")
+@app.post("/api/admin/delegations", response_model=Dict[str, Any])
 def admin_delegation_grant(request: Request, body: DelegationGrantRequest):
     admin = _require_admin(request)
     if not _can_grant_delegations(admin):
@@ -6830,7 +6842,7 @@ def admin_delegation_grant(request: Request, body: DelegationGrantRequest):
     return {"id": new_id, "ok": True}
 
 
-@app.post("/api/admin/delegations/{delegation_id}/revoke")
+@app.post("/api/admin/delegations/{delegation_id}/revoke", response_model=OkResponse)
 def admin_delegation_revoke(request: Request, delegation_id: int, body: RevokeBody):
     admin = _require_admin(request)
     row = _get_delegation(delegation_id)
@@ -6867,7 +6879,7 @@ def admin_delegation_revoke(request: Request, delegation_id: int, body: RevokeBo
     return {"ok": True}
 
 
-@app.get("/api/admin/delegations")
+@app.get("/api/admin/delegations", response_model=Dict[str, Any])
 def admin_delegation_list(request: Request,
                           as_: Optional[str] = Query(None, alias="as"),
                           status: Optional[str] = None,
@@ -6887,7 +6899,7 @@ def admin_delegation_list(request: Request,
     return {"rows": _list_delegations(filters)}
 
 
-@app.get("/api/admin/delegations/my-active")
+@app.get("/api/admin/delegations/my-active", response_model=Dict[str, Any])
 def admin_delegation_my_active(request: Request):
     admin = _require_admin(request)
     rows = _list_active_for_recipient(admin["id"])
@@ -6896,13 +6908,13 @@ def admin_delegation_my_active(request: Request):
             "cascade_revoked_recent": cascade_recent}
 
 
-@app.get("/api/admin/delegations/regrant-requests")
+@app.get("/api/admin/delegations/regrant-requests", response_model=Dict[str, Any])
 def admin_regrant_list(request: Request, status: Optional[str] = "open"):
     _require_super_admin(request)
     return {"rows": _list_regrant_reqs(status=status)}
 
 
-@app.post("/api/admin/delegations/regrant-requests")
+@app.post("/api/admin/delegations/regrant-requests", response_model=Dict[str, Any])
 def admin_regrant_create(request: Request, body: RegrantRequestBody):
     admin = _require_admin(request)
     orig = _get_delegation(int(body.original_delegation_id))
@@ -6922,7 +6934,7 @@ def admin_regrant_create(request: Request, body: RegrantRequestBody):
     return {"id": rid, "ok": True}
 
 
-@app.post("/api/admin/delegations/regrant-requests/{request_id}/approve")
+@app.post("/api/admin/delegations/regrant-requests/{request_id}/approve", response_model=OkResponse)
 def admin_regrant_approve(request: Request, request_id: int, body: ReviewNotesBody):
     admin = _require_super_admin(request)
     try:
@@ -6939,7 +6951,7 @@ def admin_regrant_approve(request: Request, request_id: int, body: ReviewNotesBo
     return res
 
 
-@app.post("/api/admin/delegations/regrant-requests/{request_id}/deny")
+@app.post("/api/admin/delegations/regrant-requests/{request_id}/deny", response_model=OkResponse)
 def admin_regrant_deny(request: Request, request_id: int, body: ReviewNotesBody):
     admin = _require_super_admin(request)
     ok = _deny_regrant_req(int(request_id), admin["id"],
@@ -6954,7 +6966,7 @@ def admin_regrant_deny(request: Request, request_id: int, body: ReviewNotesBody)
     return {"ok": True}
 
 
-@app.get("/api/admin/delegations/{delegation_id}")
+@app.get("/api/admin/delegations/{delegation_id}", response_model=Dict[str, Any])
 def admin_delegation_detail(request: Request, delegation_id: int):
     admin = _require_admin(request)
     row = _get_delegation(int(delegation_id))
