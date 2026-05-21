@@ -1519,31 +1519,7 @@
     photos: {},
   };
 
-  // =====================================================================
-  // FIXME (server endpoint not yet implemented — other agent will add to
-  // main.py/database.py in a follow-up). Until then, photos attached to
-  // failed 5S audit items are queued client-side (IndexedDB for blob
-  // payload + localStorage for the small metadata queue) and the flush
-  // function below will POST them once the endpoint exists.
-  //
-  // Proposed server endpoint:
-  //   POST /api/tech/5s/exceptions/{exception_id}/photo
-  //   Content-Type: multipart/form-data
-  //   Fields:
-  //     file        — image binary (JPEG/PNG), <= 8 MB
-  //     audit_id    — int, the audit that opened this exception
-  //     item_key    — str, the checklist item_key (also fs_exception.category)
-  //     client_meta — JSON string, same shape as visit-photo client_meta
-  //                   (geo + device + camera + network_type + app_version
-  //                   + client_captured_at)
-  //   Response: { id, exception_id, filename, uploaded_at }
-  //   Storage:  uploads/5s/{exception_id}__{ts}__{rand}.{ext}
-  //   Linkage:  new table fs_exception_photos (id, exception_id, filename,
-  //             uploaded_by_id, uploaded_by_kind, uploaded_at, client_meta_json
-  //             [encrypted], hub_id, prior_chain_hash, chain_hash).
-  //   Auth:     tech session, must own (or be assigned to) the asset that
-  //             generated the exception.
-  // =====================================================================
+  // 5S exception photo upload — POST /api/tech/5s/exceptions/{exception_id}/photo (shipped in 713f634)
 
   // ── IndexedDB for offline-safe photo blob storage ─────────────────────
   const FS_IDB_NAME = 'pc_fs_photos';
@@ -2008,8 +1984,7 @@
         fd.append('audit_id', String(entry.audit_id));
         fd.append('item_key', entry.item_key);
         fd.append('client_meta', JSON.stringify(entry.client_meta || {}));
-        // FIXME: endpoint not yet implemented; this POST will 404 until the
-        // server side ships. The catch below will simply keep the entry.
+        // 5S exception photo upload — POST /api/tech/5s/exceptions/{exception_id}/photo (shipped in 713f634)
         await api('POST', `/api/tech/5s/exceptions/${entry.exception_id}/photo`, fd);
         await _fsIdbDelete(entry.qid);
         synced++;

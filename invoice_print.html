@@ -367,5 +367,17 @@
     `;
   }
 </script>
+<script>
+  (function() {
+    try {
+      if (typeof URLSearchParams === 'undefined') return;
+      var params = new URLSearchParams(window.location.search);
+      if (params.get('print') === '1') {
+        // Small delay so layout settles before print dialog
+        setTimeout(function(){ window.print(); }, 400);
+      }
+    } catch (e) { /* no-op on very old browsers */ }
+  })();
+</script>
 </body>
 </html>
