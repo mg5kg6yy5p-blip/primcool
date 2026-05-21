@@ -150,6 +150,10 @@ from database import (
     recompute_kpi_scores, recompute_all_open_periods,
     get_kpi_scorecard, get_kpi_trend, get_team_scoreboard,
     list_kpi_flags_for_tech,
+    # Phase 3 escalation engine
+    list_kpi_flags, count_open_flags_by_severity, get_kpi_flag_detail,
+    acknowledge_kpi_flag, start_kpi_flag_work, resolve_kpi_flag,
+    override_kpi_flag,
 )
 import imghdr as _imghdr
 import mimetypes as _mimetypes
@@ -188,6 +192,8 @@ ADMIN_PERMS = {
         # Employee KPI Tracking
         "kpi:view_team", "kpi:edit_thresholds", "kpi:recompute",
         "kpi:view_definitions", "kpi:close_period",
+        # Phase 3 escalation engine
+        "kpi:flag_view", "kpi:flag_resolve", "kpi:flag_override",
     },
     "supervisor_admin": {
         "admin:view_all",
@@ -215,6 +221,9 @@ ADMIN_PERMS = {
         # Employee KPI Tracking — supervisor manages team + can recompute,
         # but cannot edit thresholds or close periods (director-only).
         "kpi:view_team", "kpi:recompute", "kpi:view_definitions",
+        # Phase 3 escalation engine — supervisor can view + resolve flags but
+        # NOT override (override is super_admin-only per locked design).
+        "kpi:flag_view", "kpi:flag_resolve",
     },
     "system_admin": {
         "tech:view", "tech:create", "tech:update", "tech:reset_pin",
@@ -231,6 +240,7 @@ ADMIN_PERMS = {
         "fs:asset_manage", "fs:report_view",
         # KPI — read-only on team + definitions
         "kpi:view_team", "kpi:view_definitions",
+        "kpi:flag_view",
     },
     "hr_admin": {
         "tech:view", "tech:create", "tech:update", "tech:reset_pin",
@@ -244,6 +254,7 @@ ADMIN_PERMS = {
         "fs:report_view",
         # KPI — read access for performance reviews
         "kpi:view_team", "kpi:view_definitions",
+        "kpi:flag_view",
     },
     "ceo_assistant": {
         "audit:view_self",
@@ -5793,6 +5804,203 @@ def tech_me_kpi(request: Request, windows: int = 4):
     payload = _kpi_scorecard_payload(tech_id, period_key=None,
                                       windows=max(1, min(windows, 26)))
     return payload
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Phase 3 — KPI escalation engine endpoints
+# ════════════════════════════════════════════════════════════════════════════
+
+def _redact_flag_for_tech(flag: dict) -> dict:
+    """Strip override text + manager-only context before returning a flag to
+    the tech who is its subject. The tech sees that an override exists, but
+    not the reason text — that's per locked design."""
+    d = dict(flag)
+    has_override = bool(d.get("override_reason"))
+    d.pop("override_reason", None)
+    d.pop("resolution_notes", None)  # internal manager notes hidden from tech
+    d["has_override"] = has_override
+    if has_override:
+        d["override_note"] = "Override on file; see Ops Manager"
+    return d
+
+
+@app.get("/api/admin/kpi/flags", response_model=Dict[str, Any])
+def admin_kpi_flags_list(request: Request,
+                          status: Optional[str] = None,
+                          severity: Optional[str] = None,
+                          tech_id: Optional[int] = None,
+                          period_key: Optional[str] = None,
+                          hub_id: Optional[int] = None,
+                          date_from: Optional[str] = None,
+                          date_to: Optional[str] = None,
+                          limit: int = 100,
+                          offset: int = 0):
+    """Paginated flag list. Filters available for the team dashboard."""
+    _require_perm(request, "kpi:flag_view")
+    rows = list_kpi_flags({
+        "status": status, "severity": severity, "tech_id": tech_id,
+        "period_key": period_key, "hub_id": hub_id,
+        "date_from": date_from, "date_to": date_to,
+        "limit": max(1, min(limit, 500)),
+        "offset": max(0, offset),
+    })
+    return {"flags": rows, "count": len(rows)}
+
+
+@app.get("/api/admin/kpi/flags/summary", response_model=Dict[str, Any])
+def admin_kpi_flags_summary(request: Request, hub_id: Optional[int] = None):
+    """Open-flag counts by severity for the Ops Manager dashboard tiles."""
+    _require_perm(request, "kpi:flag_view")
+    return {"hub_id": hub_id, "counts": count_open_flags_by_severity(hub_id)}
+
+
+@app.get("/api/admin/kpi/flags/queue", response_model=Dict[str, Any])
+def admin_kpi_flags_queue(request: Request, hub_id: Optional[int] = None):
+    """Open-flag queue grouped by severity for the Ops Manager queue UI."""
+    _require_perm(request, "kpi:flag_view")
+    open_rows = list_kpi_flags({
+        "hub_id": hub_id, "limit": 200, "offset": 0,
+    })
+    open_rows = [r for r in open_rows if r["status"] in
+                  ("open", "acknowledged", "in_progress")]
+    grouped = {s: [] for s in (
+        "immediate_escalation", "written_warning_recommended",
+        "coaching_required", "coaching_suggested",
+    )}
+    for r in open_rows:
+        grouped.setdefault(r["severity"], []).append(r)
+    return {"hub_id": hub_id, "groups": grouped,
+            "total_open": len(open_rows)}
+
+
+@app.get("/api/admin/kpi/flags/{flag_id}", response_model=Dict[str, Any])
+def admin_kpi_flag_detail(request: Request, flag_id: int):
+    """Full flag detail with embedded audit trail."""
+    _require_perm(request, "kpi:flag_view")
+    d = get_kpi_flag_detail(flag_id)
+    if not d:
+        raise HTTPException(404, "Flag not found")
+    return d
+
+
+class KpiFlagNotesBody(BaseModel):
+    notes: Optional[str] = None
+
+
+class KpiFlagResolveBody(BaseModel):
+    resolution_notes: str
+
+
+class KpiFlagOverrideBody(BaseModel):
+    override_reason: str
+
+
+@app.post("/api/admin/kpi/flags/{flag_id}/acknowledge",
+          response_model=Dict[str, Any])
+def admin_kpi_flag_acknowledge(request: Request, flag_id: int,
+                                body: KpiFlagNotesBody):
+    admin = _require_perm(request, "kpi:flag_resolve")
+    try:
+        out = acknowledge_kpi_flag(flag_id, admin["id"])
+    except ValueError as ve:
+        msg = str(ve)
+        if msg == "flag_not_found":
+            raise HTTPException(404, "Flag not found")
+        raise HTTPException(409, msg)
+    _audit_from(admin, "kpi.flag_acknowledged", request,
+                target_type="kpi_flag", target_id=flag_id,
+                target_label=out.get("severity"))
+    return {"ok": True, "flag": out}
+
+
+@app.post("/api/admin/kpi/flags/{flag_id}/start",
+          response_model=Dict[str, Any])
+def admin_kpi_flag_start(request: Request, flag_id: int,
+                          body: KpiFlagNotesBody):
+    admin = _require_perm(request, "kpi:flag_resolve")
+    if not (body.notes or "").strip():
+        raise HTTPException(400, [{"field": "notes",
+                                   "message": "Coaching notes required"}])
+    try:
+        out = start_kpi_flag_work(flag_id, admin["id"], body.notes.strip())
+    except ValueError as ve:
+        msg = str(ve)
+        if msg == "flag_not_found":
+            raise HTTPException(404, "Flag not found")
+        if msg == "notes_too_long":
+            raise HTTPException(400, [{"field": "notes",
+                                       "message": "Notes must be ≤ 2000 chars"}])
+        raise HTTPException(409, msg)
+    _audit_from(admin, "kpi.flag_in_progress", request,
+                target_type="kpi_flag", target_id=flag_id,
+                target_label=out.get("severity"))
+    return {"ok": True, "flag": out}
+
+
+@app.post("/api/admin/kpi/flags/{flag_id}/resolve",
+          response_model=Dict[str, Any])
+def admin_kpi_flag_resolve(request: Request, flag_id: int,
+                            body: KpiFlagResolveBody):
+    admin = _require_perm(request, "kpi:flag_resolve")
+    if not (body.resolution_notes or "").strip():
+        raise HTTPException(400, [{"field": "resolution_notes",
+                                   "message": "Resolution notes required"}])
+    try:
+        out = resolve_kpi_flag(flag_id, admin["id"],
+                                body.resolution_notes.strip())
+    except ValueError as ve:
+        msg = str(ve)
+        if msg == "flag_not_found":
+            raise HTTPException(404, "Flag not found")
+        if msg == "resolution_notes_too_long":
+            raise HTTPException(400, [{"field": "resolution_notes",
+                                       "message": "Notes must be ≤ 2000 chars"}])
+        raise HTTPException(409, msg)
+    _audit_from(admin, "kpi.flag_resolved", request,
+                target_type="kpi_flag", target_id=flag_id,
+                target_label=out.get("severity"))
+    return {"ok": True, "flag": out}
+
+
+@app.post("/api/admin/kpi/flags/{flag_id}/override",
+          response_model=Dict[str, Any])
+def admin_kpi_flag_override(request: Request, flag_id: int,
+                             body: KpiFlagOverrideBody):
+    """Manager override — super_admin only. Original flag is never deleted;
+    only its status flips to 'overridden' with the encrypted reason persisted.
+    """
+    admin = _require_perm(request, "kpi:flag_override")
+    if not (body.override_reason or "").strip():
+        raise HTTPException(400, [{"field": "override_reason",
+                                   "message": "Override reason is required"}])
+    try:
+        out = override_kpi_flag(flag_id, admin["id"],
+                                 body.override_reason.strip())
+    except ValueError as ve:
+        msg = str(ve)
+        if msg == "flag_not_found":
+            raise HTTPException(404, "Flag not found")
+        if msg == "override_reason_too_long":
+            raise HTTPException(400, [{"field": "override_reason",
+                                       "message": "Reason must be ≤ 1000 chars"}])
+        raise HTTPException(409, msg)
+    _audit_from(admin, "kpi.flag_overridden", request,
+                target_type="kpi_flag", target_id=flag_id,
+                target_label=out.get("severity"),
+                # IMPORTANT: never log the plaintext reason — only its length.
+                after={"reason_len": len(body.override_reason or "")})
+    return {"ok": True, "flag": out}
+
+
+@app.get("/api/tech/me/kpi/flags", response_model=Dict[str, Any])
+def tech_me_kpi_flags(request: Request, status: Optional[str] = None,
+                        limit: int = 50):
+    """Tech viewing own flags. Override reason text is redacted to the
+    recipient — they see has_override:true but not the actual note."""
+    tech_id = _require_tech(request)
+    rows = list_kpi_flags({"tech_id": tech_id, "status": status,
+                            "limit": max(1, min(limit, 100))})
+    return {"flags": [_redact_flag_for_tech(r) for r in rows]}
 
 
 # ── KPI weekly recompute loop ───────────────────────────────────────────────

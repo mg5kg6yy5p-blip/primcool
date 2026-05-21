@@ -9549,6 +9549,16 @@ def recompute_kpi_scores(tech_id: int, period_key: str,
                                             components_for_composite, tier)
         out["composite"] = composite
         rows_affected += 1
+        # ── Coaching trigger ────────────────────────────────────────────────
+        # Phase 3 escalation engine: generate kpi_flags from the freshly
+        # written scores. Idempotent — re-runs won't dup open flags.
+        try:
+            new_flag_ids = _generate_kpi_flags_for_tech(tech_id, period_key)
+            out["new_flag_ids"] = new_flag_ids
+        except Exception as _fe:
+            import logging as _lg
+            _lg.getLogger("kpi").warning(f"flag gen failed: {_fe}")
+            out["new_flag_ids"] = []
     except Exception as e:
         error = str(e)[:500]
         out["error"] = error
@@ -9680,3 +9690,453 @@ def list_kpi_flags_for_tech(tech_id: int, status: str = None, limit: int = 50) -
         ).fetchall()
     con.close()
     return [_dec_row("kpi_flags", r) for r in rows]
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Employee KPI Tracking Module — Phase 3 escalation engine
+# Coaching-first ladder:
+#   - 2 consecutive AMBER on same kpi      -> coaching_suggested
+#   - 1 RED on any composite KPI            -> coaching_required
+#   - 2 consecutive RED on same composite   -> written_warning_recommended
+#   - ANY Safety RED                        -> immediate_escalation (bypasses ladder)
+# Lifecycle: open -> acknowledged -> in_progress -> resolved (or overridden, terminal)
+# No payroll automation — coaching output only.
+# ════════════════════════════════════════════════════════════════════════════
+
+_KPI_FLAG_SEVERITIES = (
+    "coaching_suggested",
+    "coaching_required",
+    "written_warning_recommended",
+    "immediate_escalation",
+)
+_KPI_FLAG_LIFECYCLE = ("open", "acknowledged", "in_progress", "resolved", "overridden")
+
+
+def _prior_period_key(period_key: str) -> str:
+    """Return the previous ISO-week key for a 'YYYY-WNN' string."""
+    from datetime import date, timedelta
+    try:
+        yr_s, wk_s = period_key.split("-W")
+        yr, wk = int(yr_s), int(wk_s)
+        monday = date.fromisocalendar(yr, wk, 1)
+        prior_monday = monday - timedelta(days=7)
+        py, pw, _ = prior_monday.isocalendar()
+        return f"{py:04d}-W{pw:02d}"
+    except Exception:
+        return period_key
+
+
+def _kpi_flag_exists_open(con, tech_id: int, kpi_key, severity: str) -> bool:
+    """Idempotency check: return True if an OPEN (non-terminal) flag of the
+    same (tech, kpi_key, severity) already exists. Terminal states
+    (resolved/overridden) do not block creation of a new flag."""
+    if kpi_key is None:
+        r = con.execute(
+            "SELECT 1 FROM kpi_flags WHERE tech_id=? AND kpi_key IS NULL "
+            "AND severity=? AND status IN ('open','acknowledged','in_progress') "
+            "LIMIT 1", (tech_id, severity),
+        ).fetchone()
+    else:
+        r = con.execute(
+            "SELECT 1 FROM kpi_flags WHERE tech_id=? AND kpi_key=? "
+            "AND severity=? AND status IN ('open','acknowledged','in_progress') "
+            "LIMIT 1", (tech_id, kpi_key, severity),
+        ).fetchone()
+    return bool(r)
+
+
+def _insert_kpi_flag(con, tech_id: int, period_key: str, kpi_key,
+                     severity: str, reason: str) -> int:
+    """Low-level insert with chain hashing + audit. Caller owns the connection."""
+    now = datetime.now(timezone.utc).isoformat()
+    prior = _last_kpi_flag_chain(con)
+    row_for_hash = {
+        "tech_id": tech_id, "period_key": period_key, "kpi_key": kpi_key,
+        "severity": severity, "status": "open",
+        "manager_id": None, "created_at": now,
+    }
+    chash = _chain_hash_kpi_flag(prior, row_for_hash)
+    enc = _enc_dict("kpi_flags", {"reason": reason})
+    cur = con.execute(
+        "INSERT INTO kpi_flags (tech_id, period_key, kpi_key, severity, "
+        "status, reason, created_at, prior_chain_hash, chain_hash) "
+        "VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?)",
+        (tech_id, period_key, kpi_key, severity, enc.get("reason"),
+         now, prior, chash),
+    )
+    return int(cur.lastrowid)
+
+
+def _generate_kpi_flags_for_tech(tech_id: int, period_key: str) -> list:
+    """Phase 3 coaching trigger — invoked AFTER record_composite_score writes.
+    Generates kpi_flags for the (tech, period) per the escalation ladder.
+    Idempotent: existing open flags of same (tech, kpi, severity) are skipped.
+    Returns list of newly-created flag_ids."""
+    import logging as _lg
+    _logger = _lg.getLogger("kpi")
+    prior_pk = _prior_period_key(period_key)
+    con = _con()
+    try:
+        # Pull current + prior scores by kpi_key.
+        cur_rows = con.execute(
+            "SELECT kpi_key, band, raw_value FROM kpi_scores "
+            "WHERE tech_id=? AND period_key=?", (tech_id, period_key),
+        ).fetchall()
+        prior_rows = con.execute(
+            "SELECT kpi_key, band FROM kpi_scores "
+            "WHERE tech_id=? AND period_key=?", (tech_id, prior_pk),
+        ).fetchall()
+        cur_band = {r["kpi_key"]: r["band"] for r in cur_rows}
+        prior_band = {r["kpi_key"]: r["band"] for r in prior_rows}
+        # Which KPIs roll into the composite?
+        defs = con.execute(
+            "SELECT kpi_key, in_composite, safety_critical, display_name "
+            "  FROM kpi_definitions WHERE active=1"
+        ).fetchall()
+        composite_keys = {d["kpi_key"] for d in defs if d["in_composite"]}
+        safety_keys    = {d["kpi_key"] for d in defs if d["safety_critical"]}
+        display = {d["kpi_key"]: d["display_name"] for d in defs}
+
+        new_flag_ids = []
+        audit_payloads = []
+        for kpi_key, band in cur_band.items():
+            pband = prior_band.get(kpi_key)
+            # 1) Safety RED → immediate_escalation (bypasses ladder)
+            if kpi_key in safety_keys and band == "red":
+                if not _kpi_flag_exists_open(con, tech_id, kpi_key,
+                                              "immediate_escalation"):
+                    reason = (f"Safety-critical KPI '{display.get(kpi_key, kpi_key)}' "
+                              f"is RED for period {period_key}. Immediate review required.")
+                    fid = _insert_kpi_flag(con, tech_id, period_key, kpi_key,
+                                            "immediate_escalation", reason)
+                    new_flag_ids.append(fid)
+                    audit_payloads.append((fid, "immediate_escalation", kpi_key))
+                # Do NOT also generate coaching_required for the same safety RED —
+                # immediate_escalation supersedes.
+                continue
+
+            # 2) Two consecutive REDs on a composite KPI → written_warning_recommended
+            if (kpi_key in composite_keys and band == "red" and pband == "red"):
+                if not _kpi_flag_exists_open(con, tech_id, kpi_key,
+                                              "written_warning_recommended"):
+                    reason = (f"KPI '{display.get(kpi_key, kpi_key)}' has been "
+                              f"RED for two consecutive periods ({prior_pk}, {period_key}).")
+                    fid = _insert_kpi_flag(con, tech_id, period_key, kpi_key,
+                                            "written_warning_recommended", reason)
+                    new_flag_ids.append(fid)
+                    audit_payloads.append((fid, "written_warning_recommended", kpi_key))
+                continue
+
+            # 3) Current RED on a composite KPI → coaching_required
+            if kpi_key in composite_keys and band == "red":
+                if not _kpi_flag_exists_open(con, tech_id, kpi_key,
+                                              "coaching_required"):
+                    reason = (f"KPI '{display.get(kpi_key, kpi_key)}' is RED for "
+                              f"period {period_key}. Coaching required.")
+                    fid = _insert_kpi_flag(con, tech_id, period_key, kpi_key,
+                                            "coaching_required", reason)
+                    new_flag_ids.append(fid)
+                    audit_payloads.append((fid, "coaching_required", kpi_key))
+                continue
+
+            # 4) Two consecutive AMBER → coaching_suggested
+            if band == "amber" and pband == "amber":
+                if not _kpi_flag_exists_open(con, tech_id, kpi_key,
+                                              "coaching_suggested"):
+                    reason = (f"KPI '{display.get(kpi_key, kpi_key)}' has been "
+                              f"AMBER for two consecutive periods ({prior_pk}, {period_key}).")
+                    fid = _insert_kpi_flag(con, tech_id, period_key, kpi_key,
+                                            "coaching_suggested", reason)
+                    new_flag_ids.append(fid)
+                    audit_payloads.append((fid, "coaching_suggested", kpi_key))
+
+        con.commit()
+    finally:
+        con.close()
+
+    # Emit one audit row per new flag (out of band so the chain isn't held).
+    for fid, severity, kpi_key in audit_payloads:
+        try:
+            log_audit(
+                actor_type="system",
+                actor_id=None,
+                actor_label="kpi-engine",
+                actor_role="system",
+                action="kpi.flag_generated",
+                target_type="kpi_flag",
+                target_id=fid,
+                target_label=f"{severity}/{kpi_key or '-'}",
+                after_value={
+                    "tech_id": tech_id, "period_key": period_key,
+                    "kpi_key": kpi_key, "severity": severity,
+                },
+            )
+        except Exception as _ae:
+            _logger.warning(f"kpi.flag_generated audit failed: {_ae}")
+
+    if new_flag_ids:
+        _logger.info(
+            f"kpi.flag_generated: tech_id={tech_id} period={period_key} "
+            f"new_flags={new_flag_ids}"
+        )
+    return new_flag_ids
+
+
+# ── Flag lifecycle transitions ──────────────────────────────────────────────
+
+def _rehash_kpi_flag(con, flag_id: int):
+    """Recompute chain_hash for a kpi_flags row after an UPDATE. The new
+    prior_chain_hash points to the previous tail of the kpi_flags chain."""
+    row = con.execute("SELECT * FROM kpi_flags WHERE id=?",
+                      (flag_id,)).fetchone()
+    if not row:
+        return
+    prior = _last_kpi_flag_chain(con)
+    chash = _chain_hash_kpi_flag(prior, dict(row))
+    con.execute(
+        "UPDATE kpi_flags SET prior_chain_hash=?, chain_hash=? WHERE id=?",
+        (prior, chash, flag_id),
+    )
+
+
+def _get_kpi_flag_or_404(flag_id: int) -> dict:
+    con = _con()
+    r = con.execute("SELECT * FROM kpi_flags WHERE id=?", (flag_id,)).fetchone()
+    con.close()
+    if not r:
+        raise ValueError("flag_not_found")
+    return _dec_row("kpi_flags", r)
+
+
+def _append_encrypted_note(existing: str, new_note: str, manager_id: int) -> str:
+    """Append a timestamped manager note to an existing notes blob (which may
+    itself be ciphertext from a prior call). Decryption is best-effort; if the
+    blob isn't decryptable, we treat it as opaque and concatenate."""
+    ts = datetime.now(timezone.utc).isoformat()
+    prefix = f"[{ts} mgr={manager_id}] "
+    new_line = prefix + (new_note or "").strip()
+    if not existing:
+        return new_line
+    try:
+        existing_plain = _dec(existing)
+    except Exception:
+        existing_plain = ""
+    return (existing_plain + "\n" + new_line).strip()
+
+
+def acknowledge_kpi_flag(flag_id: int, manager_id: int) -> dict:
+    """Move flag to 'acknowledged' state. Chain rebuild + audit."""
+    flag = _get_kpi_flag_or_404(flag_id)
+    if flag["status"] in ("resolved", "overridden"):
+        raise ValueError("flag_already_terminal")
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    try:
+        con.execute(
+            "UPDATE kpi_flags SET status='acknowledged', acknowledged_at=?, "
+            "manager_id=? WHERE id=?", (now, manager_id, flag_id),
+        )
+        _rehash_kpi_flag(con, flag_id)
+        con.commit()
+    finally:
+        con.close()
+    log_audit(actor_type="admin", actor_id=manager_id,
+              actor_role="admin", action="kpi.flag_acknowledged",
+              target_type="kpi_flag", target_id=flag_id,
+              before_value={"status": flag["status"]},
+              after_value={"status": "acknowledged"})
+    return _get_kpi_flag_or_404(flag_id)
+
+
+def start_kpi_flag_work(flag_id: int, manager_id: int, notes: str) -> dict:
+    """Move flag to 'in_progress' state. Notes appended (encrypted)."""
+    flag = _get_kpi_flag_or_404(flag_id)
+    if flag["status"] in ("resolved", "overridden"):
+        raise ValueError("flag_already_terminal")
+    if not (notes or "").strip():
+        raise ValueError("notes_required")
+    if len(notes) > 2000:
+        raise ValueError("notes_too_long")
+    con = _con()
+    try:
+        row = con.execute("SELECT resolution_notes FROM kpi_flags WHERE id=?",
+                          (flag_id,)).fetchone()
+        existing = row["resolution_notes"] if row else None
+        combined = _append_encrypted_note(existing, notes, manager_id)
+        enc = _enc_dict("kpi_flags", {"resolution_notes": combined})
+        ack = flag.get("acknowledged_at") or datetime.now(timezone.utc).isoformat()
+        con.execute(
+            "UPDATE kpi_flags SET status='in_progress', acknowledged_at=?, "
+            "manager_id=?, resolution_notes=? WHERE id=?",
+            (ack, manager_id, enc["resolution_notes"], flag_id),
+        )
+        _rehash_kpi_flag(con, flag_id)
+        con.commit()
+    finally:
+        con.close()
+    log_audit(actor_type="admin", actor_id=manager_id,
+              actor_role="admin", action="kpi.flag_in_progress",
+              target_type="kpi_flag", target_id=flag_id,
+              before_value={"status": flag["status"]},
+              after_value={"status": "in_progress",
+                           "notes_len": len(notes)})
+    return _get_kpi_flag_or_404(flag_id)
+
+
+def resolve_kpi_flag(flag_id: int, manager_id: int,
+                      resolution_notes: str) -> dict:
+    """Resolve a flag. Resolution notes mandatory + encrypted + appended."""
+    flag = _get_kpi_flag_or_404(flag_id)
+    if flag["status"] in ("resolved", "overridden"):
+        raise ValueError("flag_already_terminal")
+    if not (resolution_notes or "").strip():
+        raise ValueError("resolution_notes_required")
+    if len(resolution_notes) > 2000:
+        raise ValueError("resolution_notes_too_long")
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    try:
+        row = con.execute("SELECT resolution_notes FROM kpi_flags WHERE id=?",
+                          (flag_id,)).fetchone()
+        existing = row["resolution_notes"] if row else None
+        combined = _append_encrypted_note(existing, resolution_notes, manager_id)
+        enc = _enc_dict("kpi_flags", {"resolution_notes": combined})
+        con.execute(
+            "UPDATE kpi_flags SET status='resolved', resolved_at=?, "
+            "manager_id=?, resolution_notes=? WHERE id=?",
+            (now, manager_id, enc["resolution_notes"], flag_id),
+        )
+        _rehash_kpi_flag(con, flag_id)
+        con.commit()
+    finally:
+        con.close()
+    log_audit(actor_type="admin", actor_id=manager_id,
+              actor_role="admin", action="kpi.flag_resolved",
+              target_type="kpi_flag", target_id=flag_id,
+              before_value={"status": flag["status"]},
+              after_value={"status": "resolved",
+                           "notes_len": len(resolution_notes)})
+    return _get_kpi_flag_or_404(flag_id)
+
+
+def override_kpi_flag(flag_id: int, manager_id: int,
+                       override_reason: str) -> dict:
+    """Manager override — REQUIRES non-empty reason. Original flag is never
+    deleted; only its status flips to 'overridden' with the encrypted reason
+    persisted. Recipient (the tech) sees the flag was overridden but NOT the
+    reason text (UI redacts to a fixed string)."""
+    if not (override_reason or "").strip():
+        raise ValueError("override_reason_required")
+    if len(override_reason) > 1000:
+        raise ValueError("override_reason_too_long")
+    flag = _get_kpi_flag_or_404(flag_id)
+    if flag["status"] == "overridden":
+        raise ValueError("flag_already_overridden")
+    if flag["status"] == "resolved":
+        # Overriding a resolved flag would erase the resolution — disallow.
+        raise ValueError("flag_already_resolved")
+    now = datetime.now(timezone.utc).isoformat()
+    enc = _enc_dict("kpi_flags",
+                     {"override_reason": override_reason.strip()})
+    con = _con()
+    try:
+        con.execute(
+            "UPDATE kpi_flags SET status='overridden', override_reason=?, "
+            "manager_id=?, resolved_at=? WHERE id=?",
+            (enc["override_reason"], manager_id, now, flag_id),
+        )
+        _rehash_kpi_flag(con, flag_id)
+        con.commit()
+    finally:
+        con.close()
+    log_audit(actor_type="admin", actor_id=manager_id,
+              actor_role="admin", action="kpi.flag_overridden",
+              target_type="kpi_flag", target_id=flag_id,
+              before_value={"status": flag["status"]},
+              after_value={"status": "overridden",
+                           "reason_len": len(override_reason)})
+    return _get_kpi_flag_or_404(flag_id)
+
+
+def list_kpi_flags(filters: dict = None) -> list:
+    """List flags with optional filters. Filters keys: tech_id, severity,
+    status, period_key, hub_id, date_from, date_to, limit (default 100),
+    offset (default 0). Returns decrypted rows."""
+    filters = filters or {}
+    where = []
+    args = []
+    if filters.get("tech_id") is not None:
+        where.append("f.tech_id=?"); args.append(int(filters["tech_id"]))
+    if filters.get("severity"):
+        where.append("f.severity=?"); args.append(filters["severity"])
+    if filters.get("status"):
+        where.append("f.status=?"); args.append(filters["status"])
+    if filters.get("period_key"):
+        where.append("f.period_key=?"); args.append(filters["period_key"])
+    if filters.get("hub_id") is not None:
+        where.append("t.hub_id=?"); args.append(int(filters["hub_id"]))
+    if filters.get("date_from"):
+        where.append("f.created_at >= ?"); args.append(filters["date_from"])
+    if filters.get("date_to"):
+        where.append("f.created_at <= ?"); args.append(filters["date_to"])
+    sql = ("SELECT f.*, t.name AS tech_name, t.role AS tech_role "
+           "  FROM kpi_flags f "
+           "  LEFT JOIN technicians t ON t.id=f.tech_id")
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY f.created_at DESC LIMIT ? OFFSET ?"
+    args.append(int(filters.get("limit") or 100))
+    args.append(int(filters.get("offset") or 0))
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    out = []
+    for r in rows:
+        d = _dec_row("kpi_flags", r)
+        d["tech_name"] = r["tech_name"]
+        d["tech_role"] = r["tech_role"]
+        out.append(d)
+    return out
+
+
+def count_open_flags_by_severity(hub_id: int = None) -> dict:
+    """Return open-flag counts grouped by severity (Ops Manager dashboard
+    tiles). 'Open' = status in (open, acknowledged, in_progress)."""
+    sql = ("SELECT f.severity, COUNT(*) AS n FROM kpi_flags f "
+           " LEFT JOIN technicians t ON t.id=f.tech_id "
+           " WHERE f.status IN ('open','acknowledged','in_progress')")
+    args = []
+    if hub_id is not None:
+        sql += " AND t.hub_id=?"; args.append(int(hub_id))
+    sql += " GROUP BY f.severity"
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    out = {s: 0 for s in _KPI_FLAG_SEVERITIES}
+    for r in rows:
+        out[r["severity"]] = r["n"]
+    return out
+
+
+def get_kpi_flag_detail(flag_id: int) -> dict:
+    """Return one flag with tech context + recent audit trail."""
+    con = _con()
+    r = con.execute(
+        "SELECT f.*, t.name AS tech_name, t.role AS tech_role "
+        "  FROM kpi_flags f LEFT JOIN technicians t ON t.id=f.tech_id "
+        " WHERE f.id=?", (flag_id,),
+    ).fetchone()
+    if not r:
+        con.close()
+        return None
+    d = _dec_row("kpi_flags", r)
+    d["tech_name"] = r["tech_name"]
+    d["tech_role"] = r["tech_role"]
+    audit_rows = con.execute(
+        "SELECT id, actor_label, actor_role, action, created_at "
+        "  FROM audit_log WHERE target_type='kpi_flag' AND target_id=? "
+        " ORDER BY id DESC LIMIT 50", (flag_id,),
+    ).fetchall()
+    con.close()
+    d["audit"] = [dict(a) for a in audit_rows]
+    return d
