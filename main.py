@@ -102,6 +102,10 @@ from database import (
     resolve_exception as fs_resolve_exception,
     escalate_exception as fs_escalate_exception,
     find_overdue_exceptions as fs_find_overdue_exceptions,
+    compute_compliance_score as fs_compute_compliance_score,
+    list_compliance_overview as fs_list_compliance_overview,
+    open_coaching as fs_open_coaching, close_coaching as fs_close_coaching,
+    list_coaching as fs_list_coaching,
     fs_today_status_for_tech, fs_export_all,
 )
 
@@ -5011,23 +5015,80 @@ def admin_fs_escalate_exception(request: Request, exception_id: int):
     return {"ok": True}
 
 
+@app.get("/api/admin/5s/compliance")
+def admin_fs_compliance_overview(request: Request,
+                                  hub_id: Optional[int] = None,
+                                  window_days: int = 30):
+    _require_perm(request, "fs:report_view")
+    return fs_list_compliance_overview(hub_id=hub_id, window_days=window_days)
+
+
+@app.get("/api/admin/5s/compliance/{tech_id}")
+def admin_fs_compliance_tech(request: Request, tech_id: int,
+                              window_days: int = 30):
+    _require_perm(request, "fs:report_view")
+    return fs_compute_compliance_score(tech_id, window_days=window_days)
+
+
 @app.get("/api/admin/5s/dashboard")
 def admin_fs_dashboard(request: Request, hub_id: Optional[int] = None):
-    """Phase 1 dashboard — exception counts only. Compliance tiles arrive in Phase 3."""
     _require_perm(request, "fs:report_view")
+    overview = fs_list_compliance_overview(hub_id=hub_id, window_days=30)
     open_excs  = fs_list_exceptions(status="open", hub_id=hub_id, limit=500)
     esc_excs   = fs_list_exceptions(status="escalated", hub_id=hub_id, limit=500)
     director_excs = fs_list_exceptions(status="escalated_director", hub_id=hub_id, limit=500)
     safety_open = [e for e in (open_excs + esc_excs + director_excs)
                    if e.get("severity") == "safety_loto"]
     return {
-        "compliance":            [],
+        "compliance":            overview,
         "open_exceptions":       len(open_excs),
         "escalated_exceptions":  len(esc_excs),
         "director_exceptions":   len(director_excs),
         "safety_red_count":      len(safety_open),
         "safety_red":            safety_open[:25],
     }
+
+
+# Phase 3: coaching log endpoints
+class AdminFSCoachingOpen(BaseModel):
+    tech_id: int
+    plan_text: str = ""
+
+
+@app.post("/api/admin/5s/coaching")
+def admin_fs_open_coaching(request: Request, body: AdminFSCoachingOpen):
+    admin = _require_perm(request, "fs:coaching_manage")
+    score = fs_compute_compliance_score(body.tech_id, window_days=30)
+    cid = fs_open_coaching(body.tech_id, opened_by_id=admin["id"],
+                           band_at_open=score["band"], plan_text=body.plan_text)
+    _audit_from(admin, "fs.coaching.open", request,
+                target_type="fs_coaching", target_id=cid,
+                target_label=f"tech:{body.tech_id}",
+                after={"band_at_open": score["band"]})
+    return {"id": cid}
+
+
+class AdminFSCoachingClose(BaseModel):
+    close_note: str = ""
+
+
+@app.post("/api/admin/5s/coaching/{coaching_id}/close")
+def admin_fs_close_coaching(request: Request, coaching_id: int,
+                             body: AdminFSCoachingClose):
+    admin = _require_perm(request, "fs:coaching_manage")
+    fs_close_coaching(coaching_id, closed_by_id=admin["id"],
+                      close_note=body.close_note or "")
+    _audit_from(admin, "fs.coaching.close", request,
+                target_type="fs_coaching", target_id=coaching_id)
+    return {"ok": True}
+
+
+@app.get("/api/admin/5s/coaching")
+def admin_fs_list_coaching(request: Request,
+                            tech_id: Optional[int] = None,
+                            status: Optional[str] = None):
+    _require_perm(request, "fs:report_view")
+    return fs_list_coaching(tech_id=tech_id, status=status)
 
 
 @app.get("/api/admin/5s/export")
