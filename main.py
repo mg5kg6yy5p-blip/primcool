@@ -154,6 +154,19 @@ from database import (
     list_kpi_flags, count_open_flags_by_severity, get_kpi_flag_detail,
     acknowledge_kpi_flag, start_kpi_flag_work, resolve_kpi_flag,
     override_kpi_flag,
+    # Phase 5 KPI Notes
+    create_kpi_note, get_kpi_note, update_kpi_note, archive_kpi_note,
+    list_kpi_notes_for_tech, list_kpi_notes_for_flag, list_kpi_notes_for_score,
+    list_kpi_notes_for_period, list_kpi_notes_filtered,
+    count_open_tech_responses, _can_read_kpi_note,
+    # Phase 6 KPI Goals + PIPs
+    create_kpi_goal, get_kpi_goal, hr_acknowledge_pip, activate_pip,
+    add_goal_checkin, list_goal_checkins, close_goal,
+    list_goals_for_tech, list_active_pips, list_goals_filtered,
+    suggest_pip_for_flag, tech_set_action_item_done,
+    # Phase 7 Custom KPIs
+    create_custom_kpi, archive_custom_kpi, set_manual_kpi_value,
+    list_manual_kpi_history,
 )
 import imghdr as _imghdr
 import mimetypes as _mimetypes
@@ -274,6 +287,33 @@ ADMIN_PERMS = {
         "audit:view_self",
     },
 }
+
+
+# ── KPI Module phases 5–7 permission additions ───────────────────────────────
+# Notes (Phase 5)
+ADMIN_PERMS["super_admin"].update({
+    "kpi:note_write_coaching", "kpi:note_write_recognition",
+    "kpi:note_write_team_period", "kpi:note_write_score_annotation",
+    "kpi:note_view",
+    # Phase 6 — goals + PIPs
+    "kpi:goal_create", "kpi:goal_close",
+    "kpi:pip_create", "kpi:pip_activate", "kpi:goal_view",
+    # Phase 7 — custom KPI
+    "kpi:def_create", "kpi:def_archive", "kpi:manual_value_set",
+})
+ADMIN_PERMS["supervisor_admin"].update({
+    "kpi:note_write_coaching", "kpi:note_write_recognition",
+    "kpi:note_write_score_annotation", "kpi:note_view",
+    "kpi:goal_create", "kpi:goal_close", "kpi:goal_view",
+    "kpi:manual_value_set",
+})
+ADMIN_PERMS["system_admin"].update({
+    "kpi:note_view",
+})
+ADMIN_PERMS["hr_admin"].update({
+    "kpi:note_write_recognition", "kpi:note_view",
+    "kpi:goal_view", "kpi:pip_acknowledge",
+})
 
 
 def _admin_can(role: str, perm: str) -> bool:
@@ -6054,6 +6094,579 @@ def admin_kpi_flash_report_email(request: Request, body: KpiFlashEmailBody):
                 target_type="kpi_flash_report", target_label=pk,
                 after={"recipient_email_hash": "redacted"})
     return {"ok": True, "skipped": False}
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Phase 5 — KPI Notes endpoints
+# Five note kinds: coaching, tech_response, recognition, team_period,
+# score_annotation. Bodies encrypted. Audit-logged. Tech-readable subset.
+# ════════════════════════════════════════════════════════════════════════════
+
+_KPI_NOTE_PERM_BY_KIND = {
+    "coaching":         "kpi:note_write_coaching",
+    "recognition":      "kpi:note_write_recognition",
+    "team_period":      "kpi:note_write_team_period",
+    "score_annotation": "kpi:note_write_score_annotation",
+}
+
+
+def _kpi_verbose_audit() -> bool:
+    return bool(os.environ.get("DELEGATION_VERBOSE_AUDIT"))
+
+
+class KpiNoteCreateBody(BaseModel):
+    note_kind:  str
+    tech_id:    Optional[int] = None
+    period_key: Optional[str] = None
+    flag_id:    Optional[int] = None
+    score_id:   Optional[int] = None
+    body:       str
+
+
+class KpiNoteUpdateBody(BaseModel):
+    body: str
+
+
+@app.post("/api/admin/kpi/notes", response_model=Dict[str, Any])
+def admin_kpi_note_create(request: Request, body: KpiNoteCreateBody):
+    if body.note_kind == "tech_response":
+        # Tech-response notes must use the tech endpoint.
+        raise HTTPException(400, "Use /api/tech/me/kpi/notes/tech-response")
+    perm = _KPI_NOTE_PERM_BY_KIND.get(body.note_kind)
+    if not perm:
+        raise HTTPException(400, "invalid note_kind")
+    admin = _require_perm(request, perm)
+    try:
+        note = create_kpi_note(
+            note_kind=body.note_kind, tech_id=body.tech_id,
+            period_key=body.period_key, flag_id=body.flag_id,
+            score_id=body.score_id, author_id=admin["id"],
+            author_kind="admin", body=body.body,
+        )
+    except ValueError as ve:
+        raise HTTPException(400, str(ve))
+    _audit_from(admin, "kpi.note.created", request,
+                target_type="kpi_note", target_id=note.get("id"),
+                target_label=body.note_kind,
+                after={"note_kind": body.note_kind, "tech_id": body.tech_id,
+                       "flag_id": body.flag_id, "score_id": body.score_id,
+                       "period_key": body.period_key,
+                       "body_len": len(body.body or "")})
+    return {"ok": True, "note": note}
+
+
+@app.patch("/api/admin/kpi/notes/{note_id}", response_model=Dict[str, Any])
+def admin_kpi_note_update(request: Request, note_id: int,
+                          body: KpiNoteUpdateBody):
+    admin = _require_admin(request)
+    note = get_kpi_note(note_id)
+    if not note:
+        raise HTTPException(404, "Note not found")
+    perm = _KPI_NOTE_PERM_BY_KIND.get(note["note_kind"])
+    if not perm or not _admin_can(admin["role"], perm):
+        # Only writer or super_admin can edit
+        if not (admin["role"] == "super_admin" or
+                (note.get("author_kind") == "admin" and
+                 note.get("author_id") == admin["id"])):
+            raise HTTPException(403, "Not permitted to edit this note")
+    try:
+        updated = update_kpi_note(note_id, admin["id"], body.body)
+    except ValueError as ve:
+        raise HTTPException(409, str(ve))
+    _audit_from(admin, "kpi.note.updated", request,
+                target_type="kpi_note", target_id=note_id,
+                target_label=note["note_kind"],
+                after={"body_len": len(body.body or "")})
+    return {"ok": True, "note": updated}
+
+
+@app.post("/api/admin/kpi/notes/{note_id}/archive",
+          response_model=Dict[str, Any])
+def admin_kpi_note_archive(request: Request, note_id: int):
+    admin = _require_perm(request, "kpi:note_view")
+    note = get_kpi_note(note_id)
+    if not note:
+        raise HTTPException(404, "Note not found")
+    # writer or super_admin
+    if admin["role"] != "super_admin" and not (
+        note.get("author_kind") == "admin" and note.get("author_id") == admin["id"]
+    ):
+        raise HTTPException(403, "Only the writer or super_admin may archive")
+    try:
+        archive_kpi_note(note_id, admin["id"])
+    except ValueError as ve:
+        raise HTTPException(409, str(ve))
+    _audit_from(admin, "kpi.note.archived", request,
+                target_type="kpi_note", target_id=note_id,
+                target_label=note["note_kind"])
+    return {"ok": True}
+
+
+@app.get("/api/admin/kpi/notes", response_model=Dict[str, Any])
+def admin_kpi_notes_list(request: Request,
+                         tech_id: Optional[int] = None,
+                         note_kind: Optional[str] = None,
+                         period_key: Optional[str] = None,
+                         flag_id: Optional[int] = None,
+                         score_id: Optional[int] = None,
+                         page: int = 1, limit: int = 50):
+    admin = _require_perm(request, "kpi:note_view")
+    rows = list_kpi_notes_filtered(
+        tech_id=tech_id, note_kind=note_kind, period_key=period_key,
+        flag_id=flag_id, score_id=score_id,
+        page=max(1, page), limit=max(1, min(limit, 200)),
+    )
+    visible = [r for r in rows
+               if _can_read_kpi_note(r, admin["id"], "admin", admin["role"])]
+    if _kpi_verbose_audit():
+        _audit_from(admin, "kpi.note.viewed", request,
+                    target_type="kpi_note", target_label="list",
+                    after={"count": len(visible)})
+    return {"notes": visible, "count": len(visible)}
+
+
+@app.get("/api/admin/kpi/notes/{note_id}", response_model=Dict[str, Any])
+def admin_kpi_note_detail(request: Request, note_id: int):
+    admin = _require_perm(request, "kpi:note_view")
+    note = get_kpi_note(note_id)
+    if not note:
+        raise HTTPException(404, "Note not found")
+    if not _can_read_kpi_note(note, admin["id"], "admin", admin["role"]):
+        raise HTTPException(403, "Not permitted to view this note")
+    if _kpi_verbose_audit():
+        _audit_from(admin, "kpi.note.viewed", request,
+                    target_type="kpi_note", target_id=note_id,
+                    target_label=note["note_kind"])
+    return {"note": note}
+
+
+class TechResponseBody(BaseModel):
+    flag_id: int
+    body:    str
+
+
+@app.post("/api/tech/me/kpi/notes/tech-response",
+          response_model=Dict[str, Any])
+def tech_kpi_note_response_create(request: Request, body: TechResponseBody):
+    tech_id = _require_tech(request)
+    # Validate that the flag exists and belongs to this tech, and is open.
+    flag = get_kpi_flag_detail(body.flag_id)
+    if not flag:
+        raise HTTPException(404, "Flag not found")
+    if flag.get("tech_id") != tech_id:
+        raise HTTPException(403, "Not your flag")
+    if flag.get("status") in ("resolved", "overridden"):
+        raise HTTPException(409, "Parent flag is closed")
+    # Dedup: existing tech_response by this tech for this flag?
+    existing = list_kpi_notes_for_flag(body.flag_id)
+    for n in existing:
+        if (n.get("note_kind") == "tech_response"
+                and n.get("author_id") == tech_id
+                and n.get("author_kind") == "tech"
+                and n.get("status") != "archived"):
+            raise HTTPException(409, "You already responded to this flag")
+    try:
+        note = create_kpi_note(
+            note_kind="tech_response", tech_id=tech_id,
+            period_key=flag.get("period_key"), flag_id=body.flag_id,
+            score_id=None, author_id=tech_id, author_kind="tech",
+            body=body.body,
+        )
+    except ValueError as ve:
+        raise HTTPException(400, str(ve))
+    log_audit(actor_type="tech", actor_id=tech_id,
+              action="kpi.note.created",
+              target_type="kpi_note", target_id=note.get("id"),
+              target_label="tech_response",
+              after_value={"flag_id": body.flag_id,
+                           "body_len": len(body.body or "")},
+              ip_address=request.client.host if request.client else None)
+    return {"ok": True, "note": note}
+
+
+@app.patch("/api/tech/me/kpi/notes/{note_id}", response_model=Dict[str, Any])
+def tech_kpi_note_update(request: Request, note_id: int,
+                         body: KpiNoteUpdateBody):
+    tech_id = _require_tech(request)
+    note = get_kpi_note(note_id)
+    if not note:
+        raise HTTPException(404, "Note not found")
+    if not (note.get("author_kind") == "tech" and note.get("author_id") == tech_id):
+        raise HTTPException(403, "Not your note")
+    if note.get("note_kind") != "tech_response":
+        raise HTTPException(403, "Only tech responses are editable here")
+    try:
+        updated = update_kpi_note(note_id, tech_id, body.body)
+    except ValueError as ve:
+        raise HTTPException(409, str(ve))
+    log_audit(actor_type="tech", actor_id=tech_id,
+              action="kpi.note.updated",
+              target_type="kpi_note", target_id=note_id,
+              after_value={"body_len": len(body.body or "")},
+              ip_address=request.client.host if request.client else None)
+    return {"ok": True, "note": updated}
+
+
+@app.get("/api/tech/me/kpi/notes", response_model=Dict[str, Any])
+def tech_kpi_notes_list(request: Request, limit: int = 50):
+    tech_id = _require_tech(request)
+    # Coaching + recognition about self + tech_responses by self.
+    self_notes = list_kpi_notes_for_tech(
+        tech_id, note_kinds=["coaching", "recognition", "tech_response"],
+        limit=max(1, min(limit, 200)),
+    )
+    # Team-period notes for periods where self has scores
+    try:
+        import sqlite3
+        con = sqlite3.connect("submissions.db")
+        con.row_factory = sqlite3.Row
+        period_keys = [r["period_key"] for r in con.execute(
+            "SELECT DISTINCT period_key FROM kpi_scores WHERE tech_id=? "
+            "ORDER BY period_key DESC LIMIT 12", (tech_id,),
+        ).fetchall()]
+        con.close()
+    except Exception:
+        period_keys = []
+    team_notes = []
+    for pk in period_keys:
+        team_notes.extend(list_kpi_notes_for_period(pk))
+    # Visibility filter for safety
+    filtered_self = [n for n in self_notes
+                     if _can_read_kpi_note(n, tech_id, "tech")]
+    filtered_team = [n for n in team_notes
+                     if _can_read_kpi_note(n, tech_id, "tech")]
+    return {"self_notes": filtered_self, "team_notes": filtered_team}
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Phase 6 — KPI Goals + PIPs endpoints
+# ════════════════════════════════════════════════════════════════════════════
+
+class KpiGoalCreateBody(BaseModel):
+    goal_kind:        str
+    tech_id:          int
+    title:            str
+    description:      str
+    start_date:       str
+    target_date:      str
+    related_kpi_keys: Optional[str] = None
+    action_items:     Optional[List[Any]] = None
+    pip_severity:     Optional[str] = None
+    pip_review_dates: Optional[List[str]] = None
+    triggering_flag_id: Optional[int] = None
+
+
+@app.post("/api/admin/kpi/goals", response_model=Dict[str, Any])
+def admin_kpi_goal_create(request: Request, body: KpiGoalCreateBody):
+    if body.goal_kind == "pip":
+        admin = _require_perm(request, "kpi:pip_create")
+    else:
+        admin = _require_perm(request, "kpi:goal_create")
+    try:
+        goal = create_kpi_goal(
+            goal_kind=body.goal_kind, tech_id=body.tech_id,
+            title=body.title, description=body.description,
+            start_date=body.start_date, target_date=body.target_date,
+            opened_by_id=admin["id"],
+            related_kpi_keys=body.related_kpi_keys,
+            action_items=body.action_items,
+            pip_severity=body.pip_severity,
+            pip_review_dates=body.pip_review_dates,
+            triggering_flag_id=body.triggering_flag_id,
+        )
+    except ValueError as ve:
+        raise HTTPException(400, str(ve))
+    _audit_from(admin, "kpi.goal.created", request,
+                target_type="kpi_goal", target_id=goal.get("id"),
+                target_label=body.goal_kind,
+                after={"tech_id": body.tech_id,
+                       "title_len": len(body.title or ""),
+                       "pip_severity": body.pip_severity})
+    return {"ok": True, "goal": goal}
+
+
+class KpiGoalUpdateBody(BaseModel):
+    title:       Optional[str] = None
+    description: Optional[str] = None
+
+
+@app.patch("/api/admin/kpi/goals/{goal_id}", response_model=Dict[str, Any])
+def admin_kpi_goal_update(request: Request, goal_id: int,
+                          body: KpiGoalUpdateBody):
+    """Edits only allowed while status is 'draft'."""
+    admin = _require_perm(request, "kpi:goal_create")
+    g = get_kpi_goal(goal_id)
+    if not g:
+        raise HTTPException(404, "Goal not found")
+    if g["status"] != "draft":
+        raise HTTPException(409, "Only draft goals are editable")
+    import sqlite3
+    updates = {}
+    if body.title is not None:
+        updates["title"] = body.title.strip()
+    if body.description is not None:
+        updates["description"] = body.description.strip()
+    if not updates:
+        return {"ok": True, "goal": g}
+    # Encrypt then update
+    from database import _enc_dict as _enc_d
+    enc = _enc_d("kpi_goals", updates)
+    sets = ", ".join(f"{k}=?" for k in enc.keys())
+    args = list(enc.values()) + [goal_id]
+    con = sqlite3.connect("submissions.db")
+    con.execute(f"UPDATE kpi_goals SET {sets} WHERE id=?", args)
+    con.commit(); con.close()
+    _audit_from(admin, "kpi.goal.updated", request,
+                target_type="kpi_goal", target_id=goal_id,
+                target_label=g.get("goal_kind"),
+                after={"fields": list(updates.keys())})
+    return {"ok": True, "goal": get_kpi_goal(goal_id)}
+
+
+@app.post("/api/admin/kpi/goals/{goal_id}/activate",
+          response_model=Dict[str, Any])
+def admin_kpi_goal_activate(request: Request, goal_id: int):
+    admin = _require_perm(request, "kpi:pip_activate")
+    try:
+        goal = activate_pip(goal_id, admin["id"])
+    except ValueError as ve:
+        msg = str(ve)
+        if msg == "goal_not_found":
+            raise HTTPException(404, msg)
+        raise HTTPException(409, msg)
+    _audit_from(admin, "kpi.pip.activated", request,
+                target_type="kpi_goal", target_id=goal_id,
+                target_label="pip")
+    return {"ok": True, "goal": goal}
+
+
+@app.post("/api/admin/kpi/goals/{goal_id}/hr-acknowledge",
+          response_model=Dict[str, Any])
+def admin_kpi_goal_hr_ack(request: Request, goal_id: int):
+    admin = _require_perm(request, "kpi:pip_acknowledge")
+    try:
+        goal = hr_acknowledge_pip(goal_id, admin["id"])
+    except ValueError as ve:
+        msg = str(ve)
+        if msg == "goal_not_found":
+            raise HTTPException(404, msg)
+        raise HTTPException(409, msg)
+    _audit_from(admin, "kpi.pip.hr_acknowledged", request,
+                target_type="kpi_goal", target_id=goal_id,
+                target_label="pip")
+    return {"ok": True, "goal": goal}
+
+
+class KpiGoalCheckinBody(BaseModel):
+    checkin_date: str
+    status:       str
+    notes:        str
+
+
+@app.post("/api/admin/kpi/goals/{goal_id}/checkins",
+          response_model=Dict[str, Any])
+def admin_kpi_goal_checkin(request: Request, goal_id: int,
+                            body: KpiGoalCheckinBody):
+    admin = _require_perm(request, "kpi:goal_create")
+    try:
+        ci = add_goal_checkin(goal_id, body.checkin_date, body.status,
+                              body.notes, admin["id"])
+    except ValueError as ve:
+        msg = str(ve)
+        if msg == "goal_not_found":
+            raise HTTPException(404, msg)
+        raise HTTPException(400, msg)
+    _audit_from(admin, "kpi.goal.checkin_added", request,
+                target_type="kpi_goal_checkin", target_id=ci.get("id"),
+                target_label=body.status,
+                after={"goal_id": goal_id, "notes_len": len(body.notes or "")})
+    return {"ok": True, "checkin": ci}
+
+
+class KpiGoalCloseBody(BaseModel):
+    outcome_status:  str
+    outcome_summary: str
+
+
+@app.post("/api/admin/kpi/goals/{goal_id}/close",
+          response_model=Dict[str, Any])
+def admin_kpi_goal_close(request: Request, goal_id: int,
+                          body: KpiGoalCloseBody):
+    admin = _require_perm(request, "kpi:goal_close")
+    try:
+        goal = close_goal(goal_id, body.outcome_status,
+                          body.outcome_summary, admin["id"])
+    except ValueError as ve:
+        msg = str(ve)
+        if msg == "goal_not_found":
+            raise HTTPException(404, msg)
+        raise HTTPException(409, msg)
+    _audit_from(admin, "kpi.goal.closed", request,
+                target_type="kpi_goal", target_id=goal_id,
+                target_label=body.outcome_status,
+                after={"outcome_summary_len": len(body.outcome_summary or "")})
+    return {"ok": True, "goal": goal}
+
+
+@app.get("/api/admin/kpi/goals", response_model=Dict[str, Any])
+def admin_kpi_goals_list(request: Request,
+                          tech_id: Optional[int] = None,
+                          goal_kind: Optional[str] = None,
+                          status: Optional[str] = None,
+                          page: int = 1, limit: int = 50):
+    _require_perm(request, "kpi:goal_view")
+    rows = list_goals_filtered(tech_id=tech_id, goal_kind=goal_kind,
+                                status=status, page=max(1, page),
+                                limit=max(1, min(limit, 200)))
+    return {"goals": rows, "count": len(rows)}
+
+
+@app.get("/api/admin/kpi/goals/{goal_id}", response_model=Dict[str, Any])
+def admin_kpi_goal_detail(request: Request, goal_id: int):
+    _require_perm(request, "kpi:goal_view")
+    g = get_kpi_goal(goal_id)
+    if not g:
+        raise HTTPException(404, "Goal not found")
+    g["checkins"] = list_goal_checkins(goal_id)
+    return {"goal": g}
+
+
+@app.get("/api/admin/kpi/pips/active", response_model=Dict[str, Any])
+def admin_kpi_pips_active(request: Request, hub_id: Optional[int] = None):
+    _require_perm(request, "kpi:goal_view")
+    return {"pips": list_active_pips(hub_id=hub_id)}
+
+
+@app.get("/api/tech/me/kpi/goals", response_model=Dict[str, Any])
+def tech_kpi_goals_list(request: Request):
+    tech_id = _require_tech(request)
+    return {"goals": list_goals_for_tech(tech_id)}
+
+
+@app.post("/api/tech/me/kpi/goals/{goal_id}/action-items/{idx}/done",
+          response_model=Dict[str, Any])
+def tech_kpi_goal_action_item_done(request: Request, goal_id: int, idx: int):
+    tech_id = _require_tech(request)
+    try:
+        goal = tech_set_action_item_done(goal_id, tech_id, idx, True)
+    except ValueError as ve:
+        msg = str(ve)
+        if msg == "goal_not_found":
+            raise HTTPException(404, msg)
+        raise HTTPException(400, msg)
+    log_audit(actor_type="tech", actor_id=tech_id,
+              action="kpi.goal.action_item_done",
+              target_type="kpi_goal", target_id=goal_id,
+              after_value={"idx": idx},
+              ip_address=request.client.host if request.client else None)
+    return {"ok": True, "goal": goal}
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Phase 7 — Custom KPI definitions + manual values
+# ════════════════════════════════════════════════════════════════════════════
+
+class KpiThresholdSpec(BaseModel):
+    tier:       str
+    green:      float
+    amber_band: float
+    red_floor:  float
+
+
+class CustomKpiCreateBody(BaseModel):
+    kpi_key:               str
+    display_name:          str
+    description:           Optional[str] = ""
+    direction:             str
+    in_composite:          int = 0
+    composite_weight_pct:  float = 0
+    safety_critical:       int = 0
+    thresholds:            List[KpiThresholdSpec] = []
+
+
+@app.post("/api/admin/kpi/definitions/custom", response_model=Dict[str, Any])
+def admin_kpi_custom_create(request: Request, body: CustomKpiCreateBody):
+    admin = _require_perm(request, "kpi:def_create")
+    try:
+        out = create_custom_kpi(
+            kpi_key=body.kpi_key, display_name=body.display_name,
+            description=body.description or "", direction=body.direction,
+            in_composite=body.in_composite,
+            composite_weight_pct=body.composite_weight_pct,
+            safety_critical=body.safety_critical,
+            thresholds=[t.dict() for t in body.thresholds],
+            creator_id=admin["id"],
+        )
+    except ValueError as ve:
+        raise HTTPException(400, str(ve))
+    _audit_from(admin, "kpi.definition.created_custom", request,
+                target_type="kpi_definition", target_label=body.kpi_key,
+                after={"in_composite": body.in_composite,
+                       "weight_pct": body.composite_weight_pct,
+                       "rebalanced": out.get("rebalanced")})
+    if out.get("rebalanced"):
+        _audit_from(admin, "kpi.composite_weights_rebalanced", request,
+                    target_type="kpi_definition", target_label=body.kpi_key,
+                    after={"after_weights": out.get("rebalanced")})
+    return {"ok": True, "result": out}
+
+
+@app.post("/api/admin/kpi/definitions/{kpi_key}/archive",
+          response_model=Dict[str, Any])
+def admin_kpi_custom_archive(request: Request, kpi_key: str):
+    admin = _require_perm(request, "kpi:def_archive")
+    try:
+        archive_custom_kpi(kpi_key)
+    except ValueError as ve:
+        msg = str(ve)
+        if msg == "kpi_not_found":
+            raise HTTPException(404, msg)
+        raise HTTPException(409, msg)
+    _audit_from(admin, "kpi.definition.archived", request,
+                target_type="kpi_definition", target_label=kpi_key)
+    return {"ok": True}
+
+
+class ManualKpiValueBody(BaseModel):
+    tech_id:     int
+    period_key:  str
+    kpi_key:     str
+    raw_value:   float
+    sample_size: Optional[int] = 1
+
+
+@app.post("/api/admin/kpi/scores/manual", response_model=Dict[str, Any])
+def admin_kpi_score_manual(request: Request, body: ManualKpiValueBody):
+    admin = _require_perm(request, "kpi:manual_value_set")
+    try:
+        out = set_manual_kpi_value(
+            tech_id=body.tech_id, period_key=body.period_key,
+            kpi_key=body.kpi_key, raw_value=body.raw_value,
+            sample_size=body.sample_size or 1, author_id=admin["id"],
+        )
+    except ValueError as ve:
+        msg = str(ve)
+        if msg == "kpi_not_found":
+            raise HTTPException(404, msg)
+        raise HTTPException(400, msg)
+    _audit_from(admin, "kpi.score.manual_set", request,
+                target_type="kpi_score", target_id=out.get("score_id"),
+                target_label=f"{body.kpi_key}/{body.period_key}",
+                after={"tech_id": body.tech_id, "kpi_key": body.kpi_key,
+                       "raw_value": body.raw_value,
+                       "sample_size": body.sample_size or 1})
+    return {"ok": True, "score": out}
+
+
+@app.get("/api/admin/kpi/definitions/{kpi_key}/manual-history",
+         response_model=Dict[str, Any])
+def admin_kpi_manual_history(request: Request, kpi_key: str,
+                              period_key: Optional[str] = None,
+                              limit: int = 100):
+    _require_perm(request, "kpi:view_definitions")
+    return {"history": list_manual_kpi_history(
+        kpi_key, period_key=period_key, limit=max(1, min(limit, 500)),
+    )}
 
 
 # ── KPI weekly recompute loop ───────────────────────────────────────────────

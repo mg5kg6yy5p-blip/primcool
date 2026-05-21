@@ -1481,12 +1481,16 @@
           <td style="padding:8px;text-align:right;color:#555;">${r.raw_value == null ? '—' : r.raw_value}</td>
         </tr>`;
       }).join('');
-      const flagItems = (fl.flags || []).map(f => `
+      const flagItems = (fl.flags || []).map(f => {
+        const respondable = !['resolved','overridden'].includes(f.status);
+        return `
         <div style="padding:10px;border-radius:8px;border:1px solid #e5e7eb;margin-bottom:8px;background:#fff;">
           <div style="font-weight:600;color:#991b1b;">${esc(f.severity)}${f.has_override ? ' <span style="font-size:11px;color:#666;font-weight:400;">(' + esc(f.override_note || 'Override on file') + ')</span>' : ''}</div>
           <div style="margin-top:4px;font-size:13px;color:#444;">${esc(f.reason || '')}</div>
           <div style="margin-top:4px;font-size:11px;color:#888;">${esc(f.period_key)} · ${esc(f.status)}</div>
-        </div>`).join('');
+          ${respondable ? `<button class="btn btn-ghost" style="margin-top:8px;font-size:12px;" onclick="techRespondToFlag(${f.id})">Add Your Response</button>` : ''}
+        </div>`;
+      }).join('');
       wrap.innerHTML = `
         <div style="padding:14px;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
@@ -1518,6 +1522,10 @@
             <h4 style="margin:16px 0 8px 0;color:var(--navy);">My coaching flags</h4>
             ${flagItems}
           ` : ''}
+          <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="btn btn-ghost" onclick="techViewNotes()">View notes about me</button>
+            <button class="btn btn-ghost" onclick="techViewGoals()">My Goals &amp; PIPs</button>
+          </div>
         </div>
       `;
     } catch (e) {
@@ -2139,5 +2147,91 @@
   window.addEventListener('online', () => { fsFlushQueue(); });
 
 </script>
+
+<!-- ═════════════════════════════════════════════════════════════════════════
+     Tech-side KPI Notes + Goals add-ons (Phases 5–6)
+     ════════════════════════════════════════════════════════════════════════ -->
+<div id="techKpiModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;align-items:center;justify-content:center;">
+  <div style="background:white;border-radius:8px;max-width:560px;width:92%;max-height:88vh;overflow:auto;padding:18px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+      <h3 id="techKpiTitle" style="margin:0;color:var(--navy);">Notice</h3>
+      <button onclick="techKpiClose()" class="btn btn-ghost" style="padding:4px 10px;">✕</button>
+    </div>
+    <div id="techKpiBody"></div>
+  </div>
+</div>
+<script>
+  function techKpiOpen(title, html){
+    document.getElementById('techKpiTitle').textContent = title;
+    document.getElementById('techKpiBody').innerHTML = html;
+    document.getElementById('techKpiModal').style.display = 'flex';
+  }
+  function techKpiClose(){ document.getElementById('techKpiModal').style.display = 'none'; }
+  function _th(s){ return (s||'').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+  async function techKpiApi(method, url, body){
+    const opts = { method, headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin' };
+    if (body) opts.body = JSON.stringify(body);
+    const r = await fetch(url, opts);
+    if (!r.ok) { let m=''; try{ m=(await r.json()).detail || ''; }catch(_){} throw new Error(m || ('HTTP '+r.status)); }
+    return r.json();
+  }
+
+  // Respond to a flag
+  window.techRespondToFlag = function(flagId){
+    techKpiOpen('Add Your Response',
+      `<p>Add a written response to the flag about your performance. This is recorded with the flag.</p>
+       <textarea id="tech_resp_body" rows="5" maxlength="2000" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;"></textarea>
+       <div style="text-align:right;margin-top:8px;"><button class="btn btn-primary" onclick="techSaveResponse(${flagId})">Submit</button></div>`);
+  };
+  window.techSaveResponse = async function(flagId){
+    const body = document.getElementById('tech_resp_body').value.trim();
+    if (!body) return;
+    try {
+      await techKpiApi('POST', '/api/tech/me/kpi/notes/tech-response', { flag_id: flagId, body });
+      techKpiClose(); alert('Response saved.');
+    } catch(e){ alert(e.message); }
+  };
+
+  // View notes about me
+  window.techViewNotes = async function(){
+    try {
+      const r = await techKpiApi('GET', '/api/tech/me/kpi/notes');
+      const items = [...(r.self_notes||[]), ...(r.team_notes||[])].map(n => {
+        const colour = n.note_kind === 'recognition' ? '#10b981'
+                     : n.note_kind === 'coaching' ? '#3b82f6'
+                     : n.note_kind === 'team_period' ? '#6366f1'
+                     : '#f59e0b';
+        return `<div style="border-left:3px solid ${colour};padding:8px 12px;margin-bottom:8px;background:#f8fafc;">
+          <div style="font-size:11px;color:#64748b;">${_th(n.note_kind)} · ${_th(n.created_at||'')}</div>
+          <div style="white-space:pre-wrap;margin-top:4px;">${_th(n.body||'')}</div>
+        </div>`;
+      }).join('') || '<div style="color:#94a3b8;">No notes yet.</div>';
+      techKpiOpen('Notes about me', items);
+    } catch(e){ alert(e.message); }
+  };
+
+  // View goals
+  window.techViewGoals = async function(){
+    try {
+      const r = await techKpiApi('GET', '/api/tech/me/kpi/goals');
+      const items = (r.goals||[]).map(g => {
+        const items = (g.action_items||[]).map((it,i) =>
+          `<div><input type="checkbox" ${it.done?'checked':''} onchange="techToggleAction(${g.id}, ${i})"/> ${_th(it.text||'')}</div>`).join('');
+        return `<div style="border:1px solid #ddd;padding:10px;margin-bottom:8px;border-radius:6px;${g.goal_kind==='pip'?'border-color:#dc2626;background:#fef2f2;':''}">
+          <div style="font-weight:600;">${g.goal_kind === 'pip' ? 'PIP: ' : ''}${_th(g.title||'')}</div>
+          <div style="font-size:12px;color:#64748b;">Status: ${_th(g.status)} · Target: ${_th(g.target_date||'')}</div>
+          <p style="white-space:pre-wrap;">${_th(g.description||'')}</p>
+          ${items}
+        </div>`;
+      }).join('') || '<div style="color:#94a3b8;">No goals or PIPs.</div>';
+      techKpiOpen('My Goals & PIPs', items);
+    } catch(e){ alert(e.message); }
+  };
+  window.techToggleAction = async function(goalId, idx){
+    try { await techKpiApi('POST', `/api/tech/me/kpi/goals/${goalId}/action-items/${idx}/done`); }
+    catch(e){ alert(e.message); }
+  };
+</script>
+
 </body>
 </html>

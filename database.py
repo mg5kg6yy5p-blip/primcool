@@ -169,6 +169,11 @@ _PII_RAND = {
     "delegation_regrant_requests":  ["review_notes"],
     # Employee KPI Tracking Module — free-text on coaching/override/resolution.
     "kpi_flags":                    ["reason", "override_reason", "resolution_notes"],
+    # KPI Notes module (phase 5) — all free-text bodies encrypted.
+    "kpi_notes":                    ["body"],
+    # KPI Goals + PIPs (phase 6) — encrypted title/description/action items/outcome.
+    "kpi_goals":                    ["title", "description", "action_items_json", "outcome_summary"],
+    "kpi_goal_checkins":            ["notes"],
 }
 # Columns that need equality lookup → deterministic encryption + blind index.
 _PII_DET = {
@@ -1584,6 +1589,95 @@ def init_db():
                     "VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
                     (kpi_key, tier, green, amber, red, _today, _kpi_now),
                 )
+
+    # ── KPI Notes (Phase 5) ─────────────────────────────────────────────────
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS kpi_notes (
+            id INTEGER PRIMARY KEY,
+            note_kind TEXT NOT NULL CHECK(note_kind IN
+                ('coaching','tech_response','recognition','team_period','score_annotation')),
+            tech_id INTEGER,
+            period_key TEXT,
+            flag_id INTEGER,
+            score_id INTEGER,
+            author_id INTEGER NOT NULL,
+            author_kind TEXT NOT NULL CHECK(author_kind IN ('admin','tech')),
+            body TEXT NOT NULL,
+            visibility TEXT NOT NULL CHECK(visibility IN
+                ('admins_only','admins_and_subject_tech','admins_and_all_techs')),
+            status TEXT NOT NULL CHECK(status IN ('active','edited','archived')) DEFAULT 'active',
+            created_at TEXT NOT NULL,
+            updated_at TEXT,
+            locked_after TEXT,
+            prior_chain_hash TEXT,
+            chain_hash TEXT,
+            hub_id INTEGER NOT NULL DEFAULT 1
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_kpi_notes_tech ON kpi_notes(tech_id, note_kind, created_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_kpi_notes_flag ON kpi_notes(flag_id)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_kpi_notes_period ON kpi_notes(period_key, note_kind)")
+
+    # ── KPI Goals + PIPs (Phase 6) ──────────────────────────────────────────
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS kpi_goals (
+            id INTEGER PRIMARY KEY,
+            goal_kind TEXT NOT NULL CHECK(goal_kind IN ('development_goal','pip')),
+            tech_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL,
+            start_date TEXT NOT NULL,
+            target_date TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN
+                ('draft','active','in_progress','met','not_met','withdrawn')) DEFAULT 'draft',
+            action_items_json TEXT,
+            related_kpi_keys TEXT,
+            triggering_flag_id INTEGER,
+            opened_by_id INTEGER NOT NULL,
+            opened_at TEXT NOT NULL,
+            activated_at TEXT,
+            closed_at TEXT,
+            closed_by_id INTEGER,
+            outcome_summary TEXT,
+            pip_review_dates TEXT,
+            pip_severity TEXT,
+            hr_acknowledged_at TEXT,
+            prior_chain_hash TEXT,
+            chain_hash TEXT,
+            hub_id INTEGER NOT NULL DEFAULT 1
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_kpi_goals_tech ON kpi_goals(tech_id, goal_kind, status)")
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS kpi_goal_checkins (
+            id INTEGER PRIMARY KEY,
+            goal_id INTEGER NOT NULL,
+            checkin_date TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('on_track','at_risk','off_track','met')),
+            notes TEXT NOT NULL,
+            author_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            prior_chain_hash TEXT,
+            chain_hash TEXT
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_kpi_goal_checkins_goal ON kpi_goal_checkins(goal_id, checkin_date)")
+
+    # ── Custom KPI extensions (Phase 7) ─────────────────────────────────────
+    _kpi_def_cols = {row[1] for row in con.execute("PRAGMA table_info(kpi_definitions)")}
+    for col, sql in (
+        ("compute_kind",    "ALTER TABLE kpi_definitions ADD COLUMN compute_kind TEXT NOT NULL DEFAULT 'auto'"),
+        ("created_by_id",   "ALTER TABLE kpi_definitions ADD COLUMN created_by_id INTEGER"),
+        ("created_at_ext",  "ALTER TABLE kpi_definitions ADD COLUMN created_at_ext TEXT"),
+    ):
+        if col not in _kpi_def_cols:
+            try: con.execute(sql)
+            except sqlite3.OperationalError: pass
+    try:
+        con.execute("UPDATE kpi_definitions SET compute_kind='auto' "
+                    "WHERE compute_kind IS NULL OR compute_kind=''")
+    except sqlite3.OperationalError:
+        pass
 
     con.commit()
     con.close()
@@ -9545,6 +9639,29 @@ def recompute_kpi_scores(tech_id: int, period_key: str,
                 rows_affected += 1
             out[kpi_key] = {"raw_value": raw, "sample_size": sample, "band": band}
             components_for_composite[kpi_key] = {"raw_value": raw, "band": band}
+        # Phase 7: include any manual-entry KPIs that already have values for
+        # this (tech, period). recompute MUST NOT overwrite them.
+        try:
+            con_m = _con()
+            manual_rows = con_m.execute(
+                "SELECT s.kpi_key, s.raw_value, s.sample_size, s.band "
+                "FROM kpi_scores s JOIN kpi_definitions d ON d.kpi_key=s.kpi_key "
+                "WHERE s.tech_id=? AND s.period_key=? AND d.compute_kind='manual' "
+                "AND d.active=1",
+                (tech_id, period_key),
+            ).fetchall()
+            con_m.close()
+            for mr in manual_rows:
+                k = mr["kpi_key"]
+                if k not in components_for_composite:
+                    components_for_composite[k] = {
+                        "raw_value": mr["raw_value"], "band": mr["band"],
+                    }
+                    out[k] = {"raw_value": mr["raw_value"],
+                              "sample_size": mr["sample_size"],
+                              "band": mr["band"], "compute_kind": "manual"}
+        except Exception:
+            pass
         composite = record_composite_score(tech_id, period_key,
                                             components_for_composite, tier)
         out["composite"] = composite
@@ -9825,6 +9942,11 @@ def _generate_kpi_flags_for_tech(tech_id: int, period_key: str) -> list:
                                             "written_warning_recommended", reason)
                     new_flag_ids.append(fid)
                     audit_payloads.append((fid, "written_warning_recommended", kpi_key))
+                    # Phase 6 hook: auto-create a DRAFT PIP. Never auto-activates.
+                    try:
+                        suggest_pip_for_flag(fid)
+                    except Exception:
+                        pass
                 continue
 
             # 3) Current RED on a composite KPI → coaching_required
@@ -10140,3 +10262,849 @@ def get_kpi_flag_detail(flag_id: int) -> dict:
     con.close()
     d["audit"] = [dict(a) for a in audit_rows]
     return d
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# KPI Notes Module (Phase 5)
+# Five note kinds in one table, discriminated by note_kind.
+# Bodies encrypted via _PII_RAND. Chain-hash on tech_response notes only.
+# ════════════════════════════════════════════════════════════════════════════
+
+_KPI_NOTE_KINDS = (
+    "coaching", "tech_response", "recognition", "team_period", "score_annotation",
+)
+
+
+def _chain_hash_kpi_note(prior_hash: str, row: dict) -> str:
+    import hashlib, json as _j
+    keys = ("note_kind", "tech_id", "period_key", "flag_id", "score_id",
+            "author_id", "author_kind", "visibility", "created_at")
+    payload = {k: row.get(k) for k in keys}
+    body = (prior_hash or "") + _j.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _last_kpi_note_chain(con=None) -> str:
+    own = con is None
+    if own: con = _con()
+    r = con.execute("SELECT chain_hash FROM kpi_notes "
+                    "WHERE note_kind='tech_response' AND chain_hash IS NOT NULL "
+                    "ORDER BY id DESC LIMIT 1").fetchone()
+    if own: con.close()
+    return (r["chain_hash"] if r else "") or ""
+
+
+def _kpi_note_default_visibility(note_kind: str) -> str:
+    return {
+        "coaching":          "admins_and_subject_tech",
+        "tech_response":     "admins_and_subject_tech",
+        "recognition":       "admins_and_subject_tech",
+        "team_period":       "admins_and_all_techs",
+        "score_annotation":  "admins_and_subject_tech",
+    }.get(note_kind, "admins_only")
+
+
+def _kpi_note_default_lock_hours(note_kind: str):
+    return {
+        "coaching":          24,
+        "score_annotation":  24,
+    }.get(note_kind)
+
+
+def create_kpi_note(note_kind: str, tech_id, period_key, flag_id, score_id,
+                    author_id: int, author_kind: str, body: str,
+                    visibility: str = None, lock_hours=None,
+                    hub_id: int = 1) -> dict:
+    if note_kind not in _KPI_NOTE_KINDS:
+        raise ValueError("invalid_note_kind")
+    if author_kind not in ("admin", "tech"):
+        raise ValueError("invalid_author_kind")
+    body = (body or "").strip()
+    if not body:
+        raise ValueError("body_required")
+    if len(body) > 5000:
+        raise ValueError("body_too_long")
+    if note_kind in ("coaching", "recognition") and not tech_id:
+        raise ValueError("tech_id_required")
+    if note_kind == "tech_response":
+        if not flag_id: raise ValueError("flag_id_required")
+        if author_kind != "tech": raise ValueError("must_be_tech_author")
+    if note_kind == "team_period" and not period_key:
+        raise ValueError("period_key_required")
+    if note_kind == "score_annotation" and not score_id:
+        raise ValueError("score_id_required")
+
+    visibility = visibility or _kpi_note_default_visibility(note_kind)
+    if lock_hours is None:
+        lock_hours = _kpi_note_default_lock_hours(note_kind)
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
+    locked_after = None
+    if lock_hours:
+        locked_after = (now_dt + timedelta(hours=int(lock_hours))).isoformat()
+
+    chain_hash = None
+    prior = None
+    if note_kind == "tech_response":
+        con0 = _con()
+        prior = _last_kpi_note_chain(con0)
+        con0.close()
+        row_for_hash = {
+            "note_kind": note_kind, "tech_id": tech_id, "period_key": period_key,
+            "flag_id": flag_id, "score_id": score_id, "author_id": author_id,
+            "author_kind": author_kind, "visibility": visibility,
+            "created_at": now,
+        }
+        chain_hash = _chain_hash_kpi_note(prior, row_for_hash)
+
+    enc = _enc_dict("kpi_notes", {"body": body})
+    con = _con()
+    cur = con.execute(
+        "INSERT INTO kpi_notes (note_kind, tech_id, period_key, flag_id, score_id, "
+        "author_id, author_kind, body, visibility, status, created_at, "
+        "locked_after, prior_chain_hash, chain_hash, hub_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)",
+        (note_kind, tech_id, period_key, flag_id, score_id,
+         author_id, author_kind, enc["body"], visibility, now,
+         locked_after, prior, chain_hash, hub_id),
+    )
+    nid = cur.lastrowid
+    con.commit(); con.close()
+    return get_kpi_note(nid)
+
+
+def get_kpi_note(note_id: int) -> dict:
+    con = _con()
+    r = con.execute("SELECT * FROM kpi_notes WHERE id=?", (note_id,)).fetchone()
+    con.close()
+    if not r: return None
+    return _dec_row("kpi_notes", r)
+
+
+def update_kpi_note(note_id: int, author_id: int, body: str,
+                    mutability_check: bool = True) -> dict:
+    body = (body or "").strip()
+    if not body: raise ValueError("body_required")
+    if len(body) > 5000: raise ValueError("body_too_long")
+    con = _con()
+    r = con.execute("SELECT * FROM kpi_notes WHERE id=?", (note_id,)).fetchone()
+    if not r:
+        con.close()
+        raise ValueError("note_not_found")
+    if r["status"] == "archived":
+        con.close()
+        raise ValueError("note_archived")
+    if mutability_check:
+        if r["note_kind"] == "recognition":
+            con.close()
+            raise ValueError("recognition_immutable")
+        if r["locked_after"]:
+            try:
+                if datetime.now(timezone.utc) > datetime.fromisoformat(r["locked_after"]):
+                    con.close()
+                    raise ValueError("note_locked")
+            except ValueError:
+                raise
+            except Exception:
+                pass
+        if r["note_kind"] == "tech_response" and r["flag_id"]:
+            fr = con.execute("SELECT status FROM kpi_flags WHERE id=?",
+                             (r["flag_id"],)).fetchone()
+            if fr and fr["status"] in ("resolved", "overridden"):
+                con.close()
+                raise ValueError("parent_flag_closed")
+    now = datetime.now(timezone.utc).isoformat()
+    enc = _enc_dict("kpi_notes", {"body": body})
+    con.execute("UPDATE kpi_notes SET body=?, updated_at=?, status='edited' WHERE id=?",
+                (enc["body"], now, note_id))
+    con.commit(); con.close()
+    return get_kpi_note(note_id)
+
+
+def archive_kpi_note(note_id: int, archiver_id: int) -> dict:
+    con = _con()
+    r = con.execute("SELECT id FROM kpi_notes WHERE id=?", (note_id,)).fetchone()
+    if not r:
+        con.close()
+        raise ValueError("note_not_found")
+    con.execute("UPDATE kpi_notes SET status='archived' WHERE id=?", (note_id,))
+    con.commit(); con.close()
+    return get_kpi_note(note_id)
+
+
+def list_kpi_notes_for_tech(tech_id: int, note_kinds=None, period_key=None,
+                            limit: int = 50) -> list:
+    sql = "SELECT * FROM kpi_notes WHERE tech_id=? AND status!='archived'"
+    args = [tech_id]
+    if note_kinds:
+        ph = ",".join(["?"] * len(note_kinds))
+        sql += f" AND note_kind IN ({ph})"
+        args.extend(note_kinds)
+    if period_key:
+        sql += " AND period_key=?"; args.append(period_key)
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    args.append(int(limit))
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    return [_dec_row("kpi_notes", r) for r in rows]
+
+
+def list_kpi_notes_for_flag(flag_id: int) -> list:
+    con = _con()
+    rows = con.execute(
+        "SELECT * FROM kpi_notes WHERE flag_id=? AND status!='archived' "
+        "ORDER BY created_at ASC", (flag_id,),
+    ).fetchall()
+    con.close()
+    return [_dec_row("kpi_notes", r) for r in rows]
+
+
+def list_kpi_notes_for_score(score_id: int) -> list:
+    con = _con()
+    rows = con.execute(
+        "SELECT * FROM kpi_notes WHERE score_id=? AND status!='archived' "
+        "ORDER BY created_at ASC", (score_id,),
+    ).fetchall()
+    con.close()
+    return [_dec_row("kpi_notes", r) for r in rows]
+
+
+def list_kpi_notes_for_period(period_key: str, note_kinds=None) -> list:
+    if not note_kinds:
+        note_kinds = ["team_period"]
+    ph = ",".join(["?"] * len(note_kinds))
+    sql = (f"SELECT * FROM kpi_notes WHERE period_key=? AND status!='archived' "
+           f"AND note_kind IN ({ph}) ORDER BY created_at DESC")
+    con = _con()
+    rows = con.execute(sql, [period_key] + list(note_kinds)).fetchall()
+    con.close()
+    return [_dec_row("kpi_notes", r) for r in rows]
+
+
+def count_open_tech_responses(tech_id: int) -> int:
+    con = _con()
+    r = con.execute(
+        "SELECT COUNT(*) FROM kpi_notes WHERE tech_id=? "
+        "AND note_kind='tech_response' AND status!='archived'", (tech_id,),
+    ).fetchone()
+    con.close()
+    return int(r[0]) if r else 0
+
+
+def list_kpi_notes_filtered(tech_id=None, note_kind=None, period_key=None,
+                            flag_id=None, score_id=None,
+                            page: int = 1, limit: int = 50) -> list:
+    sql = "SELECT * FROM kpi_notes WHERE status!='archived'"
+    args = []
+    if tech_id:    sql += " AND tech_id=?";   args.append(tech_id)
+    if note_kind:  sql += " AND note_kind=?"; args.append(note_kind)
+    if period_key: sql += " AND period_key=?";args.append(period_key)
+    if flag_id:    sql += " AND flag_id=?";   args.append(flag_id)
+    if score_id:   sql += " AND score_id=?";  args.append(score_id)
+    sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+    args.extend([int(limit), int(max(0, (page - 1) * limit))])
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    return [_dec_row("kpi_notes", r) for r in rows]
+
+
+def _can_read_kpi_note(note: dict, viewer_id: int, viewer_kind: str,
+                       viewer_role: str = None) -> bool:
+    if not note: return False
+    nk = note.get("note_kind")
+    vis = note.get("visibility")
+    if viewer_kind == "admin":
+        if nk == "team_period":
+            return True
+        if nk == "coaching":
+            if viewer_role in ("super_admin", "supervisor_admin"):
+                return True
+            if note.get("author_kind") == "admin" and note.get("author_id") == viewer_id:
+                return True
+            return False
+        if nk == "tech_response":
+            return viewer_role in ("super_admin", "supervisor_admin")
+        if nk == "recognition":
+            return viewer_role in ("super_admin", "supervisor_admin",
+                                    "hr_admin", "system_admin")
+        if nk == "score_annotation":
+            return viewer_role in ("super_admin", "supervisor_admin",
+                                    "hr_admin", "system_admin")
+        return False
+    if viewer_kind == "tech":
+        if nk == "team_period":
+            try:
+                con = _con()
+                r = con.execute(
+                    "SELECT 1 FROM kpi_scores WHERE tech_id=? AND period_key=? LIMIT 1",
+                    (viewer_id, note.get("period_key")),
+                ).fetchone()
+                con.close()
+                return bool(r)
+            except Exception:
+                return False
+        if nk == "tech_response":
+            return note.get("author_id") == viewer_id and note.get("author_kind") == "tech"
+        if note.get("tech_id") == viewer_id and vis in (
+            "admins_and_subject_tech", "admins_and_all_techs",
+        ):
+            return True
+        return False
+    return False
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# KPI Goals + PIPs (Phase 6)
+# ════════════════════════════════════════════════════════════════════════════
+
+def _chain_hash_kpi_goal(prior_hash: str, row: dict) -> str:
+    import hashlib, json as _j
+    keys = ("goal_kind", "tech_id", "status", "start_date", "target_date",
+            "opened_by_id", "opened_at", "activated_at", "closed_at",
+            "pip_severity", "hr_acknowledged_at")
+    payload = {k: row.get(k) for k in keys}
+    body = (prior_hash or "") + _j.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _chain_hash_kpi_goal_checkin(prior_hash: str, row: dict) -> str:
+    import hashlib, json as _j
+    keys = ("goal_id", "checkin_date", "status", "author_id", "created_at")
+    payload = {k: row.get(k) for k in keys}
+    body = (prior_hash or "") + _j.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _last_kpi_goal_chain(con=None) -> str:
+    own = con is None
+    if own: con = _con()
+    r = con.execute("SELECT chain_hash FROM kpi_goals "
+                    "WHERE chain_hash IS NOT NULL ORDER BY id DESC LIMIT 1").fetchone()
+    if own: con.close()
+    return (r["chain_hash"] if r else "") or ""
+
+
+def _last_kpi_goal_checkin_chain(con=None) -> str:
+    own = con is None
+    if own: con = _con()
+    r = con.execute("SELECT chain_hash FROM kpi_goal_checkins "
+                    "WHERE chain_hash IS NOT NULL ORDER BY id DESC LIMIT 1").fetchone()
+    if own: con.close()
+    return (r["chain_hash"] if r else "") or ""
+
+
+def create_kpi_goal(goal_kind: str, tech_id: int, title: str, description: str,
+                    start_date: str, target_date: str, opened_by_id: int,
+                    related_kpi_keys: str = None, action_items=None,
+                    pip_severity=None, pip_review_dates=None,
+                    triggering_flag_id=None, hub_id: int = 1) -> dict:
+    import json as _j
+    if goal_kind not in ("development_goal", "pip"):
+        raise ValueError("invalid_goal_kind")
+    if not (title or "").strip(): raise ValueError("title_required")
+    if not (description or "").strip(): raise ValueError("description_required")
+    if not start_date or not target_date: raise ValueError("dates_required")
+    if goal_kind == "pip" and pip_severity not in ("standard", "final_warning"):
+        raise ValueError("pip_severity_required")
+
+    initial_status = "active" if goal_kind == "development_goal" else "draft"
+    now = datetime.now(timezone.utc).isoformat()
+    activated_at = now if initial_status == "active" else None
+
+    action_items_json = None
+    if action_items is not None:
+        normalized = []
+        for it in action_items:
+            if isinstance(it, str):
+                normalized.append({"text": it, "done": False, "completed_at": None})
+            elif isinstance(it, dict):
+                normalized.append({
+                    "text": str(it.get("text", "")),
+                    "done": bool(it.get("done", False)),
+                    "completed_at": it.get("completed_at"),
+                })
+        action_items_json = _j.dumps(normalized)
+
+    pip_review_dates_json = None
+    if pip_review_dates:
+        pip_review_dates_json = _j.dumps(list(pip_review_dates))
+
+    chain_hash = None; prior = None
+    if goal_kind == "pip":
+        prior = _last_kpi_goal_chain()
+        row_for_hash = {
+            "goal_kind": goal_kind, "tech_id": tech_id, "status": initial_status,
+            "start_date": start_date, "target_date": target_date,
+            "opened_by_id": opened_by_id, "opened_at": now,
+            "activated_at": activated_at, "closed_at": None,
+            "pip_severity": pip_severity, "hr_acknowledged_at": None,
+        }
+        chain_hash = _chain_hash_kpi_goal(prior, row_for_hash)
+
+    enc = _enc_dict("kpi_goals", {
+        "title": title.strip(),
+        "description": description.strip(),
+        "action_items_json": action_items_json,
+    })
+
+    con = _con()
+    cur = con.execute(
+        "INSERT INTO kpi_goals (goal_kind, tech_id, title, description, "
+        "start_date, target_date, status, action_items_json, related_kpi_keys, "
+        "triggering_flag_id, opened_by_id, opened_at, activated_at, "
+        "pip_review_dates, pip_severity, prior_chain_hash, chain_hash, hub_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (goal_kind, tech_id, enc["title"], enc["description"],
+         start_date, target_date, initial_status, enc.get("action_items_json"),
+         related_kpi_keys, triggering_flag_id, opened_by_id, now, activated_at,
+         pip_review_dates_json, pip_severity, prior, chain_hash, hub_id),
+    )
+    gid = cur.lastrowid
+    con.commit(); con.close()
+    return get_kpi_goal(gid)
+
+
+def get_kpi_goal(goal_id: int) -> dict:
+    import json as _j
+    con = _con()
+    r = con.execute("SELECT * FROM kpi_goals WHERE id=?", (goal_id,)).fetchone()
+    con.close()
+    if not r: return None
+    d = _dec_row("kpi_goals", r)
+    if d.get("action_items_json"):
+        try: d["action_items"] = _j.loads(d["action_items_json"])
+        except Exception: d["action_items"] = []
+    else:
+        d["action_items"] = []
+    if d.get("pip_review_dates"):
+        try: d["pip_review_dates_list"] = _j.loads(d["pip_review_dates"])
+        except Exception: d["pip_review_dates_list"] = []
+    return d
+
+
+def hr_acknowledge_pip(goal_id: int, hr_actor_id: int) -> dict:
+    con = _con()
+    r = con.execute("SELECT * FROM kpi_goals WHERE id=?", (goal_id,)).fetchone()
+    if not r:
+        con.close(); raise ValueError("goal_not_found")
+    if r["goal_kind"] != "pip":
+        con.close(); raise ValueError("not_a_pip")
+    if r["hr_acknowledged_at"]:
+        con.close(); raise ValueError("already_acknowledged")
+    now = datetime.now(timezone.utc).isoformat()
+    con.execute("UPDATE kpi_goals SET hr_acknowledged_at=? WHERE id=?",
+                (now, goal_id))
+    con.commit(); con.close()
+    return get_kpi_goal(goal_id)
+
+
+def activate_pip(goal_id: int, actor_id: int) -> dict:
+    con = _con()
+    r = con.execute("SELECT * FROM kpi_goals WHERE id=?", (goal_id,)).fetchone()
+    if not r:
+        con.close(); raise ValueError("goal_not_found")
+    if r["goal_kind"] != "pip":
+        con.close(); raise ValueError("not_a_pip")
+    if r["status"] != "draft":
+        con.close(); raise ValueError("not_draft")
+    if not r["hr_acknowledged_at"]:
+        con.close(); raise ValueError("hr_ack_required")
+    now = datetime.now(timezone.utc).isoformat()
+    prior = _last_kpi_goal_chain(con)
+    row_for_hash = {
+        "goal_kind": "pip", "tech_id": r["tech_id"], "status": "active",
+        "start_date": r["start_date"], "target_date": r["target_date"],
+        "opened_by_id": r["opened_by_id"], "opened_at": r["opened_at"],
+        "activated_at": now, "closed_at": None,
+        "pip_severity": r["pip_severity"],
+        "hr_acknowledged_at": r["hr_acknowledged_at"],
+    }
+    chash = _chain_hash_kpi_goal(prior, row_for_hash)
+    con.execute(
+        "UPDATE kpi_goals SET status='active', activated_at=?, "
+        "prior_chain_hash=?, chain_hash=? WHERE id=?",
+        (now, prior, chash, goal_id),
+    )
+    con.commit(); con.close()
+    return get_kpi_goal(goal_id)
+
+
+def add_goal_checkin(goal_id: int, checkin_date: str, status: str,
+                     notes: str, author_id: int) -> dict:
+    if status not in ("on_track", "at_risk", "off_track", "met"):
+        raise ValueError("invalid_status")
+    if not (notes or "").strip():
+        raise ValueError("notes_required")
+    if len(notes) > 5000:
+        raise ValueError("notes_too_long")
+    con = _con()
+    gr = con.execute("SELECT id, status FROM kpi_goals WHERE id=?",
+                     (goal_id,)).fetchone()
+    if not gr:
+        con.close(); raise ValueError("goal_not_found")
+    if gr["status"] in ("met", "not_met", "withdrawn"):
+        con.close(); raise ValueError("goal_closed")
+    now = datetime.now(timezone.utc).isoformat()
+    prior = _last_kpi_goal_checkin_chain(con)
+    row_for_hash = {"goal_id": goal_id, "checkin_date": checkin_date,
+                    "status": status, "author_id": author_id, "created_at": now}
+    chash = _chain_hash_kpi_goal_checkin(prior, row_for_hash)
+    enc = _enc_dict("kpi_goal_checkins", {"notes": notes.strip()})
+    cur = con.execute(
+        "INSERT INTO kpi_goal_checkins (goal_id, checkin_date, status, notes, "
+        "author_id, created_at, prior_chain_hash, chain_hash) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (goal_id, checkin_date, status, enc["notes"], author_id, now,
+         prior, chash),
+    )
+    cid = cur.lastrowid
+    if gr["status"] == "active":
+        con.execute("UPDATE kpi_goals SET status='in_progress' WHERE id=?",
+                    (goal_id,))
+    con.commit(); con.close()
+    return get_kpi_goal_checkin(cid)
+
+
+def get_kpi_goal_checkin(cid: int) -> dict:
+    con = _con()
+    r = con.execute("SELECT * FROM kpi_goal_checkins WHERE id=?", (cid,)).fetchone()
+    con.close()
+    return _dec_row("kpi_goal_checkins", r) if r else None
+
+
+def list_goal_checkins(goal_id: int) -> list:
+    con = _con()
+    rows = con.execute(
+        "SELECT * FROM kpi_goal_checkins WHERE goal_id=? "
+        "ORDER BY checkin_date DESC, id DESC", (goal_id,),
+    ).fetchall()
+    con.close()
+    return [_dec_row("kpi_goal_checkins", r) for r in rows]
+
+
+def close_goal(goal_id: int, outcome_status: str, outcome_summary: str,
+               closer_id: int) -> dict:
+    if outcome_status not in ("met", "not_met", "withdrawn"):
+        raise ValueError("invalid_outcome_status")
+    if not (outcome_summary or "").strip():
+        raise ValueError("outcome_summary_required")
+    con = _con()
+    r = con.execute("SELECT * FROM kpi_goals WHERE id=?", (goal_id,)).fetchone()
+    if not r:
+        con.close(); raise ValueError("goal_not_found")
+    if r["status"] in ("met", "not_met", "withdrawn"):
+        con.close(); raise ValueError("already_closed")
+    now = datetime.now(timezone.utc).isoformat()
+    chash = None; prior = None
+    if r["goal_kind"] == "pip":
+        prior = _last_kpi_goal_chain(con)
+        row_for_hash = {
+            "goal_kind": "pip", "tech_id": r["tech_id"], "status": outcome_status,
+            "start_date": r["start_date"], "target_date": r["target_date"],
+            "opened_by_id": r["opened_by_id"], "opened_at": r["opened_at"],
+            "activated_at": r["activated_at"], "closed_at": now,
+            "pip_severity": r["pip_severity"],
+            "hr_acknowledged_at": r["hr_acknowledged_at"],
+        }
+        chash = _chain_hash_kpi_goal(prior, row_for_hash)
+    enc = _enc_dict("kpi_goals", {"outcome_summary": outcome_summary.strip()})
+    if chash:
+        con.execute(
+            "UPDATE kpi_goals SET status=?, outcome_summary=?, closed_at=?, "
+            "closed_by_id=?, prior_chain_hash=?, chain_hash=? WHERE id=?",
+            (outcome_status, enc["outcome_summary"], now, closer_id,
+             prior, chash, goal_id),
+        )
+    else:
+        con.execute(
+            "UPDATE kpi_goals SET status=?, outcome_summary=?, closed_at=?, "
+            "closed_by_id=? WHERE id=?",
+            (outcome_status, enc["outcome_summary"], now, closer_id, goal_id),
+        )
+    con.commit(); con.close()
+    return get_kpi_goal(goal_id)
+
+
+def list_goals_for_tech(tech_id: int, statuses=None, goal_kind=None) -> list:
+    sql = "SELECT * FROM kpi_goals WHERE tech_id=?"
+    args = [tech_id]
+    if statuses:
+        ph = ",".join(["?"] * len(statuses))
+        sql += f" AND status IN ({ph})"
+        args.extend(statuses)
+    if goal_kind:
+        sql += " AND goal_kind=?"; args.append(goal_kind)
+    sql += " ORDER BY opened_at DESC"
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    import json as _j
+    out = []
+    for r in rows:
+        d = _dec_row("kpi_goals", r)
+        if d.get("action_items_json"):
+            try: d["action_items"] = _j.loads(d["action_items_json"])
+            except Exception: d["action_items"] = []
+        else:
+            d["action_items"] = []
+        out.append(d)
+    return out
+
+
+def list_active_pips(hub_id: int = None) -> list:
+    sql = ("SELECT g.*, t.name AS tech_name FROM kpi_goals g "
+           "LEFT JOIN technicians t ON t.id=g.tech_id "
+           "WHERE g.goal_kind='pip' AND g.status IN ('active','in_progress','draft')")
+    args = []
+    if hub_id is not None:
+        sql += " AND g.hub_id=?"; args.append(int(hub_id))
+    sql += " ORDER BY g.opened_at DESC"
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    out = []
+    for r in rows:
+        d = _dec_row("kpi_goals", r)
+        d["tech_name"] = r["tech_name"]
+        out.append(d)
+    return out
+
+
+def list_goals_filtered(tech_id=None, goal_kind=None, status=None,
+                        page: int = 1, limit: int = 50) -> list:
+    sql = ("SELECT g.*, t.name AS tech_name FROM kpi_goals g "
+           "LEFT JOIN technicians t ON t.id=g.tech_id WHERE 1=1")
+    args = []
+    if tech_id:    sql += " AND g.tech_id=?";   args.append(tech_id)
+    if goal_kind:  sql += " AND g.goal_kind=?"; args.append(goal_kind)
+    if status:     sql += " AND g.status=?";    args.append(status)
+    sql += " ORDER BY g.opened_at DESC LIMIT ? OFFSET ?"
+    args.extend([int(limit), int(max(0, (page - 1) * limit))])
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    out = []
+    for r in rows:
+        d = _dec_row("kpi_goals", r)
+        d["tech_name"] = r["tech_name"]
+        out.append(d)
+    return out
+
+
+def list_open_goals_due_check_in(within_days: int = 7) -> list:
+    cutoff = datetime.now(timezone.utc).date().isoformat()
+    con = _con()
+    rows = con.execute(
+        "SELECT * FROM kpi_goals WHERE status IN ('active','in_progress') "
+        "AND target_date <= date(?, '+' || ? || ' days') ORDER BY target_date ASC",
+        (cutoff, within_days),
+    ).fetchall()
+    con.close()
+    return [_dec_row("kpi_goals", r) for r in rows]
+
+
+def suggest_pip_for_flag(flag_id: int) -> int:
+    con = _con()
+    f = con.execute("SELECT * FROM kpi_flags WHERE id=?", (flag_id,)).fetchone()
+    if not f:
+        con.close(); return 0
+    if f["severity"] != "written_warning_recommended":
+        con.close(); return 0
+    existing = con.execute(
+        "SELECT id FROM kpi_goals WHERE triggering_flag_id=? AND status='draft'",
+        (flag_id,),
+    ).fetchone()
+    if existing:
+        con.close(); return 0
+    con.close()
+    today = datetime.now(timezone.utc).date()
+    target = (today + timedelta(days=90)).isoformat()
+    try:
+        goal = create_kpi_goal(
+            goal_kind="pip", tech_id=f["tech_id"],
+            title=f"Auto-suggested PIP for flag #{flag_id}",
+            description=(f"Auto-suggested PIP based on written-warning flag #{flag_id}. "
+                         "Manager and HR must review before activation."),
+            start_date=today.isoformat(), target_date=target,
+            opened_by_id=0,
+            related_kpi_keys=(f["kpi_key"] or ""),
+            pip_severity="standard",
+            pip_review_dates=[(today + timedelta(days=30)).isoformat(),
+                              (today + timedelta(days=60)).isoformat(),
+                              (today + timedelta(days=90)).isoformat()],
+            triggering_flag_id=flag_id,
+        )
+        try:
+            log_audit(
+                actor_type="system", actor_label="kpi-engine", actor_role="system",
+                action="kpi.pip.draft_suggested",
+                target_type="kpi_goal", target_id=goal.get("id"),
+                target_label=f"flag={flag_id}",
+            )
+        except Exception:
+            pass
+        return int(goal.get("id") or 0)
+    except Exception:
+        return 0
+
+
+def tech_set_action_item_done(goal_id: int, tech_id: int, idx: int,
+                              done: bool = True) -> dict:
+    import json as _j
+    con = _con()
+    r = con.execute("SELECT * FROM kpi_goals WHERE id=? AND tech_id=?",
+                    (goal_id, tech_id)).fetchone()
+    if not r:
+        con.close(); raise ValueError("goal_not_found")
+    if r["status"] in ("met", "not_met", "withdrawn"):
+        con.close(); raise ValueError("goal_closed")
+    aij = r["action_items_json"]
+    try:
+        aij_plain = _dec(aij) if aij else None
+    except Exception:
+        aij_plain = aij
+    items = []
+    if aij_plain:
+        try: items = _j.loads(aij_plain)
+        except Exception: items = []
+    if idx < 0 or idx >= len(items):
+        con.close(); raise ValueError("invalid_idx")
+    items[idx]["done"] = bool(done)
+    items[idx]["completed_at"] = (datetime.now(timezone.utc).isoformat()
+                                  if done else None)
+    new_json = _j.dumps(items)
+    enc = _enc_dict("kpi_goals", {"action_items_json": new_json})
+    con.execute("UPDATE kpi_goals SET action_items_json=? WHERE id=?",
+                (enc["action_items_json"], goal_id))
+    con.commit(); con.close()
+    return get_kpi_goal(goal_id)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Custom KPI definitions + manual values (Phase 7)
+# ════════════════════════════════════════════════════════════════════════════
+
+import re as _re_kpi
+
+_KPI_KEY_RE = _re_kpi.compile(r"^[a-z][a-z0-9_]{2,40}$")
+
+
+def create_custom_kpi(kpi_key: str, display_name: str, description: str,
+                      direction: str, in_composite: int,
+                      composite_weight_pct: float, safety_critical: int,
+                      thresholds: list, creator_id: int) -> dict:
+    if not _KPI_KEY_RE.match(kpi_key or ""):
+        raise ValueError("invalid_kpi_key")
+    if direction not in ("higher_better", "lower_better"):
+        raise ValueError("invalid_direction")
+    con = _con()
+    existing = con.execute(
+        "SELECT id FROM kpi_definitions WHERE kpi_key=?", (kpi_key,),
+    ).fetchone()
+    if existing:
+        con.close(); raise ValueError("kpi_key_exists")
+    now = datetime.now(timezone.utc).isoformat()
+    today = datetime.now(timezone.utc).date().isoformat()
+    rebalance_after = None
+    if in_composite:
+        cur_rows = con.execute(
+            "SELECT kpi_key, composite_weight_pct FROM kpi_definitions "
+            "WHERE active=1 AND in_composite=1"
+        ).fetchall()
+        cur_total = sum(float(r["composite_weight_pct"] or 0) for r in cur_rows)
+        new_weight = float(composite_weight_pct or 0)
+        target_existing = max(0.0, 100.0 - new_weight)
+        if cur_total > 0:
+            scale = target_existing / cur_total
+            for r in cur_rows:
+                new_val = round(float(r["composite_weight_pct"] or 0) * scale, 4)
+                con.execute(
+                    "UPDATE kpi_definitions SET composite_weight_pct=?, "
+                    "updated_at=? WHERE kpi_key=?",
+                    (new_val, now, r["kpi_key"]),
+                )
+            rebalance_after = {r["kpi_key"]: round(
+                float(r["composite_weight_pct"] or 0) * scale, 4
+            ) for r in cur_rows}
+    con.execute(
+        "INSERT INTO kpi_definitions (kpi_key, display_name, description, "
+        "direction, in_composite, composite_weight_pct, safety_critical, "
+        "active, created_at, updated_at, compute_kind, created_by_id, created_at_ext) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'manual', ?, ?)",
+        (kpi_key, display_name, description or "", direction,
+         int(bool(in_composite)), float(composite_weight_pct or 0),
+         int(bool(safety_critical)), now, now, creator_id, now),
+    )
+    tiers = ("level_1", "level_2", "level_3", "ops_manager")
+    by_tier = {}
+    for t in (thresholds or []):
+        if t.get("tier") in tiers:
+            by_tier[t["tier"]] = t
+    for tier in tiers:
+        t = by_tier.get(tier) or by_tier.get("level_3") or {
+            "green": 0, "amber_band": 0, "red_floor": 0,
+        }
+        con.execute(
+            "INSERT OR IGNORE INTO kpi_thresholds (kpi_key, tier, green_threshold, "
+            "amber_band, red_floor, effective_from, active, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
+            (kpi_key, tier, float(t.get("green") or 0),
+             float(t.get("amber_band") or 0), float(t.get("red_floor") or 0),
+             today, now),
+        )
+    con.commit(); con.close()
+    return {"kpi_key": kpi_key, "rebalanced": rebalance_after}
+
+
+def archive_custom_kpi(kpi_key: str) -> bool:
+    con = _con()
+    r = con.execute("SELECT compute_kind FROM kpi_definitions WHERE kpi_key=?",
+                    (kpi_key,)).fetchone()
+    if not r:
+        con.close(); raise ValueError("kpi_not_found")
+    if r["compute_kind"] != "manual":
+        con.close(); raise ValueError("not_a_custom_kpi")
+    con.execute("UPDATE kpi_definitions SET active=0, updated_at=? WHERE kpi_key=?",
+                (datetime.now(timezone.utc).isoformat(), kpi_key))
+    con.commit(); con.close()
+    return True
+
+
+def set_manual_kpi_value(tech_id: int, period_key: str, kpi_key: str,
+                         raw_value: float, sample_size: int,
+                         author_id: int) -> dict:
+    con = _con()
+    d = con.execute(
+        "SELECT compute_kind FROM kpi_definitions WHERE kpi_key=? AND active=1",
+        (kpi_key,),
+    ).fetchone()
+    con.close()
+    if not d:
+        raise ValueError("kpi_not_found")
+    if d["compute_kind"] != "manual":
+        raise ValueError("kpi_not_manual")
+    ensure_period_exists(period_key)
+    tier = _kpi_tier_for_tech(tech_id)
+    band = score_to_band(kpi_key, tier, raw_value, sample_size)
+    rid = record_kpi_score(tech_id, period_key, kpi_key,
+                            raw_value, sample_size, band, tier)
+    return {"score_id": rid, "band": band, "raw_value": raw_value,
+            "sample_size": sample_size, "tier": tier}
+
+
+def list_manual_kpi_history(kpi_key: str, period_key: str = None,
+                            limit: int = 100) -> list:
+    sql = ("SELECT s.*, t.name AS tech_name FROM kpi_scores s "
+           "LEFT JOIN technicians t ON t.id=s.tech_id "
+           "WHERE s.kpi_key=?")
+    args = [kpi_key]
+    if period_key:
+        sql += " AND s.period_key=?"; args.append(period_key)
+    sql += " ORDER BY s.computed_at DESC LIMIT ?"
+    args.append(int(limit))
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
