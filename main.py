@@ -76,6 +76,8 @@ from database import (
     purge_old_access_log, purge_old_audit_log,
     get_entity_history, watcher_should_log, query_audit_log_team,
     set_admin_supervisor, set_tech_supervisor, subordinate_ids_for,
+    list_hubs, get_hub_by_id, create_hub,
+    get_ar_aging, get_cm_margin,
     set_customer_password, verify_customer_password, set_customer_mfa,
     set_customer_type, mark_customer_deletion_requested,
     get_customer_full_export, get_customer_visits_portal,
@@ -419,6 +421,12 @@ JAMAICA_TAX_REFERENCE = {
                   "Verify current rates with Tax Administration Jamaica (TAJ) before use.",
     "source":     "https://www.jamaicatax.gov.jm",
 }
+
+# Push the payroll rates into the database module so compute_payslip_amounts()
+# reads from this dict as its single source of truth. When TAJ changes rates,
+# edit JAMAICA_TAX_REFERENCE above and restart — no other surgery needed.
+from database import set_payroll_rates as _set_payroll_rates
+_set_payroll_rates(JAMAICA_TAX_REFERENCE.get("payroll", {}))
 
 TIER_LABELS = {
     "residential": "Residential — Home & Property",
@@ -3565,6 +3573,15 @@ def admin_tax_reference(request: Request):
     return JAMAICA_TAX_REFERENCE
 
 
+@app.get("/api/admin/hubs")
+def admin_list_hubs(request: Request):
+    """Multi-hub picker source. Seeded with Kingston (id=1). Future hubs
+    added via create_hub() — UI for hub admin will land when the second
+    physical hub opens."""
+    _require_admin(request)
+    return list_hubs()
+
+
 @app.get("/api/admin/visits/{visit_id}/invoice-prefill")
 def admin_invoice_prefill(request: Request, visit_id: int):
     _require_perm(request, "invoice:create")
@@ -3578,6 +3595,29 @@ def admin_invoice_prefill(request: Request, visit_id: int):
 def admin_visit_parts(request: Request, visit_id: int):
     _require_perm(request, "visit:update")
     return get_visit_parts(visit_id)
+
+
+@app.get("/api/admin/visits/cm-margin")
+def admin_cm_margin(request: Request, start_date: Optional[str] = None,
+                     end_date: Optional[str] = None):
+    """Per-CM-visit gross margin + aggregate rollup. Revenue is invoice
+    subtotal (net of GCT). Parts cost = quantity × parts.unit_cost.
+    Labor cost = duration × tech.hourly_rate. Tier-0 doctrine organ:
+    CM gross margin is the signal the doctrine assumes is 25–35%.
+
+    Permission: visit:view (Director, Manager, System Admin)."""
+    _require_perm(request, "visit:view")
+    return get_cm_margin(start_date=start_date, end_date=end_date)
+
+
+@app.get("/api/admin/invoices/aging")
+def admin_invoice_aging(request: Request, as_of: Optional[str] = None):
+    """Standard AR aging buckets: 0-30 / 31-60 / 61-90 / 90+ + not-yet-due.
+    Computed from invoices with (total - amount_paid) > 0, excluding draft
+    and cancelled. Tier-0 cash-discipline organ — answers 'what's owed and
+    how old' in one query."""
+    _require_perm(request, "invoice:view")
+    return get_ar_aging(as_of=as_of)
 
 
 @app.get("/api/admin/invoices")

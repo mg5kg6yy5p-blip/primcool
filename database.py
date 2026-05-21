@@ -250,10 +250,33 @@ def init_db():
         # Phase 3 — per-account lockout tracking for PIN auth.
         ("pin_failed_count", "ALTER TABLE customers ADD COLUMN pin_failed_count INTEGER NOT NULL DEFAULT 0"),
         ("pin_locked_until", "ALTER TABLE customers ADD COLUMN pin_locked_until TEXT"),
+        # Multi-hub readiness (Tier-1 from the strategy reframe).
+        # All current rows default to hub_id=1 (Kingston). Adding the column
+        # now is ~free; retrofitting it at multi-hub launch would touch
+        # every aggregate query and report. We're buying the option.
+        ("hub_id",         "ALTER TABLE customers ADD COLUMN hub_id INTEGER NOT NULL DEFAULT 1"),
     ):
         if col not in cust_cols:
             try: con.execute(sql)
             except sqlite3.OperationalError: pass
+
+    # Hubs table — single source of truth for branch/region. Seeded with one
+    # row (Kingston) so existing FKs from hub_id=1 are valid from boot.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS hubs (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT NOT NULL UNIQUE,
+            code        TEXT NOT NULL UNIQUE,
+            address     TEXT,
+            active      INTEGER NOT NULL DEFAULT 1,
+            created_at  TEXT NOT NULL
+        )
+    """)
+    con.execute(
+        "INSERT OR IGNORE INTO hubs (id, name, code, address, active, created_at) "
+        "VALUES (1, 'Kingston', 'KIN', 'Kingston, Jamaica', 1, ?)",
+        (datetime.now(timezone.utc).isoformat(),),
+    )
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS customer_pin_resets (
@@ -322,6 +345,8 @@ def init_db():
         ("terminated_at", "ALTER TABLE technicians ADD COLUMN terminated_at TEXT"),
         ("last_login_at", "ALTER TABLE technicians ADD COLUMN last_login_at TEXT"),
         ("email_hash",    "ALTER TABLE technicians ADD COLUMN email_hash TEXT"),
+        # Multi-hub: every tech belongs to a primary hub.
+        ("hub_id",        "ALTER TABLE technicians ADD COLUMN hub_id INTEGER NOT NULL DEFAULT 1"),
     ):
         if name not in tech_cols:
             try: con.execute(sql)
@@ -680,6 +705,8 @@ def init_db():
         # Client-facing summary of the work, distinct from the raw work_done
         # field which can contain internal jargon. Spec: portal serves summary.
         ("work_done_summary",      "ALTER TABLE maintenance_visits ADD COLUMN work_done_summary TEXT"),
+        # Multi-hub: each visit belongs to a hub for dispatch + reporting scope.
+        ("hub_id",                 "ALTER TABLE maintenance_visits ADD COLUMN hub_id INTEGER NOT NULL DEFAULT 1"),
     ):
         if col_sql[0] not in existing_cols:
             try: con.execute(col_sql[1])
@@ -690,6 +717,9 @@ def init_db():
     for c, sql in (
         ("image_filename", "ALTER TABLE parts ADD COLUMN image_filename TEXT"),
         ("location",       "ALTER TABLE parts ADD COLUMN location TEXT"),
+        # Multi-hub: inventory is per-hub. Parts in Montego Bay's stockroom
+        # are not Kingston's. Default 1 = Kingston for legacy rows.
+        ("hub_id",         "ALTER TABLE parts ADD COLUMN hub_id INTEGER NOT NULL DEFAULT 1"),
     ):
         if c not in part_cols:
             try: con.execute(sql)
@@ -753,6 +783,11 @@ def init_db():
         )
     """)
     con.execute("CREATE INDEX IF NOT EXISTS idx_payperiods_status ON pay_periods(status, period_end)")
+    # Multi-hub: payroll runs per hub. Existing rows default to 1 (Kingston).
+    pp_cols = {row[1] for row in con.execute("PRAGMA table_info(pay_periods)")}
+    if "hub_id" not in pp_cols:
+        try: con.execute("ALTER TABLE pay_periods ADD COLUMN hub_id INTEGER NOT NULL DEFAULT 1")
+        except sqlite3.OperationalError: pass
     con.execute("""
         CREATE TABLE IF NOT EXISTS payslips (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4653,17 +4688,49 @@ def get_pay_period(period_id: int):
     return dict(row) if row else None
 
 
+# Payroll rates — single source of truth lives in main.JAMAICA_TAX_REFERENCE
+# and is pushed here at startup via set_payroll_rates(). The defaults below
+# match the Tax Administration Jamaica rates published at the time of writing
+# and are used if main never overrides (e.g. unit tests importing database
+# directly). When TAJ changes rates, update main.JAMAICA_TAX_REFERENCE; no
+# other file needs to change.
+PAYROLL_RATES = {
+    "paye_threshold":      1_700_000.0,   # tax-free annual income
+    "paye_band1_rate":     0.25,          # threshold → band2_min
+    "paye_band2_min":      6_000_000.0,
+    "paye_band2_rate":     0.30,          # above band2_min
+    "nis_employee_rate":   0.03,
+    "nht_employee_rate":   0.02,
+    "education_tax_rate":  0.0225,
+}
+
+
+def set_payroll_rates(payroll_section: dict):
+    """Called once from main.py at module init to push the canonical
+    JAMAICA_TAX_REFERENCE['payroll'] values into PAYROLL_RATES so
+    compute_payslip_amounts() pulls from the same dict the API exposes."""
+    if not payroll_section:
+        return
+    paye = payroll_section.get("paye", {})
+    PAYROLL_RATES["paye_threshold"]     = float(paye.get("annual_threshold",  PAYROLL_RATES["paye_threshold"]))
+    PAYROLL_RATES["paye_band1_rate"]    = float(paye.get("band1_rate",        PAYROLL_RATES["paye_band1_rate"]))
+    PAYROLL_RATES["paye_band2_min"]     = float(paye.get("band2_min_annual",  PAYROLL_RATES["paye_band2_min"]))
+    PAYROLL_RATES["paye_band2_rate"]    = float(paye.get("band2_rate",        PAYROLL_RATES["paye_band2_rate"]))
+    PAYROLL_RATES["nis_employee_rate"]  = float(payroll_section.get("nis", {}).get("employee_rate",          PAYROLL_RATES["nis_employee_rate"]))
+    PAYROLL_RATES["nht_employee_rate"]  = float(payroll_section.get("nht", {}).get("employee_rate",          PAYROLL_RATES["nht_employee_rate"]))
+    PAYROLL_RATES["education_tax_rate"] = float(payroll_section.get("education_tax", {}).get("employee_rate", PAYROLL_RATES["education_tax_rate"]))
+
+
 def _calc_paye(annual_gross: float) -> float:
-    """Simplified Jamaica PAYE per the constants in main.JAMAICA_TAX_REFERENCE.
-    Threshold ~1.7M tax-free; 25% to 6M; 30% above. Returns ANNUAL PAYE."""
-    THRESHOLD = 1_700_000.0
-    BAND2_MIN = 6_000_000.0
-    if annual_gross <= THRESHOLD:
+    """Jamaica PAYE bands. Reads from PAYROLL_RATES so a TAJ rate change is
+    one dict edit in main.JAMAICA_TAX_REFERENCE — no surgery here."""
+    r = PAYROLL_RATES
+    if annual_gross <= r["paye_threshold"]:
         return 0.0
-    taxed_at_25 = min(annual_gross, BAND2_MIN) - THRESHOLD
-    paye = taxed_at_25 * 0.25
-    if annual_gross > BAND2_MIN:
-        paye += (annual_gross - BAND2_MIN) * 0.30
+    taxed_band1 = min(annual_gross, r["paye_band2_min"]) - r["paye_threshold"]
+    paye = taxed_band1 * r["paye_band1_rate"]
+    if annual_gross > r["paye_band2_min"]:
+        paye += (annual_gross - r["paye_band2_min"]) * r["paye_band2_rate"]
     return paye
 
 
@@ -4674,6 +4741,7 @@ def compute_payslip_amounts(hours_regular: float, hours_overtime: float,
                               pay_periods_per_year: int = 26) -> dict:
     """All numbers in JMD. Deductions are EMPLOYEE-side only (employer side
     goes on the company expense report, not the payslip)."""
+    r = PAYROLL_RATES
     gross = (hours_regular * hourly_rate
              + hours_overtime * overtime_rate
              + fixed_salary
@@ -4681,9 +4749,9 @@ def compute_payslip_amounts(hours_regular: float, hours_overtime: float,
     annualised = gross * pay_periods_per_year
     paye_annual = _calc_paye(annualised)
     paye_period = paye_annual / pay_periods_per_year if pay_periods_per_year else 0
-    nis           = gross * 0.03
-    nht           = gross * 0.02
-    education_tax = gross * 0.0225
+    nis           = gross * r["nis_employee_rate"]
+    nht           = gross * r["nht_employee_rate"]
+    education_tax = gross * r["education_tax_rate"]
     total_ded     = round(paye_period + nis + nht + education_tax + (other_deductions or 0), 2)
     net           = round(gross - total_ded, 2)
     return {
@@ -4856,3 +4924,243 @@ def mark_pay_period_paid(period_id: int):
     )
     con.commit()
     con.close()
+
+
+# ── Hubs (multi-hub readiness, seeded with Kingston in init_db) ──────────────
+def list_hubs(include_inactive: bool = False):
+    con = _con()
+    sql = "SELECT * FROM hubs"
+    if not include_inactive:
+        sql += " WHERE active = 1"
+    sql += " ORDER BY id ASC"
+    rows = con.execute(sql).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def get_hub_by_id(hub_id: int):
+    con = _con()
+    row = con.execute("SELECT * FROM hubs WHERE id = ?", (int(hub_id),)).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
+def create_hub(name: str, code: str, address: str = "") -> int:
+    con = _con()
+    cur = con.execute(
+        "INSERT INTO hubs (name, code, address, active, created_at) VALUES (?, ?, ?, 1, ?)",
+        (name.strip(), code.strip().upper(), address or "",
+         datetime.now(timezone.utc).isoformat()),
+    )
+    hid = cur.lastrowid
+    con.commit()
+    con.close()
+    return hid
+
+
+# ── AR Aging (Tier-0 doctrine organ: cash discipline) ────────────────────────
+def get_ar_aging(as_of: str = None) -> dict:
+    """Returns aging buckets for every invoice with outstanding balance.
+    Buckets follow standard AR convention (relative to due_date):
+      not_yet_due  → due_date >  as_of
+      bucket_0_30  → 0 ≤ days_overdue ≤ 30
+      bucket_31_60 → 31 ≤ days_overdue ≤ 60
+      bucket_61_90 → 61 ≤ days_overdue ≤ 90
+      bucket_90+   → days_overdue > 90
+
+    'Outstanding' = (total - amount_paid) > 0.01 AND status != 'draft' AND
+    status != 'cancelled'. Drafts and cancelled don't carry receivable.
+    """
+    from datetime import date as _d, datetime as _dt, timedelta as _td
+    if as_of is None:
+        as_of = _dt.now(timezone.utc).date().isoformat()
+    con = _con()
+    rows = con.execute(
+        """SELECT i.id, i.invoice_number, i.customer_id, c.name AS customer_name,
+                  c.customer_code, i.issue_date, i.due_date, i.total,
+                  i.amount_paid, i.status, i.currency
+             FROM invoices i
+             JOIN customers c ON i.customer_id = c.id
+            WHERE i.status NOT IN ('draft', 'cancelled')
+              AND (i.total - i.amount_paid) > 0.01
+            ORDER BY i.due_date ASC"""
+    ).fetchall()
+    con.close()
+
+    buckets = {
+        "not_yet_due":   {"label": "Not yet due", "count": 0, "total_outstanding": 0.0, "invoices": []},
+        "bucket_0_30":   {"label": "0–30 days",   "count": 0, "total_outstanding": 0.0, "invoices": []},
+        "bucket_31_60":  {"label": "31–60 days",  "count": 0, "total_outstanding": 0.0, "invoices": []},
+        "bucket_61_90":  {"label": "61–90 days",  "count": 0, "total_outstanding": 0.0, "invoices": []},
+        "bucket_90plus": {"label": "90+ days",    "count": 0, "total_outstanding": 0.0, "invoices": []},
+    }
+    grand_total = 0.0
+    customer_rollup = {}    # customer_id → totals
+    for r in rows:
+        d = dict(r)
+        outstanding = round(float(d["total"]) - float(d["amount_paid"]), 2)
+        if outstanding <= 0:
+            continue
+        try:
+            due = _d.fromisoformat(d["due_date"])
+            today = _d.fromisoformat(as_of)
+            days_overdue = (today - due).days
+        except Exception:
+            days_overdue = 0
+        if days_overdue < 0:
+            bucket = "not_yet_due"
+        elif days_overdue <= 30:
+            bucket = "bucket_0_30"
+        elif days_overdue <= 60:
+            bucket = "bucket_31_60"
+        elif days_overdue <= 90:
+            bucket = "bucket_61_90"
+        else:
+            bucket = "bucket_90plus"
+        d["outstanding"]  = outstanding
+        d["days_overdue"] = days_overdue
+        d["bucket"]       = bucket
+        buckets[bucket]["count"] += 1
+        buckets[bucket]["total_outstanding"] = round(buckets[bucket]["total_outstanding"] + outstanding, 2)
+        buckets[bucket]["invoices"].append(d)
+        grand_total += outstanding
+        cid = d["customer_id"]
+        if cid not in customer_rollup:
+            customer_rollup[cid] = {
+                "customer_id":         cid,
+                "customer_code":       d["customer_code"],
+                "customer_name":       d["customer_name"],
+                "invoice_count":       0,
+                "total_outstanding":   0.0,
+                "oldest_days_overdue": 0,
+            }
+        cr = customer_rollup[cid]
+        cr["invoice_count"]       += 1
+        cr["total_outstanding"]    = round(cr["total_outstanding"] + outstanding, 2)
+        cr["oldest_days_overdue"]  = max(cr["oldest_days_overdue"], days_overdue)
+    by_customer = sorted(customer_rollup.values(),
+                          key=lambda c: c["total_outstanding"], reverse=True)
+    return {
+        "as_of":             as_of,
+        "grand_total":       round(grand_total, 2),
+        "buckets":           buckets,
+        "by_customer":       by_customer,
+    }
+
+
+# ── CM margin rollup (Tier-0 doctrine organ: gross margin signal) ───────────
+def get_cm_margin(start_date: str = None, end_date: str = None) -> dict:
+    """Per-visit CM margin AND aggregate rollup for the date window.
+
+      visit_revenue  = invoice.subtotal (NET of GCT; GCT is liability, not rev)
+      parts_cost     = SUM(visit_parts.quantity * parts.unit_cost)
+      labor_cost     = (end_time - start_time) hours × technicians.hourly_rate
+      margin         = visit_revenue - parts_cost - labor_cost
+      margin_pct     = margin / visit_revenue × 100  (None if revenue == 0)
+
+    Only includes CM visits with status='completed'. PM visits roll under the
+    PM contract module (Tier-0 still to build). Visits without an invoice
+    contribute parts/labor cost but zero revenue → margin negative for that
+    row; surfaces unbilled completed work which is itself a useful signal.
+    """
+    if not start_date:
+        from datetime import date as _d, timedelta as _td
+        start_date = (_d.today() - _td(days=90)).isoformat()
+    if not end_date:
+        from datetime import date as _d
+        end_date = _d.today().isoformat()
+
+    con = _con()
+    visits = con.execute(
+        """SELECT v.id AS visit_id, v.customer_id, v.visit_type, v.status,
+                  v.scheduled_date, v.completed_date,
+                  v.start_time, v.end_time, v.assigned_tech_id,
+                  c.name AS customer_name, c.customer_code,
+                  t.name AS tech_name, t.hourly_rate
+             FROM maintenance_visits v
+             JOIN customers c   ON v.customer_id = c.id
+        LEFT JOIN technicians t ON v.assigned_tech_id = t.id
+            WHERE UPPER(v.visit_type) = 'CM'
+              AND v.status = 'completed'
+              AND COALESCE(v.completed_date, v.scheduled_date) BETWEEN ? AND ?
+            ORDER BY COALESCE(v.completed_date, v.scheduled_date) DESC""",
+        (start_date, end_date),
+    ).fetchall()
+
+    out_rows = []
+    agg = {"revenue": 0.0, "parts_cost": 0.0, "labor_cost": 0.0,
+           "margin": 0.0, "visit_count": 0, "unbilled_count": 0}
+
+    for v in visits:
+        vid = v["visit_id"]
+        # Parts cost — sum of visit_parts × parts.unit_cost.
+        parts_cost = con.execute(
+            """SELECT COALESCE(SUM(vp.quantity * p.unit_cost), 0) AS pc
+                 FROM visit_parts vp JOIN parts p ON vp.part_id = p.id
+                WHERE vp.visit_id = ?""", (vid,)
+        ).fetchone()["pc"] or 0.0
+
+        # Labor cost — duration × tech hourly rate (only if both timestamps).
+        labor_cost = 0.0
+        if v["start_time"] and v["end_time"] and v["hourly_rate"]:
+            try:
+                from datetime import datetime as _dt
+                s = _dt.fromisoformat(v["start_time"].replace("Z","+00:00"))
+                e = _dt.fromisoformat(v["end_time"].replace("Z","+00:00"))
+                hours = max(0.0, (e - s).total_seconds() / 3600.0)
+                labor_cost = round(hours * float(v["hourly_rate"]), 2)
+            except Exception:
+                labor_cost = 0.0
+
+        # Revenue — invoice.subtotal (NET of GCT).
+        inv = con.execute(
+            """SELECT id AS invoice_id, invoice_number, subtotal, total,
+                      amount_paid, status
+                 FROM invoices
+                WHERE visit_id = ? AND status != 'cancelled'
+                ORDER BY id DESC LIMIT 1""", (vid,)
+        ).fetchone()
+        revenue = float(inv["subtotal"]) if inv else 0.0
+
+        margin = round(revenue - float(parts_cost) - labor_cost, 2)
+        margin_pct = round(margin / revenue * 100.0, 1) if revenue > 0 else None
+
+        out_rows.append({
+            "visit_id":        vid,
+            "customer_id":     v["customer_id"],
+            "customer_code":   v["customer_code"],
+            "customer_name":   v["customer_name"],
+            "tech_name":       v["tech_name"],
+            "scheduled_date":  v["scheduled_date"],
+            "completed_date":  v["completed_date"],
+            "revenue":         round(revenue, 2),
+            "parts_cost":      round(float(parts_cost), 2),
+            "labor_cost":      labor_cost,
+            "margin":          margin,
+            "margin_pct":      margin_pct,
+            "invoice_id":      inv["invoice_id"]      if inv else None,
+            "invoice_number":  inv["invoice_number"]  if inv else None,
+            "invoice_status":  inv["status"]          if inv else None,
+            "billed":          bool(inv),
+        })
+        agg["revenue"]      += revenue
+        agg["parts_cost"]   += float(parts_cost)
+        agg["labor_cost"]   += labor_cost
+        agg["margin"]       += margin
+        agg["visit_count"]  += 1
+        if not inv:
+            agg["unbilled_count"] += 1
+
+    con.close()
+
+    agg["revenue"]    = round(agg["revenue"],    2)
+    agg["parts_cost"] = round(agg["parts_cost"], 2)
+    agg["labor_cost"] = round(agg["labor_cost"], 2)
+    agg["margin"]     = round(agg["margin"],     2)
+    agg["margin_pct"] = round(agg["margin"] / agg["revenue"] * 100.0, 1) if agg["revenue"] > 0 else None
+    return {
+        "start_date": start_date,
+        "end_date":   end_date,
+        "aggregate":  agg,
+        "visits":     out_rows,
+    }
