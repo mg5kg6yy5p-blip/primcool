@@ -3962,7 +3962,7 @@ def admin_create_invoice(request: Request, body: InvoiceCreate):
 
 @app.put("/api/admin/invoices/{invoice_id}")
 def admin_update_invoice(request: Request, invoice_id: int, body: InvoiceUpdate):
-    admin = _require_perm(request, "invoice:update")
+    admin = _require_record_access(request, "invoice", invoice_id, write=True)
     before = get_invoice_by_id(invoice_id, with_lines=False)
     if not before:
         raise HTTPException(404, "Invoice not found")
@@ -4061,8 +4061,8 @@ def _redact_pii_for_audit_safe(payload):
 @app.get("/api/admin/invoices/{invoice_id}/full")
 def admin_invoice_full(request: Request, invoice_id: int):
     """Full invoice payload for the Edit View: header + lines + payments +
-    customer + visit ref + active fx rate."""
-    _require_super_admin(request)
+    customer + visit ref + active fx rate. Honours delegation."""
+    _require_record_access(request, "invoice", invoice_id, write=False)
     inv = get_invoice_full(invoice_id)
     if not inv:
         raise HTTPException(404, "Invoice not found")
@@ -4928,6 +4928,55 @@ def _require_super_admin(request: Request):
     return admin
 
 
+# ── Delegation-aware record access guard ───────────────────────────────────
+# Path A: super_admin OR role-perm holder → ALLOW (audit access.role_allow).
+# Path B: active delegation matching this record (record / record_type /
+# power) with permission_level ≥ required → ALLOW (audit delegation.accessed
+# when DELEGATION_VERBOSE_AUDIT != "0").
+# Otherwise 403. Audit-write failures NEVER raise — they log to stderr.
+# FIXME: Only the four detail/edit endpoint pairs (customers, visits,
+# invoices, technicians) have been retrofitted to honor delegation. Other
+# endpoints retain their existing super_admin gate.
+def _require_record_access(request: Request, record_type: str,
+                           record_id: int, write: bool = False):
+    from database import lookup_record_delegation as _lookup_deleg
+    admin = _require_admin(request)
+    verbose = os.environ.get("DELEGATION_VERBOSE_AUDIT", "1") != "0"
+    # Path A — role check.
+    if admin.get("role") == "super_admin":
+        try:
+            _audit_from(admin, "access.role_allow", request,
+                        target_type=record_type, target_id=record_id)
+        except Exception as _e:
+            import sys; print(f"[delegation] audit-write failed: {_e}", file=sys.stderr)
+        return admin
+    # Path B — delegation lookup. Per-request, no caching.
+    deleg = None
+    try:
+        deleg = _lookup_deleg(admin["id"], record_type, int(record_id))
+    except Exception as _e:
+        import sys; print(f"[delegation] lookup failed: {_e}", file=sys.stderr)
+    if deleg:
+        # Power grants imply read+write. Record/record_type honour permission_level.
+        if deleg["delegation_type"] == "power":
+            ok = True
+        else:
+            lvl = (deleg.get("permission_level") or "read").lower()
+            ok = (lvl == "read_write") if write else (lvl in ("read", "read_write"))
+        if ok:
+            if verbose:
+                try:
+                    _audit_from(admin, "delegation.accessed", request,
+                                target_type=record_type, target_id=record_id,
+                                after={"delegation_id": deleg["id"],
+                                       "delegation_type": deleg["delegation_type"],
+                                       "write": bool(write)})
+                except Exception as _e:
+                    import sys; print(f"[delegation] audit-write failed: {_e}", file=sys.stderr)
+            return admin
+    raise HTTPException(403, "insufficient permission for this record")
+
+
 def _validate_customer_profile(body: CustomerProfileUpdate) -> list:
     """Returns a list of {field, message} dicts. Empty list = OK."""
     errs = []
@@ -4957,8 +5006,8 @@ def _validate_customer_profile(body: CustomerProfileUpdate) -> list:
 
 @app.get("/api/admin/customers/{customer_id}")
 def admin_customer_detail(request: Request, customer_id: int):
-    """super_admin-only: full decrypted customer profile."""
-    admin = _require_super_admin(request)
+    """super_admin OR delegate-with-read: full decrypted customer profile."""
+    admin = _require_record_access(request, "customer", customer_id, write=False)
     cust = get_customer_with_decryption(customer_id)
     if not cust:
         raise HTTPException(404, "Customer not found")
@@ -4974,8 +5023,8 @@ def admin_customer_detail(request: Request, customer_id: int):
 
 @app.post("/api/admin/customers/{customer_id}")
 def admin_customer_update(request: Request, customer_id: int, body: CustomerProfileUpdate):
-    """super_admin-only: edit customer profile (re-encrypts sensitive fields)."""
-    admin = _require_super_admin(request)
+    """super_admin OR delegate-with-read_write: edit customer profile."""
+    admin = _require_record_access(request, "customer", customer_id, write=True)
     before = get_customer_with_decryption(customer_id)
     if not before:
         raise HTTPException(404, "Customer not found")
@@ -5127,8 +5176,8 @@ def _validate_invoice_payment(body: InvoicePaymentUpdate) -> list:
 
 @app.get("/api/admin/visits/{visit_id}")
 def admin_visit_detail(request: Request, visit_id: int):
-    """super_admin-only: full decrypted visit detail payload."""
-    admin = _require_super_admin(request)
+    """super_admin OR delegate-with-read: full decrypted visit detail."""
+    admin = _require_record_access(request, "visit", visit_id, write=False)
     detail = get_visit_full_detail(visit_id)
     if not detail:
         raise HTTPException(404, "Visit not found")
@@ -5317,9 +5366,9 @@ def _redact_tech_for_audit(d: dict) -> dict:
 
 @app.get("/api/admin/technicians/{tech_id}")
 def admin_technician_detail(request: Request, tech_id: int):
-    """super_admin-only: full decrypted technician profile + lightweight
-    rollups (last job, last review)."""
-    admin = _require_super_admin(request)
+    """super_admin OR delegate-with-read: full decrypted technician profile
+    + lightweight rollups (last job, last review)."""
+    admin = _require_record_access(request, "technician", tech_id, write=False)
     t = get_technician_with_decryption(tech_id)
     if not t:
         raise HTTPException(404, "Technician not found")
@@ -5336,12 +5385,12 @@ def admin_technician_detail(request: Request, tech_id: int):
 @app.post("/api/admin/technicians/{tech_id}")
 def admin_technician_update(request: Request, tech_id: int,
                             body: TechnicianProfileUpdate):
-    """super_admin-only: edit the four-surface tech info card. Termination
-    is NOT routed through here — the dedicated /api/admin/techs/{id}/terminate
-    flow handles the full offboarding side-effects. We accept
-    employment_status='terminated' only to surface a 409 with a clear
-    redirect message."""
-    admin = _require_super_admin(request)
+    """super_admin OR delegate-with-read_write: edit the four-surface tech
+    info card. Termination is NOT routed through here — the dedicated
+    /api/admin/techs/{id}/terminate flow handles the full offboarding
+    side-effects. We accept employment_status='terminated' only to surface
+    a 409 with a clear redirect message."""
+    admin = _require_record_access(request, "technician", tech_id, write=True)
     before = get_technician_with_decryption(tech_id)
     if not before:
         raise HTTPException(404, "Technician not found")
@@ -5738,7 +5787,7 @@ def admin_create_visit(request: Request, body: VisitCreate):
 
 @app.put("/api/admin/visits/{visit_id}")
 def admin_update_visit(request: Request, visit_id: int, body: VisitUpdate):
-    admin = _require_perm(request, "visit:update")
+    admin = _require_record_access(request, "visit", visit_id, write=True)
     before = get_visit_by_id(visit_id)
     update_visit(visit_id, body.model_dump())
     _audit_from(admin, "visit.update", request,
@@ -6657,6 +6706,275 @@ def request_page():
 @app.get("/full")
 def full_site_preview():
     return FileResponse("index.full.html")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Delegation endpoints
+# ═══════════════════════════════════════════════════════════════════════════
+from database import (
+    create_delegation as _create_delegation,
+    revoke_delegation as _revoke_delegation,
+    cascade_revoke_power as _cascade_revoke_power,
+    list_delegations as _list_delegations,
+    get_delegation as _get_delegation,
+    list_active_delegations_for_recipient as _list_active_for_recipient,
+    list_cascade_revoked_recent as _list_cascade_recent,
+    create_regrant_request as _create_regrant_req,
+    approve_regrant_request as _approve_regrant_req,
+    deny_regrant_request as _deny_regrant_req,
+    list_regrant_requests as _list_regrant_reqs,
+    expire_delegations_sweep as _expire_delegations_sweep,
+    get_admin_user_by_id as _get_admin_for_deleg,
+)
+
+
+_VALID_SCOPE_TYPES = {"customer", "visit", "invoice", "technician"}
+
+
+class DelegationGrantRequest(BaseModel):
+    recipient_id: int
+    delegation_type: str          # 'record' | 'record_type' | 'power'
+    scope_record_id: Optional[int] = None
+    scope_record_type: Optional[str] = None
+    permission_level: Optional[str] = None   # 'read' | 'read_write'
+    valid_until: Optional[str] = None
+    grantor_notes: Optional[str] = ""
+
+
+class RegrantRequestBody(BaseModel):
+    original_delegation_id: int
+    notes: Optional[str] = ""
+
+
+class ReviewNotesBody(BaseModel):
+    review_notes: Optional[str] = ""
+
+
+class RevokeBody(BaseModel):
+    reason: Optional[str] = ""
+
+
+def _can_grant_delegations(admin: dict) -> bool:
+    """Super_admin always can. Otherwise admin must have has_delegation_power."""
+    if admin.get("role") == "super_admin":
+        return True
+    return bool(admin.get("has_delegation_power"))
+
+
+@app.post("/api/admin/delegations")
+def admin_delegation_grant(request: Request, body: DelegationGrantRequest):
+    admin = _require_admin(request)
+    if not _can_grant_delegations(admin):
+        raise HTTPException(403, "Only super_admin or admins with delegation power can grant")
+    # Locked rule 5 — power-grant only by super_admin.
+    if body.delegation_type == "power" and admin.get("role") != "super_admin":
+        raise HTTPException(403, "Only super_admin may grant delegation power")
+    if body.delegation_type not in ("record", "record_type", "power"):
+        raise HTTPException(422, "delegation_type must be record, record_type, or power")
+    # Locked rule 4 — no self-grants (including super_admin → self).
+    if int(body.recipient_id) == int(admin["id"]):
+        raise HTTPException(422, "Self-grants are not allowed")
+    # Locked rule 3 — tech recipients rejected. The recipient must exist as an admin.
+    recipient = _get_admin_for_deleg(int(body.recipient_id))
+    if not recipient:
+        raise HTTPException(422, "Recipient must be an existing admin user (tech recipients are rejected in v1)")
+    if recipient.get("role", "").startswith("tech"):
+        raise HTTPException(422, "Tech recipients are not allowed in v1")
+    # Scope validation per type
+    if body.delegation_type in ("record", "record_type"):
+        if not body.scope_record_type or body.scope_record_type not in _VALID_SCOPE_TYPES:
+            raise HTTPException(422, f"scope_record_type required and must be one of {sorted(_VALID_SCOPE_TYPES)}")
+        if body.delegation_type == "record" and not body.scope_record_id:
+            raise HTTPException(422, "scope_record_id required for record-level delegations")
+        if not body.permission_level or body.permission_level not in ("read", "read_write"):
+            raise HTTPException(422, "permission_level must be 'read' or 'read_write'")
+    perm_level = body.permission_level if body.delegation_type != "power" else None
+    new_id = _create_delegation(
+        grantor_id=admin["id"], grantor_role=admin.get("role", ""),
+        recipient_id=body.recipient_id, recipient_kind="admin",
+        delegation_type=body.delegation_type,
+        scope_record_id=body.scope_record_id,
+        scope_record_type=body.scope_record_type,
+        permission_level=perm_level,
+        valid_until=body.valid_until,
+        grantor_notes=(body.grantor_notes or "")[:500],
+    )
+    try:
+        _audit_from(admin, "delegation.granted", request,
+                    target_type="delegations", target_id=new_id,
+                    after={"recipient_id": body.recipient_id,
+                           "delegation_type": body.delegation_type,
+                           "scope_record_type": body.scope_record_type,
+                           "scope_record_id": body.scope_record_id,
+                           "permission_level": perm_level,
+                           "valid_until": body.valid_until})
+        if body.delegation_type == "power":
+            _audit_from(admin, "delegation_power.granted", request,
+                        target_type="admin_users", target_id=body.recipient_id)
+    except Exception as _e:
+        import sys; print(f"[delegation] audit-write failed: {_e}", file=sys.stderr)
+    return {"id": new_id, "ok": True}
+
+
+@app.post("/api/admin/delegations/{delegation_id}/revoke")
+def admin_delegation_revoke(request: Request, delegation_id: int, body: RevokeBody):
+    admin = _require_admin(request)
+    row = _get_delegation(delegation_id)
+    if not row:
+        raise HTTPException(404, "Delegation not found")
+    if admin.get("role") != "super_admin" and int(row["grantor_id"]) != int(admin["id"]):
+        raise HTTPException(403, "Only the grantor or super_admin may revoke")
+    if row.get("revoked_at"):
+        return {"ok": True, "already_revoked": True}
+    # Power revoke → cascade
+    if row["delegation_type"] == "power":
+        cascaded = _cascade_revoke_power(int(row["recipient_id"]), revoked_by=admin["id"])
+        # Also revoke the originating delegation row itself
+        _revoke_delegation(delegation_id, admin["id"],
+                           reason=(body.reason or "")[:500], revoke_kind="manual")
+        try:
+            _audit_from(admin, "delegation_power.revoked", request,
+                        target_type="admin_users", target_id=row["recipient_id"],
+                        after={"cascaded": cascaded})
+            for cid in cascaded:
+                _audit_from(admin, "delegation.cascade_revoked", request,
+                            target_type="delegations", target_id=cid)
+        except Exception as _e:
+            import sys; print(f"[delegation] audit-write failed: {_e}", file=sys.stderr)
+        return {"ok": True, "cascaded": cascaded}
+    # Non-power → single row
+    _revoke_delegation(delegation_id, admin["id"],
+                       reason=(body.reason or "")[:500], revoke_kind="manual")
+    try:
+        _audit_from(admin, "delegation.revoked", request,
+                    target_type="delegations", target_id=delegation_id)
+    except Exception as _e:
+        import sys; print(f"[delegation] audit-write failed: {_e}", file=sys.stderr)
+    return {"ok": True}
+
+
+@app.get("/api/admin/delegations")
+def admin_delegation_list(request: Request,
+                          as_: Optional[str] = Query(None, alias="as"),
+                          status: Optional[str] = None,
+                          type: Optional[str] = None):
+    admin = _require_admin(request)
+    filters = {}
+    if type:
+        filters["delegation_type"] = type
+    if status:
+        filters["status"] = status
+    # super_admin sees all; delegating_admin sees only own (as grantor or recipient)
+    if admin.get("role") != "super_admin":
+        if as_ == "recipient":
+            filters["recipient_id"] = admin["id"]
+        else:
+            filters["grantor_id"] = admin["id"]
+    return {"rows": _list_delegations(filters)}
+
+
+@app.get("/api/admin/delegations/my-active")
+def admin_delegation_my_active(request: Request):
+    admin = _require_admin(request)
+    rows = _list_active_for_recipient(admin["id"])
+    cascade_recent = _list_cascade_recent(admin["id"], days=30)
+    return {"count": len(rows), "rows": rows,
+            "cascade_revoked_recent": cascade_recent}
+
+
+@app.get("/api/admin/delegations/regrant-requests")
+def admin_regrant_list(request: Request, status: Optional[str] = "open"):
+    _require_super_admin(request)
+    return {"rows": _list_regrant_reqs(status=status)}
+
+
+@app.post("/api/admin/delegations/regrant-requests")
+def admin_regrant_create(request: Request, body: RegrantRequestBody):
+    admin = _require_admin(request)
+    orig = _get_delegation(int(body.original_delegation_id))
+    if not orig:
+        raise HTTPException(404, "Original delegation not found")
+    if orig.get("revoke_kind") != "power_cascade":
+        raise HTTPException(400, "Only cascade-revoked delegations can be re-granted via this flow")
+    if int(orig["recipient_id"]) != int(admin["id"]):
+        raise HTTPException(403, "Only the original recipient may request re-grant")
+    rid = _create_regrant_req(admin["id"], int(body.original_delegation_id),
+                              notes=(body.notes or "")[:500])
+    try:
+        _audit_from(admin, "delegation.regrant_requested", request,
+                    target_type="delegation_regrant_requests", target_id=rid)
+    except Exception as _e:
+        import sys; print(f"[delegation] audit-write failed: {_e}", file=sys.stderr)
+    return {"id": rid, "ok": True}
+
+
+@app.post("/api/admin/delegations/regrant-requests/{request_id}/approve")
+def admin_regrant_approve(request: Request, request_id: int, body: ReviewNotesBody):
+    admin = _require_super_admin(request)
+    try:
+        res = _approve_regrant_req(int(request_id), admin["id"],
+                                   review_notes=(body.review_notes or "")[:500])
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    try:
+        _audit_from(admin, "delegation.regrant_approved", request,
+                    target_type="delegation_regrant_requests", target_id=request_id,
+                    after={"new_delegation_id": res["new_delegation_id"]})
+    except Exception as _e:
+        import sys; print(f"[delegation] audit-write failed: {_e}", file=sys.stderr)
+    return res
+
+
+@app.post("/api/admin/delegations/regrant-requests/{request_id}/deny")
+def admin_regrant_deny(request: Request, request_id: int, body: ReviewNotesBody):
+    admin = _require_super_admin(request)
+    ok = _deny_regrant_req(int(request_id), admin["id"],
+                           review_notes=(body.review_notes or "")[:500])
+    if not ok:
+        raise HTTPException(404, "Request not found or not open")
+    try:
+        _audit_from(admin, "delegation.regrant_denied", request,
+                    target_type="delegation_regrant_requests", target_id=request_id)
+    except Exception as _e:
+        import sys; print(f"[delegation] audit-write failed: {_e}", file=sys.stderr)
+    return {"ok": True}
+
+
+@app.get("/api/admin/delegations/{delegation_id}")
+def admin_delegation_detail(request: Request, delegation_id: int):
+    admin = _require_admin(request)
+    row = _get_delegation(int(delegation_id))
+    if not row:
+        raise HTTPException(404, "Delegation not found")
+    if admin.get("role") != "super_admin" \
+       and int(row["grantor_id"]) != int(admin["id"]) \
+       and int(row["recipient_id"]) != int(admin["id"]):
+        raise HTTPException(403, "Forbidden")
+    return row
+
+
+# ── Delegation expiry cron (every 6 hours) ─────────────────────────────────
+async def _delegation_expiry_loop():
+    # Sleep once on boot so init_db has time to settle.
+    await _asyncio.sleep(30)
+    while True:
+        try:
+            n = _expire_delegations_sweep()
+            if n:
+                try:
+                    log_audit(actor_type="system", action="delegation.cron_sweep",
+                              target_type="delegations",
+                              after_value={"expired_count": n})
+                except Exception as _e:
+                    import sys; print(f"[delegation] audit-write failed: {_e}", file=sys.stderr)
+        except Exception as _e:
+            print(f"delegation expiry sweep error: {_e}")
+        await _asyncio.sleep(6 * 60 * 60)
+
+
+@app.on_event("startup")
+async def _start_delegation_expiry_loop():
+    _asyncio.create_task(_delegation_expiry_loop())
 
 
 @app.get("/")
