@@ -939,8 +939,8 @@
               </label>
               <label>From <input type="date" id="tdf-job-from" onchange="loadTdfJobs(1)" style="margin-left:4px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;"></label>
               <label>To <input type="date" id="tdf-job-to" onchange="loadTdfJobs(1)" style="margin-left:4px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;"></label>
-              <label title="Callback linkage column not yet present">
-                <input type="checkbox" id="tdf-job-cb" disabled> Callbacks only
+              <label>
+                <input type="checkbox" id="tdf-job-cb" onchange="loadTdfJobs(1)"> Callbacks only
               </label>
             </div>
             <div class="table-wrap">
@@ -1793,6 +1793,43 @@
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('techReview')">Cancel</button>
       <button class="btn btn-primary" onclick="submitTechReview()" id="tr-save-btn">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── 5S Audit Detail (super_admin / supervisors) ── -->
+<div class="modal-overlay" id="modal-fsAuditDetail">
+  <div class="modal" style="max-width:720px;width:96%;">
+    <div class="modal-header">
+      <div style="display:flex;flex-direction:column;gap:4px;flex:1;">
+        <h3 id="fsad-title" style="margin:0;">5S Audit</h3>
+        <div id="fsad-subtitle" style="font-size:12px;color:var(--muted);"></div>
+      </div>
+      <button class="modal-close" onclick="closeModal('fsAuditDetail')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body" style="max-height:70vh;overflow:auto;">
+      <div id="fsad-meta" style="font-size:12px;color:var(--muted);margin-bottom:6px;"></div>
+      <div id="fsad-sections" style="display:flex;flex-direction:column;gap:12px;"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('fsAuditDetail')">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Equipment Detail (stub, super_admin sees sensitive) ── -->
+<div class="modal-overlay" id="modal-equipmentDetail">
+  <div class="modal" style="max-width:560px;width:96%;">
+    <div class="modal-header">
+      <h3 id="eqd-title" style="margin:0;">Equipment</h3>
+      <button class="modal-close" onclick="closeModal('equipmentDetail')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="eqd-body" style="display:grid;grid-template-columns:140px 1fr;gap:6px 14px;font-size:13px;"></div>
+    </div>
+    <div class="modal-footer" style="justify-content:space-between;">
+      <div style="font-size:11px;color:var(--muted);font-style:italic;">Full equipment detail view coming in a future build.</div>
+      <button class="btn btn-ghost" onclick="closeModal('equipmentDetail')">Close</button>
     </div>
   </div>
 </div>
@@ -2825,12 +2862,14 @@
         return;
       }
       tbody.innerHTML = cdfState.equipment.map(e => {
-        // Equipment name non-clickable for now.
-        // TODO: future equipment detail drilldown.
         const notes = (e.notes || '');
         const short = notes.length > 100 ? notes.slice(0,100) + '…' : notes;
+        const isSuper = currentAdmin && currentAdmin.role === 'super_admin';
+        const nameCell = isSuper
+          ? `<a href="#" onclick="event.preventDefault();openEquipmentDetail(${e.id});" style="color:var(--navy);font-weight:600;text-decoration:underline;cursor:pointer;" aria-label="Open equipment detail for ${escHtml(e.name)}"><strong>${escHtml(e.name)}</strong></a>`
+          : `<strong>${escHtml(e.name)}</strong>`;
         return `<tr>
-          <td><strong>${escHtml(e.name)}</strong></td>
+          <td>${nameCell}</td>
           <td>${escHtml(e.type) || '—'}</td>
           <td>${escHtml(e.model) || '—'}</td>
           <td>${escHtml(e.serial_number) || '—'}</td>
@@ -2842,6 +2881,95 @@
       }).join('');
     } catch(e) {
       tbody.innerHTML = `<tr><td colspan="8" class="empty">Unable to load equipment: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  function openEquipmentDetail(equipmentId) {
+    if (!currentAdmin || currentAdmin.role !== 'super_admin') return;
+    const eq = (cdfState.equipment || []).find(x => x.id === equipmentId);
+    if (!eq) { toast('Equipment not found in this customer view.', 'error'); return; }
+    const body = document.getElementById('eqd-body');
+    const title = document.getElementById('eqd-title');
+    title.textContent = 'Equipment — ' + (eq.name || '#' + eq.id);
+
+    // Count visits in the currently loaded visits page that reference this equipment.
+    // FIXME(equipment-detail): visits list is paginated server-side, so this
+    // count reflects only the current page. A dedicated equipment-detail
+    // endpoint or aggregate count is future work; spec asked us to STOP
+    // before adding endpoints and surface a FIXME.
+    const loadedVisits = cdfState.visits || [];
+    const loadedCount = loadedVisits.filter(v => v.equipment_id === equipmentId).length;
+
+    body.innerHTML = '';
+    const rows = [
+      ['Name',          eq.name || '—'],
+      ['Type',          eq.type || '—'],
+      ['Model',         eq.model || '—'],
+      ['Serial Number', eq.serial_number || '—'],
+      ['Location',      eq.location || '—'],
+      ['Notes',         eq.notes || '—'],
+      ['Created',       eq.created_at ? String(eq.created_at).slice(0,16).replace('T',' ') : '—'],
+      ['Last PM',       eq.last_pm_visit ? String(eq.last_pm_visit).slice(0,10) : '—'],
+      ['Last CM',       eq.last_cm_visit ? String(eq.last_cm_visit).slice(0,10) : '—'],
+    ];
+    rows.forEach(([k, v]) => {
+      const label = document.createElement('div');
+      label.style.cssText = 'color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:0.4px;font-weight:600;';
+      label.textContent = k;
+      const val = document.createElement('div');
+      val.style.cssText = 'color:var(--text);white-space:pre-wrap;';
+      val.textContent = v;
+      body.appendChild(label);
+      body.appendChild(val);
+    });
+
+    // Customer link
+    const cKey = document.createElement('div');
+    cKey.style.cssText = 'color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:0.4px;font-weight:600;';
+    cKey.textContent = 'Customer';
+    const cVal = document.createElement('div');
+    const c = cdfState.customer;
+    if (c) {
+      const a = document.createElement('a');
+      a.href = '#';
+      a.style.cssText = 'color:var(--navy);font-weight:600;text-decoration:underline;cursor:pointer;';
+      a.textContent = c.name || ('#' + c.id);
+      a.onclick = function(ev){ ev.preventDefault(); closeModal('equipmentDetail'); };
+      cVal.appendChild(a);
+    } else {
+      cVal.textContent = '—';
+    }
+    body.appendChild(cKey);
+    body.appendChild(cVal);
+
+    // Service history count
+    const sKey = document.createElement('div');
+    sKey.style.cssText = 'color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:0.4px;font-weight:600;';
+    sKey.textContent = 'Service History';
+    const sVal = document.createElement('div');
+    sVal.style.cssText = 'color:var(--text);';
+    sVal.textContent = loadedCount + ' visit' + (loadedCount === 1 ? '' : 's') + ' (loaded page)';
+    body.appendChild(sKey);
+    body.appendChild(sVal);
+
+    document.getElementById('modal-equipmentDetail').classList.add('open');
+  }
+
+  async function openEquipmentDetailFromVisit(customerId, equipmentId) {
+    if (!currentAdmin || currentAdmin.role !== 'super_admin') return;
+    try {
+      // Ensure equipment list is loaded for the customer
+      if (!cdfState.equipment || !cdfState.equipment.length ||
+          (cdfState.customer && cdfState.customer.id !== customerId)) {
+        const eq = await api('GET', `/api/admin/customers/${customerId}/equipment`);
+        cdfState.equipment = eq || [];
+        if (!cdfState.customer || cdfState.customer.id !== customerId) {
+          cdfState.customer = { id: customerId };
+        }
+      }
+      openEquipmentDetail(equipmentId);
+    } catch (e) {
+      toast('Unable to load equipment: ' + e.message, 'error');
     }
   }
 
@@ -3170,8 +3298,10 @@
     document.getElementById('vdf-meta-grid').innerHTML = [
       fld('Customer',         customerCell),
       fld('Customer Type',    ctypeBadge),
-      fld('Equipment',        escHtml(v.equipment_name)),
-      // TODO: equipment drilldown is future work; field is read-only.
+      fld('Equipment',
+        (v.equipment_id && currentAdmin && currentAdmin.role === 'super_admin')
+          ? `<a href="#" onclick="event.preventDefault();openEquipmentDetailFromVisit(${v.customer_id}, ${v.equipment_id});" style="color:var(--navy);font-weight:600;text-decoration:underline;cursor:pointer;">${escHtml(v.equipment_name || '—')}</a>`
+          : escHtml(v.equipment_name)),
       fld('Visit Type',       typeBadge),
       fld('Status',           statusBadge),
       fld('Scheduled',        escHtml(sched)),
@@ -3414,15 +3544,88 @@
 
   function renderVdfCallbacks() {
     const host = document.getElementById('vdf-callbacks');
+    host.innerHTML = '';
     const cb = (vdfState.visit && vdfState.visit.callback) || null;
-    // FIXME(callback-schema): the maintenance_visits table currently has no
-    // callback_of_visit_id column. Backend returns the empty-state shape;
-    // when the column is added, swap to render is_callback / callbacks list.
-    if (!cb || (!cb.is_callback && (!cb.callbacks || !cb.callbacks.length))) {
+    // The callback_of_visit_id column shipped in commit 713f634. Backend
+    // get_visit_full_detail() should populate either:
+    //   { is_callback_of: {id, completed_date, tech_name, ...},
+    //     generated_callbacks: [ {id, completed_date, tech_name, reason}, ...] }
+    // or the legacy placeholder shape { is_callback, callback_of, callbacks }.
+    // FIXME(callback-schema): get_visit_full_detail() in database.py still
+    // returns the legacy placeholder shape — call get_visit_callback_chain()
+    // and merge to expose is_callback_of / generated_callbacks here.
+    const parent = cb && (cb.is_callback_of || cb.callback_of);
+    const children = (cb && (cb.generated_callbacks || cb.callbacks)) || [];
+
+    if (!parent && (!children || !children.length)) {
       host.textContent = 'No callbacks associated with this visit.';
       return;
     }
-    host.textContent = 'No callbacks associated with this visit.';
+
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'display:flex;flex-direction:column;gap:10px;font-size:13px;';
+
+    if (parent) {
+      const pid = parent.id || parent.visit_id;
+      const pdate = (parent.completed_date || parent.scheduled_date || '');
+      const ptech = parent.tech_name || parent.technician || '—';
+      const row = document.createElement('div');
+      row.style.cssText = 'padding:10px 12px;background:#fef3c7;border:1px solid #fcd34d;border-radius:6px;color:#92400e;';
+      // textContent for user-controlled fragments
+      const label = document.createElement('div');
+      label.style.cssText = 'font-weight:600;margin-bottom:4px;';
+      label.textContent = 'This is a callback visit.';
+      row.appendChild(label);
+      const body = document.createElement('div');
+      body.appendChild(document.createTextNode('Originating visit: '));
+      const a = document.createElement('a');
+      a.href = '#visit/' + encodeURIComponent(pid);
+      a.textContent = '#' + pid;
+      a.style.cssText = 'color:var(--navy);font-weight:600;text-decoration:underline;';
+      a.onclick = function(ev){ ev.preventDefault(); openVisitDetailFull(pid); };
+      body.appendChild(a);
+      body.appendChild(document.createTextNode('. Original completed on ' + (pdate || '—') + ' by ' + ptech + '.'));
+      row.appendChild(body);
+      wrap.appendChild(row);
+    }
+
+    if (children && children.length) {
+      const title = document.createElement('div');
+      title.style.cssText = 'font-weight:600;color:var(--navy);font-size:13px;';
+      title.textContent = 'Callbacks generated by this visit (' + children.length + ')';
+      wrap.appendChild(title);
+
+      const table = document.createElement('table');
+      table.style.cssText = 'width:100%;font-size:12px;border-collapse:collapse;';
+      const thead = document.createElement('thead');
+      thead.innerHTML = '<tr style="background:#f3f4f6;"><th style="text-align:left;padding:6px;">Callback Visit</th><th style="text-align:left;padding:6px;">Date</th><th style="text-align:left;padding:6px;">Tech</th><th style="text-align:left;padding:6px;">Reason</th></tr>';
+      table.appendChild(thead);
+      const tbody = document.createElement('tbody');
+      children.forEach(function(c){
+        const tr = document.createElement('tr');
+        tr.style.cssText = 'border-top:1px solid var(--border);';
+        const cid = c.id || c.visit_id;
+        const tdId = document.createElement('td'); tdId.style.cssText = 'padding:6px;';
+        const link = document.createElement('a');
+        link.href = '#visit/' + encodeURIComponent(cid);
+        link.textContent = '#' + cid;
+        link.style.cssText = 'color:var(--navy);font-weight:600;text-decoration:underline;';
+        link.onclick = function(ev){ ev.preventDefault(); openVisitDetailFull(cid); };
+        tdId.appendChild(link);
+        const tdDate = document.createElement('td'); tdDate.style.cssText = 'padding:6px;';
+        tdDate.textContent = (c.completed_date || c.scheduled_date || '—');
+        const tdTech = document.createElement('td'); tdTech.style.cssText = 'padding:6px;';
+        tdTech.textContent = (c.tech_name || c.technician || '—');
+        const tdReason = document.createElement('td'); tdReason.style.cssText = 'padding:6px;';
+        tdReason.textContent = (c.reason || c.scope_of_work || '—');
+        tr.appendChild(tdId); tr.appendChild(tdDate); tr.appendChild(tdTech); tr.appendChild(tdReason);
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      wrap.appendChild(table);
+    }
+
+    host.appendChild(wrap);
   }
 
   function vdfOpenCustomer(customer_id) {
@@ -3802,6 +4005,8 @@
     if (st) params.set('status', st);
     if (df) params.set('date_from', df);
     if (dt) params.set('date_to', dt);
+    const cbEl = document.getElementById('tdf-job-cb');
+    if (cbEl && cbEl.checked) params.set('callbacks_only', 'true');
     try {
       const res = await api('GET', `/api/admin/technicians/${tdfState.tech.id}/jobs?` + params.toString());
       tdfState.jobs  = res.rows  || [];
@@ -4068,8 +4273,8 @@
       }
       if (res.status === 403) { toast('Insufficient permission — super_admin only', 'error'); return; }
       if (res.status === 409) {
-        const d = await res.json().catch(() => ({}));
-        toast((d && d.detail) || 'Conflict', 'error');
+        // Concurrency conflict — keep modal open, do not overwrite.
+        toast('This technician record was updated by another admin. Refresh to see latest changes.', 'error');
         return;
       }
       if (!res.ok) { toast('Unable to save. Please try again.', 'error'); return; }
@@ -7286,9 +7491,82 @@
     `;
   }
   async function fsOpenAudit(id) {
-    const d = await api('GET', `/api/admin/5s/audits/${id}`);
-    const items = (d.items || []).map(i => `<li style="margin-bottom:4px;">[${i.section}] ${esc(i.item_label)} → <strong>${i.status.toUpperCase()}</strong>${i.note ? ` — ${esc(i.note)}` : ''}</li>`).join('');
-    alert(`Audit #${d.id}\n${d.phase} · ${d.audit_ts}\n${d.overall_pass ? 'PASS' : 'FAIL'}\n\n` + (d.items||[]).map(i=>`[${i.section}] ${i.item_label} → ${i.status}${i.note?' — '+i.note:''}`).join('\n'));
+    let d;
+    try { d = await api('GET', `/api/admin/5s/audits/${id}`); }
+    catch (e) { toast('Unable to load audit: ' + e.message, 'error'); return; }
+
+    const title = document.getElementById('fsad-title');
+    const sub   = document.getElementById('fsad-subtitle');
+    const meta  = document.getElementById('fsad-meta');
+    const host  = document.getElementById('fsad-sections');
+
+    // Title: phase + asset code + date (textContent only — user data)
+    const phase = (d.phase || '').toString();
+    const assetCode = d.asset_code || d.asset_id || '—';
+    const when = (d.audit_ts || '').toString().slice(0,16).replace('T',' ');
+    title.textContent = 'Audit #' + d.id + ' — ' + phase + ' · ' + assetCode;
+    sub.textContent = when + (d.overall_pass ? ' · PASS' : ' · FAIL');
+
+    // Auditor + timestamp
+    meta.textContent = 'Auditor: ' + (d.auditor_kind || '—') + ':' + (d.auditor_id || '—') + ' · ' + when;
+
+    // Group items by section
+    const sections = ['sort','set','shine','standardize'];
+    const titles = { sort:'Sort', set:'Set in Order', shine:'Shine', standardize:'Standardize' };
+    const items = Array.isArray(d.items) ? d.items : [];
+    const grouped = {};
+    items.forEach(function(it){
+      const s = (it.section || '').toLowerCase();
+      if (!grouped[s]) grouped[s] = [];
+      grouped[s].push(it);
+    });
+
+    host.innerHTML = '';
+    sections.forEach(function(sec){
+      const list = grouped[sec] || [];
+      const block = document.createElement('div');
+      block.style.cssText = 'border:1px solid var(--border);border-radius:6px;padding:10px 12px;background:#fff;';
+      const h = document.createElement('div');
+      h.style.cssText = 'font-weight:700;color:var(--navy);font-size:13px;margin-bottom:6px;';
+      h.textContent = titles[sec] + ' (' + list.length + ')';
+      block.appendChild(h);
+      if (!list.length) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'color:var(--muted);font-size:12px;font-style:italic;';
+        empty.textContent = 'No items in this section.';
+        block.appendChild(empty);
+      } else {
+        list.forEach(function(it){
+          const row = document.createElement('div');
+          row.style.cssText = 'display:grid;grid-template-columns:80px 1fr;gap:8px;align-items:start;padding:5px 0;border-top:1px solid #f3f4f6;font-size:12px;';
+          const badge = document.createElement('span');
+          const st = (it.status || '').toLowerCase();
+          let bg = '#f3f4f6', fg = '#374151';
+          if (st === 'pass') { bg = '#dcfce7'; fg = '#166534'; }
+          else if (st === 'fail') { bg = '#fee2e2'; fg = '#991b1b'; }
+          else if (st === 'na' || st === 'n/a') { bg = '#f3f4f6'; fg = '#6b7280'; }
+          badge.style.cssText = 'background:' + bg + ';color:' + fg + ';padding:2px 6px;border-radius:6px;font-weight:700;font-size:10px;text-transform:uppercase;justify-self:start;';
+          badge.textContent = st || '—';
+          const body = document.createElement('div');
+          const label = document.createElement('div');
+          label.style.cssText = 'font-weight:600;color:var(--text);';
+          label.textContent = it.item_label || '—';
+          body.appendChild(label);
+          if (it.note) {
+            const note = document.createElement('div');
+            note.style.cssText = 'color:var(--muted);font-size:11px;margin-top:2px;';
+            note.textContent = it.note;
+            body.appendChild(note);
+          }
+          row.appendChild(badge);
+          row.appendChild(body);
+          block.appendChild(row);
+        });
+      }
+      host.appendChild(block);
+    });
+
+    document.getElementById('modal-fsAuditDetail').classList.add('open');
   }
   async function fsRenderExceptions(body) {
     const rows = await api('GET', '/api/admin/5s/exceptions?status=open');
@@ -7620,7 +7898,7 @@
           <div style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;display:grid;grid-template-columns:1fr 100px 140px 100px auto;gap:8px;align-items:end;">
             <div>
               <label style="display:block;font-size:11px;font-weight:600;color:var(--navy);margin-bottom:2px;">${typeBadge} Description</label>
-              <input type="text" placeholder="Search part by SKU or name…" value="${escHtml(li.description||'')}" oninput="_invPartsSearch(${idx}, this.value)" onchange="_invLineSet(${idx},'description',this.value)" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;">
+              <input type="text" placeholder="Search part by SKU or name…" value="${escHtml(li.description||'')}" oninput="_invPartsSearch(${idx}, this.value)" onkeydown="_invPartsKey(event, ${idx})" onblur="setTimeout(function(){_invPartsClose(${idx});},150);" onchange="_invLineSet(${idx},'description',this.value)" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="inv-parts-results-${idx}" aria-label="Search part by SKU or name" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;">
               <div id="inv-parts-results-${idx}" style="position:relative;"></div>
               ${li.part_sku ? `<div style="font-size:10px;color:var(--muted);margin-top:2px;">SKU: ${escHtml(li.part_sku)}</div>` : ''}
             </div>
@@ -7703,6 +7981,8 @@
 
   // ── Parts search typeahead ────────────────────────────────────────────
   let _invPartsSearchTimer = null;
+  // Per-row dropdown state: { rows: [...], active: int }
+  const _invPartsState = {};
   async function _invPartsSearch(idx, q) {
     clearTimeout(_invPartsSearchTimer);
     _invPartsSearchTimer = setTimeout(async () => {
@@ -7710,15 +7990,76 @@
       if (!host) return;
       try {
         const rows = await api('GET', '/api/admin/parts/search?q='+encodeURIComponent(q||'')+'&limit=20');
-        if (!rows.length) { host.innerHTML=''; return; }
-        host.innerHTML = `<div role="listbox" style="position:absolute;top:0;left:0;right:0;z-index:50;background:white;border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,0.1);max-height:240px;overflow:auto;">
-          ${rows.map(r=>`<div role="option" tabindex="0" onclick="_invSelectPart(${idx}, ${JSON.stringify(r).replace(/"/g,'&quot;')})" style="padding:8px;border-bottom:1px solid var(--border);cursor:pointer;font-size:13px;">
-            <div style="font-weight:600;color:var(--navy);">${escHtml(r.name)} <span style="font-size:11px;color:var(--muted);">${escHtml(r.sku)}</span></div>
-            <div style="font-size:11px;color:var(--muted);">J$${r.unit_price.toFixed(2)} · on hand: ${r.on_hand_qty}</div>
-          </div>`).join('')}
-        </div>`;
+        if (!rows.length) { _invPartsState[idx] = {rows:[], active:-1}; host.innerHTML=''; _invPartsSetExpanded(idx, false); return; }
+        _invPartsState[idx] = { rows: rows, active: 0 };
+        _invPartsRenderDropdown(idx);
+        _invPartsSetExpanded(idx, true);
       } catch(e) {}
     }, 200);
+  }
+  function _invPartsRenderDropdown(idx) {
+    const host = document.getElementById('inv-parts-results-'+idx);
+    if (!host) return;
+    const st = _invPartsState[idx];
+    if (!st || !st.rows.length) { host.innerHTML = ''; return; }
+    const listId = 'inv-parts-listbox-'+idx;
+    host.innerHTML = `<div id="${listId}" role="listbox" aria-label="Part suggestions" style="position:absolute;top:0;left:0;right:0;z-index:50;background:white;border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,0.1);max-height:240px;overflow:auto;">
+      ${st.rows.map((r,i)=>`<div id="inv-parts-opt-${idx}-${i}" role="option" aria-selected="${i===st.active?'true':'false'}" tabindex="-1" data-row-idx="${i}" onmousedown="event.preventDefault();_invSelectPartByIndex(${idx}, ${i})" onmouseover="_invPartsSetActive(${idx}, ${i})" style="padding:8px;border-bottom:1px solid var(--border);cursor:pointer;font-size:13px;${i===st.active?'background:#eef2ff;':''}">
+        <div style="font-weight:600;color:var(--navy);">${escHtml(r.name)} <span style="font-size:11px;color:var(--muted);">${escHtml(r.sku)}</span></div>
+        <div style="font-size:11px;color:var(--muted);">J$${r.unit_price.toFixed(2)} · on hand: ${r.on_hand_qty}</div>
+      </div>`).join('')}
+    </div>`;
+  }
+  function _invPartsSetExpanded(idx, exp) {
+    const inp = document.querySelector(`#inv-parts-results-${idx}`);
+    if (!inp) return;
+    // The combobox input is the previous sibling of the results host
+    const combo = inp.previousElementSibling;
+    if (combo) combo.setAttribute('aria-expanded', exp ? 'true' : 'false');
+  }
+  function _invPartsSetActive(idx, i) {
+    const st = _invPartsState[idx];
+    if (!st) return;
+    st.active = i;
+    _invPartsRenderDropdown(idx);
+  }
+  function _invPartsClose(idx) {
+    const host = document.getElementById('inv-parts-results-'+idx);
+    if (host) host.innerHTML = '';
+    _invPartsState[idx] = null;
+    _invPartsSetExpanded(idx, false);
+  }
+  function _invSelectPartByIndex(idx, i) {
+    const st = _invPartsState[idx];
+    if (!st || !st.rows[i]) return;
+    _invSelectPart(idx, st.rows[i]);
+  }
+  function _invPartsKey(ev, idx) {
+    const st = _invPartsState[idx];
+    const open = st && st.rows && st.rows.length;
+    if (ev.key === 'Escape') {
+      if (open) { ev.preventDefault(); _invPartsClose(idx); }
+      return;
+    }
+    if (ev.key === 'Tab') {
+      if (open) _invPartsClose(idx);
+      return;
+    }
+    if (!open) return;
+    if (ev.key === 'ArrowDown') {
+      ev.preventDefault();
+      st.active = (st.active + 1) % st.rows.length;
+      _invPartsRenderDropdown(idx);
+    } else if (ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      st.active = (st.active - 1 + st.rows.length) % st.rows.length;
+      _invPartsRenderDropdown(idx);
+    } else if (ev.key === 'Enter') {
+      if (st.active >= 0 && st.active < st.rows.length) {
+        ev.preventDefault();
+        _invSelectPart(idx, st.rows[st.active]);
+      }
+    }
   }
   function _invSelectPart(idx, row) {
     const li = _invEditState.data.line_items[idx];
@@ -7726,8 +8067,7 @@
     li.part_sku = row.sku;
     li.description = row.name + (row.description? ' — '+row.description:'');
     li.unit_price = row.unit_price;
-    const host = document.getElementById('inv-parts-results-'+idx);
-    if (host) host.innerHTML = '';
+    _invPartsClose(idx);
     _invRenderEditView();
   }
 
