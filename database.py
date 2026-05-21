@@ -4,7 +4,7 @@ import os
 import secrets
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 # Audit chain serialization — single-process write lock so concurrent
 # coroutines can't race the prev-hash read against the insert.
@@ -148,6 +148,13 @@ _PII_RAND = {
     # Numeric geo / camera fields stay readable so we can render maps later
     # without bulk-decryption. server_ip is short and useful for plain joins.
     "visit_photos":         ["server_ua", "client_meta_json"],
+    # 5S workplace-discipline module
+    "fs_assets":            ["notes"],
+    "fs_audits":            ["client_meta_json"],
+    "fs_audit_items":       ["note"],
+    "fs_exceptions":        ["description", "resolution_note"],
+    "fs_exception_events":  ["note"],
+    "fs_coaching_log":      ["plan_text", "close_note"],
 }
 # Columns that need equality lookup → deterministic encryption + blind index.
 _PII_DET = {
@@ -968,6 +975,161 @@ def init_db():
             completed_by    INTEGER REFERENCES technicians(id)
         )
     """)
+
+    # ── 5S workplace-discipline module ────────────────────────────────────────
+    # Assets (vehicles, toolkits, storage bins) that get audited.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS fs_assets (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset_code        TEXT NOT NULL UNIQUE,
+            asset_type        TEXT NOT NULL CHECK (asset_type IN ('vehicle','toolkit','storage')),
+            label             TEXT NOT NULL,
+            hub_id            INTEGER NOT NULL DEFAULT 1,
+            assigned_tech_id  INTEGER REFERENCES technicians(id),
+            static_location   TEXT,
+            photo_ref         TEXT,
+            active            INTEGER NOT NULL DEFAULT 1,
+            created_at        TEXT NOT NULL,
+            notes             TEXT
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_fs_assets_tech ON fs_assets(assigned_tech_id)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_fs_assets_hub  ON fs_assets(hub_id)")
+
+    # Catalog of what SHOULD be in each asset (SOP).
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS fs_asset_items (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset_id     INTEGER NOT NULL REFERENCES fs_assets(id),
+            item_type    TEXT NOT NULL CHECK (item_type IN ('tool','part','consumable')),
+            item_label   TEXT NOT NULL,
+            sop_required INTEGER NOT NULL DEFAULT 1,
+            location_code TEXT,
+            expiry_date  TEXT,
+            part_id      INTEGER REFERENCES parts(id),
+            active       INTEGER NOT NULL DEFAULT 1,
+            created_at   TEXT NOT NULL
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_fs_asset_items_asset ON fs_asset_items(asset_id)")
+
+    # Audit headers — APPEND-ONLY. Chain-hashed.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS fs_audits (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset_id          INTEGER NOT NULL REFERENCES fs_assets(id),
+            auditor_id        INTEGER NOT NULL,
+            auditor_kind      TEXT NOT NULL CHECK (auditor_kind IN ('tech','admin')),
+            phase             TEXT NOT NULL CHECK (phase IN ('start_shift','end_shift','weekly_manager')),
+            audit_ts          TEXT NOT NULL,
+            overall_pass      INTEGER NOT NULL,
+            hub_id            INTEGER NOT NULL DEFAULT 1,
+            prior_chain_hash  TEXT,
+            chain_hash        TEXT NOT NULL,
+            client_meta_json  TEXT
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_fs_audits_asset ON fs_audits(asset_id)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_fs_audits_auditor ON fs_audits(auditor_id, auditor_kind)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_fs_audits_ts ON fs_audits(audit_ts)")
+
+    # Per-line checklist results.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS fs_audit_items (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            audit_id    INTEGER NOT NULL REFERENCES fs_audits(id),
+            section     TEXT NOT NULL CHECK (section IN ('sort','set','shine','standardize')),
+            item_key    TEXT NOT NULL,
+            item_label  TEXT NOT NULL,
+            status      TEXT NOT NULL CHECK (status IN ('pass','fail','na')),
+            note        TEXT
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_fs_audit_items_audit ON fs_audit_items(audit_id)")
+
+    # Exceptions — chain-hashed; state changes recorded as
+    # immutable rows in fs_exception_events. Header rows DO get a status update
+    # on resolution/escalation; rebuilt chain_hash is OK because the events
+    # table is the immutable forensic trail.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS fs_exceptions (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            audit_id           INTEGER REFERENCES fs_audits(id),
+            asset_id           INTEGER NOT NULL REFERENCES fs_assets(id),
+            opened_by_id       INTEGER NOT NULL,
+            opened_by_kind     TEXT NOT NULL CHECK (opened_by_kind IN ('tech','admin')),
+            opened_at          TEXT NOT NULL,
+            severity           TEXT NOT NULL CHECK (severity IN ('normal','safety_loto')),
+            category           TEXT NOT NULL,
+            description        TEXT,
+            status             TEXT NOT NULL CHECK (status IN ('open','resolved','escalated','escalated_director')),
+            resolved_by_id     INTEGER,
+            resolved_by_kind   TEXT,
+            resolved_at        TEXT,
+            resolution_note    TEXT,
+            escalated_at       TEXT,
+            escalated_to_id    INTEGER,
+            hub_id             INTEGER NOT NULL DEFAULT 1,
+            prior_chain_hash   TEXT,
+            chain_hash         TEXT NOT NULL
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_fs_exc_status ON fs_exceptions(status)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_fs_exc_asset ON fs_exceptions(asset_id)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_fs_exc_severity ON fs_exceptions(severity)")
+
+    # State-transition events on an exception (APPEND-ONLY).
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS fs_exception_events (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            exception_id    INTEGER NOT NULL REFERENCES fs_exceptions(id),
+            event_type      TEXT NOT NULL CHECK (event_type IN ('opened','resolved','escalated','escalated_director','reopened','override')),
+            actor_id        INTEGER NOT NULL,
+            actor_kind      TEXT NOT NULL CHECK (actor_kind IN ('tech','admin','system')),
+            occurred_at     TEXT NOT NULL,
+            from_status     TEXT,
+            to_status       TEXT,
+            note            TEXT
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_fs_exc_evt_exc ON fs_exception_events(exception_id)")
+
+    # Coaching log (Phase 3).
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS fs_coaching_log (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            tech_id         INTEGER NOT NULL REFERENCES technicians(id),
+            opened_by_id    INTEGER NOT NULL,
+            opened_at       TEXT NOT NULL,
+            band_at_open    TEXT NOT NULL,
+            plan_text       TEXT,
+            status          TEXT NOT NULL CHECK (status IN ('open','closed')),
+            closed_at       TEXT,
+            closed_by_id    INTEGER,
+            close_note      TEXT,
+            hub_id          INTEGER NOT NULL DEFAULT 1,
+            chain_hash      TEXT NOT NULL
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_fs_coach_tech ON fs_coaching_log(tech_id)")
+
+    # Seed demo assets (idempotent).
+    _now_iso_seed = datetime.now(timezone.utc).isoformat()
+    _first_tech = con.execute(
+        "SELECT id FROM technicians WHERE active = 1 ORDER BY id ASC LIMIT 1"
+    ).fetchone()
+    _seed_tech_id = _first_tech[0] if _first_tech else None
+    for _seed in (
+        ("VAN-KIN-01",  "vehicle", "Kingston Service Van 01", _seed_tech_id, None),
+        ("TKIT-KIN-01", "toolkit", "Kingston Toolkit 01",     _seed_tech_id, None),
+        ("WH-KIN-A3",   "storage", "Kingston Warehouse Bin A3", None,        "Warehouse Shelf A-3"),
+    ):
+        con.execute(
+            "INSERT OR IGNORE INTO fs_assets "
+            "(asset_code, asset_type, label, hub_id, assigned_tech_id, static_location, active, created_at) "
+            "VALUES (?, ?, ?, 1, ?, ?, 1, ?)",
+            (_seed[0], _seed[1], _seed[2], _seed[3], _seed[4], _now_iso_seed),
+        )
 
     con.commit()
     con.close()
@@ -5233,3 +5395,775 @@ def get_cm_margin(start_date: str = None, end_date: str = None) -> dict:
         "aggregate":  agg,
         "visits":     out_rows,
     }
+
+
+# ── 5S workplace-discipline module ───────────────────────────────────────────
+# Constants
+FS_BAND_GREEN  = "green"
+FS_BAND_AMBER  = "amber"
+FS_BAND_RED    = "red"
+FS_VALID_PHASES = ("start_shift", "end_shift", "weekly_manager")
+
+# Item-keys that are safety/LOTO failures (auto-elevate exception severity).
+FS_SAFETY_ITEM_KEYS = {
+    "fluids_checked", "tires_visual_ok", "lights_working",
+    "safety_gear_present", "tools_no_damage", "any_spills_cleaned",
+    "no_pest_evidence", "no_new_damage", "damage_reported",
+}
+
+def _fs_label(key: str) -> str:
+    return key.replace("_", " ").strip().capitalize()
+
+# Default checklist by (asset_type, phase). Each section maps to ordered item keys.
+FS_DEFAULT_CHECKLIST = {
+    ("vehicle", "start_shift"): {
+        "sort":        ["unauthorized_items_removed", "personal_items_stowed"],
+        "set":         ["tools_in_assigned_locations", "parts_in_assigned_bins"],
+        "shine":       ["exterior_clean", "interior_clean", "fluids_checked", "tires_visual_ok", "lights_working"],
+        "standardize": ["odometer_logged", "fuel_logged", "no_new_damage", "safety_gear_present"],
+    },
+    ("vehicle", "end_shift"): {
+        "sort":        ["van_decluttered", "trash_removed"],
+        "set":         ["tools_returned_to_locations", "remaining_parts_to_bins"],
+        "shine":       ["interior_wipedown", "any_spills_cleaned"],
+        "standardize": ["parts_used_logged", "odometer_logged", "fuel_logged", "damage_reported"],
+    },
+    ("toolkit", "start_shift"): {
+        "sort":        ["only_sop_tools_present"],
+        "set":         ["each_tool_in_slot"],
+        "shine":       ["tools_clean", "tools_no_corrosion", "tools_no_damage"],
+        "standardize": ["tool_count_matches"],
+    },
+    ("toolkit", "end_shift"): {
+        "sort":        ["no_extraneous_items"],
+        "set":         ["all_tools_returned_to_slots"],
+        "shine":       ["tools_wiped_down"],
+        "standardize": ["tool_count_matches", "any_damage_logged"],
+    },
+    ("storage", "weekly_manager"): {
+        "sort":        ["expired_items_removed", "obsolete_items_removed"],
+        "set":         ["bins_labeled", "items_in_correct_bins"],
+        "shine":       ["shelves_clean", "no_pest_evidence"],
+        "standardize": ["par_levels_recorded", "expiry_scan_completed"],
+    },
+    ("vehicle", "weekly_manager"): {
+        "sort":        ["van_decluttered", "trash_removed", "unauthorized_items_removed"],
+        "set":         ["tools_returned_to_locations", "remaining_parts_to_bins"],
+        "shine":       ["exterior_clean", "interior_clean", "fluids_checked", "tires_visual_ok",
+                        "lights_working", "any_spills_cleaned"],
+        "standardize": ["odometer_logged", "fuel_logged", "no_new_damage", "safety_gear_present",
+                        "tool_wear_assessment", "photographic_record_taken"],
+    },
+    ("toolkit", "weekly_manager"): {
+        "sort":        ["only_sop_tools_present", "no_extraneous_items"],
+        "set":         ["each_tool_in_slot", "all_tools_returned_to_slots"],
+        "shine":       ["tools_clean", "tools_no_corrosion", "tools_no_damage", "tools_wiped_down"],
+        "standardize": ["tool_count_matches", "any_damage_logged",
+                        "tool_wear_assessment", "part_expiry_scan_passed", "photographic_record_taken"],
+    },
+}
+
+
+def get_checklist_for_phase(asset_id: int, phase: str):
+    """Returns ordered list[ {section, item_key, item_label} ] for the given
+    asset_id and phase. If the asset_type/phase combination is missing from
+    FS_DEFAULT_CHECKLIST, returns [] (caller can reject)."""
+    if phase not in FS_VALID_PHASES:
+        return []
+    asset = get_asset_by_id(asset_id)
+    if not asset:
+        return []
+    tpl = FS_DEFAULT_CHECKLIST.get((asset["asset_type"], phase))
+    if not tpl:
+        return []
+    out = []
+    for section in ("sort", "set", "shine", "standardize"):
+        for key in tpl.get(section, []):
+            out.append({
+                "section":    section,
+                "item_key":   key,
+                "item_label": _fs_label(key),
+            })
+    return out
+
+
+# ── Asset CRUD ───────────────────────────────────────────────────────────────
+def create_asset(asset_code, asset_type, label, hub_id=1,
+                 assigned_tech_id=None, static_location=None, notes=None):
+    if asset_type not in ("vehicle", "toolkit", "storage"):
+        raise ValueError("invalid asset_type")
+    now = datetime.now(timezone.utc).isoformat()
+    enc = _enc_dict("fs_assets", {"notes": notes}) if notes else {"notes": None}
+    con = _con()
+    cur = con.execute(
+        "INSERT INTO fs_assets (asset_code, asset_type, label, hub_id, "
+        "assigned_tech_id, static_location, active, created_at, notes) "
+        "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)",
+        (asset_code, asset_type, label, hub_id, assigned_tech_id,
+         static_location, now, enc.get("notes")),
+    )
+    aid = cur.lastrowid
+    con.commit()
+    con.close()
+    return aid
+
+
+def list_assets(hub_id=None, asset_type=None, tech_id=None, active_only=True):
+    sql  = "SELECT * FROM fs_assets WHERE 1=1"
+    args = []
+    if active_only:
+        sql += " AND active = 1"
+    if hub_id is not None:
+        sql += " AND hub_id = ?"; args.append(hub_id)
+    if asset_type is not None:
+        sql += " AND asset_type = ?"; args.append(asset_type)
+    if tech_id is not None:
+        sql += " AND assigned_tech_id = ?"; args.append(tech_id)
+    sql += " ORDER BY asset_type, asset_code"
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    return _dec_rows("fs_assets", rows)
+
+
+def get_asset_by_id(asset_id: int):
+    con = _con()
+    row = con.execute("SELECT * FROM fs_assets WHERE id = ?", (asset_id,)).fetchone()
+    con.close()
+    return _dec_row("fs_assets", row) if row else None
+
+
+def update_asset(asset_id: int, **fields):
+    allowed = {"label", "assigned_tech_id", "static_location", "active", "asset_type"}
+    sets, vals = [], []
+    enc_in = {}
+    if "notes" in fields:
+        enc_in["notes"] = fields.pop("notes")
+    if enc_in:
+        enc = _enc_dict("fs_assets", enc_in)
+        sets.append("notes = ?"); vals.append(enc["notes"])
+    for k, v in fields.items():
+        if k in allowed:
+            sets.append(f"{k} = ?"); vals.append(v)
+    if not sets:
+        return False
+    vals.append(asset_id)
+    con = _con()
+    con.execute(f"UPDATE fs_assets SET {', '.join(sets)} WHERE id = ?", vals)
+    con.commit()
+    con.close()
+    return True
+
+
+def add_asset_item(asset_id, item_type, item_label, sop_required=True,
+                   location_code=None, expiry_date=None, part_id=None):
+    if item_type not in ("tool", "part", "consumable"):
+        raise ValueError("invalid item_type")
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    cur = con.execute(
+        "INSERT INTO fs_asset_items (asset_id, item_type, item_label, sop_required, "
+        "location_code, expiry_date, part_id, active, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)",
+        (asset_id, item_type, item_label, 1 if sop_required else 0,
+         location_code, expiry_date, part_id, now),
+    )
+    iid = cur.lastrowid
+    con.commit()
+    con.close()
+    return iid
+
+
+def list_asset_items(asset_id, active_only=True):
+    sql = "SELECT * FROM fs_asset_items WHERE asset_id = ?"
+    args = [asset_id]
+    if active_only:
+        sql += " AND active = 1"
+    sql += " ORDER BY item_type, item_label"
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def remove_asset_item(item_id: int):
+    con = _con()
+    con.execute("UPDATE fs_asset_items SET active = 0 WHERE id = ?", (item_id,))
+    con.commit()
+    con.close()
+
+
+# ── FS chain-hash helpers (separate chain per table) ─────────────────────────
+def _fs_canonical(row: dict, fields: tuple) -> str:
+    return _json.dumps({f: row.get(f) for f in fields}, sort_keys=True, separators=(",", ":"))
+
+
+def _fs_compute_hash(prev_hash: str, row: dict, fields: tuple) -> str:
+    payload = (prev_hash or AUDIT_GENESIS) + "\n" + _fs_canonical(row, fields)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+_FS_AUDIT_HASH_FIELDS = (
+    "asset_id", "auditor_id", "auditor_kind", "phase",
+    "audit_ts", "overall_pass", "hub_id",
+)
+_FS_EXC_HASH_FIELDS = (
+    "asset_id", "audit_id", "opened_by_id", "opened_by_kind", "opened_at",
+    "severity", "category", "status",
+    "resolved_by_id", "resolved_at", "escalated_at", "escalated_to_id", "hub_id",
+)
+_FS_COACH_HASH_FIELDS = (
+    "tech_id", "opened_by_id", "opened_at", "band_at_open", "status",
+    "closed_at", "closed_by_id", "hub_id",
+)
+
+
+def _fs_last_audit_hash(con) -> str:
+    r = con.execute("SELECT chain_hash FROM fs_audits ORDER BY id DESC LIMIT 1").fetchone()
+    return (dict(r)["chain_hash"] if r else None) or AUDIT_GENESIS
+
+
+def _fs_last_exc_hash(con) -> str:
+    r = con.execute("SELECT chain_hash FROM fs_exceptions ORDER BY id DESC LIMIT 1").fetchone()
+    return (dict(r)["chain_hash"] if r else None) or AUDIT_GENESIS
+
+
+def _fs_last_coach_hash(con) -> str:
+    r = con.execute("SELECT chain_hash FROM fs_coaching_log ORDER BY id DESC LIMIT 1").fetchone()
+    return (dict(r)["chain_hash"] if r else None) or AUDIT_GENESIS
+
+
+# ── Submit audit (atomic) ────────────────────────────────────────────────────
+def submit_audit(asset_id: int, auditor_id: int, auditor_kind: str,
+                 phase: str, items: list, client_meta=None):
+    """Atomic insert: fs_audits header + fs_audit_items rows + auto-create
+    fs_exceptions for any fail. Returns dict with audit_id and exception_ids."""
+    if auditor_kind not in ("tech", "admin"):
+        raise ValueError("invalid auditor_kind")
+    if phase not in FS_VALID_PHASES:
+        raise ValueError("invalid phase")
+    asset = get_asset_by_id(asset_id)
+    if not asset:
+        raise ValueError("asset not found")
+
+    expected = get_checklist_for_phase(asset_id, phase)
+    if not expected:
+        raise ValueError("no checklist defined for this asset_type+phase")
+    expected_keys = {e["item_key"] for e in expected}
+    label_by_key  = {e["item_key"]: e["item_label"] for e in expected}
+    section_by_key = {e["item_key"]: e["section"] for e in expected}
+    seen = {}
+    for it in items:
+        k = it.get("item_key")
+        if not k or k not in expected_keys:
+            raise ValueError(f"unexpected or missing item_key: {k!r}")
+        if it.get("status") not in ("pass", "fail", "na"):
+            raise ValueError(f"invalid status for {k!r}")
+        seen[k] = it
+    missing = expected_keys - set(seen.keys())
+    if missing:
+        raise ValueError(f"missing items: {sorted(missing)}")
+
+    now = datetime.now(timezone.utc).isoformat()
+    overall_pass = 1 if all(s["status"] != "fail" for s in seen.values()) else 0
+    enc_meta = None
+    if client_meta:
+        try:
+            enc_meta = _enc("fs", _json.dumps(client_meta)) if False else _enc_dict(
+                "fs_audits", {"client_meta_json": _json.dumps(client_meta)}
+            )["client_meta_json"]
+        except Exception:
+            enc_meta = None
+
+    con = _con()
+    try:
+        con.execute("BEGIN")
+        prev = _fs_last_audit_hash(con)
+        header = {
+            "asset_id": asset_id, "auditor_id": auditor_id, "auditor_kind": auditor_kind,
+            "phase": phase, "audit_ts": now, "overall_pass": overall_pass,
+            "hub_id": asset.get("hub_id") or 1,
+        }
+        chain = _fs_compute_hash(prev, header, _FS_AUDIT_HASH_FIELDS)
+        cur = con.execute(
+            "INSERT INTO fs_audits (asset_id, auditor_id, auditor_kind, phase, "
+            "audit_ts, overall_pass, hub_id, prior_chain_hash, chain_hash, client_meta_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (asset_id, auditor_id, auditor_kind, phase, now,
+             overall_pass, header["hub_id"], prev, chain, enc_meta),
+        )
+        audit_id = cur.lastrowid
+
+        exception_ids = []
+        for key in (e["item_key"] for e in expected):
+            it = seen[key]
+            note_plain = it.get("note")
+            note_enc = None
+            if note_plain:
+                note_enc = _enc_dict("fs_audit_items", {"note": note_plain})["note"]
+            con.execute(
+                "INSERT INTO fs_audit_items (audit_id, section, item_key, item_label, status, note) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (audit_id, section_by_key[key], key, label_by_key[key], it["status"], note_enc),
+            )
+            if it["status"] == "fail":
+                severity = "safety_loto" if key in FS_SAFETY_ITEM_KEYS else "normal"
+                desc_plain = note_plain or f"Auto-opened from failed checklist item: {label_by_key[key]}"
+                desc_enc = _enc_dict("fs_exceptions", {"description": desc_plain})["description"]
+                prev_e = _fs_last_exc_hash(con)
+                er = {
+                    "asset_id": asset_id, "audit_id": audit_id,
+                    "opened_by_id": auditor_id, "opened_by_kind": auditor_kind,
+                    "opened_at": now, "severity": severity, "category": key,
+                    "status": "open", "resolved_by_id": None, "resolved_at": None,
+                    "escalated_at": None, "escalated_to_id": None,
+                    "hub_id": header["hub_id"],
+                }
+                ch = _fs_compute_hash(prev_e, er, _FS_EXC_HASH_FIELDS)
+                cur2 = con.execute(
+                    "INSERT INTO fs_exceptions (audit_id, asset_id, opened_by_id, opened_by_kind, "
+                    "opened_at, severity, category, description, status, hub_id, "
+                    "prior_chain_hash, chain_hash) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)",
+                    (audit_id, asset_id, auditor_id, auditor_kind, now,
+                     severity, key, desc_enc, header["hub_id"], prev_e, ch),
+                )
+                eid = cur2.lastrowid
+                con.execute(
+                    "INSERT INTO fs_exception_events (exception_id, event_type, actor_id, "
+                    "actor_kind, occurred_at, from_status, to_status, note) "
+                    "VALUES (?, 'opened', ?, ?, ?, NULL, 'open', NULL)",
+                    (eid, auditor_id, auditor_kind, now),
+                )
+                exception_ids.append(eid)
+        con.commit()
+    except Exception:
+        con.rollback()
+        con.close()
+        raise
+    con.close()
+    return {"audit_id": audit_id, "overall_pass": bool(overall_pass),
+            "exception_ids": exception_ids}
+
+
+# ── Audit queries ────────────────────────────────────────────────────────────
+def list_audits(hub_id=None, tech_id=None, asset_id=None, phase=None,
+                date_from=None, date_to=None, limit=200):
+    sql  = "SELECT * FROM fs_audits WHERE 1=1"
+    args = []
+    if hub_id is not None:   sql += " AND hub_id = ?";   args.append(hub_id)
+    if tech_id is not None:
+        sql += " AND ((auditor_kind='tech' AND auditor_id = ?) OR asset_id IN "
+        sql += "(SELECT id FROM fs_assets WHERE assigned_tech_id = ?))"
+        args.extend([tech_id, tech_id])
+    if asset_id is not None: sql += " AND asset_id = ?"; args.append(asset_id)
+    if phase is not None:    sql += " AND phase = ?";    args.append(phase)
+    if date_from:            sql += " AND audit_ts >= ?"; args.append(date_from)
+    if date_to:              sql += " AND audit_ts <= ?"; args.append(date_to)
+    sql += " ORDER BY id DESC LIMIT ?"; args.append(int(limit))
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    return _dec_rows("fs_audits", rows)
+
+
+def get_audit_with_items(audit_id: int):
+    con = _con()
+    h = con.execute("SELECT * FROM fs_audits WHERE id = ?", (audit_id,)).fetchone()
+    if not h:
+        con.close()
+        return None
+    items = con.execute(
+        "SELECT * FROM fs_audit_items WHERE audit_id = ? ORDER BY id ASC",
+        (audit_id,),
+    ).fetchall()
+    con.close()
+    out = _dec_row("fs_audits", h)
+    out["items"] = _dec_rows("fs_audit_items", items)
+    return out
+
+
+def list_exceptions(status=None, hub_id=None, asset_id=None,
+                    severity=None, tech_id=None, limit=200):
+    sql  = "SELECT e.* FROM fs_exceptions e "
+    sql += "LEFT JOIN fs_assets a ON a.id = e.asset_id WHERE 1=1"
+    args = []
+    if status is not None:   sql += " AND e.status = ?";   args.append(status)
+    if hub_id is not None:   sql += " AND e.hub_id = ?";   args.append(hub_id)
+    if asset_id is not None: sql += " AND e.asset_id = ?"; args.append(asset_id)
+    if severity is not None: sql += " AND e.severity = ?"; args.append(severity)
+    if tech_id is not None:
+        sql += " AND ((e.opened_by_kind='tech' AND e.opened_by_id = ?) OR a.assigned_tech_id = ?)"
+        args.extend([tech_id, tech_id])
+    sql += " ORDER BY e.id DESC LIMIT ?"; args.append(int(limit))
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    return _dec_rows("fs_exceptions", rows)
+
+
+def get_exception(exception_id: int):
+    con = _con()
+    row = con.execute("SELECT * FROM fs_exceptions WHERE id = ?", (exception_id,)).fetchone()
+    con.close()
+    return _dec_row("fs_exceptions", row) if row else None
+
+
+def resolve_exception(exception_id: int, resolved_by_id: int,
+                      resolved_by_kind: str, resolution_note: str = ""):
+    if resolved_by_kind not in ("tech", "admin"):
+        raise ValueError("invalid resolved_by_kind")
+    now = datetime.now(timezone.utc).isoformat()
+    note_enc = _enc_dict("fs_exceptions",
+                         {"resolution_note": resolution_note or ""})["resolution_note"]
+    con = _con()
+    cur = con.execute("SELECT * FROM fs_exceptions WHERE id = ?", (exception_id,)).fetchone()
+    if not cur:
+        con.close()
+        raise ValueError("exception not found")
+    cur = dict(cur)
+    if cur["status"] in ("resolved",):
+        con.close()
+        return {"already_resolved": True}
+    prev = _fs_last_exc_hash(con)
+    new_row = {**cur, "status": "resolved",
+               "resolved_by_id": resolved_by_id, "resolved_at": now}
+    ch = _fs_compute_hash(prev, new_row, _FS_EXC_HASH_FIELDS)
+    con.execute(
+        "UPDATE fs_exceptions SET status='resolved', resolved_by_id=?, "
+        "resolved_by_kind=?, resolved_at=?, resolution_note=?, "
+        "prior_chain_hash=?, chain_hash=? WHERE id=?",
+        (resolved_by_id, resolved_by_kind, now, note_enc, prev, ch, exception_id),
+    )
+    con.execute(
+        "INSERT INTO fs_exception_events (exception_id, event_type, actor_id, "
+        "actor_kind, occurred_at, from_status, to_status, note) "
+        "VALUES (?, 'resolved', ?, ?, ?, ?, 'resolved', NULL)",
+        (exception_id, resolved_by_id, resolved_by_kind, now, cur["status"]),
+    )
+    con.commit()
+    con.close()
+    return {"ok": True}
+
+
+def escalate_exception(exception_id: int, escalated_to_id: int,
+                       actor_id: int, actor_kind: str = "system",
+                       target_status: str = "escalated"):
+    """target_status is 'escalated' (to manager) or 'escalated_director'."""
+    if target_status not in ("escalated", "escalated_director"):
+        raise ValueError("invalid target_status")
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    cur = con.execute("SELECT * FROM fs_exceptions WHERE id = ?", (exception_id,)).fetchone()
+    if not cur:
+        con.close()
+        raise ValueError("exception not found")
+    cur = dict(cur)
+    if cur["status"] == target_status or cur["status"] == "resolved":
+        con.close()
+        return {"no_change": True, "status": cur["status"]}
+    prev = _fs_last_exc_hash(con)
+    new_row = {**cur, "status": target_status,
+               "escalated_at": now, "escalated_to_id": escalated_to_id}
+    ch = _fs_compute_hash(prev, new_row, _FS_EXC_HASH_FIELDS)
+    con.execute(
+        "UPDATE fs_exceptions SET status=?, escalated_at=?, escalated_to_id=?, "
+        "prior_chain_hash=?, chain_hash=? WHERE id=?",
+        (target_status, now, escalated_to_id, prev, ch, exception_id),
+    )
+    con.execute(
+        "INSERT INTO fs_exception_events (exception_id, event_type, actor_id, "
+        "actor_kind, occurred_at, from_status, to_status, note) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, NULL)",
+        (exception_id, target_status, actor_id, actor_kind, now,
+         cur["status"], target_status),
+    )
+    con.commit()
+    con.close()
+    return {"ok": True, "status": target_status}
+
+
+def find_overdue_exceptions(now_iso: str = None):
+    """Returns dict {to_manager: [...], to_director: [...]} of exception ids."""
+    now = now_iso or datetime.now(timezone.utc).isoformat()
+    now_dt = datetime.fromisoformat(now)
+    con = _con()
+    rows = con.execute(
+        "SELECT id, status, opened_at, escalated_at, asset_id FROM fs_exceptions "
+        "WHERE status IN ('open','escalated')"
+    ).fetchall()
+    con.close()
+    to_mgr, to_dir = [], []
+    for r in rows:
+        d = dict(r)
+        try:
+            if d["status"] == "open":
+                opened = datetime.fromisoformat(d["opened_at"])
+                if (now_dt - opened) > timedelta(hours=24):
+                    to_mgr.append(d["id"])
+            elif d["status"] == "escalated":
+                base = d.get("escalated_at") or d.get("opened_at")
+                if base:
+                    base_dt = datetime.fromisoformat(base)
+                    if (now_dt - base_dt) > timedelta(hours=48):
+                        to_dir.append(d["id"])
+        except Exception:
+            continue
+    return {"to_manager": to_mgr, "to_director": to_dir}
+
+
+# We need timedelta — make sure it's imported.
+from datetime import timedelta as _td  # noqa: E402
+# alias so the function above works regardless of import order
+timedelta = _td
+
+
+# ── Compliance scoring ──────────────────────────────────────────────────────
+def _band_for_pct(pct: float) -> str:
+    if pct >= 90: return FS_BAND_GREEN
+    if pct >= 75: return FS_BAND_AMBER
+    return FS_BAND_RED
+
+
+def compute_compliance_score(tech_id: int, window_days: int = 30) -> dict:
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(days=window_days)).isoformat()
+    con = _con()
+    rows = con.execute(
+        "SELECT overall_pass, audit_ts FROM fs_audits "
+        "WHERE auditor_kind='tech' AND auditor_id = ? AND audit_ts >= ?",
+        (tech_id, cutoff),
+    ).fetchall()
+    total = len(rows)
+    passed = sum(1 for r in rows if r["overall_pass"] == 1)
+    pct = (passed / total * 100.0) if total else 0.0
+    band = _band_for_pct(pct) if total else FS_BAND_RED
+    # safety-red override
+    safety = con.execute(
+        "SELECT 1 FROM fs_exceptions e JOIN fs_assets a ON a.id = e.asset_id "
+        "WHERE e.severity = 'safety_loto' AND e.status IN ('open','escalated','escalated_director') "
+        "AND (a.assigned_tech_id = ? OR (e.opened_by_kind='tech' AND e.opened_by_id = ?)) "
+        "LIMIT 1",
+        (tech_id, tech_id),
+    ).fetchone()
+    safety_red = bool(safety)
+    if safety_red:
+        band = FS_BAND_RED
+    # 4-week trend
+    trend = []
+    for w in range(4, 0, -1):
+        wk_end   = (now - timedelta(days=(w - 1) * 7)).isoformat()
+        wk_start = (now - timedelta(days=w * 7)).isoformat()
+        wk = con.execute(
+            "SELECT overall_pass FROM fs_audits "
+            "WHERE auditor_kind='tech' AND auditor_id=? AND audit_ts >= ? AND audit_ts < ?",
+            (tech_id, wk_start, wk_end),
+        ).fetchall()
+        wt = len(wk); wp = sum(1 for r in wk if r["overall_pass"] == 1)
+        trend.append({
+            "week_start": wk_start[:10],
+            "audits":     wt,
+            "pct":        round((wp / wt * 100.0) if wt else 0.0, 1),
+        })
+    con.close()
+    return {
+        "tech_id":      tech_id,
+        "window_days":  window_days,
+        "score_pct":    round(pct, 1),
+        "total_audits": total,
+        "pass_audits":  passed,
+        "band":         band,
+        "safety_red":   safety_red,
+        "trend":        trend,
+    }
+
+
+def list_compliance_overview(hub_id=None, window_days: int = 30):
+    con = _con()
+    sql = "SELECT id, name, prid, hub_id FROM technicians WHERE active = 1"
+    args = []
+    if hub_id is not None:
+        # technicians table may or may not have hub_id; skip hub filter if absent
+        cols = {r[1] for r in con.execute("PRAGMA table_info(technicians)")}
+        if "hub_id" in cols:
+            sql += " AND hub_id = ?"; args.append(hub_id)
+    techs = con.execute(sql, args).fetchall()
+    con.close()
+    out = []
+    for t in techs:
+        score = compute_compliance_score(t["id"], window_days=window_days)
+        score["name"] = t["name"]
+        score["prid"] = t["prid"]
+        out.append(score)
+    return out
+
+
+# ── KPI correlation (Phase 4) ────────────────────────────────────────────────
+def _kpi_band_for_tech(tech_id: int, window_days: int = 30):
+    """Best-effort: looks for a KPI signal in existing tables. If no KPI module
+    exists yet, returns None — the endpoint will degrade gracefully."""
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(days=window_days)).isoformat()
+    con = _con()
+    # Heuristic proxy: completed-on-time vs flagged visits in window.
+    try:
+        rows = con.execute(
+            "SELECT status, flagged FROM maintenance_visits "
+            "WHERE assigned_tech_id = ? AND (completed_at >= ? OR created_at >= ?)",
+            (tech_id, cutoff, cutoff),
+        ).fetchall()
+    except Exception:
+        con.close()
+        return None
+    con.close()
+    total = len(rows)
+    if total == 0:
+        return None
+    flagged = sum(1 for r in rows if (r["flagged"] if "flagged" in r.keys() else 0) == 1)
+    bad_pct = (flagged / total) * 100.0
+    # band: <5% flagged green; 5-15 amber; >15 red.
+    if bad_pct < 5: return "green"
+    if bad_pct < 15: return "amber"
+    return "red"
+
+
+def correlate_5s_to_kpi(tech_id: int, window_days: int = 30) -> dict:
+    fs = compute_compliance_score(tech_id, window_days=window_days)
+    kpi_band = _kpi_band_for_tech(tech_id, window_days=window_days)
+    fs_band = fs["band"]
+    if kpi_band is None:
+        diagnostic = "kpi module not active — using 5S band only"
+    elif fs_band == "red" and kpi_band == "red":
+        diagnostic = "systemic — investigate conditions before performance"
+    elif fs_band == "green" and kpi_band == "red":
+        diagnostic = "performance — coaching needed"
+    elif fs_band == "red" and kpi_band == "green":
+        diagnostic = "lucky — conditions failing, will catch up"
+    elif fs_band == "green" and kpi_band == "green":
+        diagnostic = "healthy"
+    else:
+        diagnostic = f"{fs_band} 5S / {kpi_band} KPI — mixed"
+    return {
+        "tech_id":    tech_id,
+        "fs_band":    fs_band,
+        "kpi_band":   kpi_band,
+        "diagnostic": diagnostic,
+        "fs":         fs,
+    }
+
+
+# ── Coaching log (Phase 3) ───────────────────────────────────────────────────
+def open_coaching(tech_id: int, opened_by_id: int, band_at_open: str,
+                  plan_text: str = "", hub_id: int = 1) -> int:
+    now = datetime.now(timezone.utc).isoformat()
+    plan_enc = _enc_dict("fs_coaching_log",
+                         {"plan_text": plan_text or ""})["plan_text"]
+    con = _con()
+    prev = _fs_last_coach_hash(con)
+    row = {"tech_id": tech_id, "opened_by_id": opened_by_id, "opened_at": now,
+           "band_at_open": band_at_open, "status": "open",
+           "closed_at": None, "closed_by_id": None, "hub_id": hub_id}
+    ch = _fs_compute_hash(prev, row, _FS_COACH_HASH_FIELDS)
+    cur = con.execute(
+        "INSERT INTO fs_coaching_log (tech_id, opened_by_id, opened_at, "
+        "band_at_open, plan_text, status, hub_id, chain_hash) "
+        "VALUES (?, ?, ?, ?, ?, 'open', ?, ?)",
+        (tech_id, opened_by_id, now, band_at_open, plan_enc, hub_id, ch),
+    )
+    cid = cur.lastrowid
+    con.commit()
+    con.close()
+    return cid
+
+
+def close_coaching(coaching_id: int, closed_by_id: int, close_note: str = ""):
+    now = datetime.now(timezone.utc).isoformat()
+    note_enc = _enc_dict("fs_coaching_log",
+                         {"close_note": close_note or ""})["close_note"]
+    con = _con()
+    cur = con.execute("SELECT * FROM fs_coaching_log WHERE id = ?", (coaching_id,)).fetchone()
+    if not cur:
+        con.close(); raise ValueError("coaching log not found")
+    cur = dict(cur)
+    prev = _fs_last_coach_hash(con)
+    row = {**cur, "status": "closed",
+           "closed_at": now, "closed_by_id": closed_by_id}
+    ch = _fs_compute_hash(prev, row, _FS_COACH_HASH_FIELDS)
+    con.execute(
+        "UPDATE fs_coaching_log SET status='closed', closed_at=?, "
+        "closed_by_id=?, close_note=?, chain_hash=? WHERE id=?",
+        (now, closed_by_id, note_enc, ch, coaching_id),
+    )
+    con.commit()
+    con.close()
+    return True
+
+
+def list_coaching(tech_id=None, status=None, limit=100):
+    sql = "SELECT * FROM fs_coaching_log WHERE 1=1"
+    args = []
+    if tech_id is not None: sql += " AND tech_id = ?"; args.append(tech_id)
+    if status  is not None: sql += " AND status = ?";  args.append(status)
+    sql += " ORDER BY id DESC LIMIT ?"; args.append(int(limit))
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    return _dec_rows("fs_coaching_log", rows)
+
+
+# ── "Today" status for tech ──────────────────────────────────────────────────
+def fs_today_status_for_tech(tech_id: int) -> dict:
+    """Returns whether tech has submitted start_shift / end_shift audits today
+    for each of their assigned assets that requires them."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    assets = list_assets(tech_id=tech_id, active_only=True)
+    out = {"date": today, "assets": []}
+    con = _con()
+    for a in assets:
+        if a["asset_type"] not in ("vehicle", "toolkit"):
+            continue
+        start_done = bool(con.execute(
+            "SELECT 1 FROM fs_audits WHERE asset_id=? AND auditor_id=? "
+            "AND auditor_kind='tech' AND phase='start_shift' AND substr(audit_ts,1,10)=?",
+            (a["id"], tech_id, today),
+        ).fetchone())
+        end_done = bool(con.execute(
+            "SELECT 1 FROM fs_audits WHERE asset_id=? AND auditor_id=? "
+            "AND auditor_kind='tech' AND phase='end_shift' AND substr(audit_ts,1,10)=?",
+            (a["id"], tech_id, today),
+        ).fetchone())
+        out["assets"].append({
+            "asset_id":   a["id"],
+            "asset_code": a["asset_code"],
+            "label":      a["label"],
+            "asset_type": a["asset_type"],
+            "start_shift_done": start_done,
+            "end_shift_done":   end_done,
+        })
+    con.close()
+    return out
+
+
+# ── Export ──────────────────────────────────────────────────────────────────
+def fs_export_all() -> dict:
+    """Returns the full immutable 5S trail for export (CSV/JSON serialized by caller)."""
+    con = _con()
+    audits = [dict(r) for r in con.execute(
+        "SELECT id, asset_id, auditor_id, auditor_kind, phase, audit_ts, "
+        "overall_pass, hub_id, prior_chain_hash, chain_hash FROM fs_audits ORDER BY id ASC"
+    ).fetchall()]
+    items  = [dict(r) for r in con.execute(
+        "SELECT id, audit_id, section, item_key, item_label, status FROM fs_audit_items ORDER BY id ASC"
+    ).fetchall()]
+    excs   = [dict(r) for r in con.execute(
+        "SELECT id, audit_id, asset_id, opened_by_id, opened_by_kind, opened_at, "
+        "severity, category, status, resolved_by_id, resolved_at, escalated_at, "
+        "escalated_to_id, hub_id, prior_chain_hash, chain_hash FROM fs_exceptions ORDER BY id ASC"
+    ).fetchall()]
+    events = [dict(r) for r in con.execute(
+        "SELECT id, exception_id, event_type, actor_id, actor_kind, occurred_at, "
+        "from_status, to_status FROM fs_exception_events ORDER BY id ASC"
+    ).fetchall()]
+    con.close()
+    return {"audits": audits, "audit_items": items,
+            "exceptions": excs, "exception_events": events}

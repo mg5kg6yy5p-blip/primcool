@@ -466,6 +466,17 @@
 
   <!-- LIST VIEW -->
   <div id="listView">
+    <!-- 5S workplace-discipline card -->
+    <div id="fsCard" style="margin:14px 14px 0;padding:14px 16px;background:linear-gradient(135deg,#0B2545 0%,#143264 100%);color:#fff;border-radius:12px;box-shadow:0 4px 14px rgba(11,37,69,0.18);display:flex;align-items:center;gap:14px;cursor:pointer;font-family:'Barlow',-apple-system,system-ui,sans-serif;" onclick="fsShowHome()">
+      <div style="flex:1;">
+        <div style="font-size:11px;font-weight:700;letter-spacing:0.8px;color:#22A08A;text-transform:uppercase;">5S Audit</div>
+        <div id="fsCardLine" style="font-size:14px;font-weight:600;margin-top:2px;">Loading…</div>
+      </div>
+      <div id="fsCardBadge" style="display:none;background:#dc2626;color:#fff;border-radius:14px;padding:4px 10px;font-size:12px;font-weight:700;">!</div>
+      <div id="fsExcBadge" style="display:none;background:#f59e0b;color:#0B2545;border-radius:14px;padding:4px 10px;font-size:12px;font-weight:700;">0</div>
+      <div style="font-size:22px;opacity:0.6;">›</div>
+    </div>
+
     <div class="tabs">
       <div class="tab active" data-tab="today" onclick="setTab('today')">Today <span class="count" id="cnt-today">0</span></div>
       <div class="tab" data-tab="upcoming" onclick="setTab('upcoming')">Upcoming <span class="count" id="cnt-upcoming">0</span></div>
@@ -477,6 +488,9 @@
 
   <!-- DETAIL VIEW -->
   <div id="detailView" style="display:none;"></div>
+
+  <!-- 5S VIEW -->
+  <div id="fsView" style="display:none;padding:14px;font-family:'Barlow',-apple-system,system-ui,sans-serif;"></div>
 </div>
 
 <!-- Lightbox -->
@@ -555,6 +569,8 @@
     document.getElementById('loginScreen').style.display = 'none';
     document.getElementById('app').style.display = 'block';
     await loadJobs();
+    fsRefreshBadge();
+    fsFlushQueue();
   }
 
   // ── API helper ──────────────────────────────────────────────────────────
@@ -1487,6 +1503,210 @@
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
   }
+  // ── 5S workplace-discipline ─────────────────────────────────────────────
+  const FS_QUEUE_KEY = 'pc.fs.audit.queue';
+  let fsState = { mode: 'home', assetId: null, phase: null, checklist: null, answers: {} };
+
+  async function fsRefreshBadge() {
+    try {
+      const today = await api('GET', '/api/tech/5s/today');
+      const excs  = await api('GET', '/api/tech/5s/exceptions/mine');
+      const now = new Date();
+      const isEvening = now.getHours() >= 16;
+      let summary = 'All audits up to date today';
+      let needAttn = false;
+      for (const a of (today.assets || [])) {
+        if (!a.start_shift_done) { summary = `Start-of-shift audit needed: ${a.label}`; needAttn = true; break; }
+        if (isEvening && !a.end_shift_done) { summary = `End-of-shift audit needed: ${a.label}`; needAttn = true; break; }
+      }
+      const line = document.getElementById('fsCardLine');
+      const badge = document.getElementById('fsCardBadge');
+      const eb = document.getElementById('fsExcBadge');
+      if (line)  line.textContent = summary;
+      if (badge) badge.style.display = needAttn ? 'inline-block' : 'none';
+      if (eb) {
+        if (excs && excs.length) { eb.style.display = 'inline-block'; eb.textContent = String(excs.length); }
+        else { eb.style.display = 'none'; }
+      }
+    } catch (e) { /* offline; leave card alone */ }
+  }
+
+  function fsBack() { fsState.mode = 'home'; fsShowHome(); }
+
+  async function fsShowHome() {
+    document.getElementById('listView').style.display = 'none';
+    document.getElementById('detailView').style.display = 'none';
+    const v = document.getElementById('fsView');
+    v.style.display = 'block';
+    v.innerHTML = '<div style="color:var(--muted);font-size:14px;padding:30px 0;text-align:center;">Loading 5S…</div>';
+    try {
+      const [assets, today, excs] = await Promise.all([
+        api('GET', '/api/tech/5s/assets/mine'),
+        api('GET', '/api/tech/5s/today'),
+        api('GET', '/api/tech/5s/exceptions/mine'),
+      ]);
+      const todayByAsset = {};
+      for (const a of (today.assets || [])) todayByAsset[a.asset_id] = a;
+      let html = `
+        <div onclick="fsCloseView()" style="display:inline-flex;align-items:center;gap:6px;color:var(--navy);font-weight:600;font-size:13px;cursor:pointer;margin-bottom:14px;">← Back to jobs</div>
+        <h2 style="font-size:20px;color:var(--navy);font-weight:800;margin-bottom:4px;">5S Audit</h2>
+        <p style="color:var(--muted);font-size:13px;margin-bottom:16px;">Sort · Set-in-order · Shine · Standardize</p>
+      `;
+      if (!assets.length) {
+        html += '<div style="background:#fff;padding:24px;border-radius:10px;text-align:center;color:var(--muted);">No assets assigned to you yet. Ask your supervisor.</div>';
+      } else {
+        for (const a of assets) {
+          if (a.asset_type === 'storage') continue;
+          const t = todayByAsset[a.id] || {};
+          const startDone = !!t.start_shift_done, endDone = !!t.end_shift_done;
+          html += `
+            <div style="background:#fff;border-radius:12px;padding:14px;margin-bottom:12px;box-shadow:0 2px 6px rgba(11,37,69,0.06);">
+              <div style="font-weight:700;color:var(--navy);">${esc(a.label)}</div>
+              <div style="color:var(--muted);font-size:12px;margin-bottom:10px;">${esc(a.asset_code)} · ${esc(a.asset_type)}</div>
+              <div style="display:flex;gap:8px;">
+                <button onclick="fsStart(${a.id},'start_shift')" style="flex:1;padding:10px;border-radius:8px;border:none;background:${startDone ? '#e5f6f1' : 'var(--teal)'};color:${startDone ? 'var(--teal-deep)' : '#fff'};font-weight:700;font-size:13px;cursor:pointer;">
+                  ${startDone ? '✓ Start done' : 'Start-of-shift'}
+                </button>
+                <button onclick="fsStart(${a.id},'end_shift')" style="flex:1;padding:10px;border-radius:8px;border:none;background:${endDone ? '#e5f6f1' : 'var(--navy)'};color:${endDone ? 'var(--teal-deep)' : '#fff'};font-weight:700;font-size:13px;cursor:pointer;">
+                  ${endDone ? '✓ End done' : 'End-of-shift'}
+                </button>
+              </div>
+            </div>
+          `;
+        }
+      }
+      html += `<div style="margin-top:18px;background:#fff;border-radius:12px;padding:14px;box-shadow:0 2px 6px rgba(11,37,69,0.06);">
+        <div style="font-weight:700;color:var(--navy);margin-bottom:8px;">My open exceptions <span style="background:var(--amber);color:#0B2545;border-radius:10px;padding:2px 8px;font-size:11px;margin-left:4px;">${excs.length}</span></div>`;
+      if (!excs.length) html += '<div style="color:var(--muted);font-size:13px;">None — keep it up.</div>';
+      else for (const e of excs) {
+        const sev = e.severity === 'safety_loto' ? '<span style="background:#dc2626;color:#fff;border-radius:8px;padding:2px 8px;font-size:11px;margin-right:6px;">SAFETY</span>' : '';
+        html += `<div style="border-top:1px solid var(--border);padding:8px 0;font-size:13px;">${sev}<strong>${esc(e.category)}</strong> · ${esc(e.status)}<div style="color:var(--muted);font-size:12px;">${esc(e.opened_at).slice(0,16).replace('T',' ')}</div></div>`;
+      }
+      html += '</div>';
+      v.innerHTML = html;
+    } catch (e) {
+      v.innerHTML = `<div style="background:#fff;padding:24px;border-radius:10px;text-align:center;color:var(--red);">Could not load 5S: ${esc(String(e.message || e))}</div>`;
+    }
+  }
+
+  function fsCloseView() {
+    document.getElementById('fsView').style.display = 'none';
+    document.getElementById('listView').style.display = 'block';
+    fsRefreshBadge();
+  }
+
+  async function fsStart(assetId, phase) {
+    fsState = { mode: 'audit', assetId, phase, checklist: null, answers: {} };
+    const v = document.getElementById('fsView');
+    v.innerHTML = '<div style="color:var(--muted);font-size:14px;padding:30px 0;text-align:center;">Loading checklist…</div>';
+    try {
+      const cl = await api('GET', `/api/tech/5s/checklist?asset_id=${assetId}&phase=${phase}`);
+      fsState.checklist = cl;
+      fsRenderAudit();
+    } catch (e) {
+      v.innerHTML = `<div style="color:var(--red);">Could not load checklist: ${esc(String(e.message || e))}</div>`;
+    }
+  }
+
+  function fsRenderAudit() {
+    const { checklist, answers, phase } = fsState;
+    const sections = ['sort', 'set', 'shine', 'standardize'];
+    const sectionLabels = { sort: 'Sort', set: 'Set in order', shine: 'Shine', standardize: 'Standardize' };
+    const items = checklist.items;
+    const required = items.length;
+    const answered = items.filter(i => answers[i.item_key] && answers[i.item_key].status).length;
+    let html = `
+      <div onclick="fsShowHome()" style="display:inline-flex;align-items:center;gap:6px;color:var(--navy);font-weight:600;font-size:13px;cursor:pointer;margin-bottom:14px;">← Back</div>
+      <h2 style="font-size:18px;color:var(--navy);font-weight:800;margin-bottom:4px;">${esc(phase.replace('_',' '))}</h2>
+      <div style="color:var(--muted);font-size:13px;margin-bottom:16px;">${answered}/${required} items answered</div>
+    `;
+    for (const sec of sections) {
+      const secItems = items.filter(i => i.section === sec);
+      if (!secItems.length) continue;
+      html += `<div style="background:#fff;border-radius:12px;padding:14px;margin-bottom:12px;box-shadow:0 2px 6px rgba(11,37,69,0.06);">
+        <div style="font-weight:700;color:var(--navy);text-transform:uppercase;letter-spacing:0.6px;font-size:12px;margin-bottom:10px;">${sectionLabels[sec]}</div>`;
+      for (const it of secItems) {
+        const cur = (answers[it.item_key] && answers[it.item_key].status) || '';
+        html += `<div style="border-top:1px solid var(--border);padding:10px 0;">
+          <div style="font-size:14px;margin-bottom:8px;">${esc(it.item_label)}</div>
+          <div style="display:flex;gap:6px;">
+            ${['pass','fail','na'].map(s => `
+              <button onclick="fsSetStatus('${it.item_key}','${s}')" style="flex:1;padding:8px;border-radius:6px;border:1px solid var(--border);background:${cur===s?(s==='pass'?'#059669':s==='fail'?'#dc2626':'#5A6472'):'#fff'};color:${cur===s?'#fff':'var(--text)'};font-weight:600;font-size:12px;cursor:pointer;text-transform:uppercase;">${s==='na'?'N/A':s}</button>
+            `).join('')}
+          </div>
+          ${cur==='fail' ? `<textarea id="fs-note-${esc(it.item_key)}" placeholder="What's wrong? (required)" style="width:100%;margin-top:8px;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:13px;" oninput="fsSetNote('${it.item_key}', this.value)">${esc((answers[it.item_key]&&answers[it.item_key].note)||'')}</textarea>` : ''}
+        </div>`;
+      }
+      html += '</div>';
+    }
+    const canSubmit = (answered === required);
+    html += `<button onclick="fsSubmit()" ${canSubmit ? '' : 'disabled'} style="width:100%;padding:14px;background:${canSubmit?'var(--teal)':'var(--border)'};color:#fff;border:none;border-radius:10px;font-weight:700;font-size:15px;cursor:${canSubmit?'pointer':'not-allowed'};">${canSubmit?'Submit audit':'Answer every item to submit'}</button>`;
+    document.getElementById('fsView').innerHTML = html;
+  }
+
+  function fsSetStatus(key, status) {
+    if (!fsState.answers[key]) fsState.answers[key] = {};
+    fsState.answers[key].status = status;
+    if (status !== 'fail') delete fsState.answers[key].note;
+    fsRenderAudit();
+  }
+
+  function fsSetNote(key, value) {
+    if (!fsState.answers[key]) fsState.answers[key] = {};
+    fsState.answers[key].note = value;
+  }
+
+  async function fsSubmit() {
+    const items = fsState.checklist.items.map(i => ({
+      item_key: i.item_key,
+      status: (fsState.answers[i.item_key] || {}).status,
+      note:   (fsState.answers[i.item_key] || {}).note || null,
+    }));
+    for (const it of items) {
+      if (it.status === 'fail' && !(it.note && it.note.trim())) {
+        toast('Add a note for every failed item', 'err');
+        return;
+      }
+    }
+    let meta = null;
+    try { meta = await _assembleClientMeta(null); } catch(e) {}
+    const payload = {
+      asset_id: fsState.assetId, phase: fsState.phase,
+      items, client_meta: meta,
+    };
+    try {
+      const res = await api('POST', '/api/tech/5s/audit', payload);
+      const failed = (res.exception_ids || []).length;
+      toast(failed ? `Audit submitted (${failed} exception${failed>1?'s':''} opened)` : 'Audit submitted ✓', 'ok');
+      fsShowHome();
+    } catch (e) {
+      // Queue offline
+      const q = JSON.parse(localStorage.getItem(FS_QUEUE_KEY) || '[]');
+      q.push({ at: Date.now(), payload });
+      localStorage.setItem(FS_QUEUE_KEY, JSON.stringify(q));
+      toast('Saved offline — will sync', 'ok');
+      fsShowHome();
+    }
+  }
+
+  async function fsFlushQueue() {
+    const q = JSON.parse(localStorage.getItem(FS_QUEUE_KEY) || '[]');
+    if (!q.length) return;
+    const keep = [];
+    for (const entry of q) {
+      try { await api('POST', '/api/tech/5s/audit', entry.payload); }
+      catch (e) { keep.push(entry); }
+    }
+    localStorage.setItem(FS_QUEUE_KEY, JSON.stringify(keep));
+    if (keep.length < q.length) {
+      const synced = q.length - keep.length;
+      toast(`Synced ${synced} offline 5S audit${synced>1?'s':''}`, 'ok');
+      fsRefreshBadge();
+    }
+  }
+
+  window.addEventListener('online', () => { fsFlushQueue(); });
+
 </script>
 </body>
 </html>

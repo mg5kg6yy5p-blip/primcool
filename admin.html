@@ -449,6 +449,11 @@
         Reviews
         <span id="pendingBadge" style="margin-left:auto;background:var(--danger);color:white;font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px;display:none;"></span>
       </div>
+      <div class="nav-item" onclick="showPanel('fs')" id="nav-fs" style="display:none;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+        5S
+        <span id="fsRedBadge" style="margin-left:auto;background:var(--danger);color:white;font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px;display:none;"></span>
+      </div>
     </nav>
 
     <div class="main">
@@ -835,6 +840,25 @@
             <tbody id="visitTableBody"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
           </table>
         </div>
+      </div>
+
+      <!-- ── 5S panel ── -->
+      <div class="panel" id="panel-fs">
+        <div class="top-bar">
+          <h2>5S Workplace Discipline</h2>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-ghost" id="fsExportBtn" onclick="fsExportCsv()">⬇ Export immutable trail</button>
+          </div>
+        </div>
+        <div id="fsSafetyBanner" style="display:none;margin-bottom:14px;padding:12px 16px;border-radius:8px;background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;font-weight:600;"></div>
+        <div class="filter-bar" id="fsTabs">
+          <button class="filter-btn active" onclick="fsSetTab('dashboard',this)">Dashboard</button>
+          <button class="filter-btn"        onclick="fsSetTab('audits',this)">Audits</button>
+          <button class="filter-btn"        onclick="fsSetTab('exceptions',this)">Exceptions</button>
+          <button class="filter-btn" id="fsAssetsTabBtn" onclick="fsSetTab('assets',this)">Assets</button>
+          <button class="filter-btn"        onclick="fsSetTab('compliance',this)">Compliance</button>
+        </div>
+        <div id="fsBody" style="background:white;border:1px solid var(--border);border-radius:8px;padding:14px;min-height:200px;">Loading…</div>
       </div>
 
     </div><!-- /.main -->
@@ -1671,11 +1695,11 @@
   let resetAdminPwId = null;
 
   const ADMIN_PERMS = {
-    super_admin: new Set(['admin:create','admin:set_role','admin:set_active','admin:reset_password','admin:view_all','audit:view_all','tech:view','tech:create','tech:delete','tech:export','customer:view','customer:create','customer:delete','customer:export','visit:view','visit:create','visit:delete','visit:export','review:view','review:approve','review:delete','visit:view_photos','visit:flag','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','inventory:delete','inventory:export','po:create','po:send','po:receive','po:close_out','po:approve_variance','count:create','count:approve','invoice:view','invoice:create','invoice:update','invoice:delete','invoice:record_payment','invoice:export','documents:upload','documents:view','documents:view_highly_sensitive','documents:delete','documents:delete_highly_sensitive','security:view_alerts','security:resolve_alerts','payroll:generate','payroll:view_all','payroll:approve','payroll:mark_paid']),
-    supervisor_admin: new Set(['admin:view_all','audit:view_all','tech:view','tech:update','tech:export','customer:view','customer:update','customer:export','visit:view','visit:update','visit:export','review:view','visit:view_photos','visit:flag','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:adjust','inventory:export','po:create','po:send','po:receive','po:close_out','po:approve_variance','count:create','count:approve','invoice:view','invoice:update','invoice:record_payment','invoice:export','documents:upload','documents:view','documents:view_highly_sensitive','documents:delete','security:view_alerts']),
-    system_admin: new Set(['tech:view','tech:create','customer:view','customer:create','visit:view','visit:create','review:view','audit:view_self','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','invoice:view','invoice:create','invoice:update','invoice:record_payment','documents:upload','documents:view']),
-    hr_admin: new Set(['tech:view','tech:create','audit:view_self','timesheet:view_all','invoice:view','documents:upload','documents:view','documents:view_highly_sensitive','payroll:generate','payroll:view_all']),
-    ceo_assistant: new Set(['audit:view_self','inventory:view','invoice:view','documents:view']),
+    super_admin: new Set(['admin:create','admin:set_role','admin:set_active','admin:reset_password','admin:view_all','audit:view_all','tech:view','tech:create','tech:delete','tech:export','customer:view','customer:create','customer:delete','customer:export','visit:view','visit:create','visit:delete','visit:export','review:view','review:approve','review:delete','visit:view_photos','visit:flag','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','inventory:delete','inventory:export','po:create','po:send','po:receive','po:close_out','po:approve_variance','count:create','count:approve','invoice:view','invoice:create','invoice:update','invoice:delete','invoice:record_payment','invoice:export','documents:upload','documents:view','documents:view_highly_sensitive','documents:delete','documents:delete_highly_sensitive','security:view_alerts','security:resolve_alerts','payroll:generate','payroll:view_all','payroll:approve','payroll:mark_paid','fs:audit_any','fs:exception_resolve','fs:exception_escalate_director','fs:asset_manage','fs:report_view','fs:audit_override','fs:coaching_manage']),
+    supervisor_admin: new Set(['admin:view_all','audit:view_all','tech:view','tech:update','tech:export','customer:view','customer:update','customer:export','visit:view','visit:update','visit:export','review:view','visit:view_photos','visit:flag','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:adjust','inventory:export','po:create','po:send','po:receive','po:close_out','po:approve_variance','count:create','count:approve','invoice:view','invoice:update','invoice:record_payment','invoice:export','documents:upload','documents:view','documents:view_highly_sensitive','documents:delete','security:view_alerts','fs:audit_any','fs:exception_resolve','fs:exception_escalate_director','fs:report_view','fs:coaching_manage']),
+    system_admin: new Set(['tech:view','tech:create','customer:view','customer:create','visit:view','visit:create','review:view','audit:view_self','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','invoice:view','invoice:create','invoice:update','invoice:record_payment','documents:upload','documents:view','fs:asset_manage','fs:report_view']),
+    hr_admin: new Set(['tech:view','tech:create','audit:view_self','timesheet:view_all','invoice:view','documents:upload','documents:view','documents:view_highly_sensitive','payroll:generate','payroll:view_all','fs:report_view']),
+    ceo_assistant: new Set(['audit:view_self','inventory:view','invoice:view','documents:view','fs:report_view']),
     inventory_manager: new Set(['inventory:view','inventory:create','inventory:update','inventory:adjust','po:create','po:send','po:receive','count:create','audit:view_self']),
   };
   function can(perm) {
@@ -1849,6 +1873,11 @@
     if (can('invoice:export'))  document.getElementById('exportInvoicesBtn').style.display = '';
     if (can('inventory:export')) document.getElementById('exportInventoryBtn').style.display = '';
     if (can('payroll:view_all')) document.getElementById('nav-payroll').style.display = 'flex';
+    if (can('fs:report_view')) document.getElementById('nav-fs').style.display = 'flex';
+    if (!can('fs:asset_manage')) {
+      const at = document.getElementById('fsAssetsTabBtn');
+      if (at) at.style.display = 'none';
+    }
     if (can('payroll:generate')) document.getElementById('newPayPeriodBtn').style.display = '';
     if (can('po:create') || can('po:close_out') || can('count:create') || can('count:approve'))
       document.getElementById('invProcurementBtn').style.display = '';
@@ -2128,6 +2157,7 @@
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
     document.getElementById(`panel-${name}`).classList.add('active');
     document.getElementById(`nav-${name}`).classList.add('active');
+    if (name === 'fs') { fsLoadCurrentTab(); }
   }
 
   // ── Customers ──────────────────────────────────────────────────────────────
@@ -5230,6 +5260,182 @@
         </body></html>`);
       w.document.close();
     } catch (e) { toast(e.message, 'error'); }
+  }
+
+  // ── 5S panel ───────────────────────────────────────────────────────────
+  let fsCurrentTab = 'dashboard';
+  function fsSetTab(name, el) {
+    fsCurrentTab = name;
+    document.querySelectorAll('#fsTabs .filter-btn').forEach(b => b.classList.remove('active'));
+    if (el) el.classList.add('active');
+    fsLoadCurrentTab();
+  }
+  async function fsLoadCurrentTab() {
+    const body = document.getElementById('fsBody');
+    body.innerHTML = 'Loading…';
+    try {
+      if      (fsCurrentTab === 'dashboard')  await fsRenderDashboard(body);
+      else if (fsCurrentTab === 'audits')     await fsRenderAudits(body);
+      else if (fsCurrentTab === 'exceptions') await fsRenderExceptions(body);
+      else if (fsCurrentTab === 'assets')     await fsRenderAssets(body);
+      else if (fsCurrentTab === 'compliance') await fsRenderCompliance(body);
+    } catch (e) {
+      body.innerHTML = `<div style="color:var(--danger);">Failed to load: ${esc(String(e.message||e))}</div>`;
+    }
+  }
+  function fsBandColor(b) { return b==='green'?'#059669':b==='amber'?'#f59e0b':'#dc2626'; }
+  async function fsRenderDashboard(body) {
+    const d = await api('GET', '/api/admin/5s/dashboard');
+    const banner = document.getElementById('fsSafetyBanner');
+    if (d.safety_red_count > 0) {
+      banner.style.display = 'block';
+      banner.textContent = `⚠ ${d.safety_red_count} safety/LOTO exception(s) open — review immediately.`;
+    } else { banner.style.display = 'none'; }
+    const tilesHtml = (d.compliance || []).map(c => `
+      <div style="background:#f9fafb;border:1px solid var(--border);border-radius:8px;padding:10px;display:flex;align-items:center;gap:10px;">
+        <div style="width:10px;height:40px;background:${fsBandColor(c.band)};border-radius:4px;"></div>
+        <div>
+          <div style="font-weight:700;font-size:13px;">${esc(c.name || ('tech '+c.tech_id))}</div>
+          <div style="color:var(--muted);font-size:12px;">${c.pass_audits}/${c.total_audits} pass · ${c.score_pct}%</div>
+        </div>
+      </div>
+    `).join('') || '<div style="color:var(--muted);">No tech compliance data yet.</div>';
+    body.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:18px;">
+        <div style="background:#eff6ff;padding:12px;border-radius:8px;"><div style="font-size:11px;color:#1d4ed8;font-weight:700;">OPEN</div><div style="font-size:22px;font-weight:800;">${d.open_exceptions}</div></div>
+        <div style="background:#fef3c7;padding:12px;border-radius:8px;"><div style="font-size:11px;color:#92400e;font-weight:700;">ESCALATED</div><div style="font-size:22px;font-weight:800;">${d.escalated_exceptions}</div></div>
+        <div style="background:#fee2e2;padding:12px;border-radius:8px;"><div style="font-size:11px;color:#991b1b;font-weight:700;">TO DIRECTOR</div><div style="font-size:22px;font-weight:800;">${d.director_exceptions}</div></div>
+        <div style="background:#f3f4f6;padding:12px;border-radius:8px;"><div style="font-size:11px;color:#374151;font-weight:700;">SAFETY RED</div><div style="font-size:22px;font-weight:800;">${d.safety_red_count}</div></div>
+      </div>
+      <h3 style="margin-bottom:10px;">Tech compliance (rolling 30 days)</h3>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;">${tilesHtml}</div>
+    `;
+    // 5S+KPI signal hints
+    for (const c of (d.compliance || [])) {
+      if (c.band === 'red') {
+        try {
+          const k = await api('GET', `/api/admin/5s/kpi-correlation/${c.tech_id}`);
+          if (k.kpi_band && k.kpi_band !== 'green') {
+            const note = document.createElement('div');
+            note.style.cssText = 'margin-top:10px;padding:8px 10px;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;font-size:13px;';
+            note.textContent = `${c.name}: ${k.diagnostic}`;
+            body.appendChild(note);
+          }
+        } catch (e) {}
+      }
+    }
+  }
+  async function fsRenderAudits(body) {
+    const audits = await api('GET', '/api/admin/5s/audits?limit=100');
+    if (!audits.length) { body.innerHTML = '<div style="color:var(--muted);">No audits recorded yet.</div>'; return; }
+    body.innerHTML = `
+      <table>
+        <thead><tr><th>ID</th><th>When</th><th>Asset</th><th>Phase</th><th>Auditor</th><th>Result</th></tr></thead>
+        <tbody>${audits.map(a=>`
+          <tr style="cursor:pointer;" onclick="fsOpenAudit(${a.id})">
+            <td>#${a.id}</td>
+            <td>${esc((a.audit_ts||'').slice(0,16).replace('T',' '))}</td>
+            <td>${a.asset_id}</td>
+            <td>${esc(a.phase)}</td>
+            <td>${esc(a.auditor_kind)}:${a.auditor_id}</td>
+            <td>${a.overall_pass ? '<span style="color:#059669;font-weight:700;">PASS</span>' : '<span style="color:#dc2626;font-weight:700;">FAIL</span>'}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    `;
+  }
+  async function fsOpenAudit(id) {
+    const d = await api('GET', `/api/admin/5s/audits/${id}`);
+    const items = (d.items || []).map(i => `<li style="margin-bottom:4px;">[${i.section}] ${esc(i.item_label)} → <strong>${i.status.toUpperCase()}</strong>${i.note ? ` — ${esc(i.note)}` : ''}</li>`).join('');
+    alert(`Audit #${d.id}\n${d.phase} · ${d.audit_ts}\n${d.overall_pass ? 'PASS' : 'FAIL'}\n\n` + (d.items||[]).map(i=>`[${i.section}] ${i.item_label} → ${i.status}${i.note?' — '+i.note:''}`).join('\n'));
+  }
+  async function fsRenderExceptions(body) {
+    const rows = await api('GET', '/api/admin/5s/exceptions?status=open');
+    const esc2 = rows.length ? rows.map(e=>`
+      <tr>
+        <td>#${e.id}</td>
+        <td>${esc((e.opened_at||'').slice(0,16).replace('T',' '))}</td>
+        <td>${esc(e.category)}</td>
+        <td>${e.severity==='safety_loto'?'<span style="background:#fee2e2;color:#991b1b;padding:2px 6px;border-radius:8px;font-size:11px;font-weight:700;">SAFETY</span>':'normal'}</td>
+        <td>${esc(e.status)}</td>
+        <td>${esc((e.description||'').slice(0,80))}</td>
+        <td style="white-space:nowrap;">
+          ${can('fs:exception_resolve') ? `<button class="btn btn-edit btn-sm" onclick="fsResolve(${e.id})">Resolve</button>` : ''}
+          ${can('fs:exception_escalate_director') ? `<button class="btn btn-danger btn-sm" style="margin-left:4px;" onclick="fsEscalate(${e.id})">Escalate</button>` : ''}
+        </td>
+      </tr>`).join('') : '<tr><td colspan="7" class="empty">No open exceptions.</td></tr>';
+    body.innerHTML = `<table>
+      <thead><tr><th>ID</th><th>Opened</th><th>Category</th><th>Severity</th><th>Status</th><th>Description</th><th>Actions</th></tr></thead>
+      <tbody>${esc2}</tbody></table>`;
+  }
+  async function fsResolve(id) {
+    const note = prompt('Resolution note (required):', '');
+    if (note === null) return;
+    try { await api('POST', `/api/admin/5s/exceptions/${id}/resolve`, { resolution_note: note || '' }); toast('Resolved','success'); fsLoadCurrentTab(); }
+    catch (e) { toast(e.message,'error'); }
+  }
+  async function fsEscalate(id) {
+    if (!confirm('Escalate to director?')) return;
+    try { await api('POST', `/api/admin/5s/exceptions/${id}/escalate`, {}); toast('Escalated','success'); fsLoadCurrentTab(); }
+    catch (e) { toast(e.message,'error'); }
+  }
+  async function fsRenderAssets(body) {
+    const assets = await api('GET', '/api/admin/5s/assets?active_only=false');
+    body.innerHTML = `
+      ${can('fs:asset_manage') ? '<button class="btn btn-primary btn-sm" onclick="fsAddAsset()" style="margin-bottom:10px;">+ Add Asset</button>' : ''}
+      <table>
+        <thead><tr><th>Code</th><th>Type</th><th>Label</th><th>Tech</th><th>Active</th></tr></thead>
+        <tbody>${assets.length ? assets.map(a => `
+          <tr style="${a.active?'':'opacity:0.5;'}">
+            <td><span class="code-pill">${esc(a.asset_code)}</span></td>
+            <td>${esc(a.asset_type)}</td>
+            <td>${esc(a.label)}</td>
+            <td>${a.assigned_tech_id || '—'}</td>
+            <td>${a.active ? 'yes' : 'no'}</td>
+          </tr>`).join('') : '<tr><td colspan="5" class="empty">No assets.</td></tr>'}
+        </tbody>
+      </table>
+    `;
+  }
+  async function fsAddAsset() {
+    const code  = prompt('Asset code (e.g. VAN-KIN-02):');
+    if (!code) return;
+    const type  = prompt('Type — vehicle, toolkit, or storage:', 'vehicle');
+    if (!type) return;
+    const label = prompt('Display label:');
+    if (!label) return;
+    try { await api('POST', '/api/admin/5s/assets', { asset_code: code, asset_type: type, label, hub_id: 1 });
+          toast('Asset created','success'); fsLoadCurrentTab(); }
+    catch (e) { toast(e.message,'error'); }
+  }
+  async function fsRenderCompliance(body) {
+    const list = await api('GET', '/api/admin/5s/compliance');
+    if (!list.length) { body.innerHTML = '<div style="color:var(--muted);">No technicians or no audits yet.</div>'; return; }
+    body.innerHTML = `
+      <table>
+        <thead><tr><th>Tech</th><th>Band</th><th>Score</th><th>Audits</th><th>Safety</th><th>4-wk trend</th></tr></thead>
+        <tbody>${list.map(c=>`
+          <tr>
+            <td><strong>${esc(c.name||('tech '+c.tech_id))}</strong></td>
+            <td><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${fsBandColor(c.band)};margin-right:6px;"></span>${c.band.toUpperCase()}</td>
+            <td>${c.score_pct}%</td>
+            <td>${c.pass_audits}/${c.total_audits}</td>
+            <td>${c.safety_red ? '<span style="color:#dc2626;font-weight:700;">SAFETY RED</span>' : '—'}</td>
+            <td>${(c.trend||[]).map(t=>`<span title="${t.week_start}: ${t.pct}% (${t.audits})" style="display:inline-block;width:8px;height:${Math.max(4,Math.round((t.pct||0)/5))}px;background:${fsBandColor(t.pct>=90?'green':t.pct>=75?'amber':'red')};margin-right:2px;vertical-align:bottom;"></span>`).join('')}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    `;
+  }
+  async function fsExportCsv() {
+    try {
+      const res = await fetch('/api/admin/5s/export?format=csv', { headers: { 'Authorization': `Bearer ${adminToken}` }});
+      if (!res.ok) throw new Error('Export failed');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = 'fs_export.csv'; document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) { toast(e.message,'error'); }
   }
 
   init();

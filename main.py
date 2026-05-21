@@ -90,6 +90,19 @@ from database import (
     create_session, get_session_by_jti, is_session_active,
     revoke_session, revoke_all_sessions_for, get_active_sessions_for,
     mark_session_mfa_verified,
+    # 5S workplace-discipline module
+    create_asset as fs_create_asset, list_assets as fs_list_assets,
+    get_asset_by_id as fs_get_asset_by_id, update_asset as fs_update_asset,
+    add_asset_item as fs_add_asset_item, list_asset_items as fs_list_asset_items,
+    remove_asset_item as fs_remove_asset_item,
+    get_checklist_for_phase as fs_get_checklist_for_phase,
+    submit_audit as fs_submit_audit,
+    list_audits as fs_list_audits, get_audit_with_items as fs_get_audit_with_items,
+    list_exceptions as fs_list_exceptions, get_exception as fs_get_exception,
+    resolve_exception as fs_resolve_exception,
+    escalate_exception as fs_escalate_exception,
+    find_overdue_exceptions as fs_find_overdue_exceptions,
+    fs_today_status_for_tech, fs_export_all,
 )
 
 # ── Admin role → permission matrix ────────────────────────────────────────────
@@ -119,6 +132,10 @@ ADMIN_PERMS = {
         "invoice:record_payment",
         "documents:upload", "documents:view", "documents:view_highly_sensitive",
         "documents:delete", "documents:delete_highly_sensitive",
+        # 5S workplace-discipline
+        "fs:audit_any", "fs:exception_resolve", "fs:exception_escalate_director",
+        "fs:asset_manage", "fs:report_view", "fs:audit_override",
+        "fs:coaching_manage",
     },
     "supervisor_admin": {
         "admin:view_all",
@@ -140,6 +157,9 @@ ADMIN_PERMS = {
         "invoice:view", "invoice:update", "invoice:record_payment",
         "documents:upload", "documents:view", "documents:view_highly_sensitive",
         "documents:delete",
+        # 5S workplace-discipline (supervisor can audit anyone, resolve / escalate)
+        "fs:audit_any", "fs:exception_resolve", "fs:exception_escalate_director",
+        "fs:report_view", "fs:coaching_manage",
     },
     "system_admin": {
         "tech:view", "tech:create", "tech:update", "tech:reset_pin",
@@ -152,6 +172,8 @@ ADMIN_PERMS = {
         "inventory:view", "inventory:create", "inventory:update", "inventory:adjust",
         "invoice:view", "invoice:create", "invoice:update", "invoice:record_payment",
         "documents:upload", "documents:view",
+        # 5S — system_admin manages the asset catalog + can view reports
+        "fs:asset_manage", "fs:report_view",
     },
     "hr_admin": {
         "tech:view", "tech:create", "tech:update", "tech:reset_pin",
@@ -161,12 +183,16 @@ ADMIN_PERMS = {
         "documents:upload", "documents:view", "documents:view_highly_sensitive",
         # HR generates payroll; super_admin approves (separation of duties).
         "payroll:generate", "payroll:view_all",
+        # 5S — HR sees reports for coaching/performance context (read-only).
+        "fs:report_view",
     },
     "ceo_assistant": {
         "audit:view_self",
         "inventory:view",
         "invoice:view",
         "documents:view",
+        # 5S — read-only operational visibility.
+        "fs:report_view",
     },
     # Inventory manager: full operational visibility on stock + suppliers +
     # POs, zero personnel visibility. Cannot close out POs (that requires
@@ -4677,6 +4703,367 @@ def admin_invoice_print_page(invoice_id: int):
 @app.get("/portal/invoice/{invoice_id}")
 def portal_invoice_print_page(invoice_id: int):
     return FileResponse("invoice_print.html")
+
+
+# ── 5S workplace-discipline endpoints ─────────────────────────────────────────
+# Tech-side endpoints
+@app.get("/api/tech/5s/assets/mine")
+def tech_fs_my_assets(request: Request):
+    tech_id = _require_tech(request)
+    return fs_list_assets(tech_id=tech_id, active_only=True)
+
+
+@app.get("/api/tech/5s/checklist")
+def tech_fs_checklist(request: Request, asset_id: int, phase: str):
+    tech_id = _require_tech(request)
+    asset = fs_get_asset_by_id(asset_id)
+    if not asset:
+        raise HTTPException(404, "Asset not found")
+    if asset.get("assigned_tech_id") != tech_id:
+        raise HTTPException(403, "Not your asset")
+    items = fs_get_checklist_for_phase(asset_id, phase)
+    if not items:
+        raise HTTPException(400, "No checklist defined for this asset/phase")
+    return {"asset_id": asset_id, "phase": phase, "items": items}
+
+
+class TechFSAuditSubmit(BaseModel):
+    asset_id: int
+    phase: str
+    items: List[dict]
+    client_meta: Optional[dict] = None
+
+
+@app.post("/api/tech/5s/audit")
+def tech_fs_submit_audit(request: Request, body: TechFSAuditSubmit):
+    tech_id = _require_tech(request)
+    asset = fs_get_asset_by_id(body.asset_id)
+    if not asset:
+        raise HTTPException(404, "Asset not found")
+    if asset.get("assigned_tech_id") != tech_id:
+        raise HTTPException(403, "Not your asset")
+    if body.phase not in ("start_shift", "end_shift"):
+        raise HTTPException(400, "Tech may only submit start_shift or end_shift audits")
+    # Attach server IP into client_meta (server-issued data only).
+    meta = dict(body.client_meta or {})
+    meta["server_ip"] = _client_ip(request)
+    meta["server_ts"] = datetime.now(timezone.utc).isoformat()
+    try:
+        out = fs_submit_audit(
+            asset_id=body.asset_id, auditor_id=tech_id, auditor_kind="tech",
+            phase=body.phase, items=body.items, client_meta=meta,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    tech = get_tech_by_id(tech_id)
+    log_audit(
+        actor_type="tech", actor_id=tech_id,
+        actor_prid=tech.get("prid") if tech else None,
+        actor_label=tech.get("name") if tech else None,
+        action="fs.audit.submit",
+        target_type="fs_audit", target_id=out["audit_id"],
+        target_label=f"{asset['asset_code']}/{body.phase}",
+        after_value={"overall_pass": out["overall_pass"],
+                     "exception_count": len(out["exception_ids"])},
+        ip_address=_client_ip(request),
+    )
+    return out
+
+
+@app.get("/api/tech/5s/exceptions/mine")
+def tech_fs_my_exceptions(request: Request):
+    tech_id = _require_tech(request)
+    rows = fs_list_exceptions(tech_id=tech_id, limit=200)
+    # filter to open-ish
+    return [r for r in rows if r["status"] in ("open", "escalated", "escalated_director")]
+
+
+@app.get("/api/tech/5s/today")
+def tech_fs_today(request: Request):
+    tech_id = _require_tech(request)
+    return fs_today_status_for_tech(tech_id)
+
+
+# Admin-side endpoints
+@app.get("/api/admin/5s/assets")
+def admin_fs_list_assets(request: Request, hub_id: Optional[int] = None,
+                         asset_type: Optional[str] = None,
+                         tech_id: Optional[int] = None,
+                         active_only: bool = True):
+    _require_perm(request, "fs:report_view")
+    return fs_list_assets(hub_id=hub_id, asset_type=asset_type,
+                          tech_id=tech_id, active_only=active_only)
+
+
+class AdminFSAssetCreate(BaseModel):
+    asset_code: str
+    asset_type: str
+    label: str
+    hub_id: int = 1
+    assigned_tech_id: Optional[int] = None
+    static_location: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@app.post("/api/admin/5s/assets")
+def admin_fs_create_asset(request: Request, body: AdminFSAssetCreate):
+    admin = _require_perm(request, "fs:asset_manage")
+    try:
+        aid = fs_create_asset(
+            asset_code=body.asset_code, asset_type=body.asset_type, label=body.label,
+            hub_id=body.hub_id, assigned_tech_id=body.assigned_tech_id,
+            static_location=body.static_location, notes=body.notes,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(400, f"Could not create asset: {e}")
+    _audit_from(admin, "fs.asset.create", request,
+                target_type="fs_asset", target_id=aid,
+                target_label=body.asset_code,
+                after={"asset_code": body.asset_code, "asset_type": body.asset_type})
+    return {"id": aid}
+
+
+class AdminFSAssetUpdate(BaseModel):
+    label: Optional[str] = None
+    assigned_tech_id: Optional[int] = None
+    static_location: Optional[str] = None
+    active: Optional[int] = None
+    notes: Optional[str] = None
+
+
+@app.patch("/api/admin/5s/assets/{asset_id}")
+def admin_fs_update_asset(request: Request, asset_id: int, body: AdminFSAssetUpdate):
+    admin = _require_perm(request, "fs:asset_manage")
+    before = fs_get_asset_by_id(asset_id)
+    if not before:
+        raise HTTPException(404, "Asset not found")
+    fields = {k: v for k, v in body.dict().items() if v is not None}
+    if not fields:
+        return {"ok": True, "noop": True}
+    fs_update_asset(asset_id, **fields)
+    _audit_from(admin, "fs.asset.update", request,
+                target_type="fs_asset", target_id=asset_id,
+                target_label=before["asset_code"],
+                before=before, after=fields)
+    return {"ok": True}
+
+
+class AdminFSAssetItemCreate(BaseModel):
+    item_type: str
+    item_label: str
+    sop_required: bool = True
+    location_code: Optional[str] = None
+    expiry_date: Optional[str] = None
+    part_id: Optional[int] = None
+
+
+@app.post("/api/admin/5s/assets/{asset_id}/items")
+def admin_fs_add_asset_item(request: Request, asset_id: int,
+                             body: AdminFSAssetItemCreate):
+    admin = _require_perm(request, "fs:asset_manage")
+    asset = fs_get_asset_by_id(asset_id)
+    if not asset:
+        raise HTTPException(404, "Asset not found")
+    try:
+        iid = fs_add_asset_item(
+            asset_id=asset_id, item_type=body.item_type,
+            item_label=body.item_label, sop_required=body.sop_required,
+            location_code=body.location_code, expiry_date=body.expiry_date,
+            part_id=body.part_id,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    _audit_from(admin, "fs.asset_item.add", request,
+                target_type="fs_asset_item", target_id=iid,
+                target_label=body.item_label,
+                after={"asset_id": asset_id, "item_type": body.item_type})
+    return {"id": iid}
+
+
+@app.get("/api/admin/5s/assets/{asset_id}/items")
+def admin_fs_list_asset_items(request: Request, asset_id: int):
+    _require_perm(request, "fs:report_view")
+    return fs_list_asset_items(asset_id)
+
+
+@app.delete("/api/admin/5s/assets/{asset_id}/items/{item_id}")
+def admin_fs_remove_asset_item(request: Request, asset_id: int, item_id: int):
+    admin = _require_perm(request, "fs:asset_manage")
+    fs_remove_asset_item(item_id)
+    _audit_from(admin, "fs.asset_item.remove", request,
+                target_type="fs_asset_item", target_id=item_id)
+    return {"ok": True}
+
+
+class AdminFSAuditSubmit(BaseModel):
+    asset_id: int
+    phase: str = "weekly_manager"
+    items: List[dict]
+    client_meta: Optional[dict] = None
+
+
+@app.post("/api/admin/5s/audit")
+def admin_fs_submit_audit(request: Request, body: AdminFSAuditSubmit):
+    admin = _require_perm(request, "fs:audit_any")
+    asset = fs_get_asset_by_id(body.asset_id)
+    if not asset:
+        raise HTTPException(404, "Asset not found")
+    meta = dict(body.client_meta or {})
+    meta["server_ip"] = _client_ip(request)
+    meta["server_ts"] = datetime.now(timezone.utc).isoformat()
+    try:
+        out = fs_submit_audit(
+            asset_id=body.asset_id, auditor_id=admin["id"], auditor_kind="admin",
+            phase=body.phase, items=body.items, client_meta=meta,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    _audit_from(admin, "fs.audit.submit", request,
+                target_type="fs_audit", target_id=out["audit_id"],
+                target_label=f"{asset['asset_code']}/{body.phase}",
+                after={"overall_pass": out["overall_pass"],
+                       "exception_count": len(out["exception_ids"])})
+    return out
+
+
+@app.get("/api/admin/5s/audits")
+def admin_fs_list_audits(request: Request,
+                         hub_id: Optional[int] = None,
+                         tech_id: Optional[int] = None,
+                         asset_id: Optional[int] = None,
+                         phase: Optional[str] = None,
+                         date_from: Optional[str] = None,
+                         date_to: Optional[str] = None,
+                         limit: int = 200):
+    _require_perm(request, "fs:report_view")
+    return fs_list_audits(hub_id=hub_id, tech_id=tech_id, asset_id=asset_id,
+                          phase=phase, date_from=date_from, date_to=date_to,
+                          limit=limit)
+
+
+@app.get("/api/admin/5s/audits/{audit_id}")
+def admin_fs_get_audit(request: Request, audit_id: int):
+    _require_perm(request, "fs:report_view")
+    out = fs_get_audit_with_items(audit_id)
+    if not out:
+        raise HTTPException(404, "Audit not found")
+    return out
+
+
+@app.get("/api/admin/5s/exceptions")
+def admin_fs_list_exceptions(request: Request,
+                              status: Optional[str] = "open",
+                              hub_id: Optional[int] = None,
+                              asset_id: Optional[int] = None,
+                              severity: Optional[str] = None,
+                              limit: int = 200):
+    _require_perm(request, "fs:report_view")
+    # Treat "all" as no filter.
+    if status == "all":
+        status = None
+    return fs_list_exceptions(status=status, hub_id=hub_id, asset_id=asset_id,
+                              severity=severity, limit=limit)
+
+
+class AdminFSResolve(BaseModel):
+    resolution_note: str = ""
+
+
+@app.post("/api/admin/5s/exceptions/{exception_id}/resolve")
+def admin_fs_resolve_exception(request: Request, exception_id: int,
+                                body: AdminFSResolve):
+    admin = _require_perm(request, "fs:exception_resolve")
+    before = fs_get_exception(exception_id)
+    if not before:
+        raise HTTPException(404, "Exception not found")
+    try:
+        fs_resolve_exception(exception_id, admin["id"], "admin",
+                             resolution_note=body.resolution_note or "")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    _audit_from(admin, "fs.exception.resolve", request,
+                target_type="fs_exception", target_id=exception_id,
+                target_label=before["category"],
+                before={"status": before["status"]},
+                after={"status": "resolved"})
+    return {"ok": True}
+
+
+@app.post("/api/admin/5s/exceptions/{exception_id}/escalate")
+def admin_fs_escalate_exception(request: Request, exception_id: int):
+    admin = _require_perm(request, "fs:exception_escalate_director")
+    before = fs_get_exception(exception_id)
+    if not before:
+        raise HTTPException(404, "Exception not found")
+    try:
+        fs_escalate_exception(exception_id, escalated_to_id=admin["id"],
+                              actor_id=admin["id"], actor_kind="admin",
+                              target_status="escalated_director")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    _audit_from(admin, "fs.exception.escalate_director", request,
+                target_type="fs_exception", target_id=exception_id,
+                target_label=before["category"],
+                before={"status": before["status"]},
+                after={"status": "escalated_director"})
+    return {"ok": True}
+
+
+@app.get("/api/admin/5s/dashboard")
+def admin_fs_dashboard(request: Request, hub_id: Optional[int] = None):
+    """Phase 1 dashboard — exception counts only. Compliance tiles arrive in Phase 3."""
+    _require_perm(request, "fs:report_view")
+    open_excs  = fs_list_exceptions(status="open", hub_id=hub_id, limit=500)
+    esc_excs   = fs_list_exceptions(status="escalated", hub_id=hub_id, limit=500)
+    director_excs = fs_list_exceptions(status="escalated_director", hub_id=hub_id, limit=500)
+    safety_open = [e for e in (open_excs + esc_excs + director_excs)
+                   if e.get("severity") == "safety_loto"]
+    return {
+        "compliance":            [],
+        "open_exceptions":       len(open_excs),
+        "escalated_exceptions":  len(esc_excs),
+        "director_exceptions":   len(director_excs),
+        "safety_red_count":      len(safety_open),
+        "safety_red":            safety_open[:25],
+    }
+
+
+@app.get("/api/admin/5s/export")
+def admin_fs_export(request: Request, format: str = "json"):
+    admin = _require_perm(request, "fs:report_view")
+    data = fs_export_all()
+    _audit_from(admin, "fs.export", request, target_type="fs_export",
+                after={"audits": len(data["audits"]), "format": format})
+    if format == "csv":
+        import csv as _csv, io as _io
+        buf = _io.StringIO()
+        # Audits sheet
+        buf.write("# fs_audits\n")
+        w = _csv.writer(buf)
+        if data["audits"]:
+            w.writerow(list(data["audits"][0].keys()))
+            for r in data["audits"]:
+                w.writerow(list(r.values()))
+        buf.write("\n# fs_audit_items\n")
+        if data["audit_items"]:
+            w.writerow(list(data["audit_items"][0].keys()))
+            for r in data["audit_items"]:
+                w.writerow(list(r.values()))
+        buf.write("\n# fs_exceptions\n")
+        if data["exceptions"]:
+            w.writerow(list(data["exceptions"][0].keys()))
+            for r in data["exceptions"]:
+                w.writerow(list(r.values()))
+        buf.write("\n# fs_exception_events\n")
+        if data["exception_events"]:
+            w.writerow(list(data["exception_events"][0].keys()))
+            for r in data["exception_events"]:
+                w.writerow(list(r.values()))
+        return Response(content=buf.getvalue(), media_type="text/csv",
+                        headers={"Content-Disposition": 'attachment; filename="fs_export.csv"'})
+    return data
 
 
 @app.get("/tech")
