@@ -473,11 +473,23 @@
         5S
         <span id="fsRedBadge" style="margin-left:auto;background:var(--danger);color:white;font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px;display:none;"></span>
       </div>
+      <div class="nav-item" onclick="showPanel('delegations')" id="nav-delegations" style="display:none;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><polyline points="17 11 19 13 23 9"/></svg>
+        Delegations
+      </div>
     </nav>
 
     <div class="main">
 
       <div id="securityAlertBanner" style="display:none;margin-bottom:16px;padding:12px 16px;border-radius:8px;background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;font-size:14px;font-weight:600;cursor:pointer;" onclick="showPanel('audit'); document.getElementById('auditMode').value='alerts'; loadAudit();"></div>
+      <!-- Recipient delegation banner — dismissible per session. -->
+      <div id="delegRecipientBanner" style="display:none;margin-bottom:12px;padding:10px 14px;border-radius:8px;background:#e0f2fe;color:#075985;border:1px solid #7dd3fc;font-size:14px;display:none;align-items:center;gap:10px;">
+        <span id="delegRecipientBannerText" style="flex:1;"></span>
+        <button class="btn btn-ghost" style="padding:4px 10px;" onclick="showPanel('delegations'); document.getElementById('delegTabsMine')?.click();">View</button>
+        <button class="btn btn-ghost" style="padding:4px 10px;" onclick="dismissDelegBanner()">Dismiss</button>
+      </div>
+      <!-- Cascade re-grant banner stack -->
+      <div id="delegCascadeBannerStack"></div>
 
       <!-- ── Customers panel ── -->
       <div class="panel active" id="panel-customers">
@@ -574,9 +586,12 @@
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
             Back to Customers
           </div>
-          <div class="detail-header">
-            <h3 id="detailName"></h3>
-            <div class="meta" id="detailMeta"></div>
+          <div class="detail-header" style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+            <div>
+              <h3 id="detailName"></h3>
+              <div class="meta" id="detailMeta"></div>
+            </div>
+            <button class="btn btn-ghost btn-sm pc-share-icon" id="customerShareIcon" style="display:none;" title="Grant delegation for this customer" onclick="openDelegGrantModal({scope_record_type:'customer', scope_record_id: (currentCustomer && currentCustomer.id) || 0})">&#x2197;</button>
           </div>
           <div class="detail-sections">
             <div class="detail-section">
@@ -1073,9 +1088,125 @@
         <div id="fsBody" style="background:white;border:1px solid var(--border);border-radius:8px;padding:14px;min-height:200px;">Loading…</div>
       </div>
 
+      <!-- ── Delegations panel ── -->
+      <div class="panel" id="panel-delegations">
+        <div class="top-bar">
+          <h2>Delegations</h2>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-primary" id="delegGrantBtn" onclick="openDelegGrantModal()">+ Grant Delegation</button>
+          </div>
+        </div>
+        <div class="filter-bar" id="delegTabsBar">
+          <button class="filter-btn active" id="delegTabsAll"  onclick="setDelegTab('all', this)">All Active</button>
+          <button class="filter-btn"        id="delegTabsExpired" onclick="setDelegTab('expired', this)">Expired</button>
+          <button class="filter-btn"        id="delegTabsRevoked" onclick="setDelegTab('revoked', this)">Revoked</button>
+          <button class="filter-btn"        id="delegTabsMine"    onclick="setDelegTab('mine', this)">My Delegations</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Grantor</th><th>Recipient</th><th>Type</th><th>Scope</th>
+              <th>Permission</th><th>Valid Until</th><th>Status</th><th>Actions</th>
+            </tr></thead>
+            <tbody id="delegTableBody"><tr><td colspan="8" style="padding:20px;text-align:center;color:#888;">Loading…</td></tr></tbody>
+          </table>
+        </div>
+        <div id="delegRegrantBox" style="display:none;margin-top:18px;">
+          <h3 style="margin:0 0 8px 0;">Re-grant Requests <span style="font-weight:400;font-size:13px;color:#666;">(super_admin queue)</span></h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Requester</th><th>Original</th><th>Requested</th><th>Status</th><th>Actions</th></tr></thead>
+              <tbody id="delegRegrantBody"><tr><td colspan="5" style="padding:14px;text-align:center;color:#888;">No open requests.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
     </div><!-- /.main -->
   </div><!-- /.layout -->
 </div><!-- /#app -->
+
+<!-- ── Grant Delegation modal ── -->
+<div class="modal-overlay" id="modal-delegGrant">
+  <div class="modal" style="max-width:560px;">
+    <div class="modal-header">
+      <h3>Grant Delegation</h3>
+      <button class="modal-close" onclick="closeModal('delegGrant')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label>Recipient (admin) <span style="color:var(--danger);">*</span></label>
+        <input id="dg-recipient-search" type="text" placeholder="Type admin name or PRID…" oninput="delegRecipientTypeahead(this.value)" autocomplete="off"/>
+        <div id="dg-recipient-results" style="border:1px solid var(--border);border-radius:4px;max-height:140px;overflow:auto;display:none;background:white;"></div>
+        <input type="hidden" id="dg-recipient-id"/>
+        <div id="dg-recipient-chip" style="margin-top:6px;display:none;font-size:13px;color:var(--teal);font-weight:600;"></div>
+      </div>
+      <div class="field">
+        <label>Delegation Type <span style="color:var(--danger);">*</span></label>
+        <div style="display:flex;gap:14px;font-size:14px;">
+          <label><input type="radio" name="dg-type" value="record" checked onchange="onDelegTypeChange()"/> Record</label>
+          <label><input type="radio" name="dg-type" value="record_type" onchange="onDelegTypeChange()"/> Record-type</label>
+          <label id="dg-type-power-label" style="display:none;"><input type="radio" name="dg-type" value="power" onchange="onDelegTypeChange()"/> Power</label>
+        </div>
+      </div>
+      <div class="field" id="dg-scope-type-wrap">
+        <label>Scope Record-Type</label>
+        <select id="dg-scope-type">
+          <option value="customer">Customer</option>
+          <option value="visit">Visit</option>
+          <option value="invoice">Invoice</option>
+          <option value="technician">Technician</option>
+        </select>
+      </div>
+      <div class="field" id="dg-scope-id-wrap">
+        <label>Scope Record ID</label>
+        <input id="dg-scope-id" type="number" placeholder="e.g. 42"/>
+      </div>
+      <div class="field" id="dg-perm-wrap">
+        <label>Permission</label>
+        <select id="dg-perm">
+          <option value="read">Read</option>
+          <option value="read_write">Read &amp; Write</option>
+        </select>
+      </div>
+      <div class="field">
+        <label><input type="checkbox" id="dg-permanent" onchange="document.getElementById('dg-validuntil').disabled=this.checked"/> Permanent (no expiry)</label>
+        <input id="dg-validuntil" type="datetime-local" style="margin-top:6px;"/>
+      </div>
+      <div class="field">
+        <label>Notes (≤500 chars)</label>
+        <textarea id="dg-notes" rows="3" maxlength="500"></textarea>
+      </div>
+      <div class="form-error" id="dg-err" style="display:none;color:var(--danger);"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('delegGrant')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitDelegGrant()">Grant</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Request Re-grant modal ── -->
+<div class="modal-overlay" id="modal-delegRegrant">
+  <div class="modal" style="max-width:460px;">
+    <div class="modal-header">
+      <h3>Request Re-grant</h3>
+      <button class="modal-close" onclick="closeModal('delegRegrant')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:13px;color:#444;margin-bottom:8px;" id="dg-regrant-summary"></div>
+      <div class="field">
+        <label>Notes (optional)</label>
+        <textarea id="dg-regrant-notes" rows="3" maxlength="500"></textarea>
+      </div>
+      <input type="hidden" id="dg-regrant-orig-id"/>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('delegRegrant')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitDelegRegrant()">Submit Request</button>
+    </div>
+  </div>
+</div>
 
 <!-- ── Modals ── -->
 
@@ -2456,6 +2587,21 @@
     if (can('inventory:export')) document.getElementById('exportInventoryBtn').style.display = '';
     if (can('payroll:view_all')) document.getElementById('nav-payroll').style.display = 'flex';
     if (can('fs:report_view')) document.getElementById('nav-fs').style.display = 'flex';
+    // Delegations — super_admin OR admin with delegation power.
+    if (currentAdmin && (currentAdmin.role === 'super_admin'
+        || currentAdmin.has_delegation_power === 1
+        || currentAdmin.has_delegation_power === true)) {
+      const nd = document.getElementById('nav-delegations');
+      if (nd) nd.style.display = 'flex';
+    }
+    // Share icons — super_admin OR has_delegation_power.
+    if (currentAdmin && (currentAdmin.role === 'super_admin'
+        || currentAdmin.has_delegation_power === 1
+        || currentAdmin.has_delegation_power === true)) {
+      document.querySelectorAll('.pc-share-icon').forEach(el => el.style.display = '');
+    }
+    // Recipient banner / cascade re-grant banner — every admin.
+    refreshDelegationBanners();
     if (!can('fs:asset_manage')) {
       const at = document.getElementById('fsAssetsTabBtn');
       if (at) at.style.display = 'none';
@@ -2740,6 +2886,7 @@
     document.getElementById(`panel-${name}`).classList.add('active');
     document.getElementById(`nav-${name}`).classList.add('active');
     if (name === 'fs') { fsLoadCurrentTab(); }
+    if (name === 'delegations') { loadDelegationsPanel(); }
   }
 
   // ── Customers ──────────────────────────────────────────────────────────────
@@ -8445,6 +8592,261 @@
   // Also run on first hash load (in case page loads at #invoice/123/edit)
   if (location.hash.startsWith('#invoice/')) {
     setTimeout(_invHashRouter, 500);
+  }
+
+  // ═════════════════════════════════════════════════════════════════════
+  // Delegations module
+  // ═════════════════════════════════════════════════════════════════════
+  let _delegState = { tab: 'all', mineCache: null };
+
+  function setDelegTab(tab, btnEl) {
+    _delegState.tab = tab;
+    document.querySelectorAll('#delegTabsBar .filter-btn').forEach(b => b.classList.remove('active'));
+    if (btnEl) btnEl.classList.add('active');
+    loadDelegationsPanel();
+  }
+
+  async function loadDelegationsPanel() {
+    const tbody = document.getElementById('delegTableBody');
+    tbody.innerHTML = '<tr><td colspan="8" style="padding:20px;text-align:center;color:#888;">Loading…</td></tr>';
+    let url = '/api/admin/delegations';
+    const tab = _delegState.tab;
+    const params = [];
+    if (tab === 'all')      params.push('status=active');
+    if (tab === 'expired')  params.push('status=expired');
+    if (tab === 'revoked')  params.push('status=revoked');
+    if (tab === 'mine')     params.push('as=recipient');
+    if (params.length) url += '?' + params.join('&');
+    try {
+      const res = await api('GET', url);
+      const rows = res.rows || [];
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="8" style="padding:20px;text-align:center;color:#888;">No delegations.</td></tr>';
+      } else {
+        tbody.innerHTML = rows.map(r => {
+          const scope = (r.delegation_type === 'power') ? 'ALL (Power)'
+                      : (r.delegation_type === 'record_type') ? esc(r.scope_record_type || '')
+                      : `${esc(r.scope_record_type || '')} #${r.scope_record_id}`;
+          const status = r.revoked_at ? `Revoked (${esc(r.revoke_kind || '')})` : 'Active';
+          const canRevoke = !r.revoked_at && (currentAdmin && (currentAdmin.role === 'super_admin' || currentAdmin.id === r.grantor_id));
+          const actions = canRevoke
+            ? `<button class="btn btn-danger btn-sm" onclick="revokeDelegation(${r.id})">Revoke</button>`
+            : '';
+          return `<tr>
+            <td>#${r.grantor_id}</td>
+            <td>#${r.recipient_id}</td>
+            <td>${esc(r.delegation_type)}</td>
+            <td>${scope}</td>
+            <td>${esc(r.permission_level || '—')}</td>
+            <td>${esc(r.valid_until || 'Permanent')}</td>
+            <td>${status}</td>
+            <td>${actions}</td>
+          </tr>`;
+        }).join('');
+      }
+    } catch (e) {
+      tbody.innerHTML = '<tr><td colspan="8" style="padding:14px;color:var(--danger);">Failed to load.</td></tr>';
+    }
+    // Re-grant queue — super_admin only
+    if (currentAdmin && currentAdmin.role === 'super_admin') {
+      document.getElementById('delegRegrantBox').style.display = 'block';
+      try {
+        const rr = await api('GET', '/api/admin/delegations/regrant-requests?status=open');
+        const body = document.getElementById('delegRegrantBody');
+        const reqs = rr.rows || [];
+        if (!reqs.length) {
+          body.innerHTML = '<tr><td colspan="5" style="padding:14px;text-align:center;color:#888;">No open requests.</td></tr>';
+        } else {
+          body.innerHTML = reqs.map(r => `<tr>
+            <td>#${r.requester_id}</td>
+            <td>Delegation #${r.original_delegation_id}</td>
+            <td>${esc(r.requested_at || '')}</td>
+            <td>${esc(r.status)}</td>
+            <td>
+              <button class="btn btn-primary btn-sm" onclick="approveRegrant(${r.id})">Approve</button>
+              <button class="btn btn-danger btn-sm" style="margin-left:6px;" onclick="denyRegrant(${r.id})">Deny</button>
+            </td>
+          </tr>`).join('');
+        }
+      } catch {}
+    }
+  }
+
+  async function revokeDelegation(id) {
+    if (!confirm('Revoke this delegation?')) return;
+    try {
+      await api('POST', `/api/admin/delegations/${id}/revoke`, { reason: 'manual revoke from UI' });
+      toast('Delegation revoked.');
+      loadDelegationsPanel();
+    } catch (e) { toast('Failed to revoke.', 'error'); }
+  }
+
+  async function approveRegrant(id) {
+    if (!confirm('Approve this re-grant request? A new delegation row will be created.')) return;
+    try {
+      await api('POST', `/api/admin/delegations/regrant-requests/${id}/approve`, { review_notes: 'approved via UI' });
+      toast('Approved.');
+      loadDelegationsPanel();
+    } catch { toast('Approval failed.', 'error'); }
+  }
+  async function denyRegrant(id) {
+    if (!confirm('Deny this re-grant request?')) return;
+    try {
+      await api('POST', `/api/admin/delegations/regrant-requests/${id}/deny`, { review_notes: 'denied via UI' });
+      toast('Denied.');
+      loadDelegationsPanel();
+    } catch { toast('Deny failed.', 'error'); }
+  }
+
+  function openDelegGrantModal(prefill) {
+    document.getElementById('dg-recipient-id').value = '';
+    document.getElementById('dg-recipient-search').value = '';
+    document.getElementById('dg-recipient-chip').style.display = 'none';
+    document.getElementById('dg-recipient-results').style.display = 'none';
+    document.getElementById('dg-notes').value = '';
+    document.getElementById('dg-validuntil').value = '';
+    document.getElementById('dg-permanent').checked = false;
+    document.getElementById('dg-validuntil').disabled = false;
+    document.getElementById('dg-scope-id').value = '';
+    document.getElementById('dg-perm').value = 'read_write';
+    document.querySelector('input[name="dg-type"][value="record"]').checked = true;
+    // Power radio only visible if super_admin
+    document.getElementById('dg-type-power-label').style.display =
+      (currentAdmin && currentAdmin.role === 'super_admin') ? '' : 'none';
+    if (prefill && prefill.scope_record_type) {
+      document.getElementById('dg-scope-type').value = prefill.scope_record_type;
+      document.getElementById('dg-scope-id').value = prefill.scope_record_id || '';
+    }
+    onDelegTypeChange();
+    openModal('delegGrant');
+  }
+
+  function onDelegTypeChange() {
+    const t = (document.querySelector('input[name="dg-type"]:checked') || {}).value || 'record';
+    document.getElementById('dg-scope-type-wrap').style.display = (t === 'power') ? 'none' : '';
+    document.getElementById('dg-scope-id-wrap').style.display = (t === 'record') ? '' : 'none';
+    document.getElementById('dg-perm-wrap').style.display = (t === 'power') ? 'none' : '';
+  }
+
+  let _delegRecipientTimer = null;
+  async function delegRecipientTypeahead(q) {
+    clearTimeout(_delegRecipientTimer);
+    const box = document.getElementById('dg-recipient-results');
+    if (!q || q.length < 2) { box.style.display = 'none'; return; }
+    _delegRecipientTimer = setTimeout(async () => {
+      try {
+        const rows = await api('GET', '/api/admin/admins');
+        // Filter client-side: exclude self, exclude techs (admin list only)
+        const ql = q.toLowerCase();
+        const matches = (rows || []).filter(a =>
+          a.id !== (currentAdmin && currentAdmin.id) &&
+          ((a.name || '').toLowerCase().includes(ql) ||
+           (a.username || '').toLowerCase().includes(ql) ||
+           (a.prid || '').toLowerCase().includes(ql))
+        ).slice(0, 10);
+        if (!matches.length) { box.style.display = 'none'; return; }
+        box.innerHTML = matches.map(a =>
+          `<div style="padding:7px 10px;cursor:pointer;border-bottom:1px solid #eee;" onclick="pickDelegRecipient(${a.id}, '${esc((a.name||'').replace(/'/g,"\\'"))}', '${esc(a.role||'')}')">${esc(a.name || '')} <span style="color:#777;font-size:12px;">(${esc(a.role||'')})</span></div>`
+        ).join('');
+        box.style.display = 'block';
+      } catch {}
+    }, 200);
+  }
+  function pickDelegRecipient(id, name, role) {
+    document.getElementById('dg-recipient-id').value = id;
+    document.getElementById('dg-recipient-search').value = name;
+    const chip = document.getElementById('dg-recipient-chip');
+    chip.textContent = `Selected: ${name} (${role})`;
+    chip.style.display = 'block';
+    document.getElementById('dg-recipient-results').style.display = 'none';
+  }
+
+  async function submitDelegGrant() {
+    const err = document.getElementById('dg-err');
+    err.style.display = 'none';
+    const rid = parseInt(document.getElementById('dg-recipient-id').value, 10);
+    if (!rid) { err.textContent = 'Pick a recipient.'; err.style.display = 'block'; return; }
+    const type = (document.querySelector('input[name="dg-type"]:checked') || {}).value;
+    const body = { recipient_id: rid, delegation_type: type };
+    if (type !== 'power') {
+      body.scope_record_type = document.getElementById('dg-scope-type').value;
+      body.permission_level = document.getElementById('dg-perm').value;
+      if (type === 'record') {
+        const sid = parseInt(document.getElementById('dg-scope-id').value, 10);
+        if (!sid) { err.textContent = 'Enter a scope record id.'; err.style.display = 'block'; return; }
+        body.scope_record_id = sid;
+      }
+    }
+    if (!document.getElementById('dg-permanent').checked) {
+      const v = document.getElementById('dg-validuntil').value;
+      if (v) body.valid_until = v;
+    }
+    body.grantor_notes = document.getElementById('dg-notes').value || '';
+    try {
+      await api('POST', '/api/admin/delegations', body);
+      toast('Delegation granted.');
+      closeModal('delegGrant');
+      loadDelegationsPanel();
+    } catch (e) {
+      err.textContent = (e && e.detail) ? e.detail : 'Grant failed.';
+      err.style.display = 'block';
+    }
+  }
+
+  function openRegrantModal(origId, summary) {
+    document.getElementById('dg-regrant-orig-id').value = origId;
+    document.getElementById('dg-regrant-summary').textContent = summary || `Re-grant for delegation #${origId}`;
+    document.getElementById('dg-regrant-notes').value = '';
+    openModal('delegRegrant');
+  }
+  async function submitDelegRegrant() {
+    const orig = parseInt(document.getElementById('dg-regrant-orig-id').value, 10);
+    const notes = document.getElementById('dg-regrant-notes').value || '';
+    try {
+      await api('POST', '/api/admin/delegations/regrant-requests', { original_delegation_id: orig, notes });
+      toast('Re-grant request submitted.');
+      closeModal('delegRegrant');
+      refreshDelegationBanners();
+    } catch { toast('Failed to submit request.', 'error'); }
+  }
+
+  function dismissDelegBanner() {
+    try {
+      const sid = (currentAdmin && currentAdmin.session_id) || 'anon';
+      localStorage.setItem(`pc.deleg.banner.dismissed.${sid}`, '1');
+    } catch {}
+    document.getElementById('delegRecipientBanner').style.display = 'none';
+  }
+
+  async function refreshDelegationBanners() {
+    if (!currentAdmin) return;
+    try {
+      const data = await api('GET', '/api/admin/delegations/my-active');
+      const banner = document.getElementById('delegRecipientBanner');
+      const txt = document.getElementById('delegRecipientBannerText');
+      const sid = currentAdmin.session_id || 'anon';
+      const dismissed = (function(){ try { return localStorage.getItem(`pc.deleg.banner.dismissed.${sid}`) === '1'; } catch { return false; } })();
+      if ((data.count || 0) > 0 && !dismissed) {
+        txt.textContent = `You have ${data.count} delegated record(s) available.`;
+        banner.style.display = 'flex';
+      } else {
+        banner.style.display = 'none';
+      }
+      // Cascade re-grant banners
+      const stack = document.getElementById('delegCascadeBannerStack');
+      const cas = data.cascade_revoked_recent || [];
+      if (cas.length) {
+        stack.innerHTML = cas.map(c => {
+          const scope = (c.delegation_type === 'power') ? 'Power'
+                      : (c.delegation_type === 'record_type') ? `${esc(c.scope_record_type || '')}`
+                      : `${esc(c.scope_record_type || '')} #${c.scope_record_id}`;
+          return `<div style="margin-bottom:10px;padding:10px 14px;border-radius:8px;background:#fef3c7;color:#92400e;border:1px solid #fcd34d;font-size:14px;display:flex;gap:10px;align-items:center;">
+            <span style="flex:1;">Delegation revoked by power cascade: ${scope}.</span>
+            <button class="btn btn-primary" style="padding:4px 10px;" onclick="openRegrantModal(${c.id}, 'Re-grant for ${scope}')">Request re-grant</button>
+          </div>`;
+        }).join('');
+      } else { stack.innerHTML = ''; }
+    } catch {}
   }
 
   init();
