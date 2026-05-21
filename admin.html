@@ -312,6 +312,25 @@
       .sidebar { display: none; }
       .field-row { grid-template-columns: 1fr; }
     }
+
+    /* ── §1/§2 admin nav: clickable references + rows ── */
+    .pc-link {
+      color: #22A08A;
+      text-decoration: underline;
+      text-decoration-thickness: 1px;
+      text-underline-offset: 2px;
+      cursor: pointer;
+    }
+    .pc-link:hover { color: #1a7a6a; }
+    .pc-link:focus-visible { outline: 2px solid #22A08A; outline-offset: 2px; border-radius: 2px; }
+
+    tr.pc-row-clickable { cursor: pointer; }
+    tr.pc-row-clickable:hover { background: #f5f7fa; }
+
+    /* Aging bucket entries */
+    .pc-aging-bucket-clickable { cursor: pointer; }
+    .pc-aging-bucket-clickable:hover { background: #eef2f5; }
+    .pc-aging-bucket-clickable:focus-visible { outline: 2px solid #22A08A; outline-offset: 1px; }
   </style>
 </head>
 <body>
@@ -2740,19 +2759,20 @@
     tbody.innerHTML = allCustomers.map(c => {
       const isActive = c.active !== 0 && c.active !== false;
       const ctype = c.customer_type || 'residential';
+      const safeName = esc(c.name);
       return `
-      <tr style="${isActive ? '' : 'opacity:0.55;'}">
+      <tr class="pc-row-clickable" tabindex="0" role="button" aria-label="View customer ${safeName}" onclick="routeCustomerDetail(${c.id})" onkeydown="pcRowKey(event, function(){ routeCustomerDetail(${c.id}); })" style="${isActive ? '' : 'opacity:0.55;'}">
         <td><span class="code-pill">${c.customer_code}</span>${c.has_pin ? '' : '<br><span class="badge" style="background:#fee2e2;color:#991b1b;margin-top:4px;display:inline-block;">No PIN</span>'}${!isActive ? '<br><span class="badge" style="background:#f3f4f6;color:var(--muted);margin-top:4px;display:inline-block;">Closed</span>' : ''}</td>
-        <td><strong>${esc(c.name)}</strong>${ctype === 'commercial' ? ' <span class="badge" style="background:#eff6ff;color:#1d4ed8;font-size:10px;">Commercial</span>' : ''}</td>
+        <td><strong>${safeName}</strong>${ctype === 'commercial' ? ' <span class="badge" style="background:#eff6ff;color:#1d4ed8;font-size:10px;">Commercial</span>' : ''}</td>
         <td>${c.company || '—'}</td>
         <td>${c.phone || '—'}</td>
-        <td style="white-space:nowrap;">
-          <button class="btn btn-edit btn-sm" onclick="routeCustomerDetail(${c.id})">View →</button>
-          <button class="btn btn-edit btn-sm" onclick="openResetCustomerPin(${c.id},'${esc(c.name)}')" style="margin-left:6px;">${c.has_pin ? 'Reset PIN' : 'Set PIN'}</button>
+        <td style="white-space:nowrap;" onclick="event.stopPropagation();">
+          <button class="btn btn-edit btn-sm" onclick="event.stopPropagation();routeCustomerDetail(${c.id})">View →</button>
+          <button class="btn btn-edit btn-sm" onclick="event.stopPropagation();openResetCustomerPin(${c.id},'${safeName}')" style="margin-left:6px;">${c.has_pin ? 'Reset PIN' : 'Set PIN'}</button>
           ${can('customer:delete') ? (
             isActive
-              ? `<button class="btn btn-danger btn-sm" onclick="openOffboard('customer',${c.id},'${esc(c.name)}')" style="margin-left:6px;">🚪 Close</button>`
-              : `<button class="btn btn-ghost btn-sm" onclick="reinstateAccount('customer',${c.id})" style="margin-left:6px;">Reopen</button>`
+              ? `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();openOffboard('customer',${c.id},'${safeName}')" style="margin-left:6px;">🚪 Close</button>`
+              : `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();reinstateAccount('customer',${c.id})" style="margin-left:6px;">Reopen</button>`
           ) : ''}
         </td>
       </tr>`;
@@ -2971,6 +2991,22 @@
     } catch (e) {
       toast('Unable to load equipment: ' + e.message, 'error');
     }
+  }
+
+  // ── §1/§2 helpers: row keyboard activation + ref-field nav ──
+  function pcRowKey(e, fn) {
+    if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+      e.preventDefault();
+      try { fn(); } catch(_) {}
+    }
+  }
+  function pcGoCustomer(id) { if (id) location.hash = 'customer/' + id; }
+  function pcGoVisit(id)    { if (id) location.hash = 'visit/' + id; }
+  function pcGoTech(id)     { if (id) location.hash = 'technician/' + id; }
+  function pcGoInvoice(id)  { if (id) location.hash = 'invoice/' + id + '/edit'; }
+  async function pcOpenEquipment(customerId, equipmentId) {
+    if (!customerId || !equipmentId) return;
+    try { await openEquipmentDetailFromVisit(customerId, equipmentId); } catch(_) {}
   }
 
   async function loadCdfVisits() {
@@ -3295,12 +3331,19 @@
         <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);font-weight:600;margin-bottom:2px;">${label}</div>
         <div style="color:var(--text);">${val || '—'}</div>
       </div>`;
+    const isSuper = (currentAdmin && currentAdmin.role === 'super_admin');
+    const techCellLink = (v.assigned_tech_id && isSuper)
+      ? `<a href="#technician/${v.assigned_tech_id}" class="pc-link">${escHtml(v.tech_name || '—')}</a>`
+      : escHtml(v.tech_name || '—');
+    const invoiceCellLink = (v.invoice_id && isSuper)
+      ? `<a href="#invoice/${v.invoice_id}/edit" class="pc-link">${escHtml(v.invoice_number || ('#' + v.invoice_id))}</a>`
+      : (v.invoice_number ? escHtml(v.invoice_number) : '—');
     document.getElementById('vdf-meta-grid').innerHTML = [
       fld('Customer',         customerCell),
       fld('Customer Type',    ctypeBadge),
       fld('Equipment',
-        (v.equipment_id && currentAdmin && currentAdmin.role === 'super_admin')
-          ? `<a href="#" onclick="event.preventDefault();openEquipmentDetailFromVisit(${v.customer_id}, ${v.equipment_id});" style="color:var(--navy);font-weight:600;text-decoration:underline;cursor:pointer;">${escHtml(v.equipment_name || '—')}</a>`
+        (v.equipment_id && isSuper)
+          ? `<a href="#" class="pc-link" onclick="event.preventDefault();openEquipmentDetailFromVisit(${v.customer_id}, ${v.equipment_id});">${escHtml(v.equipment_name || '—')}</a>`
           : escHtml(v.equipment_name)),
       fld('Visit Type',       typeBadge),
       fld('Status',           statusBadge),
@@ -3308,7 +3351,8 @@
       fld('Actual Start',     v.start_time ? escHtml(v.start_time.replace('T', ' ').slice(0,16)) : '—'),
       fld('Actual End',       v.end_time   ? escHtml(v.end_time.replace('T', ' ').slice(0,16))   : '—'),
       fld('Duration',         escHtml(dur)),
-      fld('Assigned Technician', escHtml(v.tech_name || '—')),
+      fld('Assigned Technician', techCellLink),
+      fld('Related Invoice',  invoiceCellLink),
     ].join('');
   }
 
@@ -4601,24 +4645,36 @@
       tbody.innerHTML = '<tr><td colspan="8" class="empty">No visits match this filter.</td></tr>';
       return;
     }
+    const isSuper = (currentAdmin && currentAdmin.role === 'super_admin');
     tbody.innerHTML = rows.map(v => {
       const tech = allTechs.find(t => t.id === v.assigned_tech_id);
-      const techCell = tech ? `<strong>${escHtml(tech.name)}</strong><br><span class="code-pill">${tech.tech_code}</span>` : '<span style="color:var(--muted);">Unassigned</span>';
+      const techLinked = (tech && isSuper)
+        ? `<a href="#technician/${tech.id}" class="pc-link" onclick="event.stopPropagation();" aria-label="View technician ${escHtml(tech.name)}"><strong>${escHtml(tech.name)}</strong></a><br><span class="code-pill">${tech.tech_code}</span>`
+        : (tech ? `<strong>${escHtml(tech.name)}</strong><br><span class="code-pill">${tech.tech_code}</span>` : '<span style="color:var(--muted);">Unassigned</span>');
+      const custLinked = isSuper
+        ? `<a href="#customer/${v.customer_id}" class="pc-link" onclick="event.stopPropagation();" aria-label="View customer ${escHtml(v.customer_name)}"><strong>${escHtml(v.customer_name)}</strong></a><br><span class="code-pill">${v.customer_code}</span>`
+        : `<strong>${escHtml(v.customer_name)}</strong><br><span class="code-pill">${v.customer_code}</span>`;
+      const equipLinked = (v.equipment_id && isSuper)
+        ? `<a href="#" class="pc-link" onclick="event.stopPropagation();event.preventDefault();pcOpenEquipment(${v.customer_id}, ${v.equipment_id});" aria-label="View equipment ${escHtml(v.equipment_name||'')}">${escHtml(v.equipment_name || '—')}</a>`
+        : (v.equipment_name || '—');
+      const rowClick = isSuper
+        ? `class="pc-row-clickable" tabindex="0" role="button" aria-label="View visit #${v.id}" onclick="routeVisitDetail(${v.id})" onkeydown="pcRowKey(event, function(){ routeVisitDetail(${v.id}); })"`
+        : '';
       return `
-      <tr>
-        <td><strong>${v.customer_name}</strong><br><span class="code-pill">${v.customer_code}</span></td>
+      <tr ${rowClick}>
+        <td>${custLinked}</td>
         <td><span class="badge badge-${v.visit_type.toLowerCase()}">${v.visit_type}</span></td>
         <td><span class="badge badge-${v.status}">${v.status.replace('_',' ')}</span></td>
         <td>${fmtDateTime(v.scheduled_date, v.scheduled_time)}</td>
         <td>${fmtDate(v.completed_date)}</td>
-        <td>${techCell}</td>
-        <td>${v.equipment_name || '—'}</td>
-        <td style="white-space:nowrap;">
-          ${(currentAdmin && currentAdmin.role === 'super_admin') ? `<button class="btn btn-ghost btn-sm" onclick="routeVisitDetail(${v.id})" aria-label="View visit detail">View →</button>` : ''}
-          <button class="btn btn-edit btn-sm" onclick="openEditVisit(${v.id})" style="margin-left:6px;">Edit</button>
-          ${v.status === 'completed' && can('visit:flag') ? `<button class="btn btn-ghost btn-sm" onclick="toggleVisitFlag(${v.id}, ${v.flagged_for_review ? 'false' : 'true'})" style="margin-left:6px;${v.flagged_for_review ? 'background:#fef3c7;color:#92400e;border-color:#fcd34d;' : ''}">${v.flagged_for_review ? '🚩 Flagged' : 'Flag for review'}</button>` : ''}
-          ${v.status === 'completed' && can('invoice:create') ? `<button class="btn btn-primary btn-sm" onclick="generateInvoiceFromVisit(${v.id})" style="margin-left:6px;background:#059669;">+ Invoice</button>` : ''}
-          <button class="btn btn-danger btn-sm" onclick="deleteVisit(${v.id})" style="margin-left:6px;">Delete</button>
+        <td>${techLinked}</td>
+        <td>${equipLinked}</td>
+        <td style="white-space:nowrap;" onclick="event.stopPropagation();">
+          ${isSuper ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();routeVisitDetail(${v.id})" aria-label="View visit detail">View →</button>` : ''}
+          <button class="btn btn-edit btn-sm" onclick="event.stopPropagation();openEditVisit(${v.id})" style="margin-left:6px;">Edit</button>
+          ${v.status === 'completed' && can('visit:flag') ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();toggleVisitFlag(${v.id}, ${v.flagged_for_review ? 'false' : 'true'})" style="margin-left:6px;${v.flagged_for_review ? 'background:#fef3c7;color:#92400e;border-color:#fcd34d;' : ''}">${v.flagged_for_review ? '🚩 Flagged' : 'Flag for review'}</button>` : ''}
+          ${v.status === 'completed' && can('invoice:create') ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();generateInvoiceFromVisit(${v.id})" style="margin-left:6px;background:#059669;">+ Invoice</button>` : ''}
+          <button class="btn btn-danger btn-sm" onclick="event.stopPropagation();deleteVisit(${v.id})" style="margin-left:6px;">Delete</button>
         </td>
       </tr>`;
     }).join('');
@@ -5328,6 +5384,7 @@
   // ── Invoices ───────────────────────────────────────────────────────────────
   let allInvoices = [];
   let invoiceFilter = 'all';
+  let invoiceAgingBucket = null; // 'not_yet_due' | 'bucket_0_30' | 'bucket_31_60' | 'bucket_61_90' | 'bucket_90plus'
   let editingInvoiceId = null;
   let currentLineItems = [];
   let payingInvoice = null;
@@ -5375,7 +5432,8 @@
       };
       const cells = order.map(k => {
         const b = buckets[k] || {label:k, count:0, total_outstanding:0};
-        return `<div style="${colors[k]||''};padding:10px;border-radius:8px;">
+        const active = invoiceAgingBucket === k ? 'box-shadow:0 0 0 2px #22A08A;' : '';
+        return `<div class="pc-aging-bucket-clickable" tabindex="0" role="button" aria-label="Filter invoices by ${escHtml(b.label)}" onclick="setInvoiceAgingFilter('${k}')" onkeydown="pcRowKey(event, function(){ setInvoiceAgingFilter('${k}'); })" style="${colors[k]||''};padding:10px;border-radius:8px;${active}">
           <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.6px;font-weight:700;opacity:0.9;">${escHtml(b.label)}</div>
           <div style="font-size:18px;font-weight:700;margin-top:4px;">${fmt(cur(b))}</div>
           <div style="font-size:11px;opacity:0.85;">${b.count} invoice${b.count===1?'':'s'}</div>
@@ -5413,10 +5471,46 @@
     renderInvoices();
   }
 
+  function setInvoiceAgingFilter(bucket) {
+    // Toggle: clicking the same bucket again clears the filter.
+    invoiceAgingBucket = (invoiceAgingBucket === bucket) ? null : bucket;
+    // Re-render the aging panel (to update the active outline) and the table.
+    loadArAging();
+    renderInvoices();
+    // Scroll to the invoice table.
+    const tableEl = document.getElementById('invoiceTableBody');
+    if (tableEl && tableEl.scrollIntoView) {
+      try { tableEl.scrollIntoView({behavior: 'smooth', block: 'start'}); } catch(_) { tableEl.scrollIntoView(); }
+    }
+  }
+
   function renderInvoices() {
     let rows = allInvoices.slice();
     if (invoiceFilter === 'overdue') rows = rows.filter(isOverdue);
     else if (invoiceFilter !== 'all') rows = rows.filter(r => r.status === invoiceFilter);
+    // FIXME(client-side aging filter): backend /api/admin/invoices has no aging_bucket param,
+    // so we filter the already-loaded list client-side based on days-past-due + outstanding balance.
+    if (invoiceAgingBucket) {
+      const today = new Date(); today.setHours(0,0,0,0);
+      const daysPastDue = (inv) => {
+        if (!inv.due_date) return -9999;
+        const d = new Date(inv.due_date); d.setHours(0,0,0,0);
+        return Math.floor((today - d) / 86400000);
+      };
+      const outstanding = (inv) => (inv.total || 0) - (inv.amount_paid || 0);
+      const bucket = invoiceAgingBucket;
+      rows = rows.filter(inv => {
+        if (outstanding(inv) <= 0.005) return false;
+        if (inv.status === 'paid' || inv.status === 'cancelled' || inv.status === 'draft') return false;
+        const dpd = daysPastDue(inv);
+        if (bucket === 'not_yet_due')   return dpd < 0;
+        if (bucket === 'bucket_0_30')   return dpd >= 0  && dpd <= 30;
+        if (bucket === 'bucket_31_60')  return dpd >= 31 && dpd <= 60;
+        if (bucket === 'bucket_61_90')  return dpd >= 61 && dpd <= 90;
+        if (bucket === 'bucket_90plus') return dpd > 90;
+        return true;
+      });
+    }
 
     // Summary cards over ALL invoices (not filtered)
     const outstanding = allInvoices.filter(i => i.status === 'sent').reduce((s, i) => s + ((i.total || 0) - (i.amount_paid || 0)), 0);
@@ -5444,6 +5538,7 @@
       tbody.innerHTML = '<tr><td colspan="9" class="empty">No invoices match this filter.</td></tr>';
       return;
     }
+    const isSuper = (currentAdmin && currentAdmin.role === 'super_admin');
     tbody.innerHTML = rows.map(i => {
       const balance = (i.total || 0) - (i.amount_paid || 0);
       const overdue = isOverdue(i);
@@ -5454,22 +5549,32 @@
       const statusFg = {
         draft: '#374151', sent: '#92400e', overdue: '#991b1b', paid: '#065f46', cancelled: '#6b7280'
       }[statusLabel] || '#374151';
+      // FIXME: no read-only invoice detail view yet — row click routes to edit view (closest equivalent).
+      const rowClick = (isSuper && i.customer_id)
+        ? `class="pc-row-clickable" tabindex="0" role="button" aria-label="View invoice ${escHtml(i.invoice_number)}" onclick="pcGoInvoice(${i.id})" onkeydown="pcRowKey(event, function(){ pcGoInvoice(${i.id}); })"`
+        : '';
+      const custLink = (isSuper && i.customer_id)
+        ? `<a href="#customer/${i.customer_id}" class="pc-link" onclick="event.stopPropagation();" aria-label="View customer ${escHtml(i.customer_name)}"><strong>${escHtml(i.customer_name)}</strong></a>`
+        : `<strong>${escHtml(i.customer_name)}</strong>`;
+      const companyLink = (i.company_name && isSuper && i.customer_id)
+        ? `<br><a href="#customer/${i.customer_id}" class="pc-link" onclick="event.stopPropagation();" style="font-size:11px;" aria-label="View customer ${escHtml(i.customer_name)}">${escHtml(i.company_name)}</a>`
+        : (i.company_name ? `<br><span style="font-size:11px;color:var(--muted);">${escHtml(i.company_name)}</span>` : '');
       return `
-        <tr>
+        <tr ${rowClick}>
           <td><span class="code-pill">${escHtml(i.invoice_number)}</span></td>
-          <td><strong>${escHtml(i.customer_name)}</strong><br><span style="font-size:11px;color:var(--muted);">${escHtml(i.customer_code)}</span></td>
+          <td>${custLink}${companyLink}<br><span style="font-size:11px;color:var(--muted);">${escHtml(i.customer_code)}</span></td>
           <td style="white-space:nowrap;">${fmtDate(i.issue_date)}</td>
           <td style="white-space:nowrap;">${fmtDate(i.due_date)}</td>
           <td style="white-space:nowrap;">${fmtMoney(i.total, i.currency)}</td>
           <td style="white-space:nowrap;color:#059669;">${i.amount_paid > 0 ? fmtMoney(i.amount_paid, i.currency) : '—'}</td>
           <td style="white-space:nowrap;font-weight:600;color:${balance > 0.005 ? '#b45309' : 'var(--muted)'};">${balance > 0.005 ? fmtMoney(balance, i.currency) : '—'}</td>
           <td><span class="badge" style="background:${statusBg};color:${statusFg};">${statusLabel}</span></td>
-          <td style="white-space:nowrap;">
-            <button class="btn btn-ghost btn-sm" onclick="window.open('/admin/invoice/${i.id}','_blank')">View</button>
-            ${(i.status === 'draft' || i.status === 'sent') && can('invoice:update') ? `<button class="btn btn-edit btn-sm" onclick="openInvoiceModal(${i.id})" style="margin-left:4px;">Edit</button>` : ''}
-            ${i.status === 'draft' && can('invoice:update') ? `<button class="btn btn-primary btn-sm" onclick="markInvoiceStatus(${i.id},'sent')" style="margin-left:4px;background:#059669;">Send</button>` : ''}
-            ${(i.status === 'sent' || overdue) && balance > 0.005 && can('invoice:record_payment') ? `<button class="btn btn-primary btn-sm" onclick="openPaymentModal(${i.id})" style="margin-left:4px;">+ Payment</button>` : ''}
-            ${(i.status === 'draft' || i.status === 'cancelled') && can('invoice:delete') ? `<button class="btn btn-danger btn-sm" onclick="deleteInvoiceCmd(${i.id},'${escHtml(i.invoice_number)}')" style="margin-left:4px;">Delete</button>` : ''}
+          <td style="white-space:nowrap;" onclick="event.stopPropagation();">
+            <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();window.open('/admin/invoice/${i.id}','_blank')">View</button>
+            ${(i.status === 'draft' || i.status === 'sent') && can('invoice:update') ? `<button class="btn btn-edit btn-sm" onclick="event.stopPropagation();openInvoiceModal(${i.id})" style="margin-left:4px;">Edit</button>` : ''}
+            ${i.status === 'draft' && can('invoice:update') ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();markInvoiceStatus(${i.id},'sent')" style="margin-left:4px;background:#059669;">Send</button>` : ''}
+            ${(i.status === 'sent' || overdue) && balance > 0.005 && can('invoice:record_payment') ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();openPaymentModal(${i.id})" style="margin-left:4px;">+ Payment</button>` : ''}
+            ${(i.status === 'draft' || i.status === 'cancelled') && can('invoice:delete') ? `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();deleteInvoiceCmd(${i.id},'${escHtml(i.invoice_number)}')" style="margin-left:4px;">Delete</button>` : ''}
           </td>
         </tr>`;
     }).join('');
@@ -6922,24 +7027,30 @@
       return;
     }
     const roleLabel = { lead_tech: 'Lead Tech', tech: 'Technician', apprentice: 'Apprentice' };
-    tbody.innerHTML = allTechs.map(t => `
-      <tr style="${t.active ? '' : 'opacity:0.55;'}">
+    const isSuper = (currentAdmin && currentAdmin.role === 'super_admin');
+    tbody.innerHTML = allTechs.map(t => {
+      const rowClick = isSuper
+        ? `class="pc-row-clickable" tabindex="0" role="button" aria-label="View technician ${escHtml(t.name)}" onclick="routeTechnicianDetail(${t.id})" onkeydown="pcRowKey(event, function(){ routeTechnicianDetail(${t.id}); })"`
+        : '';
+      return `
+      <tr ${rowClick} style="${t.active ? '' : 'opacity:0.55;'}">
         <td><span class="code-pill">${t.tech_code}</span>${t.prid ? `<br><span style="font-size:10px;color:var(--muted);font-family:'Courier New',monospace;">${t.prid}</span>` : ''}</td>
         <td><strong>${escHtml(t.name)}</strong>${t.email ? `<br><span style="font-size:11px;color:var(--muted);">${escHtml(t.email)}</span>` : ''}<br><span class="badge" style="background:#eff6ff;color:#1d4ed8;margin-top:3px;display:inline-block;">${roleLabel[t.role] || 'Technician'}</span>${t.hourly_rate > 0 ? `<br><span style="font-size:11px;color:var(--muted);margin-top:2px;display:inline-block;">J$${Number(t.hourly_rate).toFixed(2)}/hr</span>` : '<br><span style="font-size:11px;color:#dc2626;margin-top:2px;display:inline-block;">No rate set</span>'}</td>
         <td>${escHtml(t.phone) || '—'}</td>
         <td>${t.active_jobs > 0 ? `<span class="badge badge-in_progress">${t.active_jobs} active</span>` : '<span style="color:var(--muted);">0</span>'}</td>
         <td>${t.active ? '<span class="badge badge-confirmed">Active</span>' : '<span class="badge" style="background:#f3f4f6;color:var(--muted);">Inactive</span>'}</td>
-        <td style="white-space:nowrap;">
-          ${(currentAdmin && currentAdmin.role === 'super_admin') ? `<button class="btn btn-ghost btn-sm" onclick="routeTechnicianDetail(${t.id})" aria-label="View technician detail" style="margin-right:6px;">View →</button>` : ''}
-          <button class="btn btn-edit btn-sm" onclick="openEditTech(${t.id})">Edit</button>
-          <button class="btn btn-edit btn-sm" onclick="openResetPin(${t.id},'${escHtml(t.name)}')" style="margin-left:6px;">Reset PIN</button>
+        <td style="white-space:nowrap;" onclick="event.stopPropagation();">
+          ${isSuper ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();routeTechnicianDetail(${t.id})" aria-label="View technician detail" style="margin-right:6px;">View →</button>` : ''}
+          <button class="btn btn-edit btn-sm" onclick="event.stopPropagation();openEditTech(${t.id})">Edit</button>
+          <button class="btn btn-edit btn-sm" onclick="event.stopPropagation();openResetPin(${t.id},'${escHtml(t.name)}')" style="margin-left:6px;">Reset PIN</button>
           ${can('tech:delete') ? (
             t.active
-              ? `<button class="btn btn-danger btn-sm" onclick="openOffboard('tech',${t.id},'${escHtml(t.name)}')" style="margin-left:6px;">🚪 Offboard</button>`
-              : `<button class="btn btn-ghost btn-sm" onclick="reinstateAccount('tech',${t.id})" style="margin-left:6px;">Reinstate</button>`
+              ? `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();openOffboard('tech',${t.id},'${escHtml(t.name)}')" style="margin-left:6px;">🚪 Offboard</button>`
+              : `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();reinstateAccount('tech',${t.id})" style="margin-left:6px;">Reinstate</button>`
           ) : ''}
         </td>
-      </tr>`).join('');
+      </tr>`;
+    }).join('');
   }
 
   function populateTechSelect() {
@@ -7777,10 +7888,12 @@
           <input id="inv-customer-search" type="search" placeholder="Search customer…" value="${escHtml(d.customer_name||'')}" oninput="_invCustomerSearch(this.value)" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
           <div id="inv-customer-results" style="position:relative;"></div>
           <input id="inv-customer-id" type="hidden" value="${d.customer_id||''}">
+          ${d.customer_id ? `<div style="margin-top:6px;"><span style="display:inline-block;padding:3px 10px;background:#e0f2f1;border-radius:12px;font-size:12px;"><a href="#customer/${d.customer_id}" class="pc-link" aria-label="View customer ${escHtml(d.customer_name||'')}">${escHtml(d.customer_name||('Customer #' + d.customer_id))} →</a></span></div>` : ''}
         </div>
         <div>
           <label for="inv-visit" style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">Related Visit (optional)</label>
           <input id="inv-visit" type="number" placeholder="Visit ID" value="${d.visit_id||''}" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+          ${d.visit_id ? `<div style="margin-top:6px;"><span style="display:inline-block;padding:3px 10px;background:#e0f2f1;border-radius:12px;font-size:12px;"><a href="#visit/${d.visit_id}" class="pc-link" aria-label="View visit #${d.visit_id}">Visit #${d.visit_id} →</a></span></div>` : ''}
         </div>
         <div>
           <label for="inv-issue" style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">Issue Date</label>
