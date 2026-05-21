@@ -10,11 +10,22 @@ import hashlib
 import hmac
 import io
 import json as _json
+import logging
 import os
 import re
 import secrets as _secrets
 import time
 import uuid
+
+# ── Structured logger (replaces ad-hoc print() debug calls) ───────────────────
+logger = logging.getLogger("primecool")
+if not logger.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    ))
+    logger.addHandler(_h)
+    logger.setLevel(logging.INFO)
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form, Response, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -442,7 +453,7 @@ JAMAICA_TAX_REFERENCE = {
     "currency": "JMD",
     "currency_symbol": "J$",
     "gct": {
-        "standard_rate": 0.15,
+        "standard_rate": INVOICE_TAX_RATE,
         "tourism_rate":  0.10,
         "label":         "General Consumption Tax (GCT)",
     },
@@ -578,8 +589,11 @@ def _preflight_run():
         msg = "Pre-flight checks failed — refusing to start:\n" + "\n".join(
             f"  ✗ {name}: {detail}" for name, detail in failures
         )
-        # Print twice — stderr for the deploy logs, raise so the process dies.
+        # Intentionally keep stderr print here — Railway / container deploy logs
+        # surface stderr distinctly on crash, and we want the human-readable
+        # failure visible even if logging handlers aren't attached yet.
         print(msg, file=_sys.stderr, flush=True)
+        logger.critical(msg)
         raise RuntimeError(msg)
     # Manifest captures who/what/when of the boot — values themselves never
     # logged, only metadata (length, presence, distinct-count for JWT_SECRET).
@@ -599,7 +613,7 @@ def _preflight_run():
         manifest_dir.mkdir(parents=True, exist_ok=True)
         path = manifest_dir / f"boot-{manifest['boot_time_utc'].replace(':','-')}.json"
         path.write_text(_json.dumps(manifest, indent=2, default=str))
-        print(f"✓ Pre-flight passed; manifest written to {path}", flush=True)
+        logger.info(f"Pre-flight passed; manifest written to {path}")
         # Defense in depth: once the preflight has confirmed the key,
         # flip the crypto Keyring out of "missing_ok" mode so any later
         # import path that tries to operate without a key will hard-fail
@@ -608,10 +622,10 @@ def _preflight_run():
             from crypto import _Keyring as _Kr
             _Kr.lock_required()
         except Exception as _e:
-            print(f"⚠ crypto.lock_required not engaged: {_e}", flush=True)
+            logger.warning(f"crypto.lock_required not engaged: {_e}")
     except Exception as e:
         # Manifest write failure is logged but non-fatal — the gate already passed.
-        print(f"⚠ Pre-flight passed but manifest write failed: {e}", flush=True)
+        logger.warning(f"Pre-flight passed but manifest write failed: {e}")
     return manifest
 
 
@@ -951,7 +965,7 @@ async def lifespan(app: FastAPI):
         result = bootstrap_super_admin(bs_user, bs_pw, bs_name, bs_email)
         if result:
             new_id, prid = result
-            print(f"✓ Bootstrapped super_admin '{bs_user}' (id={new_id}, PRID={prid})")
+            logger.info(f"Bootstrapped super_admin '{bs_user}' (id={new_id}, PRID={prid})")
 
     # Data retention. Two-tier audit policy per spec:
     #   - financial/legal events (invoices, POs, counts, exports): 7 years
@@ -965,15 +979,15 @@ async def lifespan(app: FastAPI):
     ops_retain_days    = int(os.environ.get("AUDIT_OPERATIONAL_RETAIN_DAYS", str(365 * 2)))
     try:
         n = purge_old_access_log(days=access_retain_days)
-        print(f"✓ access_log retention: kept last {access_retain_days} days "
-              f"({n} rows purged)")
+        logger.info(f"access_log retention: kept last {access_retain_days} days "
+                    f"({n} rows purged)")
         if n > 0:
             log_audit(actor_type="system", action="system.retention_purge",
                       target_type="access_log",
                       target_label=f"purged {n} rows older than {access_retain_days}d",
                       after_value={"count": n, "days": access_retain_days})
     except Exception as e:
-        print(f"access_log purge skipped: {e}")
+        logger.warning(f"access_log purge skipped: {e}")
     # Dormant-account sweep. Surfaces inactive-but-still-credentialed
     # accounts so they can be reviewed for soft-close. Does NOT auto-suspend
     # — per spec, this flags, a human decides.
@@ -982,9 +996,9 @@ async def lifespan(app: FastAPI):
         dormant = find_dormant_accounts(days=dormant_days)
         total = sum(len(v) for v in dormant.values())
         if total > 0:
-            print(f"⚠ {total} dormant account(s) (>{dormant_days}d): "
-                  f"{len(dormant['admin'])} admin, {len(dormant['tech'])} tech, "
-                  f"{len(dormant['customer'])} customer")
+            logger.warning(f"{total} dormant account(s) (>{dormant_days}d): "
+                           f"{len(dormant['admin'])} admin, {len(dormant['tech'])} tech, "
+                           f"{len(dormant['customer'])} customer")
             try:
                 create_security_alert(
                     kind="dormant_accounts", severity="medium",
@@ -999,25 +1013,25 @@ async def lifespan(app: FastAPI):
                       target_label=f"{total} accounts >{dormant_days}d idle",
                       after_value={k: [a["label"] for a in v] for k, v in dormant.items()})
         else:
-            print(f"✓ dormant sweep: no accounts idle >{dormant_days}d")
+            logger.info(f"dormant sweep: no accounts idle >{dormant_days}d")
     except Exception as e:
-        print(f"dormant sweep skipped: {e}")
+        logger.warning(f"dormant sweep skipped: {e}")
 
     try:
         r = purge_old_audit_log(financial_days=fin_retain_days,
                                  operational_days=ops_retain_days)
         if r["financial_purged"] or r["operational_purged"]:
-            print(f"✓ audit_log retention: purged {r['financial_purged']} financial "
-                  f"+ {r['operational_purged']} operational rows")
+            logger.info(f"audit_log retention: purged {r['financial_purged']} financial "
+                        f"+ {r['operational_purged']} operational rows")
             log_audit(actor_type="system", action="system.retention_purge",
                       target_type="audit_log",
                       target_label=f"financial>{fin_retain_days}d → {r['financial_purged']}; "
                                    f"operational>{ops_retain_days}d → {r['operational_purged']}",
                       after_value=r)
         else:
-            print(f"✓ audit_log retention: nothing to purge")
+            logger.info(f"audit_log retention: nothing to purge")
     except Exception as e:
-        print(f"audit_log purge skipped: {e}")
+        logger.warning(f"audit_log purge skipped: {e}")
     yield
 
 
@@ -1113,7 +1127,7 @@ def _send_security_alert_email(alert: dict):
             "html":    html,
         })
     except Exception as e:
-        print(f"SECURITY ALERT EMAIL ERROR: {e}")
+        logger.error(f"SECURITY ALERT EMAIL ERROR: {e}")
 
 
 def _run_anomaly_detector(actor_type: str, actor_id: int):
@@ -1128,14 +1142,14 @@ def _run_anomaly_detector(actor_type: str, actor_id: int):
                 kind=kind, summary=summary, severity=severity,
                 actor_type=actor_type, actor_id=actor_id, details=details,
             )
-            print(f"SECURITY ALERT #{aid} [{severity}] {kind}: {summary}")
+            logger.warning(f"SECURITY ALERT #{aid} [{severity}] {kind}: {summary}")
             _send_security_alert_email({
                 "kind": kind, "severity": severity, "summary": summary,
                 "actor_id": actor_id, "actor_label": None, "actor_prid": None,
                 "details": details, "created_at": datetime.now(timezone.utc).isoformat(),
             })
     except Exception as e:
-        print(f"anomaly detector error: {e}")
+        logger.error(f"anomaly detector error: {e}")
 
 
 @app.middleware("http")
@@ -1190,9 +1204,9 @@ async def access_log_middleware(request: Request, call_next):
                         ip_address=_client_ip(request),
                     )
             except Exception as e:
-                print(f"watcher_log error: {e}")
+                logger.warning(f"watcher_log error: {e}")
     except Exception as e:
-        print(f"access_log error: {e}")
+        logger.warning(f"access_log error: {e}")
     return response
 
 
@@ -1637,7 +1651,7 @@ class InvoiceCreate(BaseModel):
     visit_id:    Optional[int] = None
     issue_date:  str
     due_date:    str
-    tax_rate:    float = 0.15
+    tax_rate:    float = INVOICE_TAX_RATE
     currency:    str = "JMD"
     notes:       str = ""
     line_items:  List[InvoiceLineItem] = []
@@ -1648,7 +1662,7 @@ class InvoiceUpdate(BaseModel):
     visit_id:    Optional[int] = None
     issue_date:  str
     due_date:    str
-    tax_rate:    float = 0.15
+    tax_rate:    float = INVOICE_TAX_RATE
     notes:       str = ""
     line_items:  List[InvoiceLineItem] = []
 
@@ -1746,7 +1760,7 @@ async def submit_consult(req: ConsultRequest):
                 "html":    html,
             })
         except Exception as e:
-            print(f"EMAIL ERROR: {e}")
+            logger.error(f"EMAIL ERROR: {e}")
 
     return {"ok": True}
 
@@ -2053,7 +2067,7 @@ async def portal_forgot_pin(request: Request, body: PortalForgotPin):
                     """,
                 })
             except Exception as e:
-                print(f"CUSTOMER PIN RESET EMAIL ERROR: {e}")
+                logger.error(f"CUSTOMER PIN RESET EMAIL ERROR: {e}")
     return {"ok": True}
 
 
@@ -2232,7 +2246,7 @@ async def tech_forgot_pin(request: Request, body: TechForgotPin):
                     """,
                 })
             except Exception as e:
-                print(f"PIN RESET EMAIL ERROR: {e}")
+                logger.error(f"PIN RESET EMAIL ERROR: {e}")
     return {"ok": True}
 
 
@@ -2857,7 +2871,7 @@ async def admin_forgot_password(request: Request, body: AdminForgotPassword):
                     """,
                 })
             except Exception as e:
-                print(f"ADMIN PW RESET EMAIL ERROR: {e}")
+                logger.error(f"ADMIN PW RESET EMAIL ERROR: {e}")
     return {"ok": True}
 
 
@@ -3452,7 +3466,7 @@ def admin_adjust_part(request: Request, part_id: int, body: PartAdjust):
         baseline = avg if (avg and avg > 0) else (part.get("unit_cost") or 0)
         if baseline > 0:
             deviation = abs(body.unit_cost - baseline) / baseline
-            if deviation > 0.15:
+            if deviation > 0.15:  # 15% GRN unit-cost spike threshold (unrelated to GCT)
                 src = "90-day average" if avg else "catalog cost"
                 generic = (
                     f"Unit cost ${body.unit_cost:.2f} deviates {deviation*100:.1f}% "
@@ -4038,8 +4052,8 @@ def admin_record_payment(request: Request, invoice_id: int, body: InvoicePayment
 # ═══════════════════════════════════════════════════════════════════════════
 # PrimeCool Invoicing Module — locked business defaults
 # ═══════════════════════════════════════════════════════════════════════════
-# GCT default — hard-coded at 15%, configurable per-invoice via tax_rate column
-DEFAULT_GCT_RATE_PCT = 15.0
+# GCT default — derived from INVOICE_TAX_RATE (env-overridable); configurable per-invoice via tax_rate column
+DEFAULT_GCT_RATE_PCT = INVOICE_TAX_RATE * 100.0
 # FX processing fee default — flat 2%, configurable per-invoice via fx_fee_pct
 DEFAULT_FX_FEE_PCT = 2.0
 # Supported foreign display currencies. Base currency is ALWAYS JMD.
@@ -4948,14 +4962,14 @@ def _require_record_access(request: Request, record_type: str,
             _audit_from(admin, "access.role_allow", request,
                         target_type=record_type, target_id=record_id)
         except Exception as _e:
-            import sys; print(f"[delegation] audit-write failed: {_e}", file=sys.stderr)
+            logger.warning(f"[delegation] audit-write failed: {_e}")
         return admin
     # Path B — delegation lookup. Per-request, no caching.
     deleg = None
     try:
         deleg = _lookup_deleg(admin["id"], record_type, int(record_id))
     except Exception as _e:
-        import sys; print(f"[delegation] lookup failed: {_e}", file=sys.stderr)
+        logger.warning(f"[delegation] lookup failed: {_e}")
     if deleg:
         # Power grants imply read+write. Record/record_type honour permission_level.
         if deleg["delegation_type"] == "power":
@@ -4972,7 +4986,7 @@ def _require_record_access(request: Request, record_type: str,
                                        "delegation_type": deleg["delegation_type"],
                                        "write": bool(write)})
                 except Exception as _e:
-                    import sys; print(f"[delegation] audit-write failed: {_e}", file=sys.stderr)
+                    logger.warning(f"[delegation] audit-write failed: {_e}")
             return admin
     raise HTTPException(403, "insufficient permission for this record")
 
@@ -6635,7 +6649,7 @@ async def _fs_escalation_loop():
                 except Exception:
                     pass
         except Exception as _e:
-            print(f"5S escalation tick error: {_e}")
+            logger.error(f"5S escalation tick error: {_e}")
         await _asyncio.sleep(15 * 60)
 
 
@@ -6812,7 +6826,7 @@ def admin_delegation_grant(request: Request, body: DelegationGrantRequest):
             _audit_from(admin, "delegation_power.granted", request,
                         target_type="admin_users", target_id=body.recipient_id)
     except Exception as _e:
-        import sys; print(f"[delegation] audit-write failed: {_e}", file=sys.stderr)
+        logger.warning(f"[delegation] audit-write failed: {_e}")
     return {"id": new_id, "ok": True}
 
 
@@ -6840,7 +6854,7 @@ def admin_delegation_revoke(request: Request, delegation_id: int, body: RevokeBo
                 _audit_from(admin, "delegation.cascade_revoked", request,
                             target_type="delegations", target_id=cid)
         except Exception as _e:
-            import sys; print(f"[delegation] audit-write failed: {_e}", file=sys.stderr)
+            logger.warning(f"[delegation] audit-write failed: {_e}")
         return {"ok": True, "cascaded": cascaded}
     # Non-power → single row
     _revoke_delegation(delegation_id, admin["id"],
@@ -6849,7 +6863,7 @@ def admin_delegation_revoke(request: Request, delegation_id: int, body: RevokeBo
         _audit_from(admin, "delegation.revoked", request,
                     target_type="delegations", target_id=delegation_id)
     except Exception as _e:
-        import sys; print(f"[delegation] audit-write failed: {_e}", file=sys.stderr)
+        logger.warning(f"[delegation] audit-write failed: {_e}")
     return {"ok": True}
 
 
@@ -6904,7 +6918,7 @@ def admin_regrant_create(request: Request, body: RegrantRequestBody):
         _audit_from(admin, "delegation.regrant_requested", request,
                     target_type="delegation_regrant_requests", target_id=rid)
     except Exception as _e:
-        import sys; print(f"[delegation] audit-write failed: {_e}", file=sys.stderr)
+        logger.warning(f"[delegation] audit-write failed: {_e}")
     return {"id": rid, "ok": True}
 
 
@@ -6921,7 +6935,7 @@ def admin_regrant_approve(request: Request, request_id: int, body: ReviewNotesBo
                     target_type="delegation_regrant_requests", target_id=request_id,
                     after={"new_delegation_id": res["new_delegation_id"]})
     except Exception as _e:
-        import sys; print(f"[delegation] audit-write failed: {_e}", file=sys.stderr)
+        logger.warning(f"[delegation] audit-write failed: {_e}")
     return res
 
 
@@ -6936,7 +6950,7 @@ def admin_regrant_deny(request: Request, request_id: int, body: ReviewNotesBody)
         _audit_from(admin, "delegation.regrant_denied", request,
                     target_type="delegation_regrant_requests", target_id=request_id)
     except Exception as _e:
-        import sys; print(f"[delegation] audit-write failed: {_e}", file=sys.stderr)
+        logger.warning(f"[delegation] audit-write failed: {_e}")
     return {"ok": True}
 
 
@@ -6966,9 +6980,9 @@ async def _delegation_expiry_loop():
                               target_type="delegations",
                               after_value={"expired_count": n})
                 except Exception as _e:
-                    import sys; print(f"[delegation] audit-write failed: {_e}", file=sys.stderr)
+                    logger.warning(f"[delegation] audit-write failed: {_e}")
         except Exception as _e:
-            print(f"delegation expiry sweep error: {_e}")
+            logger.error(f"delegation expiry sweep error: {_e}")
         await _asyncio.sleep(6 * 60 * 60)
 
 
