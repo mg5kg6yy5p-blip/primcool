@@ -29,6 +29,8 @@ from database import (
     init_db, save_submission, bootstrap_super_admin,
     get_customer_by_code, get_customer_by_id, get_all_customers,
     create_customer, delete_customer, verify_customer, set_customer_pin,
+    validate_pin_policy, record_pin_failure, reset_pin_failures,
+    is_customer_pin_locked,
     get_customer_by_code_and_email, create_customer_pin_reset, consume_customer_pin_reset,
     get_customer_equipment, get_equipment_by_id, create_equipment, delete_equipment,
     get_customer_visits, get_all_visits, create_visit, update_visit, delete_visit,
@@ -343,6 +345,16 @@ def _enforce_rate(request: Request, bucket: str, identity: str = "",
     key = f"{bucket}:{ip}:{identity}"
     if not _rate_check(key, max_attempts, window_seconds):
         raise HTTPException(status_code=429, detail=message)
+
+
+def _enforce_pin_pacer(request: Request):
+    """Phase 3: 1 PIN-login attempt per 5 seconds per source IP, across all
+    accounts. Stops sub-second credential-spray attacks that the per-account
+    lockout alone can't catch (because each attempt targets a different code).
+    Returns 429 with a clear hint."""
+    ip = _client_ip(request)
+    if not _rate_check(f"pinpace:{ip}", max_attempts=1, window_seconds=5):
+        raise HTTPException(429, "Slow down — wait a few seconds between sign-in attempts.")
 
 
 def _enforce_export_rate(request: Request, admin_id: int, resource: str):
@@ -1590,6 +1602,8 @@ async def submit_consult(req: ConsultRequest):
 
 @app.post("/api/portal/login")
 def portal_login(req: PortalLoginRequest, request: Request, response: Response):
+    # Phase 3 pacer first — pre-empts the more expensive rate-limit + DB hit.
+    _enforce_pin_pacer(request)
     _enforce_login_rate(request, req.code)
     existing = get_customer_by_code(req.code)
     # Constant-ish error message regardless of which failure case we hit,
@@ -1603,6 +1617,16 @@ def portal_login(req: PortalLoginRequest, request: Request, response: Response):
                     attempted_identity=req.code, actor_type="customer",
                     target_label="account inactive")
         raise HTTPException(401, INVALID)
+
+    # Phase 3 per-account lockout. Done BEFORE password/PIN verification so a
+    # locked account can't be probed with valid credentials inside the window.
+    if existing:
+        locked, locked_until = is_customer_pin_locked(existing["id"])
+        if locked:
+            _audit_anon("auth.login_failed", request,
+                        attempted_identity=req.code, actor_type="customer",
+                        target_label=f"account locked until {locked_until}")
+            raise HTTPException(401, INVALID)
 
     customer = None
     if existing:
@@ -1621,7 +1645,27 @@ def portal_login(req: PortalLoginRequest, request: Request, response: Response):
         _audit_anon("auth.login_failed", request,
                     attempted_identity=req.code, actor_type="customer",
                     target_label="invalid code or credentials")
+        # Record failure → may flip the account into 30-min lockout.
+        if existing:
+            res = record_pin_failure(existing["id"])
+            if res["locked"]:
+                # Raise a security alert on the lockout itself — bursts of
+                # these on different accounts from one IP are credential spray.
+                try:
+                    create_security_alert(
+                        kind="account_lockout", severity="high",
+                        summary=f"Customer {req.code} locked after {res['failed']} failed PIN attempts",
+                        actor_type="customer", actor_id=existing["id"],
+                        details={"locked_until": res["locked_until"],
+                                 "ip": _client_ip(request)},
+                    )
+                except Exception:
+                    pass
         raise HTTPException(401, INVALID)
+
+    # Successful login resets the failure counter.
+    if existing:
+        reset_pin_failures(existing["id"])
 
     # Commercial accounts MUST have MFA enrolled per spec. Block login
     # until they enrol (returning a one-shot enrolment token).
@@ -1862,14 +1906,17 @@ async def portal_forgot_pin(request: Request, body: PortalForgotPin):
 
 @app.post("/api/portal/reset-pin")
 def portal_reset_pin(body: PortalResetPin):
-    if not body.pin.isdigit() or not (4 <= len(body.pin) <= 8):
-        raise HTTPException(400, "PIN must be 4–8 digits")
     if body.pin != body.confirm_pin:
         raise HTTPException(400, "PINs do not match")
+    try:
+        validate_pin_policy(body.pin)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     customer_id = consume_customer_pin_reset(body.token)
     if not customer_id:
         raise HTTPException(400, "Reset link is invalid or has expired")
     set_customer_pin(customer_id, body.pin)
+    reset_pin_failures(customer_id)
     return {"ok": True}
 
 
@@ -4023,8 +4070,11 @@ def admin_list_customers(request: Request):
 @app.post("/api/admin/customers")
 def admin_create_customer(request: Request, body: CustomerCreate):
     admin = _require_perm(request, "customer:create")
-    if body.pin and (not body.pin.isdigit() or not (4 <= len(body.pin) <= 8)):
-        raise HTTPException(400, "PIN must be 4–8 digits")
+    if body.pin:
+        try:
+            validate_pin_policy(body.pin)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
     try:
         customer_id = create_customer(body.model_dump())
     except Exception as e:
@@ -4040,8 +4090,10 @@ def admin_create_customer(request: Request, body: CustomerCreate):
 @app.put("/api/admin/customers/{customer_id}/pin")
 def admin_reset_customer_pin(request: Request, customer_id: int, body: CustomerPinReset):
     admin = _require_perm(request, "customer:update")
-    if not body.pin.isdigit() or not (4 <= len(body.pin) <= 8):
-        raise HTTPException(400, "PIN must be 4–8 digits")
+    try:
+        validate_pin_policy(body.pin)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     cust = get_customer_by_id(customer_id)
     if not cust:
         raise HTTPException(404, "Customer not found")

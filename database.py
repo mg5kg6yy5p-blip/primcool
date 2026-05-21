@@ -246,6 +246,9 @@ def init_db():
         ("last_login_at",  "ALTER TABLE customers ADD COLUMN last_login_at TEXT"),
         # Phase 2 — blind index for equality lookup on encrypted email.
         ("email_hash",     "ALTER TABLE customers ADD COLUMN email_hash TEXT"),
+        # Phase 3 — per-account lockout tracking for PIN auth.
+        ("pin_failed_count", "ALTER TABLE customers ADD COLUMN pin_failed_count INTEGER NOT NULL DEFAULT 0"),
+        ("pin_locked_until", "ALTER TABLE customers ADD COLUMN pin_locked_until TEXT"),
     ):
         if col not in cust_cols:
             try: con.execute(sql)
@@ -1034,6 +1037,89 @@ def verify_customer(code: str, pin: str):
     if _needs_rehash(cust["pin_hash"]):
         set_customer_pin(cust["id"], pin)
     return cust
+
+
+# ── PIN policy (Phase 3) ─────────────────────────────────────────────────────
+# Public-internet door is hardened: 6+ digits, no repeats, no sequential runs.
+# Lockout: 5 failed attempts → 30-minute auto-reset window.
+PIN_MIN_LEN              = 6
+PIN_MAX_LEN              = 8
+PIN_LOCKOUT_THRESHOLD    = 5
+PIN_LOCKOUT_MINUTES      = 30
+
+
+def validate_pin_policy(pin: str):
+    """Raises ValueError on weak PINs. Used by every PIN-setting code path
+    (customer create, set, reset). The rules:
+      - digits only, 6–8 chars
+      - reject all-same-digit (000000, 111111…)
+      - reject monotonic runs (012345, 123456, 987654, 543210)"""
+    if not pin or not pin.isdigit():
+        raise ValueError("PIN must be digits only")
+    if not (PIN_MIN_LEN <= len(pin) <= PIN_MAX_LEN):
+        raise ValueError(f"PIN must be {PIN_MIN_LEN}–{PIN_MAX_LEN} digits")
+    if len(set(pin)) == 1:
+        raise ValueError("PIN cannot be all the same digit")
+    # Sequential: each digit exactly one more (or one less) than the previous.
+    diffs = {int(pin[i+1]) - int(pin[i]) for i in range(len(pin)-1)}
+    if diffs == {1} or diffs == {-1}:
+        raise ValueError("PIN cannot be a sequential run of digits")
+
+
+def record_pin_failure(customer_id: int) -> dict:
+    """Increments pin_failed_count and, if it crosses threshold, sets
+    pin_locked_until = now + 30 minutes. Returns {'locked': bool,
+    'failed': int, 'locked_until': str|None}."""
+    from datetime import timedelta as _td
+    con = _con()
+    row = con.execute(
+        "SELECT pin_failed_count, pin_locked_until FROM customers WHERE id = ?",
+        (customer_id,),
+    ).fetchone()
+    if not row:
+        con.close()
+        return {"locked": False, "failed": 0, "locked_until": None}
+    failed = (row["pin_failed_count"] or 0) + 1
+    locked_until = None
+    locked = False
+    if failed >= PIN_LOCKOUT_THRESHOLD:
+        locked = True
+        locked_until = (datetime.now(timezone.utc) + _td(minutes=PIN_LOCKOUT_MINUTES)).isoformat()
+    con.execute(
+        "UPDATE customers SET pin_failed_count = ?, pin_locked_until = ? WHERE id = ?",
+        (failed, locked_until, customer_id),
+    )
+    con.commit()
+    con.close()
+    return {"locked": locked, "failed": failed, "locked_until": locked_until}
+
+
+def reset_pin_failures(customer_id: int):
+    con = _con()
+    con.execute(
+        "UPDATE customers SET pin_failed_count = 0, pin_locked_until = NULL WHERE id = ?",
+        (customer_id,),
+    )
+    con.commit()
+    con.close()
+
+
+def is_customer_pin_locked(customer_id: int) -> tuple:
+    """Returns (locked: bool, locked_until: str|None). Auto-clears the lock
+    if its expiry has passed (so the next failed login is treated as the
+    first of a new window)."""
+    con = _con()
+    row = con.execute(
+        "SELECT pin_locked_until FROM customers WHERE id = ?", (customer_id,),
+    ).fetchone()
+    con.close()
+    if not row or not row["pin_locked_until"]:
+        return False, None
+    locked_until = row["pin_locked_until"]
+    if locked_until < datetime.now(timezone.utc).isoformat():
+        reset_pin_failures(customer_id)
+        return False, None
+    return True, locked_until
 
 
 def set_customer_pin(customer_id: int, pin: str):
