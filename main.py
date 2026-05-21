@@ -4992,6 +4992,30 @@ def admin_audit_verify(request: Request):
     return verify_audit_chain()
 
 
+@app.get("/api/admin/audit/access-denied")
+def admin_audit_access_denied(request: Request,
+                              since: Optional[str] = None,
+                              actor_kind: Optional[str] = None,
+                              actor_id: Optional[int] = None,
+                              limit: int = 200):
+    """Support tool: pull recent access.denied rows so a user who reports a
+    'access denied' toast (with their request_id) can have the row located.
+    super_admin only by default — denial metadata may include attempted
+    target_type/id which is sensitive enumeration evidence."""
+    admin = _require_super_admin(request)
+    rows = query_audit_log(action_prefix="access.denied", since=since,
+                           limit=max(1, min(int(limit), 1000)))
+    if actor_kind:
+        rows = [r for r in rows if r.get("actor_type") == actor_kind]
+    if actor_id is not None:
+        rows = [r for r in rows if r.get("actor_id") == int(actor_id)]
+    _audit_from(admin, "audit.access_denied_query", request,
+                target_type="audit_log",
+                after={"count": len(rows), "since": since,
+                       "actor_kind": actor_kind, "actor_id": actor_id})
+    return rows
+
+
 @app.get("/api/admin/access")
 def admin_access_log(request: Request,
                      actor_id: Optional[int] = None,
