@@ -11108,3 +11108,137 @@ def list_manual_kpi_history(kpi_key: str, period_key: str = None,
     rows = con.execute(sql, args).fetchall()
     con.close()
     return [dict(r) for r in rows]
+
+
+# ── Visible-count helper for access-gated dashboards ──────────────────────────
+# Per universal access-gate spec (decision C): counts returned to the SPA
+# must match what the viewer can actually read. For super_admin / supervisor
+# we return the global count; for delegated admins we restrict to their
+# scope; for everyone else we default to zero rather than leaking a tile
+# that says "12" when the user can open none of them.
+
+def count_visible_for(viewer_id: int, viewer_kind: str, viewer_role: str,
+                      count_target: str):
+    """Returns the actual count the viewer would see if they queried the
+    target. count_target is one of:
+      'invoices_outstanding', 'invoices_overdue',
+      'visits_open', 'visits_today',
+      'inventory_low_stock',
+      'kpi_flags_open_by_severity' (returns dict),
+      'reviews_pending',
+      'fs_exceptions_open',
+      'audit_log_recent_24h'.
+    """
+    global_roles = {"super_admin", "supervisor_admin"}
+    is_global = (viewer_kind == "admin" and viewer_role in global_roles)
+
+    con = _con()
+    try:
+        if count_target == "invoices_outstanding":
+            if not is_global:
+                return 0
+            row = con.execute(
+                "SELECT COUNT(*) c FROM invoices "
+                "WHERE status='sent' AND (total - amount_paid) > 0.01"
+            ).fetchone()
+            return int(row["c"] or 0)
+
+        if count_target == "invoices_overdue":
+            if not is_global:
+                return 0
+            today = datetime.now(timezone.utc).date().isoformat()
+            row = con.execute(
+                "SELECT COUNT(*) c FROM invoices "
+                "WHERE status='sent' AND due_date < ? "
+                "AND (total - amount_paid) > 0.01", (today,),
+            ).fetchone()
+            return int(row["c"] or 0)
+
+        if count_target == "visits_open":
+            if not is_global:
+                return 0
+            row = con.execute(
+                "SELECT COUNT(*) c FROM visits "
+                "WHERE status NOT IN ('completed','cancelled','canceled')"
+            ).fetchone()
+            return int(row["c"] or 0)
+
+        if count_target == "visits_today":
+            if not is_global:
+                return 0
+            today = datetime.now(timezone.utc).date().isoformat()
+            row = con.execute(
+                "SELECT COUNT(*) c FROM visits WHERE scheduled_date = ?",
+                (today,),
+            ).fetchone()
+            return int(row["c"] or 0)
+
+        if count_target == "inventory_low_stock":
+            if not is_global and viewer_role not in (
+                "system_admin", "inventory_manager"
+            ):
+                return 0
+            row = con.execute(
+                "SELECT COUNT(*) c FROM parts "
+                "WHERE active=1 AND quantity <= COALESCE(reorder_point,0)"
+            ).fetchone()
+            return int(row["c"] or 0)
+
+        if count_target == "reviews_pending":
+            if not is_global:
+                return 0
+            row = con.execute(
+                "SELECT COUNT(*) c FROM reviews WHERE status='pending'"
+            ).fetchone()
+            return int(row["c"] or 0)
+
+        if count_target == "fs_exceptions_open":
+            if not is_global and viewer_role not in (
+                "system_admin", "hr_admin", "ceo_assistant"
+            ):
+                return 0
+            try:
+                row = con.execute(
+                    "SELECT COUNT(*) c FROM fs_exceptions WHERE status='open'"
+                ).fetchone()
+                return int(row["c"] or 0)
+            except Exception:
+                return 0
+
+        if count_target == "audit_log_recent_24h":
+            if viewer_kind != "admin":
+                return 0
+            if is_global:
+                row = con.execute(
+                    "SELECT COUNT(*) c FROM audit_log "
+                    "WHERE created_at >= datetime('now','-1 day')"
+                ).fetchone()
+                return int(row["c"] or 0)
+            # view_self only: only own rows
+            row = con.execute(
+                "SELECT COUNT(*) c FROM audit_log "
+                "WHERE created_at >= datetime('now','-1 day') "
+                "AND actor_type='admin' AND actor_id=?",
+                (viewer_id,),
+            ).fetchone()
+            return int(row["c"] or 0)
+
+        if count_target == "kpi_flags_open_by_severity":
+            # Return a dict {severity: count}.
+            if not is_global and viewer_role not in (
+                "system_admin", "hr_admin"
+            ):
+                return {}
+            try:
+                rows = con.execute(
+                    "SELECT severity, COUNT(*) c FROM kpi_flags "
+                    "WHERE status='open' GROUP BY severity"
+                ).fetchall()
+                return {r["severity"]: int(r["c"] or 0) for r in rows}
+            except Exception:
+                return {}
+
+        return 0
+    finally:
+        try: con.close()
+        except Exception: pass

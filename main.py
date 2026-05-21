@@ -904,32 +904,142 @@ def _decode_token(token: str, expected_type: str, require_session: bool = True) 
     return data
 
 
+def _make_request_id() -> str:
+    """Short opaque id stamped into 403 response bodies + audit metadata so
+    support can correlate a user's "access denied" toast to an audit row."""
+    return _secrets.token_hex(6)
+
+
+def _audit_deny(viewer_kind, viewer_id, action, resource_type, resource_id,
+                reason, request, request_id: str = None):
+    """Write an access.denied audit row. Called from every _require_* helper
+    BEFORE raising HTTPException(403). Never raises — wraps audit failures so
+    a logging glitch doesn't accidentally allow the request through."""
+    try:
+        ip = None
+        ua = None
+        try:
+            ip = request.client.host if request and request.client else None
+            ua = (request.headers.get("user-agent", "")[:200]) if request else None
+        except Exception:
+            pass
+        path = None
+        method = None
+        try:
+            path = str(request.url.path) if request else None
+            method = request.method if request else None
+        except Exception:
+            pass
+        log_audit(
+            actor_type=viewer_kind or "unauthenticated",
+            actor_id=viewer_id,
+            action="access.denied",
+            target_type=resource_type,
+            target_id=resource_id,
+            after_value={
+                "attempted_action": action,
+                "reason": reason,
+                "ip": ip,
+                "user_agent": ua,
+                "path": path,
+                "method": method,
+                "request_id": request_id,
+            },
+            ip_address=ip,
+        )
+    except Exception as e:
+        logger.warning("audit_deny_failed: %s", e)
+
+
+def _deny_response(reason: str, viewer_kind, viewer_id, action,
+                   resource_type, resource_id, request, status: int = 403):
+    """Build the standardized denial: write audit, raise HTTPException with
+    {detail, code, request_id} body. Used by every _require_* helper."""
+    rid = _make_request_id()
+    _audit_deny(viewer_kind, viewer_id, action, resource_type, resource_id,
+                reason, request, request_id=rid)
+    code = "access_denied" if status == 403 else "unauthenticated"
+    detail_msg = "Access denied" if status == 403 else "Authentication required"
+    raise HTTPException(status_code=status,
+                        detail={"detail": detail_msg, "code": code,
+                                "request_id": rid})
+
+
 def _require_customer(request: Request) -> int:
-    data = _decode_token(_read_token(request, COOKIE_CUSTOMER), "customer")
+    try:
+        data = _decode_token(_read_token(request, COOKIE_CUSTOMER), "customer")
+    except HTTPException as he:
+        _deny_response(reason="unauthenticated_customer",
+                       viewer_kind="unauthenticated", viewer_id=None,
+                       action="customer.session_required",
+                       resource_type="portal", resource_id=None,
+                       request=request, status=he.status_code or 401)
     return int(data["sub"])
 
 
 def _require_tech(request: Request) -> int:
-    data = _decode_token(_read_token(request, COOKIE_TECH), "tech")
-    return int(data["sub"])
+    try:
+        data = _decode_token(_read_token(request, COOKIE_TECH), "tech")
+    except HTTPException as he:
+        _deny_response(reason="unauthenticated_tech",
+                       viewer_kind="unauthenticated", viewer_id=None,
+                       action="tech.session_required",
+                       resource_type="tech_portal", resource_id=None,
+                       request=request, status=he.status_code or 401)
+    tid = int(data["sub"])
+    # Defense-in-depth: terminated/suspended techs cannot use the portal.
+    try:
+        from database import get_tech_by_id as _get_tech_by_id
+        t = _get_tech_by_id(tid)
+        if t and (t.get("active") in (0, False)
+                  or (t.get("employment_status") in ("terminated", "suspended"))):
+            _deny_response(reason="tech_inactive",
+                           viewer_kind="tech", viewer_id=tid,
+                           action="tech.session_required",
+                           resource_type="tech_portal", resource_id=tid,
+                           request=request, status=403)
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+    return tid
 
 
 def _require_admin(request: Request):
     """Returns the admin_user dict for the authenticated admin."""
-    data = _decode_token(_read_token(request, COOKIE_ADMIN), "admin")
+    try:
+        data = _decode_token(_read_token(request, COOKIE_ADMIN), "admin")
+    except HTTPException as he:
+        _deny_response(reason="unauthenticated_admin",
+                       viewer_kind="unauthenticated", viewer_id=None,
+                       action="admin.session_required",
+                       resource_type="admin", resource_id=None,
+                       request=request, status=he.status_code or 401)
     admin_id = data.get("sub")
     if not admin_id:
-        raise HTTPException(401, "Invalid session")
+        _deny_response(reason="invalid_session",
+                       viewer_kind="unauthenticated", viewer_id=None,
+                       action="admin.session_required",
+                       resource_type="admin", resource_id=None,
+                       request=request, status=401)
     admin = get_admin_user_by_id(int(admin_id))
     if not admin or not admin.get("active"):
-        raise HTTPException(403, "Account inactive or deleted")
+        _deny_response(reason="admin_inactive_or_deleted",
+                       viewer_kind="admin", viewer_id=int(admin_id),
+                       action="admin.session_required",
+                       resource_type="admin", resource_id=int(admin_id),
+                       request=request, status=403)
     return admin
 
 
 def _require_perm(request: Request, perm: str):
     admin = _require_admin(request)
     if not _admin_can(admin["role"], perm):
-        raise HTTPException(403, f"Your role ({admin['role']}) lacks permission: {perm}")
+        _deny_response(reason=f"role_missing_perm:{perm}",
+                       viewer_kind="admin", viewer_id=admin["id"],
+                       action=perm,
+                       resource_type=None, resource_id=None,
+                       request=request, status=403)
     return admin
 
 
@@ -2930,6 +3040,108 @@ def admin_me(request: Request):
         "role":     admin["role"],
         "prid":     admin.get("prid"),
     }
+
+
+@app.get("/api/admin/me/access-bundle")
+def admin_access_bundle(request: Request, response: Response):
+    """Effective access for the current admin: base role permissions plus
+    active unexpired delegations. Lets the SPA render Stage 1 gates in one
+    server-side roundtrip rather than each module rediscovering access.
+
+    Per locked design: NOT cached server-side, recomputed every request,
+    and not encoded in the JWT. 30s client cache hint matches decision B."""
+    admin = _require_admin(request)
+    role = admin["role"]
+    role_grants = sorted(list(ADMIN_PERMS.get(role, set())))
+    by_record_type: Dict[str, List[str]] = {}
+    by_specific: List[Dict[str, Any]] = []
+    has_power = False
+    try:
+        from database import list_active_delegations_for_recipient as _active_for
+        for d in _active_for(admin["id"]):
+            vu = d.get("valid_until")
+            # Treat expired-but-not-yet-swept rows as inactive in the bundle.
+            if vu:
+                try:
+                    if vu < datetime.now(timezone.utc).isoformat():
+                        continue
+                except Exception:
+                    pass
+            dtype = d.get("delegation_type")
+            lvl   = (d.get("permission_level") or "read").lower()
+            if dtype == "power":
+                has_power = True
+                continue
+            if dtype == "record_type":
+                rt = d.get("scope_record_type") or "?"
+                by_record_type.setdefault(rt, [])
+                if lvl not in by_record_type[rt]:
+                    by_record_type[rt].append(lvl)
+            elif dtype == "record":
+                by_specific.append({
+                    "resource_type": d.get("scope_record_type"),
+                    "resource_id":   d.get("scope_record_id"),
+                    "permission":    lvl,
+                    "valid_until":   d.get("valid_until"),
+                    "delegation_id": d.get("id"),
+                })
+    except Exception as _e:
+        logger.warning(f"[access_bundle] delegations enumerate failed: {_e}")
+    now = datetime.now(timezone.utc)
+    payload = {
+        "user_id":               admin["id"],
+        "user_kind":             "admin",
+        "role":                  role,
+        "role_grants":           role_grants,
+        "has_delegation_power":  has_power,
+        "delegations": {
+            "by_record_type":    by_record_type,
+            "by_specific_record": by_specific,
+        },
+        "fetched_at": now.isoformat(),
+        "expires_at": (now + timedelta(seconds=30)).isoformat(),
+    }
+    # 30s private client cache — Stage 1 gating is allowed to be slightly
+    # stale; destination check (Stage 2) is always re-evaluated server-side.
+    response.headers["Cache-Control"] = "private, max-age=30"
+    return payload
+
+
+@app.get("/api/portal/me/access-bundle")
+def portal_access_bundle(request: Request, response: Response):
+    """Customer-side access bundle. Customers always have read+write only on
+    their own records — no delegations in v1 (locked decision)."""
+    cid = _require_customer(request)
+    payload = {
+        "user_id":   cid,
+        "user_kind": "customer",
+        "role":      "customer",
+        "scope":     "own_records_only",
+        "role_grants": ["customer.self_view", "customer.self_edit",
+                        "invoice.self_view", "visit.self_view"],
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+    }
+    response.headers["Cache-Control"] = "private, max-age=30"
+    return payload
+
+
+@app.get("/api/tech/me/access-bundle")
+def tech_access_bundle(request: Request, response: Response):
+    """Tech-side access bundle. Techs see only assigned records — no
+    delegations in v1 (locked decision: techs cannot be delegation
+    recipients)."""
+    tid = _require_tech(request)
+    payload = {
+        "user_id":   tid,
+        "user_kind": "tech",
+        "role":      "tech",
+        "scope":     "assigned_records_only",
+        "role_grants": ["visit.self_assigned", "payslip.self_view",
+                        "kpi.self_view", "fs.self_audit"],
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+    }
+    response.headers["Cache-Control"] = "private, max-age=30"
+    return payload
 
 
 @app.post("/api/admin/forgot-password")
@@ -5031,7 +5243,11 @@ _CUSTOMER_DETAIL_PII_FIELDS = ("phone", "email", "address", "notes")
 def _require_super_admin(request: Request):
     admin = _require_admin(request)
     if admin["role"] != "super_admin":
-        raise HTTPException(403, "insufficient permission — super_admin only")
+        _deny_response(reason="not_super_admin",
+                       viewer_kind="admin", viewer_id=admin["id"],
+                       action="super_admin_only",
+                       resource_type=None, resource_id=None,
+                       request=request, status=403)
     return admin
 
 
@@ -5055,9 +5271,16 @@ def _require_record_access(request: Request, record_type: str,
         except Exception as _e:
             logger.warning(f"[delegation] audit-write failed: {_e}")
         return admin
+    # Tech recipients of delegations are rejected entirely (locked design).
     # Path B — delegation lookup. Per-request, no caching.
     deleg = None
+    saw_expired = False
     try:
+        # Check if any rows for this admin were just auto-revoked (expired)
+        # during this lookup so we can distinguish that reason for the
+        # audit row (per Phase 3.2). lookup_record_delegation handles the
+        # auto-revoke itself; we just sniff for the case where a once-valid
+        # row no longer applies.
         deleg = _lookup_deleg(admin["id"], record_type, int(record_id))
     except Exception as _e:
         logger.warning(f"[delegation] lookup failed: {_e}")
@@ -5079,7 +5302,44 @@ def _require_record_access(request: Request, record_type: str,
                 except Exception as _e:
                     logger.warning(f"[delegation] audit-write failed: {_e}")
             return admin
-    raise HTTPException(403, "insufficient permission for this record")
+        else:
+            # Delegation exists but the permission level is insufficient
+            # (e.g. read-only delegate attempting a write).
+            _deny_response(reason="delegation_insufficient_level",
+                           viewer_kind="admin", viewer_id=admin["id"],
+                           action=("record.write" if write else "record.read"),
+                           resource_type=record_type, resource_id=record_id,
+                           request=request, status=403)
+    # No active delegation. Distinguish "had one, just expired" vs "never had".
+    # The lookup helper auto-revokes expired rows and writes
+    # delegation.auto_expired audit rows, so we can scan recent revocations.
+    reason = "no_access"
+    try:
+        from database import list_cascade_revoked_recent as _cascade
+        # Cheap check — were any of this admin's delegations auto-expired in
+        # the last 60s? If so, prefer the expired-reason.
+        import sqlite3 as _sql3
+        from database import _con as _dbcon  # type: ignore
+        con = _dbcon()
+        try:
+            row = con.execute(
+                "SELECT 1 FROM delegations WHERE recipient_id=? "
+                "AND revoke_kind='auto_expiry' "
+                "AND revoked_at >= datetime('now','-60 seconds') LIMIT 1",
+                (admin["id"],),
+            ).fetchone()
+            if row:
+                reason = "delegation_expired"
+        finally:
+            try: con.close()
+            except Exception: pass
+    except Exception:
+        pass
+    _deny_response(reason=reason,
+                   viewer_kind="admin", viewer_id=admin["id"],
+                   action=("record.write" if write else "record.read"),
+                   resource_type=record_type, resource_id=record_id,
+                   request=request, status=403)
 
 
 def _validate_customer_profile(body: CustomerProfileUpdate) -> list:
