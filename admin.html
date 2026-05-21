@@ -2703,6 +2703,12 @@
         try { if (typeof renderCdfVisits     === 'function' && cdfState && cdfState.customer) renderCdfVisits(); } catch(_) {}
         try { if (typeof renderTdfJobs       === 'function' && tdfState && tdfState.tech) renderTdfJobs(); } catch(_) {}
         try { if (typeof loadAudit           === 'function' && (can('audit:view_all') || can('audit:view_self'))) loadAudit(); } catch(_) {}
+        // Tier B re-render hooks — flip conservative placeholders to gated rows
+        // once /api/admin/me/access has resolved.
+        try { if (typeof renderInventory       === 'function' && Array.isArray(allParts) && allParts.length) renderInventory(); } catch(_) {}
+        try { if (typeof loadSchedule          === 'function' && can('schedule:view')) loadSchedule(); } catch(_) {}
+        try { if (typeof loadPayPeriods        === 'function' && can('payroll:view_all')) loadPayPeriods(); } catch(_) {}
+        try { if (typeof loadMyPayslips        === 'function') loadMyPayslips(); } catch(_) {}
       }).catch(function (e) { try { console.warn('access-bundle load failed:', e); } catch(_) {} });
     }
   }
@@ -6517,39 +6523,60 @@
     const badge = document.getElementById('lowStockBadge');
     if (totalAlerts) { badge.textContent = totalAlerts; badge.style.display = 'inline-block'; }
     else { badge.style.display = 'none'; }
+    // PC.gateBadge — low-stock alert badge. Filter is "viewer can read part record".
+    if (typeof PC !== 'undefined' && PC.gateBadge && badge) {
+      try {
+        PC.gateBadge(badge, totalAlerts, 'inventory_part', function (p) {
+          return p && (p.quantity <= 0 || (p.quantity > 0 && p.quantity <= p.reorder_point));
+        });
+      } catch(_) {}
+    }
 
     const tbody = document.getElementById('inv-tbody');
     if (!rows.length) {
       tbody.innerHTML = '<tr><td colspan="8" class="empty">No parts match the current filter.</td></tr>';
       return;
     }
+    const _gateInv = (typeof PC !== 'undefined' && PC.gateLinkHtml);
     tbody.innerHTML = rows.map(p => {
       let qtyCell;
       if (p.quantity <= 0) {
-        qtyCell = `<span class="badge" style="background:#fee2e2;color:#991b1b;">${formatQty(p.quantity)} ${escHtml(p.unit||'')} · OUT</span>`;
+        qtyCell = `<span class="badge pc-stop-prop" style="background:#fee2e2;color:#991b1b;">${formatQty(p.quantity)} ${escHtml(p.unit||'')} · OUT</span>`;
       } else if (p.quantity <= p.reorder_point) {
-        qtyCell = `<span class="badge" style="background:#fef3c7;color:#92400e;">${formatQty(p.quantity)} ${escHtml(p.unit||'')} · LOW</span>`;
+        qtyCell = `<span class="badge pc-stop-prop" style="background:#fef3c7;color:#92400e;">${formatQty(p.quantity)} ${escHtml(p.unit||'')} · LOW</span>`;
       } else {
         qtyCell = `<strong>${formatQty(p.quantity)}</strong> <span style="color:var(--muted);font-size:11px;">${escHtml(p.unit||'')}</span>`;
       }
       const value = (p.quantity * p.unit_cost).toFixed(2);
+      const nameLink = _gateInv
+        ? PC.gateLinkHtml('inventory_part', p.id, p.name || '', {onClick: 'function(){ openMovements(' + p.id + '); }'})
+        : `<strong>${escHtml(p.name)}</strong>`;
       return `
-        <tr style="${p.active ? '' : 'opacity:0.5;'}">
+        <tr data-pc-row-part="${p.id}" style="${p.active ? '' : 'opacity:0.5;'}">
           <td><span class="code-pill">${escHtml(p.sku)}</span></td>
-          <td><strong>${escHtml(p.name)}</strong>${p.supplier ? `<br><span style="font-size:11px;color:var(--muted);">${escHtml(p.supplier)}</span>` : ''}</td>
+          <td>${nameLink}${p.supplier ? `<br><span style="font-size:11px;color:var(--muted);">${escHtml(p.supplier)}</span>` : ''}</td>
           <td>${escHtml(p.category) || '—'}</td>
           <td>${qtyCell}</td>
           <td>${formatQty(p.reorder_point)}</td>
           <td>$${Number(p.unit_cost).toFixed(2)}</td>
           <td>$${value}</td>
           <td style="white-space:nowrap;">
-            ${can('inventory:adjust') ? `<button class="btn btn-primary btn-sm" onclick="openAdjustStock(${p.id})">Adjust</button>` : ''}
-            ${can('inventory:update') ? `<button class="btn btn-edit btn-sm" onclick="openEditPart(${p.id})" style="margin-left:4px;">Edit</button>` : ''}
-            <button class="btn btn-ghost btn-sm" onclick="openMovements(${p.id})" style="margin-left:4px;">History</button>
-            ${can('inventory:delete') && p.active ? `<button class="btn btn-danger btn-sm" onclick="removePart(${p.id},'${escHtml(p.sku)}')" style="margin-left:4px;">Delete</button>` : ''}
+            ${can('inventory:adjust') ? `<button class="btn btn-primary btn-sm pc-stop-prop" onclick="event.stopPropagation();openAdjustStock(${p.id})">Adjust</button>` : ''}
+            ${can('inventory:update') ? `<button class="btn btn-edit btn-sm pc-stop-prop" onclick="event.stopPropagation();openEditPart(${p.id})" style="margin-left:4px;">Edit</button>` : ''}
+            <button class="btn btn-ghost btn-sm pc-stop-prop" onclick="event.stopPropagation();openMovements(${p.id})" style="margin-left:4px;">History</button>
+            ${can('inventory:delete') && p.active ? `<button class="btn btn-danger btn-sm pc-stop-prop" onclick="event.stopPropagation();removePart(${p.id},'${escHtml(p.sku)}')" style="margin-left:4px;">Delete</button>` : ''}
           </td>
         </tr>`;
     }).join('');
+    if (typeof PC !== 'undefined' && PC.gateRow) {
+      tbody.querySelectorAll('tr[data-pc-row-part]').forEach(function (tr) {
+        const pid = Number(tr.getAttribute('data-pc-row-part'));
+        PC.gateRow(tr, 'inventory_part', pid, {
+          onClick: function () { openMovements(pid); },
+          ariaLabel: 'View part movements #' + pid,
+        });
+      });
+    }
   }
 
   function formatQty(n) {
@@ -6839,7 +6866,18 @@
     }
 
     html += '</div>';
-    document.getElementById('sch-grid').innerHTML = html;
+    const grid = document.getElementById('sch-grid');
+    grid.innerHTML = html;
+    // Decorate each chip with PC.gateRow so click + keyboard route to visit detail.
+    if (typeof PC !== 'undefined' && PC.gateRow) {
+      grid.querySelectorAll('[data-pc-row-visit]').forEach(function (el) {
+        const vid = Number(el.getAttribute('data-pc-row-visit'));
+        PC.gateRow(el, 'visit', vid, {
+          onClick: function () { if (typeof routeVisitDetail === 'function') routeVisitDetail(vid); else openEditVisit(vid); },
+          ariaLabel: 'View visit #' + vid,
+        });
+      });
+    }
   }
 
   function visitChip(v) {
@@ -6847,13 +6885,18 @@
     const customer = v.customer_name || '(no customer)';
     const equip = v.equipment_name || '';
     const time = v.scheduled_time ? fmtTime12(v.scheduled_time) : '<span style="color:var(--danger);font-style:italic;">no time</span>';
+    const _gateSch = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    // Schedule chip references customer + visit; the chip itself opens visit edit.
+    const customerCell = (_gateSch && v.customer_id)
+      ? PC.gateLinkHtml('customer', v.customer_id, customer, {})
+      : escHtml(customer);
     return `
-      <div class="sch-visit ${cls}" onclick="openEditVisit(${v.id})" title="Click to edit">
+      <div class="sch-visit ${cls}" data-pc-row-visit="${v.id}" title="Click to view visit">
         <div style="display:flex;justify-content:space-between;align-items:baseline;gap:4px;">
           <span class="type">${v.visit_type}</span>
           <span style="font-size:11px;font-weight:700;color:var(--navy);">${time}</span>
         </div>
-        <div class="customer">${escHtml(customer)}</div>
+        <div class="customer">${customerCell}</div>
         ${equip ? `<div class="equip">${escHtml(equip)}</div>` : ''}
         <div style="font-size:9px;color:var(--muted);margin-top:2px;letter-spacing:0.3px;">${v.status.replace('_',' ')}</div>
       </div>`;
@@ -7671,15 +7714,19 @@
         wrap.innerHTML = '<div style="color:var(--muted);font-size:13px;">No pay periods yet. Create one to start payroll.</div>';
         return;
       }
+      const _gatePP = (typeof PC !== 'undefined' && PC.gateLinkHtml);
       wrap.innerHTML = periods.map(p => {
         const sc = p.status === 'paid' ? 'background:#d1fae5;color:#065f46;'
                  : p.status === 'approved' ? 'background:#dbeafe;color:#1e40af;'
                  : p.status === 'cancelled' ? 'background:#fee2e2;color:#991b1b;'
                  : 'background:#fef3c7;color:#92400e;';
-        return `<div style="border:1px solid var(--border);border-radius:8px;padding:12px;">
+        const labelLink = _gatePP
+          ? PC.gateLinkHtml('pay_period', p.id, p.label || '', {onClick: 'function(){ openPayPeriod(' + p.id + '); }'})
+          : `<strong>${escHtml(p.label)}</strong>`;
+        return `<div data-pc-row-payperiod="${p.id}" style="border:1px solid var(--border);border-radius:8px;padding:12px;">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
             <div>
-              <strong>${escHtml(p.label)}</strong>
+              ${labelLink}
               <span style="color:var(--muted);font-size:12px;margin-left:8px;">
                 ${escHtml(p.period_start)} → ${escHtml(p.period_end)} · ${escHtml(p.currency||'JMD')}
               </span>
@@ -7687,16 +7734,20 @@
                 Created by ${escHtml(p.created_by_name||'?')}${p.approved_by_name?' · Approved by '+escHtml(p.approved_by_name):''}
               </div>
             </div>
-            <span class="badge" style="${sc}">${escHtml(p.status.toUpperCase())}</span>
+            <span class="badge pc-stop-prop" style="${sc}">${escHtml(p.status.toUpperCase())}</span>
           </div>
           <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;">
-            <button class="btn btn-ghost btn-sm" onclick="openPayPeriod(${p.id})">View / edit payslips</button>
-            ${p.status === 'draft' && can('payroll:approve') ? `<button class="btn btn-primary btn-sm" onclick="approvePayPeriod(${p.id})">Approve</button>` : ''}
-            ${p.status === 'approved' && can('payroll:mark_paid') ? `<button class="btn btn-ghost btn-sm" onclick="markPayPeriodPaid(${p.id})">Mark paid</button>` : ''}
+            <button class="btn btn-ghost btn-sm pc-stop-prop" onclick="event.stopPropagation();openPayPeriod(${p.id})">View / edit payslips</button>
+            ${p.status === 'draft' && can('payroll:approve') ? `<button class="btn btn-primary btn-sm pc-stop-prop" onclick="event.stopPropagation();approvePayPeriod(${p.id})">Approve</button>` : ''}
+            ${p.status === 'approved' && can('payroll:mark_paid') ? `<button class="btn btn-ghost btn-sm pc-stop-prop" onclick="event.stopPropagation();markPayPeriodPaid(${p.id})">Mark paid</button>` : ''}
           </div>
         </div>`;
       }).join('');
-    } catch (e) { toast(e.message, 'error'); }
+      // FIXME: Payroll status tiles ("3 runs pending" / "2 unpaid") — no discrete DOM tile element exists for these counts today; gateBadge cannot be wired until those tiles are tagged with [data-tile=payroll-pending] / [data-tile=payroll-unpaid].
+    } catch (e) {
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return;
+      toast(e.message, 'error');
+    }
   }
 
   function openModalNewPayPeriod() { openModal('newPayPeriod'); }
@@ -7721,12 +7772,15 @@
       _currentPayPeriod = await api('GET', `/api/admin/payroll/periods/${id}`);
       const cur = _currentPayPeriod.currency || 'JMD';
       const ps = _currentPayPeriod.payslips || [];
+      const _gateOP = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+      // Sensitive-value gating: gross / deductions / net only render if viewer can read payslip records.
+      const _payVis = (typeof PC !== 'undefined' && PC.canRead && PC.canRead('payslip', null));
       const html = `<div style="border:1px solid var(--border);border-radius:8px;padding:12px;background:white;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
           <strong style="color:var(--navy);">${escHtml(_currentPayPeriod.label)} · ${escHtml(_currentPayPeriod.status.toUpperCase())}</strong>
           <div style="display:flex;gap:6px;">
-            ${_currentPayPeriod.status==='draft' && can('payroll:generate') ? `<button class="btn btn-primary btn-sm" onclick="openPayslipForm()">+ Add payslip</button>` : ''}
-            <button class="btn btn-ghost btn-sm" onclick="loadPayPeriods()">← Back</button>
+            ${_currentPayPeriod.status==='draft' && can('payroll:generate') ? `<button class="btn btn-primary btn-sm pc-stop-prop" onclick="openPayslipForm()">+ Add payslip</button>` : ''}
+            <button class="btn btn-ghost btn-sm pc-stop-prop" onclick="loadPayPeriods()">← Back</button>
           </div>
         </div>
         <table style="width:100%;font-size:13px;">
@@ -7738,20 +7792,34 @@
             <th style="text-align:right;padding:6px;">Net</th>
             <th style="padding:6px;">Viewed</th>
           </tr></thead>
-          <tbody>${ps.length ? ps.map(p => `
+          <tbody>${ps.length ? ps.map(p => {
+            // Names render unconditionally; sensitive monetary values collapse to "—" without access.
+            let subjLink = escHtml(p.subject_name || '');
+            if (_gateOP && p.subject_id) {
+              const targetType = (p.subject_type === 'tech') ? 'technician' : 'admin_user';
+              subjLink = PC.gateLinkHtml(targetType, p.subject_id, p.subject_name || '', {});
+            }
+            const psLink = (_gateOP && p.id)
+              ? PC.gateLinkHtml('payslip', p.id, '#'+p.id, {})
+              : '#'+p.id;
+            return `
             <tr style="border-top:1px solid var(--border);">
-              <td style="padding:6px;">${escHtml(p.subject_name)} <span style="color:var(--muted);font-size:11px;">(${escHtml(p.subject_type)} · ${escHtml(p.subject_prid||'')})</span></td>
+              <td style="padding:6px;">${subjLink} <span style="color:var(--muted);font-size:11px;">(${escHtml(p.subject_type)} · ${escHtml(p.subject_prid||'')} · ${psLink})</span></td>
               <td style="text-align:right;padding:6px;">${(p.hours_regular||0)+(p.hours_overtime||0)}</td>
-              <td style="text-align:right;padding:6px;">${_fmtMoney(p.gross_pay, cur)}</td>
-              <td style="text-align:right;padding:6px;color:#991b1b;">${_fmtMoney(p.total_deductions, cur)}</td>
-              <td style="text-align:right;padding:6px;font-weight:700;">${_fmtMoney(p.net_pay, cur)}</td>
+              <td style="text-align:right;padding:6px;">${_payVis ? _fmtMoney(p.gross_pay, cur) : '—'}</td>
+              <td style="text-align:right;padding:6px;color:#991b1b;">${_payVis ? _fmtMoney(p.total_deductions, cur) : '—'}</td>
+              <td style="text-align:right;padding:6px;font-weight:700;">${_payVis ? _fmtMoney(p.net_pay, cur) : '—'}</td>
               <td style="padding:6px;font-size:11px;color:var(--muted);">${p.viewed_by_employee_at ? '✓' : '—'}</td>
-            </tr>`).join('') : '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:14px;">No payslips yet.</td></tr>'}
+            </tr>`;
+          }).join('') : '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:14px;">No payslips yet.</td></tr>'}
           </tbody>
         </table>
       </div>`;
       document.getElementById('payPeriodsList').innerHTML = html;
-    } catch (e) { toast(e.message, 'error'); }
+    } catch (e) {
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return;
+      toast(e.message, 'error');
+    }
   }
 
   async function openPayslipForm() {
@@ -7867,22 +7935,41 @@
         wrap.innerHTML = '<div style="color:var(--muted);font-size:13px;">No payslips yet.</div>';
         return;
       }
+      const _gateMyPs = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+      // "My Payslips" — viewer is always allowed to see their own net (the API
+      //  enforces the self-only scope), so we render the value; the link still
+      //  routes through PC.gateLinkHtml so admins viewing other people's data
+      //  via shared widgets still hit the same code path.
       wrap.innerHTML = rows.map(p => {
         const cur = p.currency || 'JMD';
-        return `<div style="border:1px solid var(--border);border-radius:8px;padding:12px;cursor:pointer;" onclick="openMyPayslip(${p.id})">
+        const _payVis = (typeof PC === 'undefined' || !PC.canRead) ? true : PC.canRead('payslip', p.id);
+        const periodLink = _gateMyPs
+          ? PC.gateLinkHtml('pay_period', p.period_id || p.id, p.period_label || '', {onClick: 'function(){ openMyPayslip(' + p.id + '); }'})
+          : `<strong>${escHtml(p.period_label)}</strong>`;
+        return `<div data-pc-row-mypayslip="${p.id}" style="border:1px solid var(--border);border-radius:8px;padding:12px;">
           <div style="display:flex;justify-content:space-between;align-items:center;">
             <div>
-              <strong>${escHtml(p.period_label)}</strong>
+              ${periodLink}
               <div style="font-size:11px;color:var(--muted);">${escHtml(p.period_start)} → ${escHtml(p.period_end)}</div>
             </div>
             <div style="text-align:right;">
               <div style="font-size:11px;color:var(--muted);">Net pay</div>
-              <div style="font-weight:700;color:var(--navy);">${_fmtMoney(p.net_pay, cur)}</div>
+              <div style="font-weight:700;color:var(--navy);">${_payVis ? _fmtMoney(p.net_pay, cur) : '—'}</div>
             </div>
           </div>
         </div>`;
       }).join('');
+      if (typeof PC !== 'undefined' && PC.gateRow) {
+        wrap.querySelectorAll('div[data-pc-row-mypayslip]').forEach(function (el) {
+          const pid = Number(el.getAttribute('data-pc-row-mypayslip'));
+          PC.gateRow(el, 'payslip', pid, {
+            onClick: function () { openMyPayslip(pid); },
+            ariaLabel: 'Open payslip #' + pid,
+          });
+        });
+      }
     } catch (e) {
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return;
       document.getElementById('myPayslipsList').innerHTML =
         `<div style="color:var(--muted);font-size:13px;">Could not load: ${escHtml(e.message)}</div>`;
     }
@@ -7925,7 +8012,10 @@
         <div style="margin-top:30px;text-align:center;"><button onclick="window.print()" style="padding:10px 30px;background:#22A08A;color:white;border:none;border-radius:6px;font-weight:600;cursor:pointer;">Print</button></div>
         </body></html>`);
       w.document.close();
-    } catch (e) { toast(e.message, 'error'); }
+    } catch (e) {
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return;
+      toast(e.message, 'error');
+    }
   }
 
   // ── 5S panel ───────────────────────────────────────────────────────────
