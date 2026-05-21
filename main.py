@@ -527,6 +527,15 @@ def _preflight_run():
         path = manifest_dir / f"boot-{manifest['boot_time_utc'].replace(':','-')}.json"
         path.write_text(_json.dumps(manifest, indent=2, default=str))
         print(f"✓ Pre-flight passed; manifest written to {path}", flush=True)
+        # Defense in depth: once the preflight has confirmed the key,
+        # flip the crypto Keyring out of "missing_ok" mode so any later
+        # import path that tries to operate without a key will hard-fail
+        # instead of silently passing through plaintext.
+        try:
+            from crypto import _Keyring as _Kr
+            _Kr.lock_required()
+        except Exception as _e:
+            print(f"⚠ crypto.lock_required not engaged: {_e}", flush=True)
     except Exception as e:
         # Manifest write failure is logged but non-fatal — the gate already passed.
         print(f"⚠ Pre-flight passed but manifest write failed: {e}", flush=True)

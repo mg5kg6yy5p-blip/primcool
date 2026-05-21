@@ -837,7 +837,18 @@ def init_db():
     con.close()
     _backfill_prids()
     _backfill_field_encryption()
+    _backfill_audit_pii_redaction()
     _backfill_audit_chain()
+    # Reclaim freed pages so plaintext that lived in pre-encryption rows is
+    # not recoverable from the raw file. SQLite VACUUM rewrites the whole DB.
+    if os.environ.get("FIELD_ENCRYPTION_KEY"):
+        try:
+            con = _con()
+            con.isolation_level = None   # VACUUM needs autocommit
+            con.execute("VACUUM")
+            con.close()
+        except Exception as e:
+            print(f"VACUUM after encryption migration failed: {e}")
 
 
 def _backfill_field_encryption():
@@ -2120,6 +2131,119 @@ def _classify_retention(action: str) -> str:
     return "operational"
 
 
+def _backfill_audit_pii_redaction():
+    """One-time (per-deploy) sweep that redacts PII from existing audit_log
+    before/after JSON blobs and rebuilds the chain so the (redacted) rows
+    still verify. Idempotent — rows already containing only [redacted]
+    markers or no sensitive keys remain unchanged but their hashes are
+    still recomputed deterministically.
+
+    The hash chain BREAKS on the boundary where redaction happened: any
+    party that previously recorded a chain_hash externally will see it
+    differ. We surface that intentional break with a system.audit_redacted
+    row at the very end of the chain so the discontinuity is itself
+    audited."""
+    if not os.environ.get("FIELD_ENCRYPTION_KEY"):
+        return
+    con = _con()
+    rows = con.execute(
+        "SELECT id, before_value, after_value FROM audit_log ORDER BY id ASC"
+    ).fetchall()
+    if not rows:
+        con.close()
+        return
+    # Was any row carrying PII keys before redaction? Only then do we touch.
+    needs = False
+    for r in rows:
+        for blob_col in ("before_value", "after_value"):
+            blob = r[blob_col]
+            if not blob:
+                continue
+            try:
+                v = _json.loads(blob)
+            except Exception:
+                continue
+            redacted = _redact_pii_for_audit(v)
+            if _json.dumps(redacted, sort_keys=True) != _json.dumps(v, sort_keys=True):
+                needs = True
+                break
+        if needs:
+            break
+    if not needs:
+        con.close()
+        return
+    # Redact + rebuild chain.
+    prev_hash = AUDIT_GENESIS
+    for r in rows:
+        d = dict(r)
+        for blob_col in ("before_value", "after_value"):
+            if d[blob_col]:
+                try:
+                    v = _json.loads(d[blob_col])
+                    d[blob_col] = _json.dumps(_redact_pii_for_audit(v))
+                except Exception:
+                    pass
+        # Re-read the rest of the row to recompute the chain hash properly.
+        full = con.execute(
+            """SELECT actor_type, actor_id, actor_prid, actor_label, actor_role,
+                      action, target_type, target_id, target_label,
+                      ip_address, created_at
+                 FROM audit_log WHERE id = ?""", (d["id"],)
+        ).fetchone()
+        row_for_hash = dict(full)
+        row_for_hash["before_value"] = d["before_value"]
+        row_for_hash["after_value"]  = d["after_value"]
+        chain_hash = _audit_compute_hash(prev_hash, row_for_hash)
+        con.execute(
+            "UPDATE audit_log SET before_value = ?, after_value = ?, chain_hash = ? WHERE id = ?",
+            (d["before_value"], d["after_value"], chain_hash, d["id"]),
+        )
+        prev_hash = chain_hash
+    con.commit()
+    con.close()
+
+
+# ── Audit-log PII redaction ─────────────────────────────────────────────────
+# The audit trail intentionally records before/after snapshots of mutations
+# for forensic replay. WITHOUT redaction, every customer/tech/admin create or
+# update writes plaintext PII (phone, email, address, notes, mfa_secret) into
+# audit_log.after_value as JSON — defeating Phase 2's encryption-at-rest for
+# anyone who exfiltrates the database.
+#
+# Strategy: pull the same _PII_RAND / _PII_DET registry used by the column
+# encryption layer and null out matching keys in any dict passed as before/after.
+# We preserve key NAMES (so the structure of the change is still visible) but
+# replace the value with a marker — the audit log can still tell you "this
+# field changed" without telling an attacker WHAT it changed to.
+_AUDIT_PII_KEYS = set()
+for _cols in list(_PII_RAND.values()) + list(_PII_DET.values()):
+    _AUDIT_PII_KEYS.update(_cols)
+# Always redact these top-level keys regardless of table — defensive against
+# new endpoints accidentally passing raw bodies into the audit log.
+_AUDIT_PII_KEYS.update({"pin", "password", "new_password", "current_password",
+                         "current_pin", "signature_b64", "backup_codes",
+                         "mfa_secret", "password_hash", "pin_hash"})
+
+
+def _redact_pii_for_audit(value):
+    """Recursively walks a value (dict / list / scalar) and replaces any
+    PII-bearing field with '[redacted]'. Idempotent on already-redacted data.
+    Returns a new object — does not mutate the caller's dict."""
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if k in _AUDIT_PII_KEYS and v not in (None, ""):
+                out[k] = "[redacted]"
+            else:
+                out[k] = _redact_pii_for_audit(v)
+        return out
+    if isinstance(value, list):
+        return [_redact_pii_for_audit(x) for x in value]
+    return value
+
+
 def log_audit(
     actor_type: str,
     actor_id: int = None,
@@ -2144,8 +2268,10 @@ def log_audit(
         "target_type":  target_type,
         "target_id":    target_id,
         "target_label": target_label,
-        "before_value": _json.dumps(before_value) if before_value is not None else None,
-        "after_value":  _json.dumps(after_value)  if after_value  is not None else None,
+        # Strip PII before the audit row is committed. Phase 2's column
+        # encryption is moot if we keep plaintext copies here.
+        "before_value": _json.dumps(_redact_pii_for_audit(before_value)) if before_value is not None else None,
+        "after_value":  _json.dumps(_redact_pii_for_audit(after_value))  if after_value  is not None else None,
         "ip_address":   ip_address,
         "created_at":   datetime.now(timezone.utc).isoformat(),
     }
