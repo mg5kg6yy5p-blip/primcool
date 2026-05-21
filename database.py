@@ -167,6 +167,8 @@ _PII_RAND = {
     # Delegation module — free-text justification and review notes.
     "delegations":                  ["grantor_notes", "revoke_reason"],
     "delegation_regrant_requests":  ["review_notes"],
+    # Employee KPI Tracking Module — free-text on coaching/override/resolution.
+    "kpi_flags":                    ["reason", "override_reason", "resolution_notes"],
 }
 # Columns that need equality lookup → deterministic encryption + blind index.
 _PII_DET = {
@@ -1409,6 +1411,179 @@ def init_db():
             "VALUES (?, ?, ?, 1, ?, ?, 1, ?)",
             (_seed[0], _seed[1], _seed[2], _seed[3], _seed[4], _now_iso_seed),
         )
+
+    # ── Employee KPI Tracking Module — schema + defaults ───────────────────
+    # Defensive coaching-first scoring. All composite scores chain-hashed.
+    # Safety RED forces composite RED regardless of weighted average.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS kpi_definitions (
+            id                   INTEGER PRIMARY KEY,
+            kpi_key              TEXT NOT NULL UNIQUE,
+            display_name         TEXT NOT NULL,
+            description          TEXT,
+            direction            TEXT NOT NULL CHECK(direction IN ('higher_better','lower_better')),
+            in_composite         INTEGER NOT NULL DEFAULT 1,
+            composite_weight_pct REAL NOT NULL DEFAULT 0,
+            safety_critical      INTEGER NOT NULL DEFAULT 0,
+            active               INTEGER NOT NULL DEFAULT 1,
+            created_at           TEXT NOT NULL,
+            updated_at           TEXT
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS kpi_thresholds (
+            id                INTEGER PRIMARY KEY,
+            kpi_key           TEXT NOT NULL,
+            tier              TEXT NOT NULL CHECK(tier IN ('level_1','level_2','level_3','ops_manager')),
+            green_threshold   REAL NOT NULL,
+            amber_band        REAL NOT NULL,
+            red_floor         REAL NOT NULL,
+            effective_from    TEXT NOT NULL,
+            effective_until   TEXT,
+            active            INTEGER NOT NULL DEFAULT 1,
+            created_at        TEXT NOT NULL,
+            UNIQUE(kpi_key, tier, effective_from)
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_kpi_thresh_lookup ON kpi_thresholds(kpi_key, tier, active)")
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS kpi_periods (
+            id           INTEGER PRIMARY KEY,
+            period_key   TEXT NOT NULL UNIQUE,
+            start_date   TEXT NOT NULL,
+            end_date     TEXT NOT NULL,
+            status       TEXT NOT NULL CHECK(status IN ('open','closed')) DEFAULT 'open',
+            closed_at    TEXT,
+            closed_by    INTEGER,
+            created_at   TEXT NOT NULL
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS kpi_scores (
+            id                  INTEGER PRIMARY KEY,
+            tech_id             INTEGER NOT NULL,
+            period_key          TEXT NOT NULL,
+            kpi_key             TEXT NOT NULL,
+            raw_value           REAL,
+            sample_size         INTEGER,
+            band                TEXT CHECK(band IN ('green','amber','red','insufficient_data')),
+            tier_at_computation TEXT,
+            computed_at         TEXT NOT NULL,
+            recomputed_count    INTEGER NOT NULL DEFAULT 0,
+            prior_chain_hash    TEXT,
+            chain_hash          TEXT NOT NULL,
+            UNIQUE(tech_id, period_key, kpi_key)
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_kpi_scores_tech ON kpi_scores(tech_id, period_key)")
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS kpi_composite_scores (
+            id                  INTEGER PRIMARY KEY,
+            tech_id             INTEGER NOT NULL,
+            period_key          TEXT NOT NULL,
+            composite_pct       REAL,
+            band                TEXT CHECK(band IN ('green','amber','red','insufficient_data')),
+            forced_red_reason   TEXT,
+            tier_at_computation TEXT,
+            computed_at         TEXT NOT NULL,
+            prior_chain_hash    TEXT,
+            chain_hash          TEXT NOT NULL,
+            UNIQUE(tech_id, period_key)
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_kpi_comp_tech ON kpi_composite_scores(tech_id, period_key)")
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS kpi_flags (
+            id                 INTEGER PRIMARY KEY,
+            tech_id            INTEGER NOT NULL,
+            period_key         TEXT NOT NULL,
+            kpi_key            TEXT,
+            severity           TEXT NOT NULL CHECK(severity IN (
+                'coaching_suggested','coaching_required',
+                'written_warning_recommended','immediate_escalation'
+            )),
+            status             TEXT NOT NULL CHECK(status IN (
+                'open','acknowledged','in_progress','resolved','overridden'
+            )) DEFAULT 'open',
+            reason             TEXT,
+            override_reason    TEXT,
+            manager_id         INTEGER,
+            acknowledged_at    TEXT,
+            resolved_at        TEXT,
+            resolution_notes   TEXT,
+            created_at         TEXT NOT NULL,
+            prior_chain_hash   TEXT,
+            chain_hash         TEXT NOT NULL
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_kpi_flags_tech ON kpi_flags(tech_id, status)")
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS kpi_recompute_log (
+            id              INTEGER PRIMARY KEY,
+            triggered_by    TEXT NOT NULL CHECK(triggered_by IN ('cron','manual','visit_event','admin')),
+            triggered_by_id INTEGER,
+            scope           TEXT NOT NULL CHECK(scope IN ('one_tech','one_period','all_open','all')),
+            tech_id         INTEGER,
+            period_key      TEXT,
+            started_at      TEXT NOT NULL,
+            ended_at        TEXT,
+            rows_affected   INTEGER,
+            error_text      TEXT
+        )
+    """)
+
+    # Seed kpi_definitions if empty (idempotent).
+    _kpi_def_count = con.execute("SELECT COUNT(*) FROM kpi_definitions").fetchone()[0]
+    if _kpi_def_count == 0:
+        _kpi_now = datetime.now(timezone.utc).isoformat()
+        _kpi_defs = [
+            ("callback_rate",         "Callback Rate",          "Share of work that came back as a callback. Lower is better.", "lower_better",  1, 30.0, 0),
+            ("documentation_quality", "Documentation Quality",  "Readings + photos + summary completeness per visit.",          "higher_better", 1, 20.0, 0),
+            ("pm_completion",         "PM Completion",          "Preventive maintenance jobs completed on or before due.",      "higher_better", 1, 20.0, 0),
+            ("utilization",           "Utilization",            "Billable minutes over clocked minutes.",                       "higher_better", 1, 15.0, 0),
+            ("sla_adherence",         "SLA Adherence",          "CM jobs started within SLA window.",                           "higher_better", 1, 10.0, 0),
+            ("safety_compliance",     "Safety Compliance",      "100 percent expected. Any LOTO failure forces composite RED.", "higher_better", 1,  5.0, 1),
+            ("first_time_fix",        "First-Time Fix",         "CM jobs that did not generate a callback. Informational.",     "higher_better", 0,  0.0, 0),
+            ("revenue_per_tech",      "Revenue per Tech",       "Labor revenue attributed to this tech. Informational.",        "higher_better", 0,  0.0, 0),
+        ]
+        for k, name, desc, direction, in_comp, weight, safety in _kpi_defs:
+            con.execute(
+                "INSERT OR IGNORE INTO kpi_definitions (kpi_key, display_name, description, "
+                "direction, in_composite, composite_weight_pct, safety_critical, active, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)",
+                (k, name, desc, direction, in_comp, weight, safety, _kpi_now),
+            )
+
+    # Seed kpi_thresholds if empty.
+    _kpi_thresh_count = con.execute("SELECT COUNT(*) FROM kpi_thresholds").fetchone()[0]
+    if _kpi_thresh_count == 0:
+        _kpi_now = datetime.now(timezone.utc).isoformat()
+        _today = datetime.now(timezone.utc).date().isoformat()
+        # (kpi_key, [(tier, green, amber_band, red_floor)])
+        # amber_band is the pp tolerance below green (higher_better)
+        # or above green (lower_better — callback_rate). red_floor is
+        # the side-of-green boundary that flips to RED.
+        _thresh = [
+            ("callback_rate",         [("level_1", 8.0,  2.0, 12.0), ("level_2", 6.0,  2.0, 12.0), ("level_3", 4.0,  2.0, 12.0)]),
+            ("documentation_quality", [("level_1", 80.0, 5.0, 70.0), ("level_2", 85.0, 5.0, 70.0), ("level_3", 90.0, 5.0, 70.0)]),
+            ("pm_completion",         [("level_1", 90.0, 5.0, 85.0), ("level_2", 93.0, 5.0, 85.0), ("level_3", 95.0, 5.0, 85.0)]),
+            ("utilization",           [("level_1", 65.0, 5.0, 55.0), ("level_2", 72.0, 5.0, 55.0), ("level_3", 78.0, 5.0, 55.0)]),
+            ("sla_adherence",         [("level_1", 90.0, 5.0, 85.0), ("level_2", 93.0, 5.0, 85.0), ("level_3", 95.0, 5.0, 85.0)]),
+            ("safety_compliance",     [("level_1",100.0, 0.0,100.0), ("level_2",100.0, 0.0,100.0), ("level_3",100.0, 0.0,100.0)]),
+            ("first_time_fix",        [("level_1", 75.0, 5.0, 65.0), ("level_2", 80.0, 5.0, 65.0), ("level_3", 85.0, 5.0, 65.0)]),
+            ("revenue_per_tech",      [("level_1",  0.0, 0.0,  0.0), ("level_2",  0.0, 0.0,  0.0), ("level_3",  0.0, 0.0,  0.0)]),
+        ]
+        for kpi_key, rows in _thresh:
+            # Replicate level_3 row to ops_manager — they oversee, don't perform.
+            l3 = rows[-1]
+            full = rows + [("ops_manager", l3[1], l3[2], l3[3])]
+            for tier, green, amber, red in full:
+                con.execute(
+                    "INSERT OR IGNORE INTO kpi_thresholds (kpi_key, tier, green_threshold, "
+                    "amber_band, red_floor, effective_from, active, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
+                    (kpi_key, tier, green, amber, red, _today, _kpi_now),
+                )
 
     con.commit()
     con.close()
@@ -8654,3 +8829,200 @@ def list_regrant_requests(status: str = "open") -> list:
         ).fetchall()
     con.close()
     return [_dec_row("delegation_regrant_requests", r) for r in rows]
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Employee KPI Tracking Module — period + threshold + chain-hash helpers
+# Phase 1 surface. Compute engine + recompute orchestrator live below.
+# ════════════════════════════════════════════════════════════════════════════
+
+def iso_week_key(date_str_or_today=None) -> str:
+    """Return 'YYYY-WNN' ISO-week key. Accepts an ISO date string or None
+    (current UTC date)."""
+    if date_str_or_today is None:
+        d = datetime.now(timezone.utc).date()
+    elif isinstance(date_str_or_today, str):
+        # Accept full ISO timestamps or plain dates
+        d = datetime.fromisoformat(date_str_or_today.replace("Z", "+00:00")).date() \
+            if "T" in date_str_or_today else datetime.fromisoformat(date_str_or_today).date()
+    else:
+        d = date_str_or_today
+    yr, wk, _ = d.isocalendar()
+    return f"{yr:04d}-W{wk:02d}"
+
+
+def iso_week_bounds(period_key: str):
+    """Return (start_date, end_date) ISO date strings for an ISO-week key."""
+    yr_s, wk_s = period_key.split("-W")
+    yr, wk = int(yr_s), int(wk_s)
+    # ISO Monday is day 1, Sunday is day 7.
+    from datetime import date, timedelta
+    monday = date.fromisocalendar(yr, wk, 1)
+    sunday = monday + timedelta(days=6)
+    return monday.isoformat(), sunday.isoformat()
+
+
+def ensure_period_exists(period_key: str) -> int:
+    """Idempotent insert into kpi_periods. Returns the row id."""
+    start, end = iso_week_bounds(period_key)
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    con.execute(
+        "INSERT OR IGNORE INTO kpi_periods (period_key, start_date, end_date, "
+        "status, created_at) VALUES (?, ?, ?, 'open', ?)",
+        (period_key, start, end, now),
+    )
+    con.commit()
+    row = con.execute("SELECT id FROM kpi_periods WHERE period_key=?", (period_key,)).fetchone()
+    con.close()
+    return row["id"] if row else None
+
+
+def get_or_create_period(date_or_today=None) -> str:
+    """Return the period_key for the given date (default: today), ensuring it
+    exists in kpi_periods."""
+    key = iso_week_key(date_or_today)
+    ensure_period_exists(key)
+    return key
+
+
+def close_period(period_key: str, closed_by: int) -> bool:
+    """Flip period status to closed. Returns False if already closed or
+    missing. Closed periods are immutable for recompute callers."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    row = con.execute("SELECT status FROM kpi_periods WHERE period_key=?",
+                       (period_key,)).fetchone()
+    if not row:
+        con.close(); return False
+    if row["status"] == "closed":
+        con.close(); return False
+    con.execute(
+        "UPDATE kpi_periods SET status='closed', closed_at=?, closed_by=? "
+        "WHERE period_key=?", (now, closed_by, period_key),
+    )
+    con.commit(); con.close()
+    return True
+
+
+def list_kpi_periods(status: str = None, limit: int = 100) -> list:
+    con = _con()
+    if status:
+        rows = con.execute(
+            "SELECT * FROM kpi_periods WHERE status=? "
+            "ORDER BY start_date DESC LIMIT ?", (status, limit),
+        ).fetchall()
+    else:
+        rows = con.execute(
+            "SELECT * FROM kpi_periods ORDER BY start_date DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def list_kpi_definitions(active_only: bool = True) -> list:
+    con = _con()
+    sql = "SELECT * FROM kpi_definitions"
+    if active_only:
+        sql += " WHERE active=1"
+    sql += " ORDER BY in_composite DESC, composite_weight_pct DESC, kpi_key ASC"
+    rows = con.execute(sql).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def list_kpi_thresholds(tier: str = None, kpi_key: str = None,
+                         active_only: bool = True) -> list:
+    con = _con()
+    where = []
+    args = []
+    if active_only:
+        where.append("active=1")
+    if tier:
+        where.append("tier=?"); args.append(tier)
+    if kpi_key:
+        where.append("kpi_key=?"); args.append(kpi_key)
+    sql = "SELECT * FROM kpi_thresholds"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY kpi_key, tier"
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def upsert_kpi_threshold(kpi_key: str, tier: str, green: float,
+                          amber_band: float, red_floor: float,
+                          effective_from: str = None) -> int:
+    """Admin tuning: deactivate the prior active row for (kpi_key, tier) and
+    insert a new active row with the new values. Returns new row id."""
+    now = datetime.now(timezone.utc).isoformat()
+    effective_from = effective_from or datetime.now(timezone.utc).date().isoformat()
+    con = _con()
+    con.execute(
+        "UPDATE kpi_thresholds SET active=0, effective_until=? "
+        "WHERE kpi_key=? AND tier=? AND active=1",
+        (effective_from, kpi_key, tier),
+    )
+    cur = con.execute(
+        "INSERT OR REPLACE INTO kpi_thresholds (kpi_key, tier, green_threshold, "
+        "amber_band, red_floor, effective_from, active, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
+        (kpi_key, tier, green, amber_band, red_floor, effective_from, now),
+    )
+    new_id = cur.lastrowid
+    con.commit(); con.close()
+    return new_id
+
+
+def _chain_hash_kpi_score(prior_hash: str, row: dict) -> str:
+    import hashlib, json as _j
+    keys = ("tech_id", "period_key", "kpi_key", "raw_value", "sample_size",
+            "band", "tier_at_computation", "computed_at")
+    payload = {k: row.get(k) for k in keys}
+    body = (prior_hash or "") + _j.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _chain_hash_kpi_composite(prior_hash: str, row: dict) -> str:
+    import hashlib, json as _j
+    keys = ("tech_id", "period_key", "composite_pct", "band",
+            "forced_red_reason", "tier_at_computation", "computed_at")
+    payload = {k: row.get(k) for k in keys}
+    body = (prior_hash or "") + _j.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _chain_hash_kpi_flag(prior_hash: str, row: dict) -> str:
+    import hashlib, json as _j
+    keys = ("tech_id", "period_key", "kpi_key", "severity", "status",
+            "manager_id", "created_at")
+    payload = {k: row.get(k) for k in keys}
+    body = (prior_hash or "") + _j.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _last_kpi_score_chain(con=None) -> str:
+    own = con is None
+    if own: con = _con()
+    r = con.execute("SELECT chain_hash FROM kpi_scores ORDER BY id DESC LIMIT 1").fetchone()
+    if own: con.close()
+    return (r["chain_hash"] if r else "") or ""
+
+
+def _last_kpi_composite_chain(con=None) -> str:
+    own = con is None
+    if own: con = _con()
+    r = con.execute("SELECT chain_hash FROM kpi_composite_scores ORDER BY id DESC LIMIT 1").fetchone()
+    if own: con.close()
+    return (r["chain_hash"] if r else "") or ""
+
+
+def _last_kpi_flag_chain(con=None) -> str:
+    own = con is None
+    if own: con = _con()
+    r = con.execute("SELECT chain_hash FROM kpi_flags ORDER BY id DESC LIMIT 1").fetchone()
+    if own: con.close()
+    return (r["chain_hash"] if r else "") or ""
+
