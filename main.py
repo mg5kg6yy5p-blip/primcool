@@ -3528,9 +3528,15 @@ def admin_create_pay_period(request: Request, body: PayPeriodCreate):
 
 @app.get("/api/admin/payroll/periods/{period_id}")
 def admin_get_pay_period(request: Request, period_id: int):
-    _require_perm(request, "payroll:view_all")
+    # High-sensitivity: payroll periods reveal pay rates. Honor delegations
+    # so a delegated supervisor can see a specific period scoped to them.
+    admin = _require_record_access(request, "pay_period", period_id, write=False)
     pp = get_pay_period(period_id)
     if not pp:
+        _audit_deny(viewer_kind="admin", viewer_id=admin["id"],
+                    action="payroll.period_view",
+                    resource_type="pay_period", resource_id=period_id,
+                    reason="resource_not_found_or_no_access", request=request)
         raise HTTPException(404, "Pay period not found")
     pp["payslips"] = list_payslips_for_period(period_id)
     return pp
@@ -3617,10 +3623,15 @@ def admin_mark_pay_period_paid(request: Request, period_id: int):
 @app.get("/api/admin/payslips/{payslip_id}")
 def admin_get_payslip(request: Request, payslip_id: int):
     """Director sees everyone's payslip. Any other admin who has
-    payroll:view_all also sees all (currently only hr_admin)."""
-    admin = _require_perm(request, "payroll:view_all")
+    payroll:view_all also sees all (currently only hr_admin). Delegations
+    on the underlying pay_period or specific payslip ALSO grant access."""
+    admin = _require_record_access(request, "payslip", payslip_id, write=False)
     ps = get_payslip(payslip_id)
     if not ps:
+        _audit_deny(viewer_kind="admin", viewer_id=admin["id"],
+                    action="payslip.view",
+                    resource_type="payslip", resource_id=payslip_id,
+                    reason="resource_not_found_or_no_access", request=request)
         raise HTTPException(404, "Payslip not found")
     return ps
 
@@ -3642,6 +3653,10 @@ def admin_my_payslip(request: Request, payslip_id: int):
         or ps["subject_type"] != "admin"
         or ps["subject_id"] != admin["id"]
         or ps.get("period_status") not in ("approved", "paid")):
+        _audit_deny(viewer_kind="admin", viewer_id=admin["id"],
+                    action="payslip.self_view",
+                    resource_type="payslip", resource_id=payslip_id,
+                    reason="resource_not_found_or_no_access", request=request)
         raise HTTPException(404, "Payslip not found")
     mark_payslip_viewed(payslip_id)
     _audit_from(admin, "payslip.viewed", request,
@@ -3660,10 +3675,17 @@ def tech_my_payslips(request: Request):
 def tech_my_payslip(request: Request, payslip_id: int):
     tech_id = _require_tech(request)
     ps = get_payslip(payslip_id)
+    # Explicit IDOR check: payslip.tech_id must == request tech.id.
+    # Any mismatch becomes a deny+audit (cannot distinguish "not yours"
+    # vs "doesn't exist" in the response body).
     if (not ps
         or ps["subject_type"] != "tech"
         or ps["subject_id"] != tech_id
         or ps.get("period_status") not in ("approved", "paid")):
+        _audit_deny(viewer_kind="tech", viewer_id=tech_id,
+                    action="payslip.self_view",
+                    resource_type="payslip", resource_id=payslip_id,
+                    reason="resource_not_found_or_no_access", request=request)
         raise HTTPException(404, "Payslip not found")
     mark_payslip_viewed(payslip_id)
     # Build a customer-style audit row keyed on tech actor.
@@ -3723,9 +3745,13 @@ def admin_create_part(request: Request, body: PartCreate):
 
 @app.put("/api/admin/parts/{part_id}")
 def admin_update_part(request: Request, part_id: int, body: PartUpdate):
-    admin = _require_perm(request, "inventory:update")
+    admin = _require_record_access(request, "part", part_id, write=True)
     before = get_part_by_id(part_id)
     if not before:
+        _audit_deny(viewer_kind="admin", viewer_id=admin["id"],
+                    action="inventory.update",
+                    resource_type="part", resource_id=part_id,
+                    reason="resource_not_found_or_no_access", request=request)
         raise HTTPException(404, "Part not found")
     update_part(part_id, body.model_dump())
     _audit_from(admin, "inventory.update", request,
@@ -6082,10 +6108,16 @@ def admin_kpi_tech_scorecard(request: Request, tech_id: int,
                               period_key: Optional[str] = None,
                               windows: int = 4):
     """Full detail for last N periods including composite trend, per-KPI
-    history, recent flags. RBAC: kpi:view_team OR tech viewing own."""
-    admin = _require_perm(request, "kpi:view_team")
+    history, recent flags. RBAC: super_admin / supervisor (kpi:view_team)
+    OR a delegate on this technician. Honors record-level delegation so a
+    delegated supervisor can drill into a tech's scorecard."""
+    admin = _require_record_access(request, "technician", tech_id, write=False)
     t = get_tech_by_id(tech_id)
     if not t:
+        _audit_deny(viewer_kind="admin", viewer_id=admin["id"],
+                    action="kpi.scorecard_view",
+                    resource_type="technician", resource_id=tech_id,
+                    reason="resource_not_found_or_no_access", request=request)
         raise HTTPException(404, "Technician not found")
     payload = _kpi_scorecard_payload(tech_id, period_key=period_key,
                                       windows=max(1, min(windows, 26)))
@@ -6176,9 +6208,13 @@ def admin_kpi_flags_queue(request: Request, hub_id: Optional[int] = None):
 @app.get("/api/admin/kpi/flags/{flag_id}", response_model=Dict[str, Any])
 def admin_kpi_flag_detail(request: Request, flag_id: int):
     """Full flag detail with embedded audit trail."""
-    _require_perm(request, "kpi:flag_view")
+    admin = _require_record_access(request, "kpi_flag", flag_id, write=False)
     d = get_kpi_flag_detail(flag_id)
     if not d:
+        _audit_deny(viewer_kind="admin", viewer_id=admin["id"],
+                    action="kpi.flag_view",
+                    resource_type="kpi_flag", resource_id=flag_id,
+                    reason="resource_not_found_or_no_access", request=request)
         raise HTTPException(404, "Flag not found")
     return d
 
@@ -6199,7 +6235,7 @@ class KpiFlagOverrideBody(BaseModel):
           response_model=Dict[str, Any])
 def admin_kpi_flag_acknowledge(request: Request, flag_id: int,
                                 body: KpiFlagNotesBody):
-    admin = _require_perm(request, "kpi:flag_resolve")
+    admin = _require_record_access(request, "kpi_flag", flag_id, write=True)
     try:
         out = acknowledge_kpi_flag(flag_id, admin["id"])
     except ValueError as ve:
@@ -6217,7 +6253,7 @@ def admin_kpi_flag_acknowledge(request: Request, flag_id: int,
           response_model=Dict[str, Any])
 def admin_kpi_flag_start(request: Request, flag_id: int,
                           body: KpiFlagNotesBody):
-    admin = _require_perm(request, "kpi:flag_resolve")
+    admin = _require_record_access(request, "kpi_flag", flag_id, write=True)
     if not (body.notes or "").strip():
         raise HTTPException(400, [{"field": "notes",
                                    "message": "Coaching notes required"}])
@@ -6241,7 +6277,7 @@ def admin_kpi_flag_start(request: Request, flag_id: int,
           response_model=Dict[str, Any])
 def admin_kpi_flag_resolve(request: Request, flag_id: int,
                             body: KpiFlagResolveBody):
-    admin = _require_perm(request, "kpi:flag_resolve")
+    admin = _require_record_access(request, "kpi_flag", flag_id, write=True)
     if not (body.resolution_notes or "").strip():
         raise HTTPException(400, [{"field": "resolution_notes",
                                    "message": "Resolution notes required"}])
@@ -6783,9 +6819,13 @@ def admin_kpi_goals_list(request: Request,
 
 @app.get("/api/admin/kpi/goals/{goal_id}", response_model=Dict[str, Any])
 def admin_kpi_goal_detail(request: Request, goal_id: int):
-    _require_perm(request, "kpi:goal_view")
+    admin = _require_record_access(request, "kpi_goal", goal_id, write=False)
     g = get_kpi_goal(goal_id)
     if not g:
+        _audit_deny(viewer_kind="admin", viewer_id=admin["id"],
+                    action="kpi.goal_view",
+                    resource_type="kpi_goal", resource_id=goal_id,
+                    reason="resource_not_found_or_no_access", request=request)
         raise HTTPException(404, "Goal not found")
     g["checkins"] = list_goal_checkins(goal_id)
     return {"goal": g}
@@ -7212,7 +7252,7 @@ def admin_list_reviews(request: Request, status: Optional[str] = None):
 
 @app.put("/api/admin/reviews/{review_id}/approve")
 def admin_approve_review(request: Request, review_id: int):
-    admin = _require_perm(request, "review:approve")
+    admin = _require_record_access(request, "review", review_id, write=True)
     update_review_status(review_id, "approved")
     _audit_from(admin, "review.approve", request,
                 target_type="review", target_id=review_id)
@@ -7221,7 +7261,7 @@ def admin_approve_review(request: Request, review_id: int):
 
 @app.put("/api/admin/reviews/{review_id}/reject")
 def admin_reject_review(request: Request, review_id: int):
-    admin = _require_perm(request, "review:reject")
+    admin = _require_record_access(request, "review", review_id, write=True)
     update_review_status(review_id, "rejected")
     _audit_from(admin, "review.reject", request,
                 target_type="review", target_id=review_id)
@@ -7230,10 +7270,14 @@ def admin_reject_review(request: Request, review_id: int):
 
 @app.delete("/api/admin/reviews/{review_id}")
 def admin_delete_review(request: Request, review_id: int):
-    admin = _require_perm(request, "review:delete")
+    admin = _require_record_access(request, "review", review_id, write=True)
     # Look up before deleting so the audit row captures the snapshot
     existing = [r for r in get_all_reviews() if r["id"] == review_id]
     if not existing:
+        _audit_deny(viewer_kind="admin", viewer_id=admin["id"],
+                    action="review.delete",
+                    resource_type="review", resource_id=review_id,
+                    reason="resource_not_found_or_no_access", request=request)
         raise HTTPException(404, "Review not found")
     delete_review(review_id)
     _audit_from(admin, "review.delete", request,
@@ -7617,9 +7661,13 @@ def admin_fs_exception_list_photos(request: Request, exception_id: int):
     OR supervisor_admin with fs:exception_resolve. Each row carries a signed
     URL the front-end can use to fetch the binary via the existing /photos/
     signed-download surface."""
-    admin = _require_perm(request, "fs:exception_resolve")
+    admin = _require_record_access(request, "fs_exception", exception_id, write=False)
     exc = fs_get_exception(exception_id)
     if not exc:
+        _audit_deny(viewer_kind="admin", viewer_id=admin["id"],
+                    action="fs.exception.photos_view",
+                    resource_type="fs_exception", resource_id=exception_id,
+                    reason="resource_not_found_or_no_access", request=request)
         raise HTTPException(404, "Exception not found")
     photos = list_exception_photos(exception_id)
     out = []
@@ -7801,9 +7849,13 @@ def admin_fs_list_audits(request: Request,
 
 @app.get("/api/admin/5s/audits/{audit_id}")
 def admin_fs_get_audit(request: Request, audit_id: int):
-    _require_perm(request, "fs:report_view")
+    admin = _require_record_access(request, "fs_audit", audit_id, write=False)
     out = fs_get_audit_with_items(audit_id)
     if not out:
+        _audit_deny(viewer_kind="admin", viewer_id=admin["id"],
+                    action="fs.audit.view",
+                    resource_type="fs_audit", resource_id=audit_id,
+                    reason="resource_not_found_or_no_access", request=request)
         raise HTTPException(404, "Audit not found")
     return out
 
@@ -7830,9 +7882,15 @@ class AdminFSResolve(BaseModel):
 @app.post("/api/admin/5s/exceptions/{exception_id}/resolve")
 def admin_fs_resolve_exception(request: Request, exception_id: int,
                                 body: AdminFSResolve):
-    admin = _require_perm(request, "fs:exception_resolve")
+    # Per-record gate: fs:exception_resolve is the role grant, but a
+    # delegate on this specific exception (or fs_exception type) also wins.
+    admin = _require_record_access(request, "fs_exception", exception_id, write=True)
     before = fs_get_exception(exception_id)
     if not before:
+        _audit_deny(viewer_kind="admin", viewer_id=admin["id"],
+                    action="fs.exception.resolve",
+                    resource_type="fs_exception", resource_id=exception_id,
+                    reason="resource_not_found_or_no_access", request=request)
         raise HTTPException(404, "Exception not found")
     try:
         fs_resolve_exception(exception_id, admin["id"], "admin",
@@ -7849,9 +7907,13 @@ def admin_fs_resolve_exception(request: Request, exception_id: int,
 
 @app.post("/api/admin/5s/exceptions/{exception_id}/escalate")
 def admin_fs_escalate_exception(request: Request, exception_id: int):
-    admin = _require_perm(request, "fs:exception_escalate_director")
+    admin = _require_record_access(request, "fs_exception", exception_id, write=True)
     before = fs_get_exception(exception_id)
     if not before:
+        _audit_deny(viewer_kind="admin", viewer_id=admin["id"],
+                    action="fs.exception.escalate",
+                    resource_type="fs_exception", resource_id=exception_id,
+                    reason="resource_not_found_or_no_access", request=request)
         raise HTTPException(404, "Exception not found")
     try:
         fs_escalate_exception(exception_id, escalated_to_id=admin["id"],
@@ -8214,8 +8276,16 @@ def admin_delegation_revoke(request: Request, delegation_id: int, body: RevokeBo
     admin = _require_admin(request)
     row = _get_delegation(delegation_id)
     if not row:
+        _audit_deny(viewer_kind="admin", viewer_id=admin["id"],
+                    action="delegation.revoke",
+                    resource_type="delegation", resource_id=delegation_id,
+                    reason="resource_not_found_or_no_access", request=request)
         raise HTTPException(404, "Delegation not found")
     if admin.get("role") != "super_admin" and int(row["grantor_id"]) != int(admin["id"]):
+        _audit_deny(viewer_kind="admin", viewer_id=admin["id"],
+                    action="delegation.revoke",
+                    resource_type="delegation", resource_id=delegation_id,
+                    reason="not_grantor_or_super_admin", request=request)
         raise HTTPException(403, "Only the grantor or super_admin may revoke")
     if row.get("revoked_at"):
         return {"ok": True, "already_revoked": True}
@@ -8338,10 +8408,18 @@ def admin_delegation_detail(request: Request, delegation_id: int):
     admin = _require_admin(request)
     row = _get_delegation(int(delegation_id))
     if not row:
+        _audit_deny(viewer_kind="admin", viewer_id=admin["id"],
+                    action="delegation.view",
+                    resource_type="delegation", resource_id=delegation_id,
+                    reason="resource_not_found_or_no_access", request=request)
         raise HTTPException(404, "Delegation not found")
     if admin.get("role") != "super_admin" \
        and int(row["grantor_id"]) != int(admin["id"]) \
        and int(row["recipient_id"]) != int(admin["id"]):
+        _audit_deny(viewer_kind="admin", viewer_id=admin["id"],
+                    action="delegation.view",
+                    resource_type="delegation", resource_id=delegation_id,
+                    reason="not_party_to_delegation", request=request)
         raise HTTPException(403, "Forbidden")
     return row
 
