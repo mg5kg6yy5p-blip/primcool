@@ -849,20 +849,144 @@
 
       <!-- ── Technicians panel ── -->
       <div class="panel" id="panel-techs">
-        <div class="top-bar">
-          <h2>Technicians</h2>
-          <div style="display:flex;gap:8px;">
-            <button class="btn btn-ghost" id="exportTechsBtn" onclick="exportResource('techs')" style="display:none;">⬇ Export CSV</button>
-            <button class="btn btn-primary" onclick="openModal('addTech')">+ Add Technician</button>
+        <div id="techList">
+          <div class="top-bar">
+            <h2>Technicians</h2>
+            <div style="display:flex;gap:8px;">
+              <button class="btn btn-ghost" id="exportTechsBtn" onclick="exportResource('techs')" style="display:none;">⬇ Export CSV</button>
+              <button class="btn btn-primary" onclick="openModal('addTech')">+ Add Technician</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr>
+                <th>Code</th><th>Name</th><th>Phone</th><th>Active Jobs</th><th>Status</th><th>Actions</th>
+              </tr></thead>
+              <tbody id="techTableBody"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+            </table>
           </div>
         </div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr>
-              <th>Code</th><th>Name</th><th>Phone</th><th>Active Jobs</th><th>Status</th><th>Actions</th>
-            </tr></thead>
-            <tbody id="techTableBody"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
-          </table>
+
+        <!-- ── super_admin Technician Detail View (full-page) ── -->
+        <div id="technicianDetailFull" style="display:none;">
+          <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">
+            <a href="#" onclick="event.preventDefault();showTechList();" style="color:var(--navy);text-decoration:none;font-weight:600;">Technicians</a>
+            <span style="margin:0 6px;">›</span>
+            <span id="tdf-breadcrumb-name" style="color:var(--text);"></span>
+          </div>
+          <div class="back-btn" onclick="showTechList()" style="cursor:pointer;display:inline-flex;align-items:center;gap:6px;margin-bottom:14px;color:var(--navy);font-weight:600;font-size:13px;">
+            ← Back to Technicians
+          </div>
+
+          <!-- Header -->
+          <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:18px;">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">
+              <div>
+                <h3 style="margin:0;color:var(--navy);font-size:18px;" id="tdf-name"></h3>
+                <div style="font-size:12px;color:var(--muted);margin-top:3px;" id="tdf-meta"></div>
+              </div>
+              <button class="btn btn-primary btn-sm" id="tdf-edit-btn" onclick="openEditTechProfile()" aria-label="Edit technician info">✎ Edit Info</button>
+            </div>
+            <div id="tdf-profile-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px 24px;font-size:13px;margin-top:14px;"></div>
+            <div id="tdf-certs-inline" style="margin-top:14px;font-size:12px;color:var(--muted);"></div>
+          </div>
+
+          <!-- KPI Dashboard -->
+          <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:18px;">
+            <h3 style="margin:0 0 6px;color:var(--navy);font-size:16px;">KPI Dashboard</h3>
+            <div id="tdf-kpi-note" style="font-size:12px;color:var(--muted);margin-bottom:12px;"></div>
+            <div id="tdf-kpi-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;"></div>
+          </div>
+
+          <!-- 5S Compliance -->
+          <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:18px;">
+            <h3 style="margin:0 0 12px;color:var(--navy);font-size:16px;">5S Compliance</h3>
+            <div id="tdf-5s-summary" style="margin-bottom:12px;"></div>
+            <div id="tdf-5s-trend" style="display:flex;gap:6px;align-items:flex-end;height:60px;margin-bottom:12px;"></div>
+            <h4 style="margin:14px 0 8px;color:var(--navy);font-size:13px;text-transform:uppercase;letter-spacing:0.5px;">Recent Audits</h4>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Date</th><th>Auditor</th><th>Phase</th><th>Result</th></tr></thead>
+                <tbody id="tdf-5s-audits-body"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+              </table>
+            </div>
+            <h4 style="margin:14px 0 8px;color:var(--navy);font-size:13px;text-transform:uppercase;letter-spacing:0.5px;">Open / Recent Exceptions</h4>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Opened</th><th>Severity</th><th>Category</th><th>Status</th><th>Description</th><th></th></tr></thead>
+                <tbody id="tdf-5s-exc-body"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Job History -->
+          <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:18px;">
+            <h3 style="margin:0 0 12px;color:var(--navy);font-size:16px;">Job History</h3>
+            <div class="filter-bar" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;font-size:12px;align-items:center;">
+              <label>Type
+                <select id="tdf-job-type" onchange="loadTdfJobs(1)" style="margin-left:4px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;">
+                  <option value="">All</option><option value="PM">PM</option><option value="CM">CM</option>
+                </select>
+              </label>
+              <label>Status
+                <select id="tdf-job-status" onchange="loadTdfJobs(1)" style="margin-left:4px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;">
+                  <option value="">Any</option>
+                  <option value="scheduled">Scheduled</option>
+                  <option value="in_progress">In Progress</option>
+                  <option value="completed">Completed</option>
+                  <option value="cancelled">Cancelled</option>
+                </select>
+              </label>
+              <label>From <input type="date" id="tdf-job-from" onchange="loadTdfJobs(1)" style="margin-left:4px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;"></label>
+              <label>To <input type="date" id="tdf-job-to" onchange="loadTdfJobs(1)" style="margin-left:4px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;"></label>
+              <label title="Callback linkage column not yet present">
+                <input type="checkbox" id="tdf-job-cb" disabled> Callbacks only
+              </label>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr>
+                  <th>Date</th><th>Visit</th><th>Customer</th><th>Equipment</th>
+                  <th>Type</th><th>Status</th><th>Callback?</th>
+                  <th>Duration</th><th>Parts</th><th>Revenue</th>
+                </tr></thead>
+                <tbody id="tdf-jobs-body"><tr><td colspan="10" class="empty">Loading…</td></tr></tbody>
+              </table>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;font-size:12px;color:var(--muted);">
+              <div id="tdf-jobs-range">—</div>
+              <div>
+                <button class="btn btn-ghost btn-sm" id="tdf-jobs-prev" onclick="tdfJobsPage(-1)">← Prev</button>
+                <button class="btn btn-ghost btn-sm" id="tdf-jobs-next" onclick="tdfJobsPage(1)" style="margin-left:6px;">Next →</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Reviews & Notes -->
+          <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:18px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+              <h3 style="margin:0;color:var(--navy);font-size:16px;">Performance Reviews &amp; Notes</h3>
+              <button class="btn btn-primary btn-sm" onclick="openAddTechReview()" aria-label="Add review">+ Add Review</button>
+            </div>
+            <div id="tdf-reviews-list"><div class="empty" style="padding:14px;">Loading…</div></div>
+          </div>
+
+          <!-- Bonus & Payroll -->
+          <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:18px;">
+            <h3 style="margin:0 0 12px;color:var(--navy);font-size:16px;">Bonus &amp; Payroll Summary</h3>
+            <div id="tdf-payroll-body" style="font-size:13px;color:var(--muted);">Loading…</div>
+            <div style="margin-top:10px;font-size:11px;color:var(--muted);font-style:italic;">
+              Bonus linked to KPI status — will activate when the KPI module ships.
+            </div>
+          </div>
+
+          <!-- Footer actions -->
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px;margin-bottom:24px;">
+            <button class="btn btn-ghost" onclick="showTechList()">← Back to Technicians</button>
+            <button class="btn btn-primary" onclick="openEditTechProfile()">✎ Edit Info</button>
+            <button class="btn btn-edit" id="tdf-reset-pin-btn" onclick="tdfResetPin()">Reset PIN</button>
+            <button class="btn btn-danger" id="tdf-offboard-btn" onclick="tdfOffboard()" style="margin-left:auto;">🚪 Offboard</button>
+          </div>
         </div>
       </div>
 
@@ -1500,6 +1624,179 @@
   </div>
 </div>
 
+<!-- ── Edit Technician Info (super_admin) ── -->
+<div class="modal-overlay" id="modal-editTechProfile">
+  <div class="modal" style="max-width:620px;">
+    <div class="modal-header">
+      <h3>Edit Technician Info</h3>
+      <button class="modal-close" onclick="closeModal('editTechProfile')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field-row">
+        <div class="field"><label>Full Name</label>
+          <input id="etp-name" disabled style="background:var(--light);color:var(--muted);">
+        </div>
+        <div class="field"><label>PRID</label>
+          <input id="etp-prid" disabled style="background:var(--light);color:var(--muted);">
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Phone</label>
+          <input id="etp-phone" maxlength="40">
+          <div class="field-err" id="etp-err-phone" style="display:none;color:var(--danger);font-size:11px;margin-top:3px;"></div>
+        </div>
+        <div class="field"><label>Email</label>
+          <input id="etp-email" type="email" maxlength="200">
+          <div class="field-err" id="etp-err-email" style="display:none;color:var(--danger);font-size:11px;margin-top:3px;"></div>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Tech Role</label>
+          <select id="etp-role">
+            <option value="tech">Level 1 — Technician</option>
+            <option value="lead_tech">Lead Technician</option>
+            <option value="apprentice">Apprentice</option>
+          </select>
+        </div>
+        <div class="field"><label>Hourly Rate (JMD)</label>
+          <input id="etp-rate" type="number" step="0.01" min="0.01">
+          <div class="field-err" id="etp-err-rate" style="display:none;color:var(--danger);font-size:11px;margin-top:3px;"></div>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Hire Date</label>
+          <input id="etp-hire" disabled style="background:var(--light);color:var(--muted);">
+        </div>
+        <div class="field"><label>Employment Status</label>
+          <select id="etp-status">
+            <option value="active">Active</option>
+            <option value="on_leave">On Leave</option>
+            <option value="terminated">Terminated</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-error" id="err-editTechProfile" style="display:none;"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('editTechProfile')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitEditTechProfile()" id="etp-save-btn">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── KPI Threshold Override (super_admin) ── -->
+<div class="modal-overlay" id="modal-kpiOverride">
+  <div class="modal" style="max-width:560px;">
+    <div class="modal-header">
+      <h3>Override KPI Thresholds</h3>
+      <button class="modal-close" onclick="closeModal('kpiOverride')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:12px;">
+        KPI: <strong id="ko-key-label" style="color:var(--text);"></strong>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Green ≥</label>
+          <input id="ko-green" type="number" step="0.01">
+        </div>
+        <div class="field"><label>Amber ≥</label>
+          <input id="ko-amber" type="number" step="0.01">
+        </div>
+        <div class="field"><label>Red &lt;</label>
+          <input id="ko-red" type="number" step="0.01">
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Effective From</label>
+          <input id="ko-from" type="date">
+        </div>
+        <div class="field"><label>Effective Until <span style="color:var(--muted);font-weight:400;">(optional)</span></label>
+          <input id="ko-until" type="date">
+        </div>
+      </div>
+      <div class="field"><label>Reason <span style="color:var(--danger);">*</span></label>
+        <textarea id="ko-reason" rows="3" maxlength="1000" placeholder="Why is this threshold being overridden?"></textarea>
+        <div class="field-err" id="ko-err-reason" style="display:none;color:var(--danger);font-size:11px;margin-top:3px;"></div>
+      </div>
+      <div class="form-error" id="err-kpiOverride" style="display:none;"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('kpiOverride')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitKpiOverride()" id="ko-save-btn">Save Override</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── 5S Exception Override (super_admin) ── -->
+<div class="modal-overlay" id="modal-5sOverride">
+  <div class="modal" style="max-width:520px;">
+    <div class="modal-header">
+      <h3>Override 5S Exception Flag</h3>
+      <button class="modal-close" onclick="closeModal('5sOverride')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:12px;color:var(--muted);margin-bottom:12px;">
+        Exception #<span id="fso-exc-id"></span> — the original exception record is preserved.
+        The override is a separate forensic row.
+      </p>
+      <div class="field"><label>Reason <span style="color:var(--danger);">*</span></label>
+        <textarea id="fso-reason" rows="4" maxlength="1000" placeholder="Why is this flag being overridden?"></textarea>
+        <div class="field-err" id="fso-err-reason" style="display:none;color:var(--danger);font-size:11px;margin-top:3px;"></div>
+      </div>
+      <div class="form-error" id="err-5sOverride" style="display:none;"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('5sOverride')">Cancel</button>
+      <button class="btn btn-primary" onclick="submit5sOverride()" id="fso-save-btn">Save Override</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Add / Edit Technician Review (super_admin) ── -->
+<div class="modal-overlay" id="modal-techReview">
+  <div class="modal" style="max-width:780px;">
+    <div class="modal-header">
+      <h3 id="tr-modal-title">Add Performance Review</h3>
+      <button class="modal-close" onclick="closeModal('techReview')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field-row">
+        <div class="field"><label>Type <span style="color:var(--danger);">*</span></label>
+          <select id="tr-type">
+            <option value="coaching">Coaching</option>
+            <option value="written_warning">Written Warning</option>
+            <option value="positive_feedback">Positive Feedback</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+        <div class="field"><label>Status</label>
+          <select id="tr-status">
+            <option value="open">Open</option>
+            <option value="resolved">Resolved</option>
+            <option value="archived">Archived</option>
+          </select>
+        </div>
+      </div>
+      <div class="field"><label>Summary <span style="color:var(--danger);">*</span></label>
+        <textarea id="tr-summary" rows="4" maxlength="1000"></textarea>
+        <div class="field-err" id="tr-err-summary" style="display:none;color:var(--danger);font-size:11px;margin-top:3px;"></div>
+      </div>
+      <div class="field"><label>Action Items <span style="color:var(--muted);font-weight:400;">(optional)</span></label>
+        <textarea id="tr-actions" rows="3" maxlength="2000"></textarea>
+        <div class="field-err" id="tr-err-actions" style="display:none;color:var(--danger);font-size:11px;margin-top:3px;"></div>
+      </div>
+      <div class="field"><label>Follow-up Date <span style="color:var(--muted);font-weight:400;">(optional)</span></label>
+        <input id="tr-followup" type="date">
+      </div>
+      <div class="form-error" id="err-techReview" style="display:none;"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('techReview')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitTechReview()" id="tr-save-btn">Save</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Visit Detail View (super_admin) ── -->
 <div class="modal-overlay" id="modal-visitDetailFull">
   <div class="modal" style="max-width:800px;width:96%;">
@@ -2077,6 +2374,8 @@
     setTimeout(_maybeOpenCustomerFromHash, 60);
     // Honor /admin#visit/{id} deep-link for super_admin
     setTimeout(_maybeOpenVisitFromHash, 60);
+    // Honor /admin#technician/{id} deep-link for super_admin
+    setTimeout(_maybeOpenTechnicianFromHash, 60);
   }
 
   function applyRoleVisibility() {
@@ -3165,6 +3464,699 @@
     openVisitDetailFull(parseInt(m[1], 10));
   }
   window.addEventListener('hashchange', _maybeOpenVisitFromHash);
+
+  // ── super_admin Technician Detail View ──────────────────────────────────
+  // Mirrors the customer & visit detail patterns: hard role gate, hash
+  // deep-link, audited reads on every section load, surgical edits via the
+  // four edit-surface modals (info / KPI thresholds / 5S overrides / reviews).
+  let tdfState = { tech: null, jobs: [], page: 1, total: 0, limit: 20,
+                   kpi: null, fs: null, reviews: [],
+                   editingReviewId: null, activeKpiKey: null,
+                   activeExceptionId: null };
+
+  const TDF_ROLE_LABEL = { tech: 'Level 1 — Technician',
+                           lead_tech: 'Lead Technician',
+                           apprentice: 'Apprentice' };
+  const TDF_REVIEW_TYPE_LABEL = {
+    coaching:          { label: 'Coaching',          bg: '#dbeafe', fg: '#1d4ed8' },
+    written_warning:   { label: 'Written Warning',   bg: '#fee2e2', fg: '#b91c1c' },
+    positive_feedback: { label: 'Positive Feedback', bg: '#dcfce7', fg: '#166534' },
+    other:             { label: 'Other',             bg: '#f3f4f6', fg: '#374151' },
+  };
+  const TDF_REVIEW_STATUS_LABEL = {
+    open:     { label: 'Open',     bg: '#fef3c7', fg: '#92400e' },
+    resolved: { label: 'Resolved', bg: '#dcfce7', fg: '#166534' },
+    archived: { label: 'Archived', bg: '#f3f4f6', fg: '#6b7280' },
+  };
+  const TDF_KPI_KEYS = [
+    { key: 'pm_completion',         label: 'PM Visit Completion' },
+    { key: 'callback_rate',         label: 'Callback / Rework Rate' },
+    { key: 'first_time_fix',        label: 'First-Time Fix' },
+    { key: 'revenue_per_tech',      label: 'Revenue per Tech' },
+    { key: 'utilization',           label: 'Utilization' },
+    { key: 'documentation_quality', label: 'Documentation Quality' },
+    { key: 'sla_adherence',         label: 'SLA Adherence' },
+    { key: 'safety_loto',           label: 'Safety / LOTO' },
+  ];
+
+  function routeTechnicianDetail(id) {
+    if (!currentAdmin || currentAdmin.role !== 'super_admin') {
+      toast('Technician detail view is restricted to super_admin', 'error');
+      return;
+    }
+    openTechnicianDetailFull(id);
+  }
+
+  function showTechList() {
+    document.getElementById('technicianDetailFull').style.display = 'none';
+    document.getElementById('techList').style.display = '';
+    if (location.hash.startsWith('#technician/')) {
+      history.replaceState(null, '', location.pathname + location.search);
+    }
+  }
+
+  async function openTechnicianDetailFull(id) {
+    document.getElementById('techList').style.display = 'none';
+    document.getElementById('technicianDetailFull').style.display = 'block';
+    tdfState = { tech: null, jobs: [], page: 1, total: 0, limit: 20,
+                 kpi: null, fs: null, reviews: [],
+                 editingReviewId: null, activeKpiKey: null,
+                 activeExceptionId: null };
+    history.replaceState(null, '', location.pathname + location.search + '#technician/' + id);
+    try {
+      const t = await api('GET', `/api/admin/technicians/${id}`);
+      tdfState.tech = t;
+      renderTdfHeader();
+      loadTdfKpi();
+      loadTdf5s();
+      loadTdfJobs(1);
+      loadTdfReviews();
+      loadTdfCertifications();
+      loadTdfPayroll();
+    } catch (e) {
+      toast('Unable to load technician: ' + e.message, 'error');
+      showTechList();
+    }
+  }
+
+  function _tdfBadge(text, bg, fg) {
+    return `<span class="badge" style="background:${bg};color:${fg};">${escHtml(text)}</span>`;
+  }
+
+  function renderTdfHeader() {
+    const t = tdfState.tech; if (!t) return;
+    document.getElementById('tdf-name').textContent = t.name || '—';
+    document.getElementById('tdf-breadcrumb-name').textContent = t.name || '—';
+
+    const role = t.role || 'tech';
+    const roleBadgeBg = role === 'lead_tech' ? '#ffedd5'
+                      : role === 'apprentice' ? '#e0e7ff'
+                      : '#e0f2f1';
+    const roleBadgeFg = role === 'lead_tech' ? '#9a3412'
+                      : role === 'apprentice' ? '#4338ca'
+                      : '#0a7d68';
+    const empStatus = (t.active === 0 || t.active === false)
+                       ? { label: 'Terminated', bg: '#f3f4f6', fg: '#6b7280' }
+                       : { label: 'Active',     bg: '#dcfce7', fg: '#166534' };
+    const meta = [];
+    if (t.prid) meta.push(`<span class="code-pill" style="background:#0B2545;color:#fff;">${escHtml(t.prid)}</span>`);
+    if (t.tech_code) meta.push(`<span class="code-pill">${escHtml(t.tech_code)}</span>`);
+    meta.push(_tdfBadge(TDF_ROLE_LABEL[role] || 'Technician', roleBadgeBg, roleBadgeFg));
+    meta.push(_tdfBadge(empStatus.label, empStatus.bg, empStatus.fg));
+    document.getElementById('tdf-meta').innerHTML = meta.join(' ');
+
+    const fld = (label, val) => `
+      <div>
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);font-weight:600;margin-bottom:3px;">${label}</div>
+        <div style="color:var(--text);">${escHtml(val) || '—'}</div>
+      </div>`;
+    document.getElementById('tdf-profile-grid').innerHTML = [
+      fld('Phone', t.phone || ''),
+      fld('Email', t.email || ''),
+      fld('Hourly Rate', t.hourly_rate ? `J$${Number(t.hourly_rate).toFixed(2)}/hr` : '—'),
+      fld('Hire Date', t.hire_date || ''),
+    ].join('');
+
+    // Offboard button hidden if already inactive
+    const offBtn = document.getElementById('tdf-offboard-btn');
+    if (offBtn) offBtn.style.display = (t.active === 0 || t.active === false) ? 'none' : '';
+  }
+
+  // ── KPI section ───────────────────────────────────────────────────────────
+  async function loadTdfKpi() {
+    if (!tdfState.tech) return;
+    try {
+      const kpi = await api('GET', `/api/admin/technicians/${tdfState.tech.id}/kpi`);
+      tdfState.kpi = kpi;
+      renderTdfKpi();
+    } catch (e) {
+      document.getElementById('tdf-kpi-note').textContent =
+        'Unable to load KPI status: ' + e.message;
+    }
+  }
+
+  function renderTdfKpi() {
+    const k = tdfState.kpi || {};
+    const note = document.getElementById('tdf-kpi-note');
+    if (k.available === false) {
+      note.textContent = k.message ||
+        'KPI tracking not yet active — scores will populate once the KPI module is deployed.';
+      note.style.color = 'var(--muted)';
+    } else {
+      note.textContent = '';
+    }
+    const grid = document.getElementById('tdf-kpi-grid');
+    grid.innerHTML = TDF_KPI_KEYS.map(k2 => `
+      <div style="border:1px solid var(--border);border-radius:8px;padding:12px;background:#fafafa;">
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);font-weight:700;margin-bottom:6px;">${escHtml(k2.label)}</div>
+        <div style="font-size:18px;color:#cbd5e1;font-weight:700;margin-bottom:8px;" aria-label="Score pending">—</div>
+        <button class="btn btn-ghost btn-sm" onclick="openKpiOverride('${k2.key}','${escHtml(k2.label)}')" aria-label="Edit thresholds for ${escHtml(k2.label)}">Edit Thresholds</button>
+      </div>`).join('');
+  }
+
+  function openKpiOverride(key, label) {
+    tdfState.activeKpiKey = key;
+    document.getElementById('ko-key-label').textContent = label;
+    ['ko-green','ko-amber','ko-red','ko-reason','ko-from','ko-until'].forEach(id =>
+      document.getElementById(id).value = '');
+    document.getElementById('ko-err-reason').style.display = 'none';
+    document.getElementById('err-kpiOverride').style.display = 'none';
+    document.getElementById('modal-kpiOverride').classList.add('open');
+  }
+
+  async function submitKpiOverride() {
+    const reason = document.getElementById('ko-reason').value.trim();
+    if (!reason) {
+      const el = document.getElementById('ko-err-reason');
+      el.textContent = 'Reason is required'; el.style.display = 'block';
+      return;
+    }
+    const body = {
+      kpi_key:         tdfState.activeKpiKey,
+      green_threshold: parseFloat(document.getElementById('ko-green').value) || null,
+      amber_threshold: parseFloat(document.getElementById('ko-amber').value) || null,
+      red_threshold:   parseFloat(document.getElementById('ko-red').value)   || null,
+      reason:          reason,
+      effective_from:  document.getElementById('ko-from').value || null,
+      effective_until: document.getElementById('ko-until').value || null,
+    };
+    const btn = document.getElementById('ko-save-btn');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      await api('POST', `/api/admin/technicians/${tdfState.tech.id}/kpi-threshold`, body);
+      toast('KPI threshold override saved', 'success');
+      closeModal('kpiOverride');
+      loadTdfKpi();
+    } catch (e) {
+      const err = document.getElementById('err-kpiOverride');
+      err.textContent = e.message || 'Unable to save';
+      err.style.display = 'block';
+    } finally {
+      btn.disabled = false; btn.textContent = 'Save Override';
+    }
+  }
+
+  // ── 5S section ────────────────────────────────────────────────────────────
+  async function loadTdf5s() {
+    if (!tdfState.tech) return;
+    try {
+      const fs = await api('GET', `/api/admin/technicians/${tdfState.tech.id}/5s`);
+      tdfState.fs = fs;
+      renderTdf5s();
+    } catch (e) {
+      document.getElementById('tdf-5s-summary').innerHTML =
+        '<span style="color:var(--muted);">Unable to load 5S data: ' + escHtml(e.message) + '</span>';
+    }
+  }
+
+  function renderTdf5s() {
+    const fs = tdfState.fs || {};
+    const score = fs.score || {};
+    const band  = score.band || 'red';
+    const bandColor = band === 'green' ? { bg: '#dcfce7', fg: '#166534' }
+                    : band === 'amber' ? { bg: '#fef3c7', fg: '#92400e' }
+                    :                    { bg: '#fee2e2', fg: '#b91c1c' };
+    const safetyTag = score.safety_red
+      ? ' <span class="badge" style="background:#fee2e2;color:#b91c1c;" title="Open safety/LOTO exception">⚠ SAFETY</span>'
+      : '';
+    document.getElementById('tdf-5s-summary').innerHTML = `
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+        <span class="badge" style="background:${bandColor.bg};color:${bandColor.fg};font-size:14px;padding:6px 14px;">
+          ${escHtml((band||'').toUpperCase())} — ${Number(score.score_pct||0).toFixed(1)}%
+        </span>
+        <span style="font-size:12px;color:var(--muted);">${score.pass_audits||0} / ${score.total_audits||0} audits passed (${score.window_days||30}-day window)</span>
+        ${safetyTag}
+      </div>`;
+
+    const trendEl = document.getElementById('tdf-5s-trend');
+    const trend = score.trend || [];
+    if (!trend.length) {
+      trendEl.innerHTML = '<span style="font-size:11px;color:var(--muted);">No trend data yet.</span>';
+    } else {
+      trendEl.innerHTML = trend.map(t => {
+        const pct = Math.max(2, Math.min(100, Number(t.pct || 0)));
+        const c = t.pct >= 90 ? '#22A08A' : t.pct >= 75 ? '#f59e0b' : '#dc2626';
+        return `<div title="Week of ${escHtml(t.week_start)} — ${t.pct}% (${t.audits} audits)" style="display:flex;flex-direction:column;align-items:center;gap:4px;">
+          <div style="width:32px;height:${pct*0.5}px;background:${c};border-radius:4px;"></div>
+          <div style="font-size:10px;color:var(--muted);">${escHtml(t.week_start.slice(5))}</div>
+        </div>`;
+      }).join('');
+    }
+
+    const audits = fs.audits || [];
+    const aBody = document.getElementById('tdf-5s-audits-body');
+    if (!audits.length) {
+      aBody.innerHTML = '<tr><td colspan="4" class="empty">No 5S audits in window.</td></tr>';
+    } else {
+      aBody.innerHTML = audits.slice(0, 20).map(a => `
+        <tr>
+          <td>${escHtml((a.audit_ts || '').slice(0,16).replace('T',' '))}</td>
+          <td>${escHtml(a.auditor_kind || '')} #${a.auditor_id}</td>
+          <td>${escHtml(a.phase || '')}</td>
+          <td>${a.overall_pass ? '<span class="badge" style="background:#dcfce7;color:#166534;">PASS</span>' : '<span class="badge" style="background:#fee2e2;color:#b91c1c;">FAIL</span>'}</td>
+        </tr>`).join('');
+    }
+
+    const excs = fs.exceptions || [];
+    const overriddenIds = new Set((fs.overrides || []).map(o => o.exception_id));
+    const eBody = document.getElementById('tdf-5s-exc-body');
+    if (!excs.length) {
+      eBody.innerHTML = '<tr><td colspan="6" class="empty">No exceptions recorded.</td></tr>';
+    } else {
+      eBody.innerHTML = excs.map(e => {
+        const sev = e.severity === 'safety_loto'
+          ? '<span class="badge" style="background:#fee2e2;color:#b91c1c;">⚠ Safety</span>'
+          : '<span class="badge" style="background:#f3f4f6;color:#374151;">Normal</span>';
+        const stColors = e.status === 'open' ? { bg: '#fef3c7', fg: '#92400e' }
+                       : e.status === 'resolved' ? { bg: '#dcfce7', fg: '#166534' }
+                       : { bg: '#dbeafe', fg: '#1d4ed8' };
+        const desc = e.description || '';
+        const shortDesc = desc.length > 80 ? desc.slice(0,80)+'…' : desc;
+        const overridden = overriddenIds.has(e.id)
+          ? '<span class="badge" style="background:#e0e7ff;color:#4338ca;margin-left:4px;">Overridden</span>'
+          : '';
+        const overrideBtn = overriddenIds.has(e.id)
+          ? ''
+          : `<button class="btn btn-ghost btn-sm" onclick="open5sOverride(${e.id})">Override Flag</button>`;
+        return `<tr>
+          <td>${escHtml((e.opened_at||'').slice(0,16).replace('T',' '))}</td>
+          <td>${sev}</td>
+          <td>${escHtml(e.category||'')}</td>
+          <td><span class="badge" style="background:${stColors.bg};color:${stColors.fg};">${escHtml(e.status)}</span>${overridden}</td>
+          <td title="${escHtml(desc)}">${escHtml(shortDesc) || '—'}</td>
+          <td>${overrideBtn}</td>
+        </tr>`;
+      }).join('');
+    }
+  }
+
+  function open5sOverride(exceptionId) {
+    tdfState.activeExceptionId = exceptionId;
+    document.getElementById('fso-exc-id').textContent = exceptionId;
+    document.getElementById('fso-reason').value = '';
+    document.getElementById('fso-err-reason').style.display = 'none';
+    document.getElementById('err-5sOverride').style.display = 'none';
+    document.getElementById('modal-5sOverride').classList.add('open');
+  }
+
+  async function submit5sOverride() {
+    const reason = document.getElementById('fso-reason').value.trim();
+    if (!reason) {
+      const el = document.getElementById('fso-err-reason');
+      el.textContent = 'Reason is required'; el.style.display = 'block';
+      return;
+    }
+    const btn = document.getElementById('fso-save-btn');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      await api('POST', `/api/admin/technicians/${tdfState.tech.id}/5s-override`, {
+        exception_id: tdfState.activeExceptionId,
+        reason: reason,
+      });
+      toast('5S exception override saved', 'success');
+      closeModal('5sOverride');
+      loadTdf5s();
+    } catch (e) {
+      const err = document.getElementById('err-5sOverride');
+      err.textContent = e.message || 'Unable to save'; err.style.display = 'block';
+    } finally {
+      btn.disabled = false; btn.textContent = 'Save Override';
+    }
+  }
+
+  // ── Jobs section ─────────────────────────────────────────────────────────
+  async function loadTdfJobs(page) {
+    if (!tdfState.tech) return;
+    if (page) tdfState.page = page;
+    const tbody = document.getElementById('tdf-jobs-body');
+    tbody.innerHTML = '<tr><td colspan="10" class="empty">Loading…</td></tr>';
+    const params = new URLSearchParams({
+      page:  String(tdfState.page),
+      limit: String(tdfState.limit),
+    });
+    const vt = document.getElementById('tdf-job-type').value;
+    const st = document.getElementById('tdf-job-status').value;
+    const df = document.getElementById('tdf-job-from').value;
+    const dt = document.getElementById('tdf-job-to').value;
+    if (vt) params.set('visit_type', vt);
+    if (st) params.set('status', st);
+    if (df) params.set('date_from', df);
+    if (dt) params.set('date_to', dt);
+    try {
+      const res = await api('GET', `/api/admin/technicians/${tdfState.tech.id}/jobs?` + params.toString());
+      tdfState.jobs  = res.rows  || [];
+      tdfState.total = res.total || 0;
+      renderTdfJobs();
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="10" class="empty">Unable to load: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  function tdfJobsPage(delta) {
+    const next = tdfState.page + delta;
+    if (next < 1) return;
+    if ((next-1)*tdfState.limit >= tdfState.total) return;
+    tdfState.page = next;
+    loadTdfJobs();
+  }
+
+  function renderTdfJobs() {
+    const tbody = document.getElementById('tdf-jobs-body');
+    if (!tdfState.jobs.length) {
+      tbody.innerHTML = '<tr><td colspan="10" class="empty">No jobs completed yet.</td></tr>';
+    } else {
+      tbody.innerHTML = tdfState.jobs.map(v => {
+        const vt = (v.visit_type||'').toUpperCase();
+        const typeBadge = vt === 'PM'
+          ? _tdfBadge('PM', '#dcfce7', '#166534')
+          : _tdfBadge('CM', '#ffedd5', '#9a3412');
+        const status = (v.status||'').toLowerCase();
+        const statusBg = status === 'completed' ? '#dcfce7'
+                       : status === 'in_progress' ? '#dbeafe'
+                       : status === 'cancelled' ? '#f3f4f6' : '#fef3c7';
+        const statusFg = status === 'completed' ? '#166534'
+                       : status === 'in_progress' ? '#1d4ed8'
+                       : status === 'cancelled' ? '#6b7280' : '#92400e';
+        const when = fmtDate(v.completed_date) || fmtDateTime(v.scheduled_date, v.scheduled_time) || fmtDate(v.created_at) || '—';
+        const dur  = v.duration_min != null ? `${v.duration_min} min` : '—';
+        const parts = (v.parts_cost != null) ? `J$${Math.round(v.parts_cost).toLocaleString()}` : '—';
+        const rev  = (v.revenue != null) ? `J$${Math.round(v.revenue).toLocaleString()}` : '—';
+        const custLink = v.customer_id
+          ? `<a href="#customer/${v.customer_id}" onclick="event.preventDefault();routeCustomerDetail(${v.customer_id});" style="color:var(--navy);font-weight:600;">${escHtml(v.customer_name||v.customer_code||'—')}</a>`
+          : '—';
+        const visitLink = `<a href="#visit/${v.id}" onclick="event.preventDefault();routeVisitDetail(${v.id});" style="color:var(--navy);font-weight:600;">#${v.id}</a>`;
+        return `<tr>
+          <td>${when}</td>
+          <td>${visitLink}</td>
+          <td>${custLink}</td>
+          <td>${escHtml(v.equipment_name) || '—'}</td>
+          <td>${typeBadge}</td>
+          <td><span class="badge" style="background:${statusBg};color:${statusFg};">${escHtml((status||'').replace('_',' '))}</span></td>
+          <td title="Callback linkage column not yet present">—</td>
+          <td>${dur}</td>
+          <td>${parts}</td>
+          <td>${rev}</td>
+        </tr>`;
+      }).join('');
+    }
+    const start = tdfState.total ? ((tdfState.page-1)*tdfState.limit)+1 : 0;
+    const end   = Math.min(tdfState.page*tdfState.limit, tdfState.total);
+    document.getElementById('tdf-jobs-range').textContent =
+      tdfState.total ? `Showing ${start}–${end} of ${tdfState.total} jobs` : 'Showing 0 jobs';
+    document.getElementById('tdf-jobs-prev').disabled = tdfState.page <= 1;
+    document.getElementById('tdf-jobs-next').disabled = end >= tdfState.total;
+  }
+
+  // ── Reviews section ──────────────────────────────────────────────────────
+  async function loadTdfReviews() {
+    if (!tdfState.tech) return;
+    try {
+      const rows = await api('GET', `/api/admin/technicians/${tdfState.tech.id}/reviews?limit=100`);
+      tdfState.reviews = rows || [];
+      renderTdfReviews();
+    } catch (e) {
+      document.getElementById('tdf-reviews-list').innerHTML =
+        `<div class="empty" style="padding:14px;color:var(--danger);">Unable to load reviews: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  function renderTdfReviews() {
+    const wrap = document.getElementById('tdf-reviews-list');
+    if (!tdfState.reviews.length) {
+      wrap.innerHTML = '<div class="empty" style="padding:14px;">No reviews logged yet.</div>';
+      return;
+    }
+    wrap.innerHTML = tdfState.reviews.map(r => {
+      const tt = TDF_REVIEW_TYPE_LABEL[r.review_type] || TDF_REVIEW_TYPE_LABEL.other;
+      const st = TDF_REVIEW_STATUS_LABEL[r.status] || TDF_REVIEW_STATUS_LABEL.open;
+      const date = (r.created_at || '').slice(0,10);
+      const editBtn = r.status === 'open'
+        ? `<button class="btn btn-ghost btn-sm" onclick="openEditTechReview(${r.id})">Edit</button>`
+        : '';
+      const actions = r.action_items
+        ? `<details style="margin-top:8px;"><summary style="cursor:pointer;color:var(--navy);font-weight:600;font-size:12px;">Action items</summary><div style="margin-top:6px;font-size:13px;color:var(--text);white-space:pre-wrap;">${escHtml(r.action_items)}</div></details>`
+        : '';
+      const fu = r.followup_date
+        ? `<div style="font-size:11px;color:var(--muted);margin-top:4px;">Follow-up: <strong>${escHtml(r.followup_date)}</strong></div>`
+        : '';
+      return `<div style="border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:10px;background:#fafafa;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            ${_tdfBadge(tt.label, tt.bg, tt.fg)}
+            ${_tdfBadge(st.label, st.bg, st.fg)}
+            <span style="font-size:11px;color:var(--muted);">${escHtml(date)} — ${escHtml(r.reviewer_name || ('Admin #'+r.reviewer_id))}</span>
+          </div>
+          <div>${editBtn}</div>
+        </div>
+        <div style="font-size:13px;color:var(--text);white-space:pre-wrap;">${escHtml(r.summary || '')}</div>
+        ${actions}${fu}
+      </div>`;
+    }).join('');
+  }
+
+  function openAddTechReview() {
+    tdfState.editingReviewId = null;
+    document.getElementById('tr-modal-title').textContent = 'Add Performance Review';
+    document.getElementById('tr-type').value     = 'coaching';
+    document.getElementById('tr-status').value   = 'open';
+    document.getElementById('tr-summary').value  = '';
+    document.getElementById('tr-actions').value  = '';
+    document.getElementById('tr-followup').value = '';
+    ['tr-err-summary','tr-err-actions','err-techReview'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.style.display = 'none';
+    });
+    document.getElementById('modal-techReview').classList.add('open');
+  }
+
+  function openEditTechReview(reviewId) {
+    const r = (tdfState.reviews || []).find(x => x.id === reviewId);
+    if (!r) return;
+    if (r.status !== 'open') {
+      toast('Only open reviews can be edited', 'error'); return;
+    }
+    tdfState.editingReviewId = reviewId;
+    document.getElementById('tr-modal-title').textContent = 'Edit Performance Review';
+    document.getElementById('tr-type').value     = r.review_type || 'coaching';
+    document.getElementById('tr-status').value   = r.status || 'open';
+    document.getElementById('tr-summary').value  = r.summary || '';
+    document.getElementById('tr-actions').value  = r.action_items || '';
+    document.getElementById('tr-followup').value = r.followup_date || '';
+    ['tr-err-summary','tr-err-actions','err-techReview'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.style.display = 'none';
+    });
+    document.getElementById('modal-techReview').classList.add('open');
+  }
+
+  async function submitTechReview() {
+    const body = {
+      review_type:   document.getElementById('tr-type').value,
+      status:        document.getElementById('tr-status').value,
+      summary:       document.getElementById('tr-summary').value.trim(),
+      action_items:  document.getElementById('tr-actions').value.trim() || null,
+      followup_date: document.getElementById('tr-followup').value || null,
+    };
+    let bad = false;
+    if (!body.summary) {
+      const el = document.getElementById('tr-err-summary');
+      el.textContent = 'Summary is required'; el.style.display = 'block'; bad = true;
+    } else if (body.summary.length > 1000) {
+      const el = document.getElementById('tr-err-summary');
+      el.textContent = 'Summary must be ≤ 1000 characters'; el.style.display = 'block'; bad = true;
+    }
+    if (body.action_items && body.action_items.length > 2000) {
+      const el = document.getElementById('tr-err-actions');
+      el.textContent = 'Action items must be ≤ 2000 characters'; el.style.display = 'block'; bad = true;
+    }
+    if (bad) return;
+    const btn = document.getElementById('tr-save-btn');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      if (tdfState.editingReviewId) {
+        await api('PATCH', `/api/admin/technicians/${tdfState.tech.id}/reviews/${tdfState.editingReviewId}`, body);
+      } else {
+        await api('POST',  `/api/admin/technicians/${tdfState.tech.id}/reviews`, body);
+      }
+      toast('Review saved', 'success');
+      closeModal('techReview');
+      loadTdfReviews();
+    } catch (e) {
+      const err = document.getElementById('err-techReview');
+      err.textContent = e.message || 'Unable to save'; err.style.display = 'block';
+    } finally {
+      btn.disabled = false; btn.textContent = 'Save';
+    }
+  }
+
+  // ── Edit Info modal ──────────────────────────────────────────────────────
+  function openEditTechProfile() {
+    const t = tdfState.tech; if (!t) return;
+    document.getElementById('etp-name').value   = t.name || '';
+    document.getElementById('etp-prid').value   = t.prid || t.tech_code || '';
+    document.getElementById('etp-phone').value  = t.phone || '';
+    document.getElementById('etp-email').value  = t.email || '';
+    document.getElementById('etp-role').value   = t.role || 'tech';
+    document.getElementById('etp-rate').value   = t.hourly_rate || '';
+    document.getElementById('etp-hire').value   = t.hire_date || '';
+    document.getElementById('etp-status').value = (t.active === 0 || t.active === false) ? 'terminated' : 'active';
+    ['etp-err-phone','etp-err-email','etp-err-rate','err-editTechProfile'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.style.display = 'none';
+    });
+    document.getElementById('modal-editTechProfile').classList.add('open');
+  }
+
+  async function submitEditTechProfile() {
+    const t = tdfState.tech; if (!t) return;
+    ['etp-err-phone','etp-err-email','etp-err-rate','err-editTechProfile'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.style.display = 'none';
+    });
+    const body = {
+      phone:             document.getElementById('etp-phone').value.trim() || null,
+      email:             document.getElementById('etp-email').value.trim() || null,
+      role:              document.getElementById('etp-role').value || null,
+      hourly_rate:       parseFloat(document.getElementById('etp-rate').value) || null,
+      employment_status: document.getElementById('etp-status').value || null,
+    };
+
+    let bad = false;
+    if (body.phone && !/^[\d\+\-\(\) ]+$/.test(body.phone)) {
+      const el = document.getElementById('etp-err-phone');
+      el.textContent = 'Phone may contain digits, +, -, (), and spaces only'; el.style.display = 'block'; bad = true;
+    }
+    if (body.email && (body.email.indexOf('@') < 1 || body.email.split('@')[1].indexOf('.') < 1)) {
+      const el = document.getElementById('etp-err-email');
+      el.textContent = 'Enter a valid email address'; el.style.display = 'block'; bad = true;
+    }
+    if (body.hourly_rate !== null && !(body.hourly_rate > 0)) {
+      const el = document.getElementById('etp-err-rate');
+      el.textContent = 'Hourly rate must be > 0'; el.style.display = 'block'; bad = true;
+    }
+    if (bad) return;
+
+    // Termination guard — redirect user to offboarding flow.
+    if (body.employment_status === 'terminated' && (t.active !== 0 && t.active !== false)) {
+      if (!confirm('Termination must go through the offboarding flow (not this edit form). Open offboarding now?')) return;
+      closeModal('editTechProfile');
+      openOffboard('tech', t.id, t.name);
+      return;
+    }
+
+    const btn = document.getElementById('etp-save-btn');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const res = await fetch(`/api/admin/technicians/${t.id}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + adminToken,
+        },
+        body: JSON.stringify(body),
+      });
+      if (res.status === 400) {
+        const d = await res.json().catch(() => ({}));
+        const detail = d.detail;
+        if (Array.isArray(detail)) {
+          detail.forEach(e => {
+            const el = document.getElementById('etp-err-' + e.field);
+            if (el) { el.textContent = e.message; el.style.display = 'block'; }
+          });
+        } else {
+          const err = document.getElementById('err-editTechProfile');
+          err.textContent = (typeof detail === 'string') ? detail : 'Validation failed';
+          err.style.display = 'block';
+        }
+        return;
+      }
+      if (res.status === 403) { toast('Insufficient permission — super_admin only', 'error'); return; }
+      if (res.status === 409) {
+        const d = await res.json().catch(() => ({}));
+        toast((d && d.detail) || 'Conflict', 'error');
+        return;
+      }
+      if (!res.ok) { toast('Unable to save. Please try again.', 'error'); return; }
+      const data = await res.json();
+      tdfState.tech = data.technician || tdfState.tech;
+      toast('Technician info updated', 'success');
+      closeModal('editTechProfile');
+      renderTdfHeader();
+      loadTechs();
+    } catch (e) {
+      toast('Unable to save: ' + e.message, 'error');
+    } finally {
+      btn.disabled = false; btn.textContent = 'Save';
+    }
+  }
+
+  // ── Certifications + payroll degraded sections ───────────────────────────
+  async function loadTdfCertifications() {
+    if (!tdfState.tech) return;
+    const el = document.getElementById('tdf-certs-inline');
+    try {
+      const c = await api('GET', `/api/admin/technicians/${tdfState.tech.id}/certifications`);
+      if (c.available === false) {
+        el.innerHTML = '<em>Certifications: ' + escHtml(c.message || 'module not yet active') + '</em>';
+      } else if (!c.rows || !c.rows.length) {
+        el.innerHTML = '<em>Certifications: none tracked yet.</em>';
+      } else {
+        el.innerHTML = '<strong style="color:var(--text);">Certifications:</strong> ' +
+          c.rows.map(r => escHtml(r.name || r.cert_name || '—')).join(', ');
+      }
+    } catch (e) {
+      el.innerHTML = '<em>Certifications unavailable.</em>';
+    }
+  }
+
+  async function loadTdfPayroll() {
+    if (!tdfState.tech) return;
+    const el = document.getElementById('tdf-payroll-body');
+    try {
+      const p = await api('GET', `/api/admin/technicians/${tdfState.tech.id}/payroll-summary?limit=6`);
+      if (p.available === false) {
+        el.innerHTML = '<em>Payroll module not yet active.</em>';
+        return;
+      }
+      if (!p.rows || !p.rows.length) {
+        el.innerHTML = '<em>No payslips generated for this technician yet.</em>';
+        return;
+      }
+      el.innerHTML = `<table style="width:100%;font-size:12px;border-collapse:collapse;">
+        <thead><tr style="text-align:left;color:var(--muted);">
+          <th style="padding:4px 6px;border-bottom:1px solid var(--border);">Period</th>
+          <th style="padding:4px 6px;border-bottom:1px solid var(--border);">Status</th>
+          <th style="padding:4px 6px;border-bottom:1px solid var(--border);">Gross</th>
+          <th style="padding:4px 6px;border-bottom:1px solid var(--border);">Bonus</th>
+          <th style="padding:4px 6px;border-bottom:1px solid var(--border);">Net</th>
+        </tr></thead>
+        <tbody>${p.rows.map(r => `<tr>
+          <td style="padding:4px 6px;border-bottom:1px solid var(--border);">${escHtml(r.label || '')}</td>
+          <td style="padding:4px 6px;border-bottom:1px solid var(--border);">${escHtml(r.period_status || '—')}</td>
+          <td style="padding:4px 6px;border-bottom:1px solid var(--border);">${r.gross_pay != null ? 'J$'+Math.round(r.gross_pay).toLocaleString() : '—'}</td>
+          <td style="padding:4px 6px;border-bottom:1px solid var(--border);">${r.bonus != null ? 'J$'+Math.round(r.bonus).toLocaleString() : '—'}</td>
+          <td style="padding:4px 6px;border-bottom:1px solid var(--border);">${r.net_pay != null ? 'J$'+Math.round(r.net_pay).toLocaleString() : '—'}</td>
+        </tr>`).join('')}</tbody></table>`;
+    } catch (e) {
+      el.innerHTML = '<em>Unable to load payroll: ' + escHtml(e.message) + '</em>';
+    }
+  }
+
+  // ── Footer actions ───────────────────────────────────────────────────────
+  function tdfResetPin() {
+    if (!tdfState.tech) return;
+    openResetPin(tdfState.tech.id, tdfState.tech.name);
+  }
+
+  function tdfOffboard() {
+    if (!tdfState.tech) return;
+    openOffboard('tech', tdfState.tech.id, tdfState.tech.name);
+  }
+
+  function _maybeOpenTechnicianFromHash() {
+    const m = (location.hash || '').match(/^#technician\/(\d+)$/);
+    if (!m) return;
+    if (!currentAdmin || currentAdmin.role !== 'super_admin') return;
+    showPanel('techs');
+    openTechnicianDetailFull(parseInt(m[1], 10));
+  }
+  window.addEventListener('hashchange', _maybeOpenTechnicianFromHash);
 
   async function loadCustomerEquipment() {
     if (!currentCustomer) return;
@@ -5733,6 +6725,7 @@
         <td>${t.active_jobs > 0 ? `<span class="badge badge-in_progress">${t.active_jobs} active</span>` : '<span style="color:var(--muted);">0</span>'}</td>
         <td>${t.active ? '<span class="badge badge-confirmed">Active</span>' : '<span class="badge" style="background:#f3f4f6;color:var(--muted);">Inactive</span>'}</td>
         <td style="white-space:nowrap;">
+          ${(currentAdmin && currentAdmin.role === 'super_admin') ? `<button class="btn btn-ghost btn-sm" onclick="routeTechnicianDetail(${t.id})" aria-label="View technician detail" style="margin-right:6px;">View →</button>` : ''}
           <button class="btn btn-edit btn-sm" onclick="openEditTech(${t.id})">Edit</button>
           <button class="btn btn-edit btn-sm" onclick="openResetPin(${t.id},'${escHtml(t.name)}')" style="margin-left:6px;">Reset PIN</button>
           ${can('tech:delete') ? (

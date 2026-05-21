@@ -155,6 +155,10 @@ _PII_RAND = {
     "fs_exceptions":        ["description", "resolution_note"],
     "fs_exception_events":  ["note"],
     "fs_coaching_log":      ["plan_text", "close_note"],
+    # Technician Detail View (Phase: super_admin profile editor)
+    "technician_reviews":       ["summary", "action_items"],
+    "technician_kpi_overrides": ["reason"],
+    "technician_5s_overrides":  ["reason"],
 }
 # Columns that need equality lookup → deterministic encryption + blind index.
 _PII_DET = {
@@ -1112,6 +1116,67 @@ def init_db():
         )
     """)
     con.execute("CREATE INDEX IF NOT EXISTS idx_fs_coach_tech ON fs_coaching_log(tech_id)")
+
+    # ── Technician Detail View tables (super_admin) ─────────────────────
+    # Append-leaning forensic records. technician_reviews mutates status in
+    # place (matches fs_exceptions pattern) but the chain_hash protects the
+    # state transitions. KPI overrides + 5S overrides are write-once forensic
+    # records — they never get deleted.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS technician_reviews (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            tech_id            INTEGER NOT NULL REFERENCES technicians(id),
+            review_type        TEXT NOT NULL CHECK (review_type IN ('coaching','written_warning','positive_feedback','other')),
+            summary            TEXT NOT NULL,
+            status             TEXT NOT NULL CHECK (status IN ('open','resolved','archived')) DEFAULT 'open',
+            action_items       TEXT,
+            followup_date      TEXT,
+            reviewer_id        INTEGER NOT NULL,
+            created_at         TEXT NOT NULL,
+            updated_at         TEXT,
+            hub_id             INTEGER NOT NULL DEFAULT 1,
+            prior_chain_hash   TEXT,
+            chain_hash         TEXT NOT NULL
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_tech_reviews_tech ON technician_reviews(tech_id, created_at DESC)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_tech_reviews_status ON technician_reviews(status)")
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS technician_kpi_overrides (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            tech_id            INTEGER NOT NULL REFERENCES technicians(id),
+            kpi_key            TEXT NOT NULL,
+            green_threshold    REAL,
+            amber_threshold    REAL,
+            red_threshold      REAL,
+            reason             TEXT NOT NULL,
+            effective_from     TEXT NOT NULL,
+            effective_until    TEXT,
+            created_by         INTEGER NOT NULL,
+            created_at         TEXT NOT NULL,
+            active             INTEGER NOT NULL DEFAULT 1,
+            prior_chain_hash   TEXT,
+            chain_hash         TEXT NOT NULL
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_tech_kpi_ov_tech ON technician_kpi_overrides(tech_id, active)")
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS technician_5s_overrides (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            exception_id       INTEGER NOT NULL REFERENCES fs_exceptions(id),
+            tech_id            INTEGER NOT NULL,
+            reason             TEXT NOT NULL,
+            overridden_by      INTEGER NOT NULL,
+            overridden_at      TEXT NOT NULL,
+            hub_id             INTEGER NOT NULL DEFAULT 1,
+            prior_chain_hash   TEXT,
+            chain_hash         TEXT NOT NULL
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_tech_5s_ov_tech ON technician_5s_overrides(tech_id)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_tech_5s_ov_exc  ON technician_5s_overrides(exception_id)")
 
     # Seed demo assets (idempotent).
     _now_iso_seed = datetime.now(timezone.utc).isoformat()
@@ -6587,3 +6652,481 @@ def fs_export_all() -> dict:
     con.close()
     return {"audits": audits, "audit_items": items,
             "exceptions": excs, "exception_events": events}
+
+
+# ── Technician Detail View helpers (super_admin) ────────────────────────────
+# Mirror naming conventions of the customer-detail / visit-detail patterns.
+# Encrypted fields are decrypted on read via _dec_row("<table>"). Chain hashes
+# protect the forensic timeline.
+
+_TECH_REVIEW_HASH_FIELDS = (
+    "tech_id", "review_type", "status", "reviewer_id",
+    "created_at", "updated_at", "followup_date", "hub_id",
+)
+_TECH_KPI_OV_HASH_FIELDS = (
+    "tech_id", "kpi_key", "green_threshold", "amber_threshold", "red_threshold",
+    "effective_from", "effective_until", "created_by", "created_at", "active",
+)
+_TECH_5S_OV_HASH_FIELDS = (
+    "exception_id", "tech_id", "overridden_by", "overridden_at", "hub_id",
+)
+
+
+def _last_chain(con, table: str) -> str:
+    r = con.execute(f"SELECT chain_hash FROM {table} ORDER BY id DESC LIMIT 1").fetchone()
+    return (dict(r)["chain_hash"] if r else None) or AUDIT_GENESIS
+
+
+def get_technician_with_decryption(tech_id: int):
+    """Full decrypted technician row + lightweight aggregates so the detail
+    view's first paint has everything. Returns None if missing."""
+    con = _con()
+    row = con.execute("SELECT * FROM technicians WHERE id = ?", (tech_id,)).fetchone()
+    if not row:
+        con.close()
+        return None
+    tech = _dec_row("technicians", row)
+    # Quick aggregates (cheap counts, NOT full joins)
+    try:
+        last_job = con.execute(
+            "SELECT id, visit_type, status, COALESCE(completed_date, scheduled_date, created_at) AS when_ts "
+            "FROM maintenance_visits WHERE assigned_tech_id = ? "
+            "ORDER BY COALESCE(completed_date, scheduled_date, created_at) DESC, id DESC LIMIT 1",
+            (tech_id,),
+        ).fetchone()
+        tech["last_job"] = dict(last_job) if last_job else None
+    except Exception:
+        tech["last_job"] = None
+    try:
+        last_review_row = con.execute(
+            "SELECT id, review_type, status, summary, created_at "
+            "FROM technician_reviews WHERE tech_id = ? ORDER BY id DESC LIMIT 1",
+            (tech_id,),
+        ).fetchone()
+        if last_review_row:
+            last_review = _dec_row("technician_reviews", last_review_row)
+            tech["last_review"] = {
+                "id":          last_review["id"],
+                "review_type": last_review["review_type"],
+                "status":      last_review["status"],
+                "created_at":  last_review["created_at"],
+            }
+        else:
+            tech["last_review"] = None
+    except Exception:
+        tech["last_review"] = None
+    con.close()
+    # Don't leak the PIN hash to the API surface.
+    tech.pop("pin_hash", None)
+    return tech
+
+
+def update_technician_fields(tech_id: int, data: dict):
+    """Partial update — phone/email re-encrypted, role/hourly_rate/active
+    plain. Returns the new decrypted row. Mirror of update_customer_fields."""
+    allowed_plain     = {"role", "active", "name"}
+    allowed_encrypted = {"phone"}
+    sets, vals = [], []
+    for k, v in data.items():
+        if k in allowed_plain:
+            sets.append(f"{k} = ?")
+            vals.append(v)
+        elif k in allowed_encrypted:
+            sets.append(f"{k} = ?")
+            vals.append(_enc(v if v is not None else ""))
+        elif k == "email":
+            sets.append("email = ?")
+            sets.append("email_hash = ?")
+            vals.append(_det_enc(v or ""))
+            vals.append(_email_hash(v or ""))
+        elif k == "hourly_rate":
+            sets.append("hourly_rate = ?")
+            vals.append(float(v or 0))
+    if not sets:
+        return get_technician_with_decryption(tech_id)
+    vals.append(tech_id)
+    con = _con()
+    con.execute(f"UPDATE technicians SET {', '.join(sets)} WHERE id = ?", vals)
+    if data.get("active") == 0:
+        con.execute(
+            "UPDATE technicians SET terminated_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(), tech_id),
+        )
+    con.commit()
+    con.close()
+    return get_technician_with_decryption(tech_id)
+
+
+def get_technician_jobs_paginated(tech_id: int, page: int = 1, limit: int = 20,
+                                  filters: dict = None):
+    """Reverse-chronological job history for the tech, paginated. Mirrors
+    get_customer_visits_paginated. Filters: visit_type, date_from, date_to,
+    status. (callbacks_only filter is accepted but is a no-op until the
+    maintenance_visits.callback_of_visit_id column ships — FIXME below.)"""
+    filters = filters or {}
+    page  = max(1, int(page or 1))
+    limit = max(1, min(100, int(limit or 20)))
+    offset = (page - 1) * limit
+
+    where  = ["v.assigned_tech_id = ?"]
+    args   = [tech_id]
+    if filters.get("visit_type"):
+        where.append("UPPER(v.visit_type) = ?")
+        args.append(filters["visit_type"].upper())
+    if filters.get("status"):
+        where.append("v.status = ?")
+        args.append(filters["status"])
+    if filters.get("date_from"):
+        where.append("COALESCE(v.completed_date, v.scheduled_date, v.created_at) >= ?")
+        args.append(filters["date_from"])
+    if filters.get("date_to"):
+        where.append("COALESCE(v.completed_date, v.scheduled_date, v.created_at) <= ?")
+        args.append(filters["date_to"])
+    # FIXME(callbacks): maintenance_visits has no callback_of_visit_id column
+    # yet, so the callbacks_only filter is currently a no-op and returns "—"
+    # in the callback column. Surface a tooltip in the UI; light up once the
+    # schema migration lands.
+    where_sql = " AND ".join(where)
+
+    con = _con()
+    total = con.execute(
+        f"SELECT COUNT(*) AS n FROM maintenance_visits v WHERE {where_sql}",
+        args,
+    ).fetchone()["n"]
+    rows = con.execute(
+        f"""
+        SELECT v.id, v.customer_id, v.equipment_id, v.visit_type, v.status,
+               v.scheduled_date, v.scheduled_time, v.completed_date,
+               v.created_at, v.start_time, v.end_time,
+               v.scope_of_work, v.work_done_summary,
+               e.name AS equipment_name,
+               c.name AS customer_name,
+               c.customer_code AS customer_code
+        FROM maintenance_visits v
+        LEFT JOIN equipment e ON v.equipment_id = e.id
+        LEFT JOIN customers c ON v.customer_id  = c.id
+        WHERE {where_sql}
+        ORDER BY COALESCE(v.completed_date, v.scheduled_date, v.created_at) DESC,
+                 v.id DESC
+        LIMIT ? OFFSET ?
+        """,
+        args + [limit, offset],
+    ).fetchall()
+    # Enrich each row with parts cost + revenue (computed from invoice if present).
+    out_rows = []
+    for r in rows:
+        d = dict(r)
+        # Parts cost (sum of visit_parts qty * unit_price)
+        pc = con.execute(
+            "SELECT COALESCE(SUM(quantity * unit_price), 0) AS pc "
+            "FROM visit_parts WHERE visit_id = ?",
+            (d["id"],),
+        ).fetchone()
+        d["parts_cost"] = float(pc["pc"] or 0)
+        # Invoice total + balance (if any)
+        inv = con.execute(
+            "SELECT total, amount_paid FROM invoices WHERE visit_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (d["id"],),
+        ).fetchone()
+        d["revenue"]      = float(inv["total"] or 0) if inv else None
+        d["amount_paid"]  = float(inv["amount_paid"] or 0) if inv else None
+        # Duration (minutes) if start/end set
+        if d.get("start_time") and d.get("end_time"):
+            try:
+                from datetime import datetime as _dt
+                a = _dt.fromisoformat(d["start_time"])
+                b = _dt.fromisoformat(d["end_time"])
+                d["duration_min"] = int((b - a).total_seconds() // 60)
+            except Exception:
+                d["duration_min"] = None
+        else:
+            d["duration_min"] = None
+        d["callback_of_visit_id"] = None   # FIXME(callbacks): no schema column
+        out_rows.append(d)
+    con.close()
+    return {"rows": out_rows, "page": page, "limit": limit, "total": int(total or 0)}
+
+
+# ── Reviews ─────────────────────────────────────────────────────────────────
+def list_technician_reviews(tech_id: int, status: str = None, limit: int = 50):
+    con = _con()
+    sql  = "SELECT * FROM technician_reviews WHERE tech_id = ?"
+    args = [tech_id]
+    if status:
+        sql += " AND status = ?"
+        args.append(status)
+    sql += " ORDER BY id DESC LIMIT ?"
+    args.append(int(limit))
+    rows = con.execute(sql, args).fetchall()
+    # Join reviewer name (admin_users) for display
+    out = []
+    for r in rows:
+        d = _dec_row("technician_reviews", r)
+        rev = con.execute(
+            "SELECT name FROM admin_users WHERE id = ?", (d.get("reviewer_id"),),
+        ).fetchone()
+        d["reviewer_name"] = (dict(rev)["name"] if rev else None)
+        out.append(d)
+    con.close()
+    return out
+
+
+def create_technician_review(tech_id: int, review_type: str, summary: str,
+                             reviewer_id: int, status: str = "open",
+                             action_items: str = None, followup_date: str = None,
+                             hub_id: int = 1):
+    if review_type not in ("coaching", "written_warning", "positive_feedback", "other"):
+        raise ValueError("invalid review_type")
+    if status not in ("open", "resolved", "archived"):
+        raise ValueError("invalid status")
+    now = datetime.now(timezone.utc).isoformat()
+    enc = _enc_dict("technician_reviews", {
+        "summary":      summary or "",
+        "action_items": action_items or "",
+    })
+    con = _con()
+    prev = _last_chain(con, "technician_reviews")
+    canonical = {
+        "tech_id": tech_id, "review_type": review_type, "status": status,
+        "reviewer_id": reviewer_id, "created_at": now, "updated_at": None,
+        "followup_date": followup_date, "hub_id": hub_id,
+    }
+    ch = _fs_compute_hash(prev, canonical, _TECH_REVIEW_HASH_FIELDS)
+    cur = con.execute(
+        "INSERT INTO technician_reviews (tech_id, review_type, summary, status, "
+        "action_items, followup_date, reviewer_id, created_at, hub_id, "
+        "prior_chain_hash, chain_hash) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (tech_id, review_type, enc["summary"], status,
+         enc.get("action_items") if action_items else None,
+         followup_date, reviewer_id, now, hub_id, prev, ch),
+    )
+    rid = cur.lastrowid
+    con.commit()
+    con.close()
+    return rid
+
+
+def update_technician_review(review_id: int, **fields):
+    """Allowed mutations: status, summary, action_items, followup_date.
+    Refuses if the row is not in 'open' status (resolved/archived = locked)."""
+    con = _con()
+    row = con.execute(
+        "SELECT * FROM technician_reviews WHERE id = ?", (review_id,)
+    ).fetchone()
+    if not row:
+        con.close()
+        raise ValueError("review not found")
+    cur = dict(row)
+    if cur["status"] != "open":
+        con.close()
+        raise ValueError("review is not editable (status != open)")
+    now = datetime.now(timezone.utc).isoformat()
+    sets, vals = [], []
+    if "status" in fields and fields["status"] is not None:
+        if fields["status"] not in ("open", "resolved", "archived"):
+            con.close()
+            raise ValueError("invalid status")
+        sets.append("status = ?"); vals.append(fields["status"])
+    if "summary" in fields and fields["summary"] is not None:
+        sets.append("summary = ?")
+        vals.append(_enc(fields["summary"]))
+    if "action_items" in fields and fields["action_items"] is not None:
+        sets.append("action_items = ?")
+        vals.append(_enc(fields["action_items"]) if fields["action_items"] else None)
+    if "followup_date" in fields:
+        sets.append("followup_date = ?"); vals.append(fields.get("followup_date"))
+    sets.append("updated_at = ?"); vals.append(now)
+    # Recompute chain hash based on new canonical fields
+    new_canonical = {
+        "tech_id": cur["tech_id"],
+        "review_type": cur["review_type"],
+        "status": fields.get("status", cur["status"]),
+        "reviewer_id": cur["reviewer_id"],
+        "created_at": cur["created_at"],
+        "updated_at": now,
+        "followup_date": fields.get("followup_date", cur.get("followup_date")),
+        "hub_id": cur.get("hub_id", 1),
+    }
+    prev = _last_chain(con, "technician_reviews")
+    ch = _fs_compute_hash(prev, new_canonical, _TECH_REVIEW_HASH_FIELDS)
+    sets.append("prior_chain_hash = ?"); vals.append(prev)
+    sets.append("chain_hash = ?");      vals.append(ch)
+    vals.append(review_id)
+    con.execute(
+        f"UPDATE technician_reviews SET {', '.join(sets)} WHERE id = ?", vals
+    )
+    con.commit()
+    con.close()
+    return True
+
+
+# ── KPI threshold overrides ────────────────────────────────────────────────
+def list_kpi_threshold_overrides(tech_id: int, active_only: bool = True):
+    con = _con()
+    sql = "SELECT * FROM technician_kpi_overrides WHERE tech_id = ?"
+    args = [tech_id]
+    if active_only:
+        sql += " AND active = 1"
+    sql += " ORDER BY id DESC"
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    return _dec_rows("technician_kpi_overrides", rows)
+
+
+def create_kpi_threshold_override(tech_id: int, kpi_key: str, reason: str,
+                                  created_by: int,
+                                  green_threshold=None, amber_threshold=None,
+                                  red_threshold=None,
+                                  effective_from: str = None,
+                                  effective_until: str = None):
+    if not kpi_key:
+        raise ValueError("kpi_key required")
+    if not reason:
+        raise ValueError("reason required")
+    now = datetime.now(timezone.utc).isoformat()
+    effective_from = effective_from or now
+    enc_reason = _enc(reason or "")
+    con = _con()
+    prev = _last_chain(con, "technician_kpi_overrides")
+    canonical = {
+        "tech_id": tech_id, "kpi_key": kpi_key,
+        "green_threshold": green_threshold, "amber_threshold": amber_threshold,
+        "red_threshold": red_threshold,
+        "effective_from": effective_from, "effective_until": effective_until,
+        "created_by": created_by, "created_at": now, "active": 1,
+    }
+    ch = _fs_compute_hash(prev, canonical, _TECH_KPI_OV_HASH_FIELDS)
+    cur = con.execute(
+        "INSERT INTO technician_kpi_overrides (tech_id, kpi_key, green_threshold, "
+        "amber_threshold, red_threshold, reason, effective_from, effective_until, "
+        "created_by, created_at, active, prior_chain_hash, chain_hash) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+        (tech_id, kpi_key, green_threshold, amber_threshold, red_threshold,
+         enc_reason, effective_from, effective_until, created_by, now, prev, ch),
+    )
+    new_id = cur.lastrowid
+    con.commit()
+    con.close()
+    return new_id
+
+
+# ── 5S exception overrides ─────────────────────────────────────────────────
+def list_5s_overrides(tech_id: int):
+    con = _con()
+    rows = con.execute(
+        "SELECT * FROM technician_5s_overrides WHERE tech_id = ? ORDER BY id DESC",
+        (tech_id,),
+    ).fetchall()
+    con.close()
+    return _dec_rows("technician_5s_overrides", rows)
+
+
+def create_5s_override(exception_id: int, tech_id: int, reason: str,
+                       overridden_by: int, hub_id: int = 1):
+    if not reason:
+        raise ValueError("reason required")
+    # IDOR safety: caller (main.py) must already have verified the exception
+    # belongs to this tech, but we also re-check here.
+    con = _con()
+    exc = con.execute(
+        "SELECT e.id, a.assigned_tech_id, e.opened_by_id, e.opened_by_kind "
+        "FROM fs_exceptions e LEFT JOIN fs_assets a ON a.id = e.asset_id "
+        "WHERE e.id = ?",
+        (exception_id,),
+    ).fetchone()
+    if not exc:
+        con.close()
+        raise ValueError("exception not found")
+    e = dict(exc)
+    belongs = (e.get("assigned_tech_id") == tech_id) or (
+        e.get("opened_by_kind") == "tech" and e.get("opened_by_id") == tech_id
+    )
+    if not belongs:
+        con.close()
+        raise ValueError("exception does not belong to this technician")
+    now = datetime.now(timezone.utc).isoformat()
+    enc_reason = _enc(reason or "")
+    prev = _last_chain(con, "technician_5s_overrides")
+    canonical = {
+        "exception_id": exception_id, "tech_id": tech_id,
+        "overridden_by": overridden_by, "overridden_at": now, "hub_id": hub_id,
+    }
+    ch = _fs_compute_hash(prev, canonical, _TECH_5S_OV_HASH_FIELDS)
+    cur = con.execute(
+        "INSERT INTO technician_5s_overrides (exception_id, tech_id, reason, "
+        "overridden_by, overridden_at, hub_id, prior_chain_hash, chain_hash) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (exception_id, tech_id, enc_reason, overridden_by, now, hub_id, prev, ch),
+    )
+    new_id = cur.lastrowid
+    # Append a forensic event into fs_exception_events (kind 'override') so
+    # the original 5S audit trail also reflects the action. The fs_exceptions
+    # header row itself is NOT mutated.
+    try:
+        con.execute(
+            "INSERT INTO fs_exception_events (exception_id, event_type, actor_id, "
+            "actor_kind, occurred_at, from_status, to_status, note) "
+            "VALUES (?, 'override', ?, 'admin', ?, NULL, NULL, NULL)",
+            (exception_id, overridden_by, now),
+        )
+    except Exception:
+        pass
+    con.commit()
+    con.close()
+    return new_id
+
+
+# ── Certifications + payroll summary (dependency-aware) ────────────────────
+def get_technician_certifications(tech_id: int):
+    """Returns rows if a `certifications` table exists; else returns
+    {'available': False}. FIXME: when the certs module ships, define the
+    table schema (cert name, issuing body, expiry, etc.) and wire it here."""
+    con = _con()
+    has = con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='certifications'"
+    ).fetchone()
+    if not has:
+        con.close()
+        return {"available": False,
+                "message": "Certifications module not yet active"}
+    try:
+        rows = con.execute(
+            "SELECT * FROM certifications WHERE tech_id = ? ORDER BY expiry_date ASC",
+            (tech_id,),
+        ).fetchall()
+        out = [dict(r) for r in rows]
+    except Exception:
+        out = []
+    con.close()
+    return {"available": True, "rows": out}
+
+
+def get_technician_payroll_summary(tech_id: int, limit: int = 6):
+    """Returns last `limit` pay periods + the tech's payslip in each (if any).
+    Degrades gracefully if pay_periods/payslips tables are absent."""
+    con = _con()
+    have = {r[0] for r in con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name IN ('pay_periods','payslips')"
+    ).fetchall()}
+    if "pay_periods" not in have or "payslips" not in have:
+        con.close()
+        return {"available": False}
+    rows = con.execute(
+        """
+        SELECT pp.id AS period_id, pp.label, pp.period_start, pp.period_end,
+               pp.status AS period_status,
+               ps.gross_pay, ps.bonus, ps.net_pay, ps.hours_regular, ps.hours_overtime
+        FROM pay_periods pp
+        LEFT JOIN payslips ps ON ps.pay_period_id = pp.id
+                              AND ps.subject_type = 'tech'
+                              AND ps.subject_id = ?
+        ORDER BY pp.period_end DESC
+        LIMIT ?
+        """,
+        (tech_id, int(limit)),
+    ).fetchall()
+    con.close()
+    return {"available": True, "rows": [dict(r) for r in rows]}

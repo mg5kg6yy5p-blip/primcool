@@ -113,6 +113,13 @@ from database import (
     open_coaching as fs_open_coaching, close_coaching as fs_close_coaching,
     list_coaching as fs_list_coaching,
     fs_today_status_for_tech, fs_export_all,
+    # Technician Detail View (super_admin)
+    get_technician_with_decryption, update_technician_fields,
+    get_technician_jobs_paginated,
+    list_technician_reviews, create_technician_review, update_technician_review,
+    list_kpi_threshold_overrides, create_kpi_threshold_override,
+    list_5s_overrides, create_5s_override,
+    get_technician_certifications, get_technician_payroll_summary,
 )
 
 # ── Admin role → permission matrix ────────────────────────────────────────────
@@ -1391,6 +1398,49 @@ class CustomerProfileUpdate(BaseModel):
     customer_type:         Optional[str] = None    # 'residential' | 'commercial'
     account_status:        Optional[str] = None    # 'active' | 'closed'
     status_change_reason:  Optional[str] = None    # free-text → audit only
+
+
+class TechnicianProfileUpdate(BaseModel):
+    """super_admin Technician Detail View — editable profile fields.
+    Mirrors CustomerProfileUpdate pattern: all optional so the modal can
+    submit a partial body; server re-validates and re-encrypts. The
+    employment_status / role enums are validated server-side (see
+    _validate_tech_profile)."""
+    phone:              Optional[str] = None
+    email:              Optional[str] = None
+    role:               Optional[str] = None   # 'tech'|'lead_tech'|'apprentice' (existing schema)
+    hourly_rate:        Optional[float] = None
+    employment_status:  Optional[str] = None   # 'active'|'on_leave'|'terminated'
+
+
+class TechnicianReviewCreate(BaseModel):
+    review_type:    str
+    summary:        str
+    status:         Optional[str] = "open"
+    action_items:   Optional[str] = None
+    followup_date:  Optional[str] = None
+
+
+class TechnicianReviewUpdate(BaseModel):
+    status:         Optional[str] = None
+    summary:        Optional[str] = None
+    action_items:   Optional[str] = None
+    followup_date:  Optional[str] = None
+
+
+class TechnicianKpiThresholdOverride(BaseModel):
+    kpi_key:           str
+    green_threshold:   Optional[float] = None
+    amber_threshold:   Optional[float] = None
+    red_threshold:     Optional[float] = None
+    reason:            str
+    effective_from:    Optional[str] = None
+    effective_until:   Optional[str] = None
+
+
+class Technician5SOverride(BaseModel):
+    exception_id:  int
+    reason:        str
 
 
 class InvoicePaymentUpdate(BaseModel):
@@ -4821,6 +4871,453 @@ def admin_visit_invoice_payment(request: Request, visit_id: int,
                 })
 
     return {"ok": True, "invoice": after_inv}
+
+
+# ── Technician Detail View (super_admin only) ────────────────────────────────
+# Mirrors the Customer Detail / Visit Detail pattern: hard role gate, full
+# decrypted read with field-name audit, surgical updates with PII-redacted
+# before/after audit rows. The KPI module isn't shipped yet, so the
+# read-side KPI endpoint degrades gracefully while the threshold-override
+# endpoint still persists (so when KPI ships, the overrides are already
+# there).
+_TECH_DETAIL_PII_FIELDS  = ("phone", "email")
+_TECH_REVIEW_PII_FIELDS  = ("summary", "action_items")
+_TECH_KPI_OV_PII_FIELDS  = ("reason",)
+_TECH_5S_OV_PII_FIELDS   = ("reason",)
+
+# Existing role values in the technicians table are 'tech' | 'lead_tech' |
+# 'apprentice'. The product spec asks for level_1/level_2/level_3/lead, but
+# changing the enum mid-flight would break the existing tech-management UI
+# and the verify_tech / get_all_techs surface. We accept the legacy enum
+# here and surface the spec labels in the UI dropdown. FIXME(role-rename):
+# coordinate a one-shot migration to rename role values once HR signs off.
+_TECH_ROLE_VALUES         = ("tech", "lead_tech", "apprentice")
+_TECH_EMPLOYMENT_VALUES   = ("active", "on_leave", "terminated")
+
+
+def _validate_tech_profile(body: TechnicianProfileUpdate) -> list:
+    errs = []
+    if body.phone:
+        if not re.fullmatch(r"[\d\+\-\(\) ]+", body.phone):
+            errs.append({"field": "phone",
+                         "message": "Phone may contain digits, +, -, (), and spaces only"})
+    if body.email:
+        e = body.email.strip()
+        if "@" not in e or "." not in e.split("@", 1)[-1]:
+            errs.append({"field": "email",
+                         "message": "Enter a valid email address"})
+    if body.role is not None and body.role not in _TECH_ROLE_VALUES:
+        errs.append({"field": "role",
+                     "message": f"Must be one of: {', '.join(_TECH_ROLE_VALUES)}"})
+    if body.hourly_rate is not None:
+        try:
+            if float(body.hourly_rate) <= 0:
+                errs.append({"field": "hourly_rate",
+                             "message": "Hourly rate must be greater than 0"})
+        except (TypeError, ValueError):
+            errs.append({"field": "hourly_rate",
+                         "message": "Hourly rate must be numeric"})
+    if body.employment_status is not None and body.employment_status not in _TECH_EMPLOYMENT_VALUES:
+        errs.append({"field": "employment_status",
+                     "message": "Must be one of: active, on_leave, terminated"})
+    return errs
+
+
+def _redact_tech_for_audit(d: dict) -> dict:
+    """Drop sensitive fields from a tech-row dict before stamping into audit
+    before/after JSON. The audit layer also re-applies _PII_RAND redaction,
+    but doing it here keeps the audit row small and intentional."""
+    if not d:
+        return d
+    out = dict(d)
+    for k in _TECH_DETAIL_PII_FIELDS:
+        if k in out:
+            out[k] = "[REDACTED]"
+    out.pop("pin_hash", None)
+    return out
+
+
+@app.get("/api/admin/technicians/{tech_id}")
+def admin_technician_detail(request: Request, tech_id: int):
+    """super_admin-only: full decrypted technician profile + lightweight
+    rollups (last job, last review)."""
+    admin = _require_super_admin(request)
+    t = get_technician_with_decryption(tech_id)
+    if not t:
+        raise HTTPException(404, "Technician not found")
+    _audit_from(admin, "technician.detail_view", request,
+                target_type="technician", target_id=tech_id,
+                target_label=t.get("name"))
+    _audit_from(admin, "technician.decrypted_data_accessed", request,
+                target_type="technician", target_id=tech_id,
+                target_label=t.get("name"),
+                after={"field_names": list(_TECH_DETAIL_PII_FIELDS)})
+    return t
+
+
+@app.post("/api/admin/technicians/{tech_id}")
+def admin_technician_update(request: Request, tech_id: int,
+                            body: TechnicianProfileUpdate):
+    """super_admin-only: edit the four-surface tech info card. Termination
+    is NOT routed through here — the dedicated /api/admin/techs/{id}/terminate
+    flow handles the full offboarding side-effects. We accept
+    employment_status='terminated' only to surface a 409 with a clear
+    redirect message."""
+    admin = _require_super_admin(request)
+    before = get_technician_with_decryption(tech_id)
+    if not before:
+        raise HTTPException(404, "Technician not found")
+
+    errs = _validate_tech_profile(body)
+    if errs:
+        raise HTTPException(400, errs)
+
+    # Termination guard — must go through the offboard flow.
+    if body.employment_status == "terminated":
+        raise HTTPException(
+            409,
+            "Use the dedicated offboarding flow to terminate this technician — "
+            "this endpoint does not perform the full offboarding side-effects."
+        )
+
+    updates = {}
+    if body.phone is not None:        updates["phone"]       = (body.phone or "").strip()
+    if body.email is not None:        updates["email"]       = (body.email or "").strip()
+    if body.role is not None:         updates["role"]        = body.role
+    if body.hourly_rate is not None:  updates["hourly_rate"] = float(body.hourly_rate)
+    if body.employment_status is not None:
+        # 'active'|'on_leave' both map to active=1 in the existing schema;
+        # there's no on_leave column yet. FIXME(employment-status): add an
+        # employment_status column to technicians once on_leave needs to
+        # gate scheduling logic — for now we only flip the active flag.
+        updates["active"] = 1 if body.employment_status in ("active", "on_leave") else 0
+
+    try:
+        after = update_technician_fields(tech_id, updates)
+    except Exception as e:
+        raise HTTPException(500, f"Unable to save: {type(e).__name__}")
+
+    _audit_from(admin, "technician.update", request,
+                target_type="technician", target_id=tech_id,
+                target_label=before.get("name"),
+                before=_redact_tech_for_audit(before),
+                after=_redact_tech_for_audit(after))
+    return {"ok": True, "technician": after}
+
+
+@app.get("/api/admin/technicians/{tech_id}/jobs")
+def admin_technician_jobs(request: Request, tech_id: int,
+                          page: int = 1, limit: int = 20,
+                          visit_type: Optional[str] = None,
+                          date_from: Optional[str] = None,
+                          date_to: Optional[str] = None,
+                          callbacks_only: bool = False,
+                          status: Optional[str] = None):
+    """super_admin-only: paginated reverse-chronological job history."""
+    admin = _require_super_admin(request)
+    t = get_tech_by_id(tech_id)
+    if not t:
+        raise HTTPException(404, "Technician not found")
+    _audit_from(admin, "technician.jobs_view", request,
+                target_type="technician", target_id=tech_id,
+                target_label=t.get("name"),
+                after={"page": page, "limit": limit, "visit_type": visit_type,
+                       "date_from": date_from, "date_to": date_to,
+                       "callbacks_only": bool(callbacks_only), "status": status})
+    return get_technician_jobs_paginated(
+        tech_id, page=page, limit=limit,
+        filters={"visit_type": visit_type, "date_from": date_from,
+                 "date_to": date_to, "status": status,
+                 "callbacks_only": bool(callbacks_only)},
+    )
+
+
+@app.get("/api/admin/technicians/{tech_id}/kpi")
+def admin_technician_kpi(request: Request, tech_id: int, window: int = 30):
+    """super_admin-only: KPI dashboard payload. The KPI module is NOT yet
+    shipped, so this returns a degraded stub. The threshold overrides
+    endpoint is still functional and persists into technician_kpi_overrides
+    so that, when the KPI module ships, overrides will already exist."""
+    admin = _require_super_admin(request)
+    t = get_tech_by_id(tech_id)
+    if not t:
+        raise HTTPException(404, "Technician not found")
+    _audit_from(admin, "technician.kpi_view", request,
+                target_type="technician", target_id=tech_id,
+                target_label=t.get("name"),
+                after={"window_days": window})
+    # FIXME(kpi-module): when the KPI module ships, replace this stub with a
+    # real read of kpi_scores joined with technician_kpi_overrides.
+    return {
+        "available": False,
+        "message":   "KPI tracking not yet active — scores will populate "
+                     "once the KPI module is deployed.",
+        "window_days": window,
+        "overrides": list_kpi_threshold_overrides(tech_id, active_only=True),
+        "kpi_keys": [
+            "pm_completion", "callback_rate", "first_time_fix",
+            "revenue_per_tech", "utilization", "documentation_quality",
+            "sla_adherence", "safety_loto",
+        ],
+    }
+
+
+@app.get("/api/admin/technicians/{tech_id}/5s")
+def admin_technician_5s(request: Request, tech_id: int, window: int = 30):
+    """super_admin-only: 5S compliance score + recent audits + open
+    exceptions for the tech. Wraps the existing 5S helpers."""
+    admin = _require_super_admin(request)
+    t = get_tech_by_id(tech_id)
+    if not t:
+        raise HTTPException(404, "Technician not found")
+    score = fs_compute_compliance_score(tech_id, window_days=window)
+    audits = fs_list_audits(tech_id=tech_id, limit=50)
+    excs   = fs_list_exceptions(tech_id=tech_id, limit=100)
+    overrides = list_5s_overrides(tech_id)
+    _audit_from(admin, "technician.5s_view", request,
+                target_type="technician", target_id=tech_id,
+                target_label=t.get("name"),
+                after={"window_days": window,
+                       "audits_n": len(audits), "exc_n": len(excs)})
+    return {
+        "score":      score,
+        "audits":     audits,
+        "exceptions": excs,
+        "overrides":  overrides,
+    }
+
+
+@app.post("/api/admin/technicians/{tech_id}/kpi-threshold")
+def admin_technician_kpi_threshold(request: Request, tech_id: int,
+                                   body: TechnicianKpiThresholdOverride):
+    """super_admin-only: persist a KPI threshold override row. Will surface
+    in the UI once the KPI module reads from technician_kpi_overrides."""
+    admin = _require_super_admin(request)
+    t = get_tech_by_id(tech_id)
+    if not t:
+        raise HTTPException(404, "Technician not found")
+    if not (body.kpi_key or "").strip():
+        raise HTTPException(400, [{"field": "kpi_key",
+                                   "message": "KPI key is required"}])
+    if not (body.reason or "").strip():
+        raise HTTPException(400, [{"field": "reason",
+                                   "message": "Override reason is required"}])
+    try:
+        new_id = create_kpi_threshold_override(
+            tech_id=tech_id,
+            kpi_key=body.kpi_key.strip(),
+            green_threshold=body.green_threshold,
+            amber_threshold=body.amber_threshold,
+            red_threshold=body.red_threshold,
+            reason=body.reason.strip(),
+            effective_from=body.effective_from,
+            effective_until=body.effective_until,
+            created_by=admin["id"],
+        )
+    except ValueError as ve:
+        raise HTTPException(400, str(ve))
+    except Exception as e:
+        raise HTTPException(500, f"Unable to save: {type(e).__name__}")
+    _audit_from(admin, "technician.kpi_threshold_override", request,
+                target_type="technician", target_id=tech_id,
+                target_label=t.get("name"),
+                after={"kpi_key": body.kpi_key,
+                       "green_threshold": body.green_threshold,
+                       "amber_threshold": body.amber_threshold,
+                       "red_threshold":   body.red_threshold,
+                       "effective_from":  body.effective_from,
+                       "effective_until": body.effective_until,
+                       "override_id":     new_id,
+                       # Reason is encrypted at rest via _PII_RAND on
+                       # technician_kpi_overrides.reason; only the audit
+                       # row's audit_pii redaction needs to drop it. The
+                       # log_audit layer handles that automatically.
+                       })
+    return {"ok": True, "override_id": new_id}
+
+
+@app.post("/api/admin/technicians/{tech_id}/5s-override")
+def admin_technician_5s_override(request: Request, tech_id: int,
+                                 body: Technician5SOverride):
+    """super_admin-only: persist a forensic override row for a 5S exception.
+    Does NOT mutate the original fs_exceptions row — that row stays for the
+    audit trail. The override is a parallel forensic record."""
+    admin = _require_super_admin(request)
+    t = get_tech_by_id(tech_id)
+    if not t:
+        raise HTTPException(404, "Technician not found")
+    if not (body.reason or "").strip():
+        raise HTTPException(400, [{"field": "reason",
+                                   "message": "Override reason is required"}])
+    try:
+        new_id = create_5s_override(
+            exception_id=body.exception_id,
+            tech_id=tech_id,
+            reason=body.reason.strip(),
+            overridden_by=admin["id"],
+            hub_id=t.get("hub_id", 1),
+        )
+    except ValueError as ve:
+        msg = str(ve)
+        if "not found" in msg.lower():
+            raise HTTPException(404, msg)
+        if "does not belong" in msg.lower():
+            raise HTTPException(403, msg)
+        raise HTTPException(400, msg)
+    _audit_from(admin, "technician.5s_flag_override", request,
+                target_type="technician", target_id=tech_id,
+                target_label=t.get("name"),
+                after={"exception_id": body.exception_id,
+                       "override_id":  new_id})
+    return {"ok": True, "override_id": new_id}
+
+
+@app.get("/api/admin/technicians/{tech_id}/reviews")
+def admin_technician_reviews_list(request: Request, tech_id: int,
+                                  status: Optional[str] = None,
+                                  limit: int = 50):
+    admin = _require_super_admin(request)
+    t = get_tech_by_id(tech_id)
+    if not t:
+        raise HTTPException(404, "Technician not found")
+    rows = list_technician_reviews(tech_id, status=status, limit=limit)
+    _audit_from(admin, "technician.reviews_view", request,
+                target_type="technician", target_id=tech_id,
+                target_label=t.get("name"),
+                after={"count": len(rows),
+                       "field_names": list(_TECH_REVIEW_PII_FIELDS)})
+    return rows
+
+
+@app.post("/api/admin/technicians/{tech_id}/reviews")
+def admin_technician_review_create(request: Request, tech_id: int,
+                                   body: TechnicianReviewCreate):
+    admin = _require_super_admin(request)
+    t = get_tech_by_id(tech_id)
+    if not t:
+        raise HTTPException(404, "Technician not found")
+    errs = []
+    if body.review_type not in ("coaching", "written_warning",
+                                "positive_feedback", "other"):
+        errs.append({"field": "review_type", "message": "Invalid review type"})
+    if not (body.summary or "").strip():
+        errs.append({"field": "summary", "message": "Summary is required"})
+    if body.summary and len(body.summary) > 1000:
+        errs.append({"field": "summary", "message": "Summary must be ≤ 1000 chars"})
+    if body.action_items and len(body.action_items) > 2000:
+        errs.append({"field": "action_items",
+                     "message": "Action items must be ≤ 2000 chars"})
+    if body.status and body.status not in ("open", "resolved", "archived"):
+        errs.append({"field": "status", "message": "Invalid status"})
+    if body.followup_date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}",
+                                               body.followup_date):
+        errs.append({"field": "followup_date",
+                     "message": "Follow-up date must be ISO date (YYYY-MM-DD)"})
+    if errs:
+        raise HTTPException(400, errs)
+    try:
+        rid = create_technician_review(
+            tech_id=tech_id,
+            review_type=body.review_type,
+            summary=body.summary.strip(),
+            reviewer_id=admin["id"],
+            status=body.status or "open",
+            action_items=(body.action_items or None),
+            followup_date=body.followup_date,
+            hub_id=t.get("hub_id", 1),
+        )
+    except ValueError as ve:
+        raise HTTPException(400, str(ve))
+    _audit_from(admin, "technician.review_logged", request,
+                target_type="technician", target_id=tech_id,
+                target_label=t.get("name"),
+                after={"review_id":     rid,
+                       "review_type":   body.review_type,
+                       "status":        body.status or "open",
+                       "followup_date": body.followup_date,
+                       "field_names":   list(_TECH_REVIEW_PII_FIELDS)})
+    return {"ok": True, "review_id": rid}
+
+
+@app.patch("/api/admin/technicians/{tech_id}/reviews/{review_id}")
+def admin_technician_review_update(request: Request, tech_id: int,
+                                   review_id: int,
+                                   body: TechnicianReviewUpdate):
+    admin = _require_super_admin(request)
+    t = get_tech_by_id(tech_id)
+    if not t:
+        raise HTTPException(404, "Technician not found")
+    # IDOR-safe: confirm review belongs to this tech.
+    existing = list_technician_reviews(tech_id, status=None, limit=1000)
+    if not any(r["id"] == review_id for r in existing):
+        raise HTTPException(404, "Review not found for this technician")
+    errs = []
+    if body.summary is not None and not body.summary.strip():
+        errs.append({"field": "summary", "message": "Summary cannot be blank"})
+    if body.summary and len(body.summary) > 1000:
+        errs.append({"field": "summary", "message": "Summary must be ≤ 1000 chars"})
+    if body.action_items and len(body.action_items) > 2000:
+        errs.append({"field": "action_items",
+                     "message": "Action items must be ≤ 2000 chars"})
+    if body.status and body.status not in ("open", "resolved", "archived"):
+        errs.append({"field": "status", "message": "Invalid status"})
+    if body.followup_date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}",
+                                               body.followup_date):
+        errs.append({"field": "followup_date",
+                     "message": "Follow-up date must be ISO date (YYYY-MM-DD)"})
+    if errs:
+        raise HTTPException(400, errs)
+    try:
+        update_technician_review(
+            review_id,
+            status=body.status,
+            summary=body.summary,
+            action_items=body.action_items,
+            followup_date=body.followup_date,
+        )
+    except ValueError as ve:
+        msg = str(ve)
+        if "not editable" in msg:
+            raise HTTPException(409, msg)
+        if "not found" in msg:
+            raise HTTPException(404, msg)
+        raise HTTPException(400, msg)
+    _audit_from(admin, "technician.review_updated", request,
+                target_type="technician", target_id=tech_id,
+                target_label=t.get("name"),
+                after={"review_id":     review_id,
+                       "status":        body.status,
+                       "followup_date": body.followup_date,
+                       "field_names":   list(_TECH_REVIEW_PII_FIELDS)})
+    return {"ok": True}
+
+
+@app.get("/api/admin/technicians/{tech_id}/certifications")
+def admin_technician_certifications(request: Request, tech_id: int):
+    admin = _require_super_admin(request)
+    t = get_tech_by_id(tech_id)
+    if not t:
+        raise HTTPException(404, "Technician not found")
+    payload = get_technician_certifications(tech_id)
+    _audit_from(admin, "technician.certifications_view", request,
+                target_type="technician", target_id=tech_id,
+                target_label=t.get("name"))
+    return payload
+
+
+@app.get("/api/admin/technicians/{tech_id}/payroll-summary")
+def admin_technician_payroll_summary(request: Request, tech_id: int,
+                                     limit: int = 6):
+    admin = _require_super_admin(request)
+    t = get_tech_by_id(tech_id)
+    if not t:
+        raise HTTPException(404, "Technician not found")
+    payload = get_technician_payroll_summary(tech_id, limit=limit)
+    _audit_from(admin, "technician.payroll_summary_view", request,
+                target_type="technician", target_id=tech_id,
+                target_label=t.get("name"),
+                after={"limit": limit})
+    return payload
 
 
 @app.post("/api/admin/equipment")
