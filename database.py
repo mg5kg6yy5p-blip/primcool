@@ -9026,3 +9026,657 @@ def _last_kpi_flag_chain(con=None) -> str:
     if own: con.close()
     return (r["chain_hash"] if r else "") or ""
 
+
+# ════════════════════════════════════════════════════════════════════════════
+# Employee KPI Tracking Module — compute engine
+# Each helper returns (raw_value, sample_size, band_marker_or_None). The band
+# is computed separately via score_to_band so threshold overrides flow through
+# one path. Insufficient-data is propagated as raw_value=None with the
+# threshold-specific minimum sample documented inline.
+# ════════════════════════════════════════════════════════════════════════════
+
+# Tier inference — technicians.role values map onto the tier table.
+_KPI_TECH_ROLE_TO_TIER = {
+    "tech":            "level_1",
+    "tech_l1":         "level_1",
+    "tech_level_1":    "level_1",
+    "tech_l2":         "level_2",
+    "tech_level_2":    "level_2",
+    "tech_l3":         "level_3",
+    "tech_level_3":    "level_3",
+    "senior_tech":     "level_3",
+    "lead_tech":       "level_3",
+    "ops_manager":     "ops_manager",
+}
+
+
+def _kpi_tier_for_tech(tech_id: int) -> str:
+    con = _con()
+    r = con.execute("SELECT role FROM technicians WHERE id=?", (tech_id,)).fetchone()
+    con.close()
+    role = (r["role"] if r else "tech") or "tech"
+    return _KPI_TECH_ROLE_TO_TIER.get(role, "level_1")
+
+
+def _kpi_period_bounds_iso(period_key: str):
+    """Return (start_iso_dt, end_iso_dt) datetime strings covering the full
+    week — start is Monday 00:00 UTC, end is Sunday 23:59:59 UTC."""
+    start, end = iso_week_bounds(period_key)
+    return f"{start}T00:00:00+00:00", f"{end}T23:59:59+00:00"
+
+
+def compute_callback_rate(tech_id: int, period_key: str) -> tuple:
+    """callback_rate = (visits in period that are callbacks of THIS tech's
+    prior work) / (visits this tech completed in period). Lower is better.
+    Insufficient data if denominator < 3."""
+    start, end = _kpi_period_bounds_iso(period_key)
+    sd, ed = iso_week_bounds(period_key)
+    con = _con()
+    # Denominator: completed visits by this tech in the period (any type).
+    denom = con.execute(
+        "SELECT COUNT(*) FROM maintenance_visits "
+        "WHERE assigned_tech_id=? AND completed_date IS NOT NULL "
+        "AND completed_date BETWEEN ? AND ?",
+        (tech_id, sd, ed),
+    ).fetchone()[0]
+    # Numerator: callbacks created in this period whose origin visit was done by this tech.
+    num = con.execute(
+        "SELECT COUNT(*) FROM maintenance_visits v "
+        "JOIN maintenance_visits orig ON orig.id = v.callback_of_visit_id "
+        "WHERE v.callback_of_visit_id IS NOT NULL "
+        "AND orig.assigned_tech_id = ? "
+        "AND v.created_at BETWEEN ? AND ?",
+        (tech_id, start, end),
+    ).fetchone()[0]
+    con.close()
+    if denom < 3:
+        return (None, denom, "insufficient_data")
+    pct = (num / denom) * 100.0
+    return (round(pct, 2), denom, None)
+
+
+def compute_documentation_quality(tech_id: int, period_key: str) -> tuple:
+    """Per-visit score: 30 (base for being completed) + 30 (has readings) +
+    20 (has photos) + 20 (has work_done_summary). Capped 100. Averaged
+    across all completed visits in period. Insufficient if < 2 visits."""
+    sd, ed = iso_week_bounds(period_key)
+    con = _con()
+    visits = con.execute(
+        "SELECT v.id, v.work_done_summary, "
+        "       EXISTS(SELECT 1 FROM visit_readings r WHERE r.visit_id=v.id) AS has_r, "
+        "       EXISTS(SELECT 1 FROM visit_photos  p WHERE p.visit_id=v.id) AS has_p "
+        "  FROM maintenance_visits v "
+        " WHERE v.assigned_tech_id=? AND v.completed_date IS NOT NULL "
+        "   AND v.completed_date BETWEEN ? AND ?",
+        (tech_id, sd, ed),
+    ).fetchall()
+    con.close()
+    n = len(visits)
+    if n < 2:
+        return (None, n, "insufficient_data")
+    total = 0.0
+    for v in visits:
+        score = 30.0
+        if v["has_r"]: score += 30.0
+        if v["has_p"]: score += 20.0
+        summ = (v["work_done_summary"] or "").strip()
+        if summ: score += 20.0
+        total += min(score, 100.0)
+    return (round(total / n, 2), n, None)
+
+
+def compute_pm_completion(tech_id: int, period_key: str) -> tuple:
+    """PM visits completed on or before scheduled_date / PM visits scheduled
+    in period. Insufficient if PM count < 2."""
+    sd, ed = iso_week_bounds(period_key)
+    con = _con()
+    pm_visits = con.execute(
+        "SELECT scheduled_date, completed_date "
+        "  FROM maintenance_visits "
+        " WHERE assigned_tech_id=? AND visit_type IN ('PM','pm','preventive') "
+        "   AND scheduled_date BETWEEN ? AND ?",
+        (tech_id, sd, ed),
+    ).fetchall()
+    con.close()
+    n = len(pm_visits)
+    if n < 2:
+        return (None, n, "insufficient_data")
+    on_time = 0
+    for v in pm_visits:
+        sched = v["scheduled_date"]; comp = v["completed_date"]
+        if comp and sched and comp <= sched:
+            on_time += 1
+    pct = (on_time / n) * 100.0
+    return (round(pct, 2), n, None)
+
+
+def compute_utilization(tech_id: int, period_key: str) -> tuple:
+    """billable_minutes / clocked_minutes.
+    FIXME: no time-clock table exists yet. We can compute billable minutes from
+    visit start_time/end_time but have no independent clocked_minutes signal.
+    Until the time-clock table ships, this returns 100% with sample_size = visit
+    count. Do NOT treat as authoritative; flagged as informational-grade only.
+    Replace with real clock-in/out data when the time-clock table ships."""
+    sd, ed = iso_week_bounds(period_key)
+    con = _con()
+    n = con.execute(
+        "SELECT COUNT(*) FROM maintenance_visits "
+        " WHERE assigned_tech_id=? AND completed_date IS NOT NULL "
+        "   AND completed_date BETWEEN ? AND ? "
+        "   AND start_time IS NOT NULL AND end_time IS NOT NULL",
+        (tech_id, sd, ed),
+    ).fetchone()[0]
+    con.close()
+    if n < 2:
+        return (None, n, "insufficient_data")
+    # FIXME: replace with real clock-in/out when time-clock table ships.
+    return (100.0, n, None)
+
+
+def compute_sla_adherence(tech_id: int, period_key: str) -> tuple:
+    """CM (corrective maintenance) visits where the tech started within 24h
+    of scheduled_date / total CM visits. Insufficient if no CM in period."""
+    from datetime import datetime as _dt, timedelta as _td
+    sd, ed = iso_week_bounds(period_key)
+    con = _con()
+    cms = con.execute(
+        "SELECT scheduled_date, start_time "
+        "  FROM maintenance_visits "
+        " WHERE assigned_tech_id=? AND visit_type IN ('CM','cm','corrective','callback','repair') "
+        "   AND scheduled_date BETWEEN ? AND ?",
+        (tech_id, sd, ed),
+    ).fetchall()
+    con.close()
+    n = len(cms)
+    if n == 0:
+        return (None, 0, "insufficient_data")
+    SLA_HOURS = 24
+    in_sla = 0
+    for v in cms:
+        sched = v["scheduled_date"]; st = v["start_time"]
+        if not st or not sched:
+            continue
+        try:
+            sched_dt = _dt.fromisoformat(sched)
+            st_dt = _dt.fromisoformat(st.replace("Z", "+00:00"))
+            # Strip tz on sched if naive
+            if sched_dt.tzinfo is None and st_dt.tzinfo is not None:
+                sched_dt = sched_dt.replace(tzinfo=st_dt.tzinfo)
+            elif st_dt.tzinfo is None and sched_dt.tzinfo is not None:
+                st_dt = st_dt.replace(tzinfo=sched_dt.tzinfo)
+            if (st_dt - sched_dt) <= _td(hours=SLA_HOURS):
+                in_sla += 1
+        except Exception:
+            continue
+    pct = (in_sla / n) * 100.0
+    return (round(pct, 2), n, None)
+
+
+def compute_safety_compliance(tech_id: int, period_key: str) -> tuple:
+    """100% minus (count of safety_loto fs_exceptions opened by this tech in
+    period / total completed visits in period * 100), floored at 0. ANY
+    safety_loto exception forces 0%. sample_size surfaces the # of LOTO events
+    so the UI can show the underlying count."""
+    start, end = _kpi_period_bounds_iso(period_key)
+    sd, ed = iso_week_bounds(period_key)
+    con = _con()
+    loto_n = con.execute(
+        "SELECT COUNT(*) FROM fs_exceptions "
+        " WHERE severity='safety_loto' AND opened_by_id=? AND opened_at BETWEEN ? AND ?",
+        (tech_id, start, end),
+    ).fetchone()[0]
+    visit_n = con.execute(
+        "SELECT COUNT(*) FROM maintenance_visits "
+        " WHERE assigned_tech_id=? AND completed_date IS NOT NULL "
+        "   AND completed_date BETWEEN ? AND ?",
+        (tech_id, sd, ed),
+    ).fetchone()[0]
+    con.close()
+    if visit_n == 0 and loto_n == 0:
+        return (None, 0, "insufficient_data")
+    if loto_n > 0:
+        # Any safety event is full RED — spec is unambiguous.
+        return (0.0, loto_n, None)
+    return (100.0, visit_n, None)
+
+
+def compute_first_time_fix(tech_id: int, period_key: str) -> tuple:
+    """CM visits NOT linked to a callback (i.e. not pointed at by a later
+    callback row) / total CM visits. Informational only."""
+    sd, ed = iso_week_bounds(period_key)
+    con = _con()
+    cms = con.execute(
+        "SELECT v.id FROM maintenance_visits v "
+        " WHERE v.assigned_tech_id=? AND v.visit_type IN ('CM','cm','corrective','repair') "
+        "   AND v.completed_date IS NOT NULL "
+        "   AND v.completed_date BETWEEN ? AND ?",
+        (tech_id, sd, ed),
+    ).fetchall()
+    n = len(cms)
+    if n < 2:
+        con.close()
+        return (None, n, "insufficient_data")
+    ftf = 0
+    for v in cms:
+        had_callback = con.execute(
+            "SELECT 1 FROM maintenance_visits WHERE callback_of_visit_id=? LIMIT 1",
+            (v["id"],),
+        ).fetchone()
+        if not had_callback:
+            ftf += 1
+    con.close()
+    pct = (ftf / n) * 100.0
+    return (round(pct, 2), n, None)
+
+
+def compute_revenue_per_tech(tech_id: int, period_key: str) -> tuple:
+    """SUM(invoice_line_items.line_total) for line_type='labor' AND
+    tech_id=this_tech AND invoice was created in period. Informational only."""
+    start, end = _kpi_period_bounds_iso(period_key)
+    con = _con()
+    row = con.execute(
+        "SELECT COALESCE(SUM(li.line_total), 0) AS rev, COUNT(*) AS n "
+        "  FROM invoice_line_items li "
+        "  JOIN invoices inv ON inv.id = li.invoice_id "
+        " WHERE li.line_type='labor' AND li.tech_id=? "
+        "   AND inv.created_at BETWEEN ? AND ?",
+        (tech_id, start, end),
+    ).fetchone()
+    con.close()
+    rev = float(row["rev"] or 0)
+    n = int(row["n"] or 0)
+    if n == 0:
+        return (0.0, 0, None)
+    return (round(rev, 2), n, None)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Band logic
+# ────────────────────────────────────────────────────────────────────────────
+
+def _get_active_threshold(con, kpi_key: str, tier: str):
+    r = con.execute(
+        "SELECT * FROM kpi_thresholds WHERE kpi_key=? AND tier=? AND active=1 "
+        "ORDER BY effective_from DESC LIMIT 1",
+        (kpi_key, tier),
+    ).fetchone()
+    if r:
+        return dict(r)
+    # fall back to level_1 if tier-specific not configured
+    r = con.execute(
+        "SELECT * FROM kpi_thresholds WHERE kpi_key=? AND tier='level_1' AND active=1 "
+        "ORDER BY effective_from DESC LIMIT 1",
+        (kpi_key,),
+    ).fetchone()
+    return dict(r) if r else None
+
+
+def score_to_band(kpi_key: str, tier: str, raw_value, sample_size: int = 0) -> str:
+    """Translate a raw score into 'green'|'amber'|'red'|'insufficient_data'
+    using the active threshold row for (kpi_key, tier). Honors direction
+    (higher_better vs lower_better). Insufficient if raw_value is None."""
+    if raw_value is None:
+        return "insufficient_data"
+    con = _con()
+    defn = con.execute("SELECT direction FROM kpi_definitions WHERE kpi_key=?",
+                       (kpi_key,)).fetchone()
+    thr = _get_active_threshold(con, kpi_key, tier)
+    con.close()
+    if not thr or not defn:
+        return "insufficient_data"
+    direction = defn["direction"]
+    green = thr["green_threshold"]
+    amber = thr["amber_band"]
+    red_floor = thr["red_floor"]
+    val = float(raw_value)
+    if direction == "higher_better":
+        if val < red_floor: return "red"
+        if val >= green:    return "green"
+        if val >= green - amber: return "amber"
+        return "red"
+    else:  # lower_better
+        if val > red_floor: return "red"
+        if val <= green:    return "green"
+        if val <= green + amber: return "amber"
+        return "red"
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Score writers
+# ────────────────────────────────────────────────────────────────────────────
+
+def record_kpi_score(tech_id: int, period_key: str, kpi_key: str,
+                      raw_value, sample_size: int, band: str, tier: str) -> int:
+    """Upsert one (tech, period, kpi) row. Chain-hashed against the prior
+    row. recomputed_count auto-increments on re-write."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    # Closed-period guard
+    prow = con.execute("SELECT status FROM kpi_periods WHERE period_key=?",
+                       (period_key,)).fetchone()
+    if prow and prow["status"] == "closed":
+        con.close()
+        return 0
+    existing = con.execute(
+        "SELECT id, recomputed_count FROM kpi_scores "
+        " WHERE tech_id=? AND period_key=? AND kpi_key=?",
+        (tech_id, period_key, kpi_key),
+    ).fetchone()
+    prior = _last_kpi_score_chain(con)
+    row_for_hash = {
+        "tech_id": tech_id, "period_key": period_key, "kpi_key": kpi_key,
+        "raw_value": raw_value, "sample_size": sample_size,
+        "band": band, "tier_at_computation": tier, "computed_at": now,
+    }
+    chash = _chain_hash_kpi_score(prior, row_for_hash)
+    if existing:
+        new_count = (existing["recomputed_count"] or 0) + 1
+        con.execute(
+            "UPDATE kpi_scores SET raw_value=?, sample_size=?, band=?, "
+            "tier_at_computation=?, computed_at=?, recomputed_count=?, "
+            "prior_chain_hash=?, chain_hash=? WHERE id=?",
+            (raw_value, sample_size, band, tier, now, new_count,
+             prior, chash, existing["id"]),
+        )
+        rid = existing["id"]
+    else:
+        cur = con.execute(
+            "INSERT INTO kpi_scores (tech_id, period_key, kpi_key, raw_value, "
+            "sample_size, band, tier_at_computation, computed_at, "
+            "recomputed_count, prior_chain_hash, chain_hash) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+            (tech_id, period_key, kpi_key, raw_value, sample_size, band,
+             tier, now, prior, chash),
+        )
+        rid = cur.lastrowid
+    con.commit(); con.close()
+    return rid
+
+
+def record_composite_score(tech_id: int, period_key: str,
+                            components: dict, tier: str) -> dict:
+    """components: dict of kpi_key -> {'raw_value':..., 'band':...} for the
+    in-composite KPIs only. Weighted average using kpi_definitions weights.
+    Safety RED forces composite RED. Insufficient if any in-composite KPI
+    lacks a usable value AND we have <4 valid signals.
+
+    Returns the row written: {composite_pct, band, forced_red_reason}."""
+    import logging as _lg
+    _logger = _lg.getLogger("kpi")
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    prow = con.execute("SELECT status FROM kpi_periods WHERE period_key=?",
+                       (period_key,)).fetchone()
+    if prow and prow["status"] == "closed":
+        con.close()
+        return {"composite_pct": None, "band": None,
+                "forced_red_reason": "period_closed"}
+
+    defs = con.execute(
+        "SELECT kpi_key, composite_weight_pct, safety_critical, direction "
+        "  FROM kpi_definitions WHERE in_composite=1 AND active=1"
+    ).fetchall()
+
+    forced_red_reason = None
+    weighted_sum = 0.0
+    weight_used = 0.0
+    valid_signals = 0
+    safety_red_triggered = False
+    for d in defs:
+        k = d["kpi_key"]
+        w = float(d["composite_weight_pct"] or 0)
+        comp = components.get(k) or {}
+        raw = comp.get("raw_value")
+        band = comp.get("band")
+        if d["safety_critical"] and band == "red":
+            safety_red_triggered = True
+        if raw is None or band == "insufficient_data":
+            continue
+        # Normalize lower-better to a higher-is-better contribution.
+        # For callback_rate we invert: contribution = max(0, 100 - raw).
+        if d["direction"] == "lower_better":
+            contribution = max(0.0, 100.0 - float(raw))
+        else:
+            contribution = max(0.0, min(100.0, float(raw)))
+        weighted_sum += contribution * w
+        weight_used += w
+        valid_signals += 1
+
+    if weight_used <= 0 or valid_signals < 2:
+        composite_pct = None
+        band = "insufficient_data"
+    else:
+        composite_pct = round(weighted_sum / weight_used, 2)
+        # Composite band: green if >=85, amber if >=70, red below.
+        if composite_pct >= 85: band = "green"
+        elif composite_pct >= 70: band = "amber"
+        else: band = "red"
+
+    if safety_red_triggered:
+        # Locked decision: Safety RED forces composite RED regardless.
+        _logger.warning(
+            f"kpi.safety_red_force: tech_id={tech_id} period={period_key} "
+            f"composite={composite_pct} -> forced RED"
+        )
+        band = "red"
+        forced_red_reason = "safety_red"
+
+    prior = _last_kpi_composite_chain(con)
+    row_for_hash = {
+        "tech_id": tech_id, "period_key": period_key,
+        "composite_pct": composite_pct, "band": band,
+        "forced_red_reason": forced_red_reason,
+        "tier_at_computation": tier, "computed_at": now,
+    }
+    chash = _chain_hash_kpi_composite(prior, row_for_hash)
+    existing = con.execute(
+        "SELECT id FROM kpi_composite_scores WHERE tech_id=? AND period_key=?",
+        (tech_id, period_key),
+    ).fetchone()
+    if existing:
+        con.execute(
+            "UPDATE kpi_composite_scores SET composite_pct=?, band=?, "
+            "forced_red_reason=?, tier_at_computation=?, computed_at=?, "
+            "prior_chain_hash=?, chain_hash=? WHERE id=?",
+            (composite_pct, band, forced_red_reason, tier, now,
+             prior, chash, existing["id"]),
+        )
+    else:
+        con.execute(
+            "INSERT INTO kpi_composite_scores (tech_id, period_key, "
+            "composite_pct, band, forced_red_reason, tier_at_computation, "
+            "computed_at, prior_chain_hash, chain_hash) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (tech_id, period_key, composite_pct, band, forced_red_reason,
+             tier, now, prior, chash),
+        )
+    con.commit(); con.close()
+    return {"composite_pct": composite_pct, "band": band,
+            "forced_red_reason": forced_red_reason}
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Recompute orchestrator
+# ────────────────────────────────────────────────────────────────────────────
+
+_KPI_COMPUTE_FNS = {
+    "callback_rate":         compute_callback_rate,
+    "documentation_quality": compute_documentation_quality,
+    "pm_completion":         compute_pm_completion,
+    "utilization":           compute_utilization,
+    "sla_adherence":         compute_sla_adherence,
+    "safety_compliance":     compute_safety_compliance,
+    "first_time_fix":        compute_first_time_fix,
+    "revenue_per_tech":      compute_revenue_per_tech,
+}
+
+
+def recompute_kpi_scores(tech_id: int, period_key: str,
+                          triggered_by: str = "manual",
+                          triggered_by_id: int = None) -> dict:
+    """Recompute all 8 KPI helpers + composite for one (tech, period).
+    Logs to kpi_recompute_log. Returns a dict with each kpi result + composite."""
+    ensure_period_exists(period_key)
+    tier = _kpi_tier_for_tech(tech_id)
+    started = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    cur = con.execute(
+        "INSERT INTO kpi_recompute_log (triggered_by, triggered_by_id, scope, "
+        "tech_id, period_key, started_at) VALUES (?, ?, 'one_tech', ?, ?, ?)",
+        (triggered_by, triggered_by_id, tech_id, period_key, started),
+    )
+    log_id = cur.lastrowid
+    con.commit(); con.close()
+
+    error = None
+    out = {}
+    components_for_composite = {}
+    rows_affected = 0
+    try:
+        for kpi_key, fn in _KPI_COMPUTE_FNS.items():
+            raw, sample, marker = fn(tech_id, period_key)
+            if marker == "insufficient_data":
+                band = "insufficient_data"
+            else:
+                band = score_to_band(kpi_key, tier, raw, sample)
+            rid = record_kpi_score(tech_id, period_key, kpi_key,
+                                    raw, sample, band, tier)
+            if rid:
+                rows_affected += 1
+            out[kpi_key] = {"raw_value": raw, "sample_size": sample, "band": band}
+            components_for_composite[kpi_key] = {"raw_value": raw, "band": band}
+        composite = record_composite_score(tech_id, period_key,
+                                            components_for_composite, tier)
+        out["composite"] = composite
+        rows_affected += 1
+    except Exception as e:
+        error = str(e)[:500]
+        out["error"] = error
+
+    ended = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    con.execute(
+        "UPDATE kpi_recompute_log SET ended_at=?, rows_affected=?, error_text=? "
+        "WHERE id=?", (ended, rows_affected, error, log_id),
+    )
+    con.commit(); con.close()
+    return out
+
+
+def recompute_all_open_periods(triggered_by: str = "cron",
+                                triggered_by_id: int = None) -> dict:
+    """For every open period × every active technician, recompute scores."""
+    con = _con()
+    periods = [r["period_key"] for r in con.execute(
+        "SELECT period_key FROM kpi_periods WHERE status='open'"
+    ).fetchall()]
+    techs = [r["id"] for r in con.execute(
+        "SELECT id FROM technicians WHERE active=1"
+    ).fetchall()]
+    con.close()
+    total = 0
+    for pk in periods:
+        for tid in techs:
+            try:
+                recompute_kpi_scores(tid, pk, triggered_by=triggered_by,
+                                      triggered_by_id=triggered_by_id)
+                total += 1
+            except Exception:
+                pass
+    return {"periods": len(periods), "techs": len(techs), "runs": total}
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Read helpers for scorecards
+# ────────────────────────────────────────────────────────────────────────────
+
+def get_kpi_scorecard(tech_id: int, period_key: str) -> dict:
+    """Return all current scores + composite for (tech, period)."""
+    con = _con()
+    scores = con.execute(
+        "SELECT kpi_key, raw_value, sample_size, band, tier_at_computation, "
+        "computed_at, recomputed_count FROM kpi_scores "
+        " WHERE tech_id=? AND period_key=? ORDER BY kpi_key",
+        (tech_id, period_key),
+    ).fetchall()
+    comp = con.execute(
+        "SELECT composite_pct, band, forced_red_reason, tier_at_computation, "
+        "computed_at FROM kpi_composite_scores "
+        " WHERE tech_id=? AND period_key=?",
+        (tech_id, period_key),
+    ).fetchone()
+    con.close()
+    return {
+        "tech_id": tech_id,
+        "period_key": period_key,
+        "kpis": {r["kpi_key"]: dict(r) for r in scores},
+        "composite": dict(comp) if comp else None,
+    }
+
+
+def get_kpi_trend(tech_id: int, windows: int = 4) -> list:
+    """Return last `windows` periods of composite scores for a tech, newest first."""
+    con = _con()
+    rows = con.execute(
+        "SELECT period_key, composite_pct, band, forced_red_reason, computed_at "
+        "  FROM kpi_composite_scores WHERE tech_id=? "
+        " ORDER BY period_key DESC LIMIT ?", (tech_id, windows),
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def get_team_scoreboard(period_key: str, tier_filter: str = None,
+                         hub_id: int = None) -> list:
+    """Return per-tech composite + KPI band map for one period."""
+    con = _con()
+    sql = (
+        "SELECT t.id AS tech_id, t.name, t.role, c.composite_pct, c.band, "
+        "       c.forced_red_reason, c.tier_at_computation "
+        "  FROM technicians t "
+        "  LEFT JOIN kpi_composite_scores c "
+        "    ON c.tech_id=t.id AND c.period_key=? "
+        " WHERE t.active=1"
+    )
+    args = [period_key]
+    rows = con.execute(sql, args).fetchall()
+    out = []
+    for r in rows:
+        tier = r["tier_at_computation"] or _KPI_TECH_ROLE_TO_TIER.get(
+            (r["role"] or "tech"), "level_1")
+        if tier_filter and tier != tier_filter:
+            continue
+        # Pull per-KPI bands
+        ks = con.execute(
+            "SELECT kpi_key, raw_value, band FROM kpi_scores "
+            " WHERE tech_id=? AND period_key=?", (r["tech_id"], period_key),
+        ).fetchall()
+        out.append({
+            "tech_id": r["tech_id"],
+            "name": r["name"],
+            "role": r["role"],
+            "tier": tier,
+            "composite_band": r["band"],
+            "composite_pct": r["composite_pct"],
+            "forced_red_reason": r["forced_red_reason"],
+            "kpis": {k["kpi_key"]: {"band": k["band"], "raw_value": k["raw_value"]} for k in ks},
+        })
+    con.close()
+    # Per spec: exclude techs with insufficient_data composite
+    return [o for o in out if o["composite_band"] not in (None, "insufficient_data")]
+
+
+def list_kpi_flags_for_tech(tech_id: int, status: str = None, limit: int = 50) -> list:
+    con = _con()
+    if status:
+        rows = con.execute(
+            "SELECT * FROM kpi_flags WHERE tech_id=? AND status=? "
+            "ORDER BY created_at DESC LIMIT ?", (tech_id, status, limit),
+        ).fetchall()
+    else:
+        rows = con.execute(
+            "SELECT * FROM kpi_flags WHERE tech_id=? "
+            "ORDER BY created_at DESC LIMIT ?", (tech_id, limit),
+        ).fetchall()
+    con.close()
+    return [_dec_row("kpi_flags", r) for r in rows]

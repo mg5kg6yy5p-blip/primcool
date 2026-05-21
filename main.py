@@ -143,6 +143,13 @@ from database import (
     transition_invoice_status, create_invoice_with_lines,
     update_invoice_with_lines,
     StaleWriteError,
+    # Employee KPI Tracking Module
+    get_or_create_period, ensure_period_exists, close_period,
+    list_kpi_periods, list_kpi_definitions, list_kpi_thresholds,
+    upsert_kpi_threshold, iso_week_key,
+    recompute_kpi_scores, recompute_all_open_periods,
+    get_kpi_scorecard, get_kpi_trend, get_team_scoreboard,
+    list_kpi_flags_for_tech,
 )
 import imghdr as _imghdr
 import mimetypes as _mimetypes
@@ -178,6 +185,9 @@ ADMIN_PERMS = {
         "fs:audit_any", "fs:exception_resolve", "fs:exception_escalate_director",
         "fs:asset_manage", "fs:report_view", "fs:audit_override",
         "fs:coaching_manage",
+        # Employee KPI Tracking
+        "kpi:view_team", "kpi:edit_thresholds", "kpi:recompute",
+        "kpi:view_definitions", "kpi:close_period",
     },
     "supervisor_admin": {
         "admin:view_all",
@@ -202,6 +212,9 @@ ADMIN_PERMS = {
         # 5S workplace-discipline (supervisor can audit anyone, resolve / escalate)
         "fs:audit_any", "fs:exception_resolve", "fs:exception_escalate_director",
         "fs:report_view", "fs:coaching_manage",
+        # Employee KPI Tracking — supervisor manages team + can recompute,
+        # but cannot edit thresholds or close periods (director-only).
+        "kpi:view_team", "kpi:recompute", "kpi:view_definitions",
     },
     "system_admin": {
         "tech:view", "tech:create", "tech:update", "tech:reset_pin",
@@ -216,6 +229,8 @@ ADMIN_PERMS = {
         "documents:upload", "documents:view",
         # 5S — system_admin manages the asset catalog + can view reports
         "fs:asset_manage", "fs:report_view",
+        # KPI — read-only on team + definitions
+        "kpi:view_team", "kpi:view_definitions",
     },
     "hr_admin": {
         "tech:view", "tech:create", "tech:update", "tech:reset_pin",
@@ -227,6 +242,8 @@ ADMIN_PERMS = {
         "payroll:generate", "payroll:view_all",
         # 5S — HR sees reports for coaching/performance context (read-only).
         "fs:report_view",
+        # KPI — read access for performance reviews
+        "kpi:view_team", "kpi:view_definitions",
     },
     "ceo_assistant": {
         "audit:view_self",
@@ -2431,6 +2448,14 @@ def tech_complete_job(request: Request, visit_id: int, body: TechCompleteVisit):
         today,
         next_pm_due=(body.next_pm_due or None),
     )
+    # KPI lazy trigger — non-blocking. Failures are logged, not raised: the
+    # tech's submission must NEVER be blocked by KPI scoring problems.
+    try:
+        recompute_kpi_scores(tech_id, get_or_create_period(),
+                              triggered_by="visit_event",
+                              triggered_by_id=tech_id)
+    except Exception as e:
+        logger.warning(f"kpi recompute deferred: {e}")
     return {"ok": True, "end_time": end_iso, "submitted_at": end_iso}
 
 
@@ -5487,33 +5512,58 @@ def admin_technician_jobs(request: Request, tech_id: int,
     )
 
 
+def _kpi_scorecard_payload(tech_id: int, period_key: str = None,
+                            windows: int = 4) -> Dict[str, Any]:
+    """Shared payload builder for both /api/admin/technicians/{id}/kpi and
+    /api/admin/kpi/technician/{id}/scorecard. Recomputes the current period
+    on demand if no rows exist yet so the Tech Detail UI shows live data
+    instead of an empty card."""
+    if period_key is None:
+        period_key = get_or_create_period()
+    current = get_kpi_scorecard(tech_id, period_key)
+    if not current.get("kpis"):
+        try:
+            recompute_kpi_scores(tech_id, period_key, triggered_by="manual")
+            current = get_kpi_scorecard(tech_id, period_key)
+        except Exception as e:
+            logger.warning(f"kpi lazy recompute failed: {e}")
+    trend = get_kpi_trend(tech_id, windows=windows)
+    flags = list_kpi_flags_for_tech(tech_id, status=None, limit=20)
+    return {
+        "available":     True,
+        "tech_id":       tech_id,
+        "period_key":    period_key,
+        "current_period": {
+            "composite": current.get("composite"),
+            "kpis":      current.get("kpis"),
+        },
+        "trend":         trend,
+        "recent_flags":  flags,
+        "overrides":     list_kpi_threshold_overrides(tech_id, active_only=True),
+        "kpi_keys": [
+            "callback_rate", "documentation_quality", "pm_completion",
+            "utilization", "sla_adherence", "safety_compliance",
+            "first_time_fix", "revenue_per_tech",
+        ],
+    }
+
+
 @app.get("/api/admin/technicians/{tech_id}/kpi", response_model=Dict[str, Any])
 def admin_technician_kpi(request: Request, tech_id: int, window: int = 30):
-    """super_admin-only: KPI dashboard payload. The KPI module is NOT yet
-    shipped, so this returns a degraded stub. The threshold overrides
-    endpoint is still functional and persists into technician_kpi_overrides
-    so that, when the KPI module ships, overrides will already exist."""
-    admin = _require_super_admin(request)
+    """Tech Detail View KPI card. Thin alias that delegates to the canonical
+    /api/admin/kpi/technician/{tech_id}/scorecard endpoint. The legacy
+    `window` query param maps to the number of trailing periods returned
+    (default 4)."""
+    admin = _require_perm(request, "kpi:view_team")
     t = get_tech_by_id(tech_id)
     if not t:
         raise HTTPException(404, "Technician not found")
+    payload = _kpi_scorecard_payload(tech_id, period_key=None, windows=4)
     _audit_from(admin, "technician.kpi_view", request,
                 target_type="technician", target_id=tech_id,
                 target_label=t.get("name"),
-                after={"window_days": window})
-    # FIXME(docs/FIXMES.md): KPI ingest module pending — endpoint returns available=false until then.
-    return {
-        "available": False,
-        "message":   "KPI tracking not yet active — scores will populate "
-                     "once the KPI module is deployed.",
-        "window_days": window,
-        "overrides": list_kpi_threshold_overrides(tech_id, active_only=True),
-        "kpi_keys": [
-            "pm_completion", "callback_rate", "first_time_fix",
-            "revenue_per_tech", "utilization", "documentation_quality",
-            "sla_adherence", "safety_loto",
-        ],
-    }
+                after={"period_key": payload["period_key"]})
+    return payload
 
 
 @app.get("/api/admin/technicians/{tech_id}/5s", response_model=Dict[str, Any])
@@ -5588,6 +5638,186 @@ def admin_technician_kpi_threshold(request: Request, tech_id: int,
                        # log_audit layer handles that automatically.
                        })
     return {"ok": True, "override_id": new_id}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Employee KPI Tracking Module — endpoints (Phase 2)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/admin/kpi/definitions", response_model=Dict[str, Any])
+def admin_kpi_definitions(request: Request):
+    """Return the 8 KPI definitions and their per-tier thresholds."""
+    _require_perm(request, "kpi:view_definitions")
+    defs = list_kpi_definitions(active_only=True)
+    thrs = list_kpi_thresholds(active_only=True)
+    by_kpi = {}
+    for t in thrs:
+        by_kpi.setdefault(t["kpi_key"], {})[t["tier"]] = {
+            "green_threshold": t["green_threshold"],
+            "amber_band":      t["amber_band"],
+            "red_floor":       t["red_floor"],
+            "effective_from":  t["effective_from"],
+        }
+    out = []
+    for d in defs:
+        d["thresholds"] = by_kpi.get(d["kpi_key"], {})
+        out.append(d)
+    return {"definitions": out}
+
+
+class KpiThresholdUpdate(BaseModel):
+    kpi_key:        str
+    tier:           str
+    green:          float
+    amber_band:     float
+    red_floor:      float
+    effective_from: Optional[str] = None
+
+
+@app.post("/api/admin/kpi/thresholds", response_model=Dict[str, Any])
+def admin_kpi_threshold_update(request: Request, body: KpiThresholdUpdate):
+    """Director-only: deactivate the prior active threshold row for
+    (kpi_key, tier) and insert a new one. Always audit-logged."""
+    admin = _require_perm(request, "kpi:edit_thresholds")
+    if body.tier not in ("level_1", "level_2", "level_3", "ops_manager"):
+        raise HTTPException(400, [{"field": "tier", "message": "invalid tier"}])
+    new_id = upsert_kpi_threshold(
+        kpi_key=body.kpi_key, tier=body.tier,
+        green=body.green, amber_band=body.amber_band,
+        red_floor=body.red_floor, effective_from=body.effective_from,
+    )
+    _audit_from(admin, "kpi.threshold_updated", request,
+                target_type="kpi_threshold", target_id=new_id,
+                target_label=f"{body.kpi_key}/{body.tier}",
+                after={"green": body.green, "amber_band": body.amber_band,
+                       "red_floor": body.red_floor,
+                       "effective_from": body.effective_from})
+    return {"ok": True, "threshold_id": new_id}
+
+
+@app.get("/api/admin/kpi/periods", response_model=Dict[str, Any])
+def admin_kpi_periods_list(request: Request, status: Optional[str] = None,
+                            limit: int = 100):
+    _require_perm(request, "kpi:view_definitions")
+    return {"periods": list_kpi_periods(status=status, limit=limit)}
+
+
+@app.post("/api/admin/kpi/periods/{period_key}/close",
+          response_model=Dict[str, Any])
+def admin_kpi_period_close(request: Request, period_key: str):
+    """Director-only: close a period. Closed periods are immutable for the
+    recompute path."""
+    admin = _require_perm(request, "kpi:close_period")
+    ok = close_period(period_key, closed_by=admin["id"])
+    if not ok:
+        raise HTTPException(409, "Period missing or already closed")
+    _audit_from(admin, "kpi.period_closed", request,
+                target_type="kpi_period", target_label=period_key)
+    return {"ok": True}
+
+
+class KpiRecomputeBody(BaseModel):
+    tech_id:    Optional[int] = None
+    period_key: Optional[str] = None
+
+
+@app.post("/api/admin/kpi/recompute", response_model=Dict[str, Any])
+def admin_kpi_recompute(request: Request, body: KpiRecomputeBody):
+    """Recompute scores. Body shapes:
+      - {} → recompute current period × all active techs (cron-equivalent)
+      - {tech_id} → recompute current period for one tech
+      - {period_key} → recompute that period × all active techs
+      - {tech_id, period_key} → recompute one (tech, period)
+    """
+    admin = _require_perm(request, "kpi:recompute")
+    if body.tech_id and body.period_key:
+        out = recompute_kpi_scores(body.tech_id, body.period_key,
+                                    triggered_by="manual",
+                                    triggered_by_id=admin["id"])
+        scope = "one_tech_one_period"
+    elif body.tech_id:
+        pk = get_or_create_period()
+        out = recompute_kpi_scores(body.tech_id, pk,
+                                    triggered_by="manual",
+                                    triggered_by_id=admin["id"])
+        scope = "one_tech_current_period"
+    else:
+        # All techs over either the given period or current period.
+        out = recompute_all_open_periods(triggered_by="manual",
+                                          triggered_by_id=admin["id"])
+        scope = "all_open"
+    _audit_from(admin, "kpi.recompute_triggered", request,
+                target_type="kpi", target_label=scope,
+                after={"tech_id": body.tech_id, "period_key": body.period_key})
+    return {"ok": True, "scope": scope, "result": out}
+
+
+@app.get("/api/admin/kpi/team-scoreboard", response_model=Dict[str, Any])
+def admin_kpi_team_scoreboard(request: Request,
+                                period_key: Optional[str] = None,
+                                tier: Optional[str] = None,
+                                zone: Optional[str] = None):
+    """Per-tech composite + KPI band map for a period. Techs whose composite
+    is insufficient_data are excluded (spec)."""
+    _require_perm(request, "kpi:view_team")
+    pk = period_key or get_or_create_period()
+    rows = get_team_scoreboard(pk, tier_filter=tier)
+    return {"period_key": pk, "tier": tier, "zone": zone, "rows": rows}
+
+
+@app.get("/api/admin/kpi/technician/{tech_id}/scorecard",
+         response_model=Dict[str, Any])
+def admin_kpi_tech_scorecard(request: Request, tech_id: int,
+                              period_key: Optional[str] = None,
+                              windows: int = 4):
+    """Full detail for last N periods including composite trend, per-KPI
+    history, recent flags. RBAC: kpi:view_team OR tech viewing own."""
+    admin = _require_perm(request, "kpi:view_team")
+    t = get_tech_by_id(tech_id)
+    if not t:
+        raise HTTPException(404, "Technician not found")
+    payload = _kpi_scorecard_payload(tech_id, period_key=period_key,
+                                      windows=max(1, min(windows, 26)))
+    _audit_from(admin, "kpi.scorecard_view", request,
+                target_type="technician", target_id=tech_id,
+                target_label=t.get("name"),
+                after={"period_key": payload["period_key"]})
+    return payload
+
+
+@app.get("/api/tech/me/kpi", response_model=Dict[str, Any])
+def tech_me_kpi(request: Request, windows: int = 4):
+    """Tech viewing own scorecard. Returns ONLY this tech's data. No
+    drilldown into other techs allowed via this endpoint."""
+    tech_id = _require_tech(request)
+    payload = _kpi_scorecard_payload(tech_id, period_key=None,
+                                      windows=max(1, min(windows, 26)))
+    return payload
+
+
+# ── KPI weekly recompute loop ───────────────────────────────────────────────
+# Mirrors the _fs_escalation_loop pattern. Runs every 24h: ensures the
+# current ISO-week period exists and recomputes scores for all active techs
+# in all open periods.
+import asyncio as _kpi_asyncio
+
+
+async def _kpi_weekly_recompute_loop():
+    while True:
+        try:
+            pk = get_or_create_period()
+            ensure_period_exists(pk)
+            res = recompute_all_open_periods(triggered_by="cron",
+                                              triggered_by_id=None)
+            logger.info(f"kpi recompute cron: {res} (current={pk})")
+        except Exception as _e:
+            logger.error(f"kpi recompute cron error: {_e}")
+        await _kpi_asyncio.sleep(24 * 60 * 60)
+
+
+@app.on_event("startup")
+async def _start_kpi_weekly_recompute_loop():
+    _kpi_asyncio.create_task(_kpi_weekly_recompute_loop())
 
 
 @app.post("/api/admin/technicians/{tech_id}/5s-override")
