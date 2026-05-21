@@ -1505,7 +1505,147 @@
   }
   // ── 5S workplace-discipline ─────────────────────────────────────────────
   const FS_QUEUE_KEY = 'pc.fs.audit.queue';
-  let fsState = { mode: 'home', assetId: null, phase: null, checklist: null, answers: {} };
+  const FS_PHOTO_QUEUE_KEY = 'pc.fs.audit.photo.queue';
+  // Safety-critical item_keys — mirrors database.py FS_SAFETY_ITEM_KEYS.
+  // When a failed item is in this set, an evidence photo is REQUIRED.
+  const FS_SAFETY_ITEM_KEYS = new Set([
+    'fluids_checked', 'tires_visual_ok', 'lights_working',
+    'safety_gear_present', 'tools_no_damage', 'any_spills_cleaned',
+    'no_pest_evidence', 'no_new_damage', 'damage_reported',
+  ]);
+  let fsState = {
+    mode: 'home', assetId: null, phase: null, checklist: null, answers: {},
+    // photos: { item_key: { dataUrl, meta, mime, captured_at } }
+    photos: {},
+  };
+
+  // =====================================================================
+  // FIXME (server endpoint not yet implemented — other agent will add to
+  // main.py/database.py in a follow-up). Until then, photos attached to
+  // failed 5S audit items are queued client-side (IndexedDB for blob
+  // payload + localStorage for the small metadata queue) and the flush
+  // function below will POST them once the endpoint exists.
+  //
+  // Proposed server endpoint:
+  //   POST /api/tech/5s/exceptions/{exception_id}/photo
+  //   Content-Type: multipart/form-data
+  //   Fields:
+  //     file        — image binary (JPEG/PNG), <= 8 MB
+  //     audit_id    — int, the audit that opened this exception
+  //     item_key    — str, the checklist item_key (also fs_exception.category)
+  //     client_meta — JSON string, same shape as visit-photo client_meta
+  //                   (geo + device + camera + network_type + app_version
+  //                   + client_captured_at)
+  //   Response: { id, exception_id, filename, uploaded_at }
+  //   Storage:  uploads/5s/{exception_id}__{ts}__{rand}.{ext}
+  //   Linkage:  new table fs_exception_photos (id, exception_id, filename,
+  //             uploaded_by_id, uploaded_by_kind, uploaded_at, client_meta_json
+  //             [encrypted], hub_id, prior_chain_hash, chain_hash).
+  //   Auth:     tech session, must own (or be assigned to) the asset that
+  //             generated the exception.
+  // =====================================================================
+
+  // ── IndexedDB for offline-safe photo blob storage ─────────────────────
+  const FS_IDB_NAME = 'pc_fs_photos';
+  const FS_IDB_STORE = 'photos';
+  function _fsIdbOpen() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(FS_IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(FS_IDB_STORE)) {
+          db.createObjectStore(FS_IDB_STORE, { keyPath: 'qid' });
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  async function _fsIdbPut(qid, blob, mime) {
+    try {
+      const db = await _fsIdbOpen();
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(FS_IDB_STORE, 'readwrite');
+        tx.objectStore(FS_IDB_STORE).put({ qid, blob, mime });
+        tx.oncomplete = () => { db.close(); resolve(true); };
+        tx.onerror = () => { db.close(); reject(tx.error); };
+      });
+    } catch (e) { return false; }
+  }
+  async function _fsIdbGet(qid) {
+    try {
+      const db = await _fsIdbOpen();
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(FS_IDB_STORE, 'readonly');
+        const r = tx.objectStore(FS_IDB_STORE).get(qid);
+        r.onsuccess = () => { db.close(); resolve(r.result || null); };
+        r.onerror = () => { db.close(); reject(r.error); };
+      });
+    } catch (e) { return null; }
+  }
+  async function _fsIdbDelete(qid) {
+    try {
+      const db = await _fsIdbOpen();
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(FS_IDB_STORE, 'readwrite');
+        tx.objectStore(FS_IDB_STORE).delete(qid);
+        tx.oncomplete = () => { db.close(); resolve(true); };
+        tx.onerror = () => { db.close(); reject(tx.error); };
+      });
+    } catch (e) { return false; }
+  }
+
+  // Downscale an image File to <= maxBytes by re-encoding via canvas.
+  // Returns { blob, dataUrl, mime, width, height }. Falls back to the
+  // original file if anything goes wrong.
+  async function _fsDownscalePhoto(file, maxBytes = 8 * 1024 * 1024) {
+    try {
+      if (file.size <= maxBytes && file.type === 'image/jpeg') {
+        const dataUrl = await new Promise((res, rej) => {
+          const fr = new FileReader();
+          fr.onload = () => res(fr.result);
+          fr.onerror = () => rej(fr.error);
+          fr.readAsDataURL(file);
+        });
+        return { blob: file, dataUrl, mime: file.type };
+      }
+      const bitmap = await createImageBitmap(file);
+      let w = bitmap.width, h = bitmap.height;
+      const maxDim = 1920;
+      if (Math.max(w, h) > maxDim) {
+        const s = maxDim / Math.max(w, h);
+        w = Math.round(w * s); h = Math.round(h * s);
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(bitmap, 0, 0, w, h);
+      let q = 0.85;
+      let blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', q));
+      while (blob && blob.size > maxBytes && q > 0.4) {
+        q -= 0.1;
+        blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', q));
+      }
+      const dataUrl = await new Promise((res, rej) => {
+        const fr = new FileReader();
+        fr.onload = () => res(fr.result);
+        fr.onerror = () => rej(fr.error);
+        fr.readAsDataURL(blob);
+      });
+      return { blob, dataUrl, mime: 'image/jpeg' };
+    } catch (e) {
+      // Fallback — return original
+      try {
+        const dataUrl = await new Promise((res, rej) => {
+          const fr = new FileReader();
+          fr.onload = () => res(fr.result);
+          fr.onerror = () => rej(fr.error);
+          fr.readAsDataURL(file);
+        });
+        return { blob: file, dataUrl, mime: file.type || 'image/jpeg' };
+      } catch (e2) { return null; }
+    }
+  }
 
   async function fsRefreshBadge() {
     try {
@@ -1583,6 +1723,13 @@
         html += `<div style="border-top:1px solid var(--border);padding:8px 0;font-size:13px;">${sev}<strong>${esc(e.category)}</strong> · ${esc(e.status)}<div style="color:var(--muted);font-size:12px;">${esc(e.opened_at).slice(0,16).replace('T',' ')}</div></div>`;
       }
       html += '</div>';
+      const pendingPhotos = fsPendingPhotoCount();
+      if (pendingPhotos) {
+        html += `<div style="margin-top:12px;background:#fff7ed;border:1px solid #fdba74;border-radius:10px;padding:10px 12px;font-size:13px;color:#9a3412;display:flex;align-items:center;justify-content:space-between;gap:10px;">
+          <span>📷 Pending evidence uploads: <strong>${pendingPhotos}</strong></span>
+          <button onclick="fsFlushPhotoQueue().then(()=>fsShowHome())" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:6px 10px;font-size:12px;font-weight:600;cursor:pointer;">Retry now</button>
+        </div>`;
+      }
       v.innerHTML = html;
     } catch (e) {
       v.innerHTML = `<div style="background:#fff;padding:24px;border-radius:10px;text-align:center;color:var(--red);">Could not load 5S: ${esc(String(e.message || e))}</div>`;
@@ -1596,7 +1743,7 @@
   }
 
   async function fsStart(assetId, phase) {
-    fsState = { mode: 'audit', assetId, phase, checklist: null, answers: {} };
+    fsState = { mode: 'audit', assetId, phase, checklist: null, answers: {}, photos: {} };
     const v = document.getElementById('fsView');
     v.innerHTML = '<div style="color:var(--muted);font-size:14px;padding:30px 0;text-align:center;">Loading checklist…</div>';
     try {
@@ -1627,14 +1774,43 @@
         <div style="font-weight:700;color:var(--navy);text-transform:uppercase;letter-spacing:0.6px;font-size:12px;margin-bottom:10px;">${sectionLabels[sec]}</div>`;
       for (const it of secItems) {
         const cur = (answers[it.item_key] && answers[it.item_key].status) || '';
+        const isSafety = FS_SAFETY_ITEM_KEYS.has(it.item_key);
+        const photo = fsState.photos[it.item_key];
         html += `<div style="border-top:1px solid var(--border);padding:10px 0;">
-          <div style="font-size:14px;margin-bottom:8px;">${esc(it.item_label)}</div>
+          <div style="font-size:14px;margin-bottom:8px;">${esc(it.item_label)}${isSafety ? ' <span style="background:#dc2626;color:#fff;border-radius:6px;padding:1px 6px;font-size:10px;vertical-align:middle;">SAFETY</span>' : ''}</div>
           <div style="display:flex;gap:6px;">
             ${['pass','fail','na'].map(s => `
               <button onclick="fsSetStatus('${it.item_key}','${s}')" style="flex:1;padding:8px;border-radius:6px;border:1px solid var(--border);background:${cur===s?(s==='pass'?'#059669':s==='fail'?'#dc2626':'#5A6472'):'#fff'};color:${cur===s?'#fff':'var(--text)'};font-weight:600;font-size:12px;cursor:pointer;text-transform:uppercase;">${s==='na'?'N/A':s}</button>
             `).join('')}
           </div>
-          ${cur==='fail' ? `<textarea id="fs-note-${esc(it.item_key)}" placeholder="What's wrong? (required)" style="width:100%;margin-top:8px;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:13px;" oninput="fsSetNote('${it.item_key}', this.value)">${esc((answers[it.item_key]&&answers[it.item_key].note)||'')}</textarea>` : ''}
+          ${cur==='fail' ? `
+            <textarea id="fs-note-${esc(it.item_key)}" placeholder="What's wrong? (required)" style="width:100%;margin-top:8px;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:13px;" oninput="fsSetNote('${it.item_key}', this.value)">${esc((answers[it.item_key]&&answers[it.item_key].note)||'')}</textarea>
+            <div style="margin-top:8px;">
+              <div style="color:var(--muted);font-size:12px;margin-bottom:6px;">
+                ${isSafety
+                  ? '<span style="color:#dc2626;font-weight:700;">📷 Photo required</span> — safety item evidence'
+                  : '📷 Photo recommended'}
+              </div>
+              ${photo ? `
+                <div style="display:flex;align-items:center;gap:10px;background:#f8fafc;border:1px solid var(--border);border-radius:8px;padding:8px;">
+                  <img src="${photo.dataUrl}" alt="Evidence preview for ${esc(it.item_label)}" style="width:64px;height:64px;object-fit:cover;border-radius:6px;cursor:pointer;" onclick="openLightbox('${photo.dataUrl}')">
+                  <div style="flex:1;font-size:12px;color:var(--muted);">
+                    Attached · ${Math.round(((photo.size||0)/1024))} KB
+                  </div>
+                  <label style="background:var(--navy);color:#fff;border-radius:6px;padding:6px 10px;font-size:12px;font-weight:600;cursor:pointer;" tabindex="0" aria-label="Retake photo for ${esc(it.item_label)}">
+                    Retake
+                    <input type="file" accept="image/*" capture="environment" style="display:none;" onchange="fsAttachPhoto('${it.item_key}', this)">
+                  </label>
+                  <button onclick="fsRemovePhoto('${it.item_key}')" aria-label="Remove photo for ${esc(it.item_label)}" style="background:transparent;color:#dc2626;border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:12px;cursor:pointer;">Remove</button>
+                </div>
+              ` : `
+                <label style="display:inline-flex;align-items:center;gap:6px;background:#fff;border:1px dashed var(--teal);color:var(--teal-deep);border-radius:8px;padding:8px 12px;font-size:13px;font-weight:600;cursor:pointer;" tabindex="0" aria-label="Attach evidence photo for ${esc(it.item_label)}">
+                  📷 Attach photo
+                  <input type="file" accept="image/*" capture="environment" style="display:none;" onchange="fsAttachPhoto('${it.item_key}', this)">
+                </label>
+              `}
+            </div>
+          ` : ''}
         </div>`;
       }
       html += '</div>';
@@ -1647,13 +1823,50 @@
   function fsSetStatus(key, status) {
     if (!fsState.answers[key]) fsState.answers[key] = {};
     fsState.answers[key].status = status;
-    if (status !== 'fail') delete fsState.answers[key].note;
+    if (status !== 'fail') {
+      delete fsState.answers[key].note;
+      // Drop any attached photo when no longer a fail.
+      if (fsState.photos[key]) delete fsState.photos[key];
+    }
     fsRenderAudit();
   }
 
   function fsSetNote(key, value) {
     if (!fsState.answers[key]) fsState.answers[key] = {};
     fsState.answers[key].note = value;
+  }
+
+  async function fsAttachPhoto(itemKey, inputEl) {
+    const file = inputEl.files && inputEl.files[0];
+    if (!file) return;
+    if (!/^image\//.test(file.type || '')) {
+      toast('Please choose an image file', 'err');
+      inputEl.value = '';
+      return;
+    }
+    const processed = await _fsDownscalePhoto(file, 8 * 1024 * 1024);
+    if (!processed) {
+      toast('Could not read photo', 'err');
+      inputEl.value = '';
+      return;
+    }
+    // Fresh client_meta captured at the moment of capture (not at submit).
+    let meta = null;
+    try { meta = await _assembleClientMeta(null); } catch (e) { meta = null; }
+    fsState.photos[itemKey] = {
+      dataUrl: processed.dataUrl,
+      mime: processed.mime,
+      size: processed.blob.size,
+      meta,
+      captured_at: new Date().toISOString(),
+    };
+    inputEl.value = '';
+    fsRenderAudit();
+  }
+
+  function fsRemovePhoto(itemKey) {
+    delete fsState.photos[itemKey];
+    fsRenderAudit();
   }
 
   async function fsSubmit() {
@@ -1667,6 +1880,11 @@
         toast('Add a note for every failed item', 'err');
         return;
       }
+      // Safety-critical items MUST have a photo when they fail.
+      if (it.status === 'fail' && FS_SAFETY_ITEM_KEYS.has(it.item_key) && !fsState.photos[it.item_key]) {
+        toast('Photo required for safety item: ' + it.item_key, 'err');
+        return;
+      }
     }
     let meta = null;
     try { meta = await _assembleClientMeta(null); } catch(e) {}
@@ -1674,28 +1892,170 @@
       asset_id: fsState.assetId, phase: fsState.phase,
       items, client_meta: meta,
     };
+    // Snapshot photos keyed by item_key BEFORE we clear fsState.
+    const failedOrdered = items.filter(it => it.status === 'fail').map(it => it.item_key);
+    const photosByKey = {};
+    for (const k of failedOrdered) {
+      if (fsState.photos[k]) photosByKey[k] = fsState.photos[k];
+    }
+
     try {
       const res = await api('POST', '/api/tech/5s/audit', payload);
       const failed = (res.exception_ids || []).length;
-      toast(failed ? `Audit submitted (${failed} exception${failed>1?'s':''} opened)` : 'Audit submitted ✓', 'ok');
+      // Map exception_ids → failed item_keys (same order, per database.py).
+      const excIds = res.exception_ids || [];
+      let queued = 0;
+      for (let i = 0; i < failedOrdered.length && i < excIds.length; i++) {
+        const key = failedOrdered[i];
+        const ph = photosByKey[key];
+        if (!ph) continue;
+        await _fsEnqueuePhoto({
+          exception_id: excIds[i],
+          audit_id: res.audit_id,
+          item_key: key,
+          dataUrl: ph.dataUrl,
+          mime: ph.mime,
+          client_meta: ph.meta,
+          queued_at: new Date().toISOString(),
+        });
+        queued++;
+      }
+      let msg = failed ? `Audit submitted (${failed} exception${failed>1?'s':''} opened)` : 'Audit submitted ✓';
+      if (queued) msg += ` · ${queued} photo${queued>1?'s':''} queued`;
+      toast(msg, 'ok');
+      // Try to flush right away (no-op until the endpoint exists).
+      fsFlushPhotoQueue();
       fsShowHome();
     } catch (e) {
-      // Queue offline
+      // Audit POST failed — queue the audit AND its pending photos together.
       const q = JSON.parse(localStorage.getItem(FS_QUEUE_KEY) || '[]');
-      q.push({ at: Date.now(), payload });
+      const photoStash = [];
+      for (const k of failedOrdered) {
+        const ph = photosByKey[k];
+        if (!ph) continue;
+        photoStash.push({
+          item_key: k, dataUrl: ph.dataUrl, mime: ph.mime,
+          client_meta: ph.meta, queued_at: new Date().toISOString(),
+        });
+      }
+      q.push({ at: Date.now(), payload, pending_photos: photoStash });
       localStorage.setItem(FS_QUEUE_KEY, JSON.stringify(q));
       toast('Saved offline — will sync', 'ok');
       fsShowHome();
     }
   }
 
-  async function fsFlushQueue() {
-    const q = JSON.parse(localStorage.getItem(FS_QUEUE_KEY) || '[]');
+  // Add a pending photo to the queue. We store the blob in IndexedDB (so it
+  // survives reloads without bloating localStorage) and a small metadata
+  // record in localStorage so we can list/flush even if IDB is unavailable.
+  async function _fsEnqueuePhoto(rec) {
+    const q = JSON.parse(localStorage.getItem(FS_PHOTO_QUEUE_KEY) || '[]');
+    const qid = 'fsp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    // Convert dataUrl to a Blob for IDB.
+    let idbOk = false;
+    try {
+      const resp = await fetch(rec.dataUrl);
+      const blob = await resp.blob();
+      idbOk = await _fsIdbPut(qid, blob, rec.mime);
+    } catch (e) { idbOk = false; }
+    const entry = {
+      qid,
+      exception_id: rec.exception_id,
+      audit_id: rec.audit_id,
+      item_key: rec.item_key,
+      mime: rec.mime,
+      client_meta: rec.client_meta,
+      queued_at: rec.queued_at,
+      // Fallback path: if IndexedDB write failed, keep dataUrl inline. Cap
+      // to 3 inline payloads to avoid blowing the 5–10 MB localStorage quota.
+      inline_data_url: idbOk ? null : rec.dataUrl,
+    };
+    if (!idbOk) {
+      const inlineCount = q.filter(e => e.inline_data_url).length;
+      if (inlineCount >= 3) {
+        toast('Offline photo storage is full — connect to sync before adding more', 'err');
+        return false;
+      }
+    }
+    q.push(entry);
+    localStorage.setItem(FS_PHOTO_QUEUE_KEY, JSON.stringify(q));
+    return true;
+  }
+
+  async function fsFlushPhotoQueue() {
+    const q = JSON.parse(localStorage.getItem(FS_PHOTO_QUEUE_KEY) || '[]');
     if (!q.length) return;
     const keep = [];
+    let synced = 0;
     for (const entry of q) {
-      try { await api('POST', '/api/tech/5s/audit', entry.payload); }
-      catch (e) { keep.push(entry); }
+      try {
+        // Reconstruct the blob.
+        let blob = null;
+        if (entry.inline_data_url) {
+          const r = await fetch(entry.inline_data_url);
+          blob = await r.blob();
+        } else {
+          const rec = await _fsIdbGet(entry.qid);
+          blob = rec && rec.blob;
+        }
+        if (!blob) {
+          // Blob is gone — drop the entry rather than retry forever.
+          continue;
+        }
+        const fd = new FormData();
+        const ext = (entry.mime && entry.mime.split('/')[1]) || 'jpg';
+        fd.append('file', blob, `fs_${entry.exception_id}.${ext}`);
+        fd.append('audit_id', String(entry.audit_id));
+        fd.append('item_key', entry.item_key);
+        fd.append('client_meta', JSON.stringify(entry.client_meta || {}));
+        // FIXME: endpoint not yet implemented; this POST will 404 until the
+        // server side ships. The catch below will simply keep the entry.
+        await api('POST', `/api/tech/5s/exceptions/${entry.exception_id}/photo`, fd);
+        await _fsIdbDelete(entry.qid);
+        synced++;
+      } catch (e) {
+        keep.push(entry);
+      }
+    }
+    localStorage.setItem(FS_PHOTO_QUEUE_KEY, JSON.stringify(keep));
+    if (synced) {
+      toast(`Synced ${synced} 5S evidence photo${synced>1?'s':''}`, 'ok');
+      fsRefreshBadge();
+    }
+  }
+
+  function fsPendingPhotoCount() {
+    try { return (JSON.parse(localStorage.getItem(FS_PHOTO_QUEUE_KEY) || '[]')).length; }
+    catch (e) { return 0; }
+  }
+
+  async function fsFlushQueue() {
+    const q = JSON.parse(localStorage.getItem(FS_QUEUE_KEY) || '[]');
+    if (!q.length) { fsFlushPhotoQueue(); return; }
+    const keep = [];
+    for (const entry of q) {
+      try {
+        const res = await api('POST', '/api/tech/5s/audit', entry.payload);
+        // After the audit lands, queue its pending photos against the
+        // newly-created exception_ids (same order as failed items).
+        const pending = entry.pending_photos || [];
+        const excIds = res.exception_ids || [];
+        const failedKeys = (entry.payload.items || [])
+          .filter(it => it.status === 'fail').map(it => it.item_key);
+        for (let i = 0; i < failedKeys.length && i < excIds.length; i++) {
+          const ph = pending.find(p => p.item_key === failedKeys[i]);
+          if (!ph) continue;
+          await _fsEnqueuePhoto({
+            exception_id: excIds[i],
+            audit_id: res.audit_id,
+            item_key: failedKeys[i],
+            dataUrl: ph.dataUrl,
+            mime: ph.mime,
+            client_meta: ph.client_meta,
+            queued_at: ph.queued_at,
+          });
+        }
+      } catch (e) { keep.push(entry); }
     }
     localStorage.setItem(FS_QUEUE_KEY, JSON.stringify(keep));
     if (keep.length < q.length) {
@@ -1703,6 +2063,8 @@
       toast(`Synced ${synced} offline 5S audit${synced>1?'s':''}`, 'ok');
       fsRefreshBadge();
     }
+    // Always try to drain photo queue after audits flush.
+    fsFlushPhotoQueue();
   }
 
   window.addEventListener('online', () => { fsFlushQueue(); });
