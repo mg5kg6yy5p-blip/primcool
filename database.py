@@ -164,6 +164,9 @@ _PII_RAND = {
     "invoice_payments":         ["notes"],
     "fx_rates":                 ["notes"],
     "invoices":                 ["canceled_reason"],
+    # Delegation module — free-text justification and review notes.
+    "delegations":                  ["grantor_notes", "revoke_reason"],
+    "delegation_regrant_requests":  ["review_notes"],
 }
 # Columns that need equality lookup → deterministic encryption + blind index.
 _PII_DET = {
@@ -1316,6 +1319,78 @@ def init_db():
     """)
     con.execute("CREATE INDEX IF NOT EXISTS idx_tech_5s_ov_tech ON technician_5s_overrides(tech_id)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_tech_5s_ov_exc  ON technician_5s_overrides(exception_id)")
+
+    # ── Delegation module ──────────────────────────────────────────────────
+    # Task delegation: super_admin (and admins with delegation power) can
+    # grant scoped access to other admins. Record-level, type-level, or
+    # full power. Chain-hashed append-only audit, mirrored from payments.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS delegations (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            grantor_id          INTEGER NOT NULL REFERENCES admin_users(id),
+            grantor_role        TEXT NOT NULL,
+            recipient_id        INTEGER NOT NULL REFERENCES admin_users(id),
+            recipient_kind      TEXT NOT NULL DEFAULT 'admin'
+                                  CHECK (recipient_kind = 'admin'),
+            delegation_type     TEXT NOT NULL
+                                  CHECK (delegation_type IN ('record','record_type','power')),
+            scope_record_id     INTEGER,
+            scope_record_type   TEXT,
+            permission_level    TEXT
+                                  CHECK (permission_level IN ('read','read_write') OR permission_level IS NULL),
+            valid_until         TEXT,
+            grantor_notes       TEXT,
+            created_at          TEXT NOT NULL,
+            revoked_at          TEXT,
+            revoked_by          INTEGER REFERENCES admin_users(id),
+            revoke_reason       TEXT,
+            revoke_kind         TEXT
+                                  CHECK (revoke_kind IN ('manual','auto_expiry','power_cascade') OR revoke_kind IS NULL),
+            prior_chain_hash    TEXT,
+            chain_hash          TEXT NOT NULL,
+            hub_id              INTEGER NOT NULL DEFAULT 1
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_deleg_recipient ON delegations(recipient_id, revoked_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_deleg_grantor   ON delegations(grantor_id, revoked_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_deleg_scope     ON delegations(scope_record_type, scope_record_id, revoked_at)")
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS delegation_power (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id          INTEGER NOT NULL UNIQUE REFERENCES admin_users(id),
+            granted_by_id     INTEGER NOT NULL REFERENCES admin_users(id),
+            granted_at        TEXT NOT NULL,
+            revoked_at        TEXT,
+            revoked_by        INTEGER REFERENCES admin_users(id),
+            prior_chain_hash  TEXT,
+            chain_hash        TEXT NOT NULL
+        )
+    """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS delegation_regrant_requests (
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            requester_id            INTEGER NOT NULL REFERENCES admin_users(id),
+            original_delegation_id  INTEGER NOT NULL REFERENCES delegations(id),
+            status                  TEXT NOT NULL DEFAULT 'open'
+                                      CHECK (status IN ('open','approved','denied','cancelled')),
+            requested_at            TEXT NOT NULL,
+            reviewed_by             INTEGER REFERENCES admin_users(id),
+            reviewed_at             TEXT,
+            review_notes            TEXT,
+            new_delegation_id       INTEGER REFERENCES delegations(id),
+            prior_chain_hash        TEXT,
+            chain_hash              TEXT NOT NULL
+        )
+    """)
+
+    # has_delegation_power on admin_users — idempotent ALTER.
+    if "has_delegation_power" not in admin_cols:
+        try:
+            con.execute("ALTER TABLE admin_users ADD COLUMN has_delegation_power INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
 
     # Seed demo assets (idempotent).
     _now_iso_seed = datetime.now(timezone.utc).isoformat()
@@ -8117,3 +8192,442 @@ def update_invoice_with_lines(invoice_id: int, data: dict,
         )
     con.commit()
     con.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Delegation module — helpers
+# ═══════════════════════════════════════════════════════════════════════════
+# Chain-hashed append-only audit on delegations + delegation_power. Mirrors
+# `_chain_hash_payment` shape. Notes/reasons/review_notes get _PII_RAND
+# field-level encryption via _enc_dict on write, _dec_row on read.
+
+
+def _chain_hash_delegation(prior_hash: str, row: dict) -> str:
+    import hashlib, json as _j
+    keys = ("grantor_id", "recipient_id", "delegation_type",
+            "scope_record_id", "scope_record_type", "permission_level",
+            "valid_until", "created_at", "revoked_at", "revoked_by",
+            "revoke_kind")
+    payload = {k: row.get(k) for k in keys}
+    body = (prior_hash or "") + _j.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _chain_hash_delegation_power(prior_hash: str, row: dict) -> str:
+    import hashlib, json as _j
+    keys = ("admin_id", "granted_by_id", "granted_at",
+            "revoked_at", "revoked_by")
+    payload = {k: row.get(k) for k in keys}
+    body = (prior_hash or "") + _j.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _last_delegation_chain(con=None) -> str:
+    own = con is None
+    if own: con = _con()
+    r = con.execute("SELECT chain_hash FROM delegations ORDER BY id DESC LIMIT 1").fetchone()
+    if own: con.close()
+    return (r["chain_hash"] if r else "") or ""
+
+
+def _last_delegation_power_chain(con=None) -> str:
+    own = con is None
+    if own: con = _con()
+    r = con.execute("SELECT chain_hash FROM delegation_power ORDER BY id DESC LIMIT 1").fetchone()
+    if own: con.close()
+    return (r["chain_hash"] if r else "") or ""
+
+
+def _last_regrant_chain(con=None) -> str:
+    own = con is None
+    if own: con = _con()
+    r = con.execute("SELECT chain_hash FROM delegation_regrant_requests ORDER BY id DESC LIMIT 1").fetchone()
+    if own: con.close()
+    return (r["chain_hash"] if r else "") or ""
+
+
+def create_delegation(grantor_id: int, grantor_role: str,
+                      recipient_id: int, recipient_kind: str,
+                      delegation_type: str,
+                      scope_record_id: int = None,
+                      scope_record_type: str = None,
+                      permission_level: str = None,
+                      valid_until: str = None,
+                      grantor_notes: str = "") -> int:
+    """Chain-hashed insert. Returns new id. Caller validates business rules."""
+    now = datetime.now(timezone.utc).isoformat()
+    enc = _enc_dict("delegations", {"grantor_notes": grantor_notes or ""})
+    con = _con()
+    prior = _last_delegation_chain(con)
+    row_for_hash = {
+        "grantor_id": grantor_id, "recipient_id": recipient_id,
+        "delegation_type": delegation_type,
+        "scope_record_id": scope_record_id,
+        "scope_record_type": scope_record_type,
+        "permission_level": permission_level,
+        "valid_until": valid_until, "created_at": now,
+        "revoked_at": None, "revoked_by": None, "revoke_kind": None,
+    }
+    chash = _chain_hash_delegation(prior, row_for_hash)
+    cur = con.execute(
+        "INSERT INTO delegations "
+        "(grantor_id, grantor_role, recipient_id, recipient_kind, "
+        " delegation_type, scope_record_id, scope_record_type, permission_level, "
+        " valid_until, grantor_notes, created_at, prior_chain_hash, chain_hash, hub_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+        (grantor_id, grantor_role, recipient_id, recipient_kind,
+         delegation_type, scope_record_id, scope_record_type, permission_level,
+         valid_until, enc.get("grantor_notes"), now, prior, chash),
+    )
+    new_id = cur.lastrowid
+    # If type=power, flip recipient flag in the same transaction.
+    if delegation_type == "power":
+        p_prior = _last_delegation_power_chain(con)
+        p_row = {"admin_id": recipient_id, "granted_by_id": grantor_id,
+                 "granted_at": now, "revoked_at": None, "revoked_by": None}
+        p_chash = _chain_hash_delegation_power(p_prior, p_row)
+        con.execute(
+            "INSERT OR REPLACE INTO delegation_power "
+            "(admin_id, granted_by_id, granted_at, revoked_at, revoked_by, "
+            " prior_chain_hash, chain_hash) "
+            "VALUES (?, ?, ?, NULL, NULL, ?, ?)",
+            (recipient_id, grantor_id, now, p_prior, p_chash),
+        )
+        con.execute("UPDATE admin_users SET has_delegation_power = 1 WHERE id = ?",
+                    (recipient_id,))
+    con.commit()
+    con.close()
+    return new_id
+
+
+def revoke_delegation(delegation_id: int, revoked_by: int,
+                      reason: str = "", revoke_kind: str = "manual",
+                      con=None) -> bool:
+    """UPDATE row; recompute chain hash for the now-revoked row.
+    If `con` provided, uses it (no commit/close) — for cascade transactions."""
+    now = datetime.now(timezone.utc).isoformat()
+    own = con is None
+    if own: con = _con()
+    row = con.execute("SELECT * FROM delegations WHERE id = ?", (delegation_id,)).fetchone()
+    if not row:
+        if own: con.close()
+        return False
+    if row["revoked_at"]:
+        if own: con.close()
+        return False
+    enc = _enc_dict("delegations", {"revoke_reason": reason or ""})
+    prior = _last_delegation_chain(con)
+    row_for_hash = dict(row)
+    row_for_hash.update({"revoked_at": now, "revoked_by": revoked_by,
+                         "revoke_kind": revoke_kind})
+    chash = _chain_hash_delegation(prior, row_for_hash)
+    con.execute(
+        "UPDATE delegations SET revoked_at = ?, revoked_by = ?, "
+        "revoke_reason = ?, revoke_kind = ?, "
+        "prior_chain_hash = ?, chain_hash = ? WHERE id = ?",
+        (now, revoked_by, enc.get("revoke_reason"), revoke_kind,
+         prior, chash, delegation_id),
+    )
+    if own:
+        con.commit()
+        con.close()
+    return True
+
+
+def cascade_revoke_power(admin_id: int, revoked_by: int) -> list:
+    """Single transaction: clear has_delegation_power flag on admin, revoke
+    delegation_power row, AND revoke every active delegation granted by this
+    admin (revoke_kind='power_cascade'). Returns the list of cascaded
+    delegation IDs so the caller can audit each one."""
+    now = datetime.now(timezone.utc).isoformat()
+    cascaded = []
+    con = _con()
+    try:
+        con.execute("UPDATE admin_users SET has_delegation_power = 0 WHERE id = ?",
+                    (admin_id,))
+        p_row = con.execute(
+            "SELECT * FROM delegation_power WHERE admin_id = ? AND revoked_at IS NULL",
+            (admin_id,),
+        ).fetchone()
+        if p_row:
+            p_prior = _last_delegation_power_chain(con)
+            new_row = dict(p_row)
+            new_row.update({"revoked_at": now, "revoked_by": revoked_by})
+            p_chash = _chain_hash_delegation_power(p_prior, new_row)
+            con.execute(
+                "UPDATE delegation_power SET revoked_at = ?, revoked_by = ?, "
+                "prior_chain_hash = ?, chain_hash = ? WHERE id = ?",
+                (now, revoked_by, p_prior, p_chash, p_row["id"]),
+            )
+        active = con.execute(
+            "SELECT id FROM delegations WHERE grantor_id = ? AND revoked_at IS NULL",
+            (admin_id,),
+        ).fetchall()
+        for r in active:
+            if revoke_delegation(r["id"], revoked_by,
+                                 reason="Power cascade",
+                                 revoke_kind="power_cascade", con=con):
+                cascaded.append(r["id"])
+        con.commit()
+    except Exception:
+        con.rollback()
+        con.close()
+        raise
+    con.close()
+    return cascaded
+
+
+def list_active_delegations_for_recipient(admin_id: int) -> list:
+    con = _con()
+    rows = con.execute(
+        "SELECT * FROM delegations "
+        "WHERE recipient_id = ? AND revoked_at IS NULL "
+        "ORDER BY created_at DESC", (admin_id,),
+    ).fetchall()
+    con.close()
+    return [_dec_row("delegations", r) for r in rows]
+
+
+def list_cascade_revoked_recent(admin_id: int, days: int = 30) -> list:
+    """For the 'Request re-grant' banner."""
+    con = _con()
+    rows = con.execute(
+        "SELECT * FROM delegations "
+        "WHERE recipient_id = ? AND revoke_kind = 'power_cascade' "
+        "AND revoked_at >= datetime('now', ?) "
+        "ORDER BY revoked_at DESC", (admin_id, f"-{int(days)} days"),
+    ).fetchall()
+    con.close()
+    return [_dec_row("delegations", r) for r in rows]
+
+
+def lookup_record_delegation(admin_id: int, record_type: str,
+                             record_id: int) -> dict:
+    """Find the strongest active delegation that grants this admin access to
+    the given record. Power > record_type > record. Auto-revokes expired rows
+    encountered during the scan. Returns the matching row dict or None."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    rows = con.execute(
+        "SELECT * FROM delegations "
+        "WHERE recipient_id = ? AND revoked_at IS NULL",
+        (admin_id,),
+    ).fetchall()
+    con.close()
+    candidates = []
+    for r in rows:
+        d = dict(r)
+        if d["valid_until"] and d["valid_until"] < now:
+            try:
+                revoke_delegation(d["id"], revoked_by=admin_id,
+                                  reason="lazy auto-expiry",
+                                  revoke_kind="auto_expiry")
+                try:
+                    log_audit(actor_type="system",
+                              action="delegation.auto_expired",
+                              target_type="delegations", target_id=d["id"])
+                except Exception as _e:
+                    import sys
+                    print(f"[delegation] audit-write failed: {_e}", file=sys.stderr)
+            except Exception as _e:
+                import sys
+                print(f"[delegation] auto-expiry failed: {_e}", file=sys.stderr)
+            continue
+        if d["delegation_type"] == "power":
+            candidates.append((3, d)); continue
+        if d["delegation_type"] == "record_type" and d["scope_record_type"] == record_type:
+            candidates.append((2, d)); continue
+        if d["delegation_type"] == "record" and d["scope_record_type"] == record_type \
+                and int(d["scope_record_id"] or 0) == int(record_id):
+            candidates.append((1, d)); continue
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: -x[0])
+    return _dec_row("delegations", candidates[0][1])
+
+
+def expire_delegations_sweep() -> int:
+    """Cron-driven sweep — revoke delegations whose valid_until has passed.
+    Returns count of rows revoked."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    rows = con.execute(
+        "SELECT id FROM delegations WHERE revoked_at IS NULL "
+        "AND valid_until IS NOT NULL AND valid_until < ?", (now,),
+    ).fetchall()
+    con.close()
+    count = 0
+    for r in rows:
+        try:
+            if revoke_delegation(r["id"], revoked_by=0,
+                                 reason="cron auto-expiry",
+                                 revoke_kind="auto_expiry"):
+                count += 1
+                try:
+                    log_audit(actor_type="system",
+                              action="delegation.auto_expired",
+                              target_type="delegations", target_id=r["id"])
+                except Exception as _e:
+                    import sys
+                    print(f"[delegation] audit-write failed: {_e}", file=sys.stderr)
+        except Exception as _e:
+            import sys
+            print(f"[delegation] sweep skip {r['id']}: {_e}", file=sys.stderr)
+    return count
+
+
+def list_delegations(filters: dict = None) -> list:
+    """For the admin UI table. Filters: grantor_id, recipient_id, status,
+    delegation_type."""
+    filters = filters or {}
+    where, params = ["1=1"], []
+    if filters.get("grantor_id") is not None:
+        where.append("grantor_id = ?"); params.append(filters["grantor_id"])
+    if filters.get("recipient_id") is not None:
+        where.append("recipient_id = ?"); params.append(filters["recipient_id"])
+    if filters.get("delegation_type"):
+        where.append("delegation_type = ?"); params.append(filters["delegation_type"])
+    status = filters.get("status")
+    if status == "active":
+        where.append("revoked_at IS NULL "
+                     "AND (valid_until IS NULL OR valid_until > datetime('now'))")
+    elif status == "expired":
+        where.append("revoked_at IS NOT NULL AND revoke_kind = 'auto_expiry'")
+    elif status == "revoked":
+        where.append("revoked_at IS NOT NULL AND revoke_kind != 'auto_expiry'")
+    con = _con()
+    rows = con.execute(
+        f"SELECT * FROM delegations WHERE {' AND '.join(where)} "
+        "ORDER BY created_at DESC", params,
+    ).fetchall()
+    con.close()
+    return [_dec_row("delegations", r) for r in rows]
+
+
+def get_delegation(delegation_id: int) -> dict:
+    con = _con()
+    r = con.execute("SELECT * FROM delegations WHERE id = ?", (delegation_id,)).fetchone()
+    con.close()
+    return _dec_row("delegations", r) if r else None
+
+
+def create_regrant_request(requester_id: int,
+                           original_delegation_id: int,
+                           notes: str = "") -> int:
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    prior = _last_regrant_chain(con)
+    enc = _enc_dict("delegation_regrant_requests", {"review_notes": notes or ""})
+    import hashlib, json as _j
+    payload = {"requester_id": requester_id,
+               "original_delegation_id": original_delegation_id,
+               "requested_at": now, "status": "open"}
+    chash = hashlib.sha256(((prior or "") + _j.dumps(payload, sort_keys=True)).encode()).hexdigest()
+    cur = con.execute(
+        "INSERT INTO delegation_regrant_requests "
+        "(requester_id, original_delegation_id, status, requested_at, "
+        " review_notes, prior_chain_hash, chain_hash) "
+        "VALUES (?, ?, 'open', ?, ?, ?, ?)",
+        (requester_id, original_delegation_id, now,
+         enc.get("review_notes"), prior, chash),
+    )
+    rid = cur.lastrowid
+    con.commit()
+    con.close()
+    return rid
+
+
+def _update_regrant_chain(con, rid: int, payload: dict) -> str:
+    import hashlib, json as _j
+    prior = _last_regrant_chain(con)
+    chash = hashlib.sha256(((prior or "") + _j.dumps(payload, sort_keys=True, default=str)).encode()).hexdigest()
+    con.execute("UPDATE delegation_regrant_requests SET prior_chain_hash = ?, chain_hash = ? WHERE id = ?",
+                (prior, chash, rid))
+    return chash
+
+
+def approve_regrant_request(request_id: int, reviewer_id: int,
+                            review_notes: str = "") -> dict:
+    """Copies the original delegation's scope/perm into a new active row.
+    Returns {request_id, new_delegation_id}."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    req = con.execute(
+        "SELECT * FROM delegation_regrant_requests WHERE id = ? AND status = 'open'",
+        (request_id,),
+    ).fetchone()
+    if not req:
+        con.close()
+        raise ValueError("Request not found or not open")
+    orig = con.execute("SELECT * FROM delegations WHERE id = ?",
+                       (req["original_delegation_id"],)).fetchone()
+    if not orig:
+        con.close()
+        raise ValueError("Original delegation missing")
+    con.close()
+    new_id = create_delegation(
+        grantor_id=reviewer_id, grantor_role="super_admin",
+        recipient_id=orig["recipient_id"], recipient_kind="admin",
+        delegation_type=orig["delegation_type"],
+        scope_record_id=orig["scope_record_id"],
+        scope_record_type=orig["scope_record_type"],
+        permission_level=orig["permission_level"],
+        valid_until=orig["valid_until"],
+        grantor_notes=f"Re-grant via request #{request_id}",
+    )
+    con = _con()
+    enc = _enc_dict("delegation_regrant_requests", {"review_notes": review_notes or ""})
+    con.execute(
+        "UPDATE delegation_regrant_requests SET status = 'approved', "
+        "reviewed_by = ?, reviewed_at = ?, review_notes = ?, "
+        "new_delegation_id = ? WHERE id = ?",
+        (reviewer_id, now, enc.get("review_notes"), new_id, request_id),
+    )
+    _update_regrant_chain(con, request_id, {
+        "status": "approved", "reviewed_by": reviewer_id,
+        "reviewed_at": now, "new_delegation_id": new_id,
+    })
+    con.commit()
+    con.close()
+    return {"request_id": request_id, "new_delegation_id": new_id}
+
+
+def deny_regrant_request(request_id: int, reviewer_id: int,
+                         review_notes: str = "") -> bool:
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    req = con.execute(
+        "SELECT id FROM delegation_regrant_requests WHERE id = ? AND status = 'open'",
+        (request_id,),
+    ).fetchone()
+    if not req:
+        con.close()
+        return False
+    enc = _enc_dict("delegation_regrant_requests", {"review_notes": review_notes or ""})
+    con.execute(
+        "UPDATE delegation_regrant_requests SET status = 'denied', "
+        "reviewed_by = ?, reviewed_at = ?, review_notes = ? WHERE id = ?",
+        (reviewer_id, now, enc.get("review_notes"), request_id),
+    )
+    _update_regrant_chain(con, request_id, {
+        "status": "denied", "reviewed_by": reviewer_id, "reviewed_at": now,
+    })
+    con.commit()
+    con.close()
+    return True
+
+
+def list_regrant_requests(status: str = "open") -> list:
+    con = _con()
+    if status:
+        rows = con.execute(
+            "SELECT * FROM delegation_regrant_requests WHERE status = ? "
+            "ORDER BY requested_at DESC", (status,),
+        ).fetchall()
+    else:
+        rows = con.execute(
+            "SELECT * FROM delegation_regrant_requests "
+            "ORDER BY requested_at DESC"
+        ).fetchall()
+    con.close()
+    return [_dec_row("delegation_regrant_requests", r) for r in rows]
