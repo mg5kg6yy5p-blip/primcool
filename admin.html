@@ -332,6 +332,7 @@
     .pc-aging-bucket-clickable:hover { background: #eef2f5; }
     .pc-aging-bucket-clickable:focus-visible { outline: 2px solid #22A08A; outline-offset: 1px; }
   </style>
+  <script src="/icons/pc_shared.js"></script>
 </head>
 <body>
 
@@ -5096,30 +5097,9 @@
     return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
-  // ── Toast (lightweight user feedback) ──────────────────────────────────
-  // Floats a notification top-right that auto-fades after ~3s.
-  function toast(message, kind) {
-    let host = document.getElementById('toastHost');
-    if (!host) {
-      host = document.createElement('div');
-      host.id = 'toastHost';
-      host.style.cssText = 'position:fixed;top:16px;right:16px;display:flex;flex-direction:column;gap:8px;z-index:9999;pointer-events:none;';
-      document.body.appendChild(host);
-    }
-    const bg = kind === 'error'   ? '#dc2626'
-             : kind === 'success' ? '#059669'
-             : '#0B2545';
-    const el = document.createElement('div');
-    el.style.cssText = 'background:' + bg + ';color:white;padding:10px 14px;border-radius:8px;font-size:13px;font-weight:600;box-shadow:0 6px 18px rgba(0,0,0,0.18);max-width:360px;line-height:1.4;pointer-events:auto;opacity:0;transform:translateY(-6px);transition:opacity 180ms ease, transform 180ms ease;';
-    el.textContent = String(message ?? '');
-    host.appendChild(el);
-    requestAnimationFrame(() => { el.style.opacity = '1'; el.style.transform = 'translateY(0)'; });
-    setTimeout(() => {
-      el.style.opacity = '0';
-      el.style.transform = 'translateY(-6px)';
-      setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 220);
-    }, kind === 'error' ? 5000 : 3000);
-  }
+  // ── Toast (delegated to PC.toast from /icons/pc_shared.js) ─────────────
+  // Local alias kept for backward compatibility; bare `toast(...)` call sites continue to work.
+  const toast = (message, kind) => window.PC.toast(message, kind);
 
   // ── Admin Users ────────────────────────────────────────────────────────────
   const ROLE_LABEL = {
