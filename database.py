@@ -143,6 +143,7 @@ _PII_RAND = {
                               "hazards", "access_codes",
                               "contact_person_phone"],
     "visit_signatures":     ["signature_b64"],
+    "payslips":             ["notes"],
 }
 # Columns that need equality lookup → deterministic encryption + blind index.
 _PII_DET = {
@@ -728,6 +729,65 @@ def init_db():
             captured_at     TEXT NOT NULL
         )
     """)
+
+    # ── Payroll: pay periods + payslips ─────────────────────────────────
+    # Separation of duties: hr_admin GENERATES payslips for a period (and
+    # the rounded numbers come from timesheets that techs themselves
+    # produced). super_admin (director) is the only role that can APPROVE
+    # a period — the same person never both generates and approves.
+    # Employees see only their own payslips via /api/(admin|tech)/me/payslips.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS pay_periods (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            period_start    TEXT NOT NULL,        -- ISO date inclusive
+            period_end      TEXT NOT NULL,        -- ISO date inclusive
+            label           TEXT NOT NULL,        -- 'May 2026', 'Wk 22 2026', etc
+            status          TEXT NOT NULL DEFAULT 'draft',  -- draft|approved|paid|cancelled
+            currency        TEXT NOT NULL DEFAULT 'JMD',
+            created_by      INTEGER REFERENCES admin_users(id),
+            created_at      TEXT NOT NULL,
+            approved_by     INTEGER REFERENCES admin_users(id),
+            approved_at     TEXT,
+            paid_at         TEXT,
+            UNIQUE(period_start, period_end)
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_payperiods_status ON pay_periods(status, period_end)")
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS payslips (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            pay_period_id   INTEGER NOT NULL REFERENCES pay_periods(id),
+            subject_type    TEXT NOT NULL,        -- 'admin' | 'tech'
+            subject_id      INTEGER NOT NULL,
+            subject_name    TEXT NOT NULL,        -- snapshot at generation time
+            subject_prid    TEXT NOT NULL,
+            -- Earnings
+            hours_regular   REAL NOT NULL DEFAULT 0,
+            hours_overtime  REAL NOT NULL DEFAULT 0,
+            hourly_rate     REAL NOT NULL DEFAULT 0,
+            overtime_rate   REAL NOT NULL DEFAULT 0,
+            fixed_salary    REAL NOT NULL DEFAULT 0,
+            bonus           REAL NOT NULL DEFAULT 0,
+            gross_pay       REAL NOT NULL DEFAULT 0,
+            -- Statutory deductions (computed)
+            paye_tax        REAL NOT NULL DEFAULT 0,
+            nis             REAL NOT NULL DEFAULT 0,
+            nht             REAL NOT NULL DEFAULT 0,
+            education_tax   REAL NOT NULL DEFAULT 0,
+            other_deductions REAL NOT NULL DEFAULT 0,
+            total_deductions REAL NOT NULL DEFAULT 0,
+            net_pay         REAL NOT NULL DEFAULT 0,
+            -- Free-text notes — encrypted (employer-private)
+            notes           TEXT,
+            -- Lifecycle
+            generated_by    INTEGER REFERENCES admin_users(id),
+            generated_at    TEXT NOT NULL,
+            viewed_by_employee_at TEXT,
+            UNIQUE(pay_period_id, subject_type, subject_id)
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_payslips_subject ON payslips(subject_type, subject_id, generated_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_payslips_period  ON payslips(pay_period_id)")
 
     # ── Client portal: service requests ─────────────────────────────────
     # Client requests do NOT directly become visits. They go into a triage
@@ -2126,7 +2186,8 @@ def _classify_retention(action: str) -> str:
         return "system"
     if a.startswith(("invoice.", "payment.", "po.", "count.",
                      "inventory.received", "inventory.export",
-                     "customer.export", "tech.export", "visit.export")):
+                     "customer.export", "tech.export", "visit.export",
+                     "payroll.", "payslip.")):
         return "financial"
     return "operational"
 
@@ -4548,3 +4609,245 @@ def get_account_exit_report(subject_type: str, subject_id: int, days: int = 30) 
         "exports":               [dict(r) for r in exports],
         "account_changes":       [dict(r) for r in account_changes],
     }
+
+
+# ── Payroll helpers ─────────────────────────────────────────────────────────
+def create_pay_period(start: str, end: str, label: str, created_by: int,
+                       currency: str = "JMD") -> int:
+    con = _con()
+    cur = con.execute(
+        """INSERT INTO pay_periods (period_start, period_end, label, status,
+                                     currency, created_by, created_at)
+           VALUES (?, ?, ?, 'draft', ?, ?, ?)""",
+        (start, end, label, currency, created_by,
+         datetime.now(timezone.utc).isoformat()),
+    )
+    pid = cur.lastrowid
+    con.commit()
+    con.close()
+    return pid
+
+
+def list_pay_periods(limit: int = 100):
+    con = _con()
+    rows = con.execute(
+        """SELECT pp.*, a1.name AS created_by_name, a2.name AS approved_by_name
+             FROM pay_periods pp
+        LEFT JOIN admin_users a1 ON pp.created_by  = a1.id
+        LEFT JOIN admin_users a2 ON pp.approved_by = a2.id
+            ORDER BY pp.period_end DESC LIMIT ?""", (int(limit),),
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def get_pay_period(period_id: int):
+    con = _con()
+    row = con.execute("SELECT * FROM pay_periods WHERE id = ?", (period_id,)).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
+def _calc_paye(annual_gross: float) -> float:
+    """Simplified Jamaica PAYE per the constants in main.JAMAICA_TAX_REFERENCE.
+    Threshold ~1.7M tax-free; 25% to 6M; 30% above. Returns ANNUAL PAYE."""
+    THRESHOLD = 1_700_000.0
+    BAND2_MIN = 6_000_000.0
+    if annual_gross <= THRESHOLD:
+        return 0.0
+    taxed_at_25 = min(annual_gross, BAND2_MIN) - THRESHOLD
+    paye = taxed_at_25 * 0.25
+    if annual_gross > BAND2_MIN:
+        paye += (annual_gross - BAND2_MIN) * 0.30
+    return paye
+
+
+def compute_payslip_amounts(hours_regular: float, hours_overtime: float,
+                              hourly_rate: float, overtime_rate: float,
+                              fixed_salary: float, bonus: float,
+                              other_deductions: float,
+                              pay_periods_per_year: int = 26) -> dict:
+    """All numbers in JMD. Deductions are EMPLOYEE-side only (employer side
+    goes on the company expense report, not the payslip)."""
+    gross = (hours_regular * hourly_rate
+             + hours_overtime * overtime_rate
+             + fixed_salary
+             + bonus)
+    annualised = gross * pay_periods_per_year
+    paye_annual = _calc_paye(annualised)
+    paye_period = paye_annual / pay_periods_per_year if pay_periods_per_year else 0
+    nis           = gross * 0.03
+    nht           = gross * 0.02
+    education_tax = gross * 0.0225
+    total_ded     = round(paye_period + nis + nht + education_tax + (other_deductions or 0), 2)
+    net           = round(gross - total_ded, 2)
+    return {
+        "gross_pay":        round(gross, 2),
+        "paye_tax":         round(paye_period, 2),
+        "nis":              round(nis, 2),
+        "nht":              round(nht, 2),
+        "education_tax":    round(education_tax, 2),
+        "other_deductions": round(other_deductions or 0, 2),
+        "total_deductions": total_ded,
+        "net_pay":          net,
+    }
+
+
+def upsert_payslip(period_id: int, subject_type: str, subject_id: int,
+                    subject_name: str, subject_prid: str,
+                    data: dict, generated_by: int) -> int:
+    """Create or update the payslip for (period, subject). Computes amounts
+    from the supplied hours / rate / fixed salary so callers can't pass
+    inconsistent gross/net numbers. notes column goes through field
+    encryption via _enc_dict."""
+    calc = compute_payslip_amounts(
+        hours_regular   = float(data.get("hours_regular", 0)),
+        hours_overtime  = float(data.get("hours_overtime", 0)),
+        hourly_rate     = float(data.get("hourly_rate", 0)),
+        overtime_rate   = float(data.get("overtime_rate", 0)),
+        fixed_salary    = float(data.get("fixed_salary", 0)),
+        bonus           = float(data.get("bonus", 0)),
+        other_deductions= float(data.get("other_deductions", 0)),
+        pay_periods_per_year = int(data.get("pay_periods_per_year", 26)),
+    )
+    notes_enc = _enc(data.get("notes") or "")
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    cur = con.execute(
+        """INSERT INTO payslips
+            (pay_period_id, subject_type, subject_id, subject_name, subject_prid,
+             hours_regular, hours_overtime, hourly_rate, overtime_rate,
+             fixed_salary, bonus, gross_pay,
+             paye_tax, nis, nht, education_tax, other_deductions,
+             total_deductions, net_pay, notes,
+             generated_by, generated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(pay_period_id, subject_type, subject_id) DO UPDATE SET
+             subject_name=excluded.subject_name,
+             subject_prid=excluded.subject_prid,
+             hours_regular=excluded.hours_regular,
+             hours_overtime=excluded.hours_overtime,
+             hourly_rate=excluded.hourly_rate,
+             overtime_rate=excluded.overtime_rate,
+             fixed_salary=excluded.fixed_salary,
+             bonus=excluded.bonus,
+             gross_pay=excluded.gross_pay,
+             paye_tax=excluded.paye_tax,
+             nis=excluded.nis,
+             nht=excluded.nht,
+             education_tax=excluded.education_tax,
+             other_deductions=excluded.other_deductions,
+             total_deductions=excluded.total_deductions,
+             net_pay=excluded.net_pay,
+             notes=excluded.notes,
+             generated_by=excluded.generated_by,
+             generated_at=excluded.generated_at
+        """,
+        (period_id, subject_type, int(subject_id), subject_name, subject_prid,
+         float(data.get("hours_regular", 0)), float(data.get("hours_overtime", 0)),
+         float(data.get("hourly_rate", 0)), float(data.get("overtime_rate", 0)),
+         float(data.get("fixed_salary", 0)), float(data.get("bonus", 0)),
+         calc["gross_pay"],
+         calc["paye_tax"], calc["nis"], calc["nht"], calc["education_tax"],
+         calc["other_deductions"], calc["total_deductions"], calc["net_pay"],
+         notes_enc, generated_by, now),
+    )
+    rid = cur.lastrowid
+    con.commit()
+    con.close()
+    return rid
+
+
+def list_payslips_for_period(period_id: int):
+    con = _con()
+    rows = con.execute(
+        """SELECT p.*, a.name AS generated_by_name
+             FROM payslips p
+        LEFT JOIN admin_users a ON p.generated_by = a.id
+            WHERE p.pay_period_id = ?
+            ORDER BY p.subject_type, p.subject_name""",
+        (period_id,),
+    ).fetchall()
+    con.close()
+    return _dec_rows("payslips", rows)
+
+
+def list_payslips_for_subject(subject_type: str, subject_id: int, limit: int = 50):
+    """Returns ONLY payslips for the named employee. Used by the
+    self-service endpoints. Drafts (period.status='draft') are hidden —
+    the employee should not see numbers until the period is approved."""
+    con = _con()
+    rows = con.execute(
+        """SELECT p.*, pp.label AS period_label, pp.period_start, pp.period_end,
+                  pp.status AS period_status, pp.currency
+             FROM payslips p
+             JOIN pay_periods pp ON p.pay_period_id = pp.id
+            WHERE p.subject_type = ? AND p.subject_id = ?
+              AND pp.status IN ('approved','paid')
+            ORDER BY pp.period_end DESC LIMIT ?""",
+        (subject_type, int(subject_id), int(limit)),
+    ).fetchall()
+    con.close()
+    return _dec_rows("payslips", rows)
+
+
+def get_payslip(payslip_id: int):
+    con = _con()
+    row = con.execute(
+        """SELECT p.*, pp.label AS period_label, pp.period_start, pp.period_end,
+                  pp.status AS period_status, pp.currency,
+                  a.name AS generated_by_name
+             FROM payslips p
+             JOIN pay_periods pp ON p.pay_period_id = pp.id
+        LEFT JOIN admin_users a ON p.generated_by  = a.id
+            WHERE p.id = ?""", (payslip_id,)
+    ).fetchone()
+    con.close()
+    return _dec_row("payslips", row) if row else None
+
+
+def mark_payslip_viewed(payslip_id: int):
+    """Stamp viewed_by_employee_at the first time the owning employee opens
+    their payslip. Subsequent views don't overwrite — the timestamp records
+    'employee acknowledged receipt'."""
+    con = _con()
+    con.execute(
+        "UPDATE payslips SET viewed_by_employee_at = COALESCE(viewed_by_employee_at, ?) WHERE id = ?",
+        (datetime.now(timezone.utc).isoformat(), payslip_id),
+    )
+    con.commit()
+    con.close()
+
+
+def approve_pay_period(period_id: int, approved_by: int) -> dict:
+    """SoD: super_admin only. Endpoint also enforces approved_by != created_by
+    as defense in depth so HR can never approve their own batch."""
+    con = _con()
+    row = con.execute("SELECT created_by, status FROM pay_periods WHERE id = ?", (period_id,)).fetchone()
+    if not row:
+        con.close()
+        raise ValueError("pay period not found")
+    if row["status"] != "draft":
+        con.close()
+        raise ValueError(f"pay period is {row['status']}, only draft can be approved")
+    if row["created_by"] == approved_by:
+        con.close()
+        raise ValueError("approver cannot be the same admin who created the period")
+    now = datetime.now(timezone.utc).isoformat()
+    con.execute(
+        "UPDATE pay_periods SET status='approved', approved_by=?, approved_at=? WHERE id=?",
+        (approved_by, now, period_id),
+    )
+    con.commit()
+    con.close()
+    return {"status": "approved", "approved_at": now}
+
+
+def mark_pay_period_paid(period_id: int):
+    con = _con()
+    con.execute(
+        "UPDATE pay_periods SET status='paid', paid_at=? WHERE id=? AND status='approved'",
+        (datetime.now(timezone.utc).isoformat(), period_id),
+    )
+    con.commit()
+    con.close()

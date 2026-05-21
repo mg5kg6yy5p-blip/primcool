@@ -470,6 +470,7 @@
       <div class="tab active" data-tab="today" onclick="setTab('today')">Today <span class="count" id="cnt-today">0</span></div>
       <div class="tab" data-tab="upcoming" onclick="setTab('upcoming')">Upcoming <span class="count" id="cnt-upcoming">0</span></div>
       <div class="tab" data-tab="done" onclick="setTab('done')">Done <span class="count" id="cnt-done">0</span></div>
+      <div class="tab" data-tab="payslips" onclick="setTab('payslips')">My Pay</div>
     </div>
     <div class="list" id="jobList"></div>
   </div>
@@ -622,6 +623,12 @@
     document.getElementById('cnt-today').textContent    = buckets.today.length;
     document.getElementById('cnt-upcoming').textContent = buckets.upcoming.length;
     document.getElementById('cnt-done').textContent     = buckets.done.length;
+
+    // My-payslips tab swaps the job list for the employee's own payslips.
+    if (currentTab === 'payslips') {
+      renderMyPayslips();
+      return;
+    }
 
     const rows = buckets[currentTab];
     const wrap = document.getElementById('jobList');
@@ -1320,6 +1327,82 @@
   if (isIos && !isStandalone && !localStorage.getItem('pc_tech_install_dismissed')) {
     document.getElementById('iosHint').style.display = 'block';
   }
+  // ── My Payslips ─────────────────────────────────────────────────────────
+  function _fmtMoneyTech(n, cur='JMD') {
+    const v = Number(n||0);
+    const sym = cur === 'JMD' ? 'J$' : (cur === 'USD' ? '$' : cur + ' ');
+    return sym + v.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+  }
+
+  async function renderMyPayslips() {
+    const wrap = document.getElementById('jobList');
+    wrap.innerHTML = '<div class="empty"><div>Loading payslips…</div></div>';
+    try {
+      const rows = await api('GET', '/api/tech/me/payslips');
+      if (!rows.length) {
+        wrap.innerHTML = `<div class="empty">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+          <div>No payslips yet. They appear here once the Director approves the pay period.</div>
+        </div>`;
+        return;
+      }
+      wrap.innerHTML = rows.map(p => {
+        const cur = p.currency || 'JMD';
+        return `<div class="job-card" onclick="openMyPayslip(${p.id})">
+          <div class="job-customer">${esc(p.period_label)}</div>
+          <div class="job-meta">${esc(p.period_start)} → ${esc(p.period_end)}</div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;">
+            <span style="font-size:12px;color:var(--muted);">Net pay</span>
+            <strong style="color:var(--navy);">${_fmtMoneyTech(p.net_pay, cur)}</strong>
+          </div>
+        </div>`;
+      }).join('');
+    } catch (e) {
+      wrap.innerHTML = `<div class="empty"><div>Could not load payslips: ${esc(e.message)}</div></div>`;
+    }
+  }
+
+  async function openMyPayslip(id) {
+    try {
+      const p = await api('GET', `/api/tech/me/payslips/${id}`);
+      const cur = p.currency || 'JMD';
+      const w = window.open('', '_blank', 'width=720,height=900');
+      w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Payslip — ${esc(p.period_label)}</title>
+        <style>body{font-family:-apple-system,sans-serif;padding:30px;color:#0B2545;max-width:600px;margin:0 auto;}
+        h1{color:#0B2545;margin:0 0 4px;} h2{color:#22A08A;font-size:14px;text-transform:uppercase;letter-spacing:1px;margin-top:24px;}
+        table{width:100%;border-collapse:collapse;margin-top:8px;}
+        td{padding:6px 0;border-bottom:1px solid #e8ecf0;font-size:14px;}
+        td:last-child{text-align:right;font-weight:600;}
+        .net{background:#0B2545;color:white;padding:14px;border-radius:8px;font-size:18px;font-weight:700;display:flex;justify-content:space-between;margin-top:16px;}
+        .ded td{color:#991b1b;} @media print{button{display:none;}}</style></head><body>
+        <h1>PrimeCool Services — Payslip</h1>
+        <div style="color:#5A6472;font-size:13px;">Period: <strong>${esc(p.period_label)}</strong> (${esc(p.period_start)} → ${esc(p.period_end)})</div>
+        <div style="color:#5A6472;font-size:13px;">Employee: <strong>${esc(p.subject_name)}</strong> (${esc(p.subject_prid)})</div>
+        <h2>Earnings</h2>
+        <table>
+          <tr><td>Regular hours</td><td>${p.hours_regular} × ${_fmtMoneyTech(p.hourly_rate, cur)}</td></tr>
+          <tr><td>Overtime hours</td><td>${p.hours_overtime} × ${_fmtMoneyTech(p.overtime_rate, cur)}</td></tr>
+          <tr><td>Fixed salary</td><td>${_fmtMoneyTech(p.fixed_salary, cur)}</td></tr>
+          <tr><td>Bonus</td><td>${_fmtMoneyTech(p.bonus, cur)}</td></tr>
+          <tr style="font-weight:700;"><td>Gross pay</td><td>${_fmtMoneyTech(p.gross_pay, cur)}</td></tr>
+        </table>
+        <h2>Deductions</h2>
+        <table class="ded">
+          <tr><td>PAYE income tax</td><td>${_fmtMoneyTech(p.paye_tax, cur)}</td></tr>
+          <tr><td>NIS</td><td>${_fmtMoneyTech(p.nis, cur)}</td></tr>
+          <tr><td>NHT</td><td>${_fmtMoneyTech(p.nht, cur)}</td></tr>
+          <tr><td>Education Tax</td><td>${_fmtMoneyTech(p.education_tax, cur)}</td></tr>
+          <tr><td>Other</td><td>${_fmtMoneyTech(p.other_deductions, cur)}</td></tr>
+          <tr style="font-weight:700;"><td>Total deductions</td><td>${_fmtMoneyTech(p.total_deductions, cur)}</td></tr>
+        </table>
+        <div class="net"><span>Net pay</span><span>${_fmtMoneyTech(p.net_pay, cur)}</span></div>
+        ${p.notes ? `<h2>Notes</h2><p style="font-size:13px;line-height:1.6;">${esc(p.notes).replace(/\n/g,'<br>')}</p>` : ''}
+        <div style="margin-top:30px;text-align:center;"><button onclick="window.print()" style="padding:10px 30px;background:#22A08A;color:white;border:none;border-radius:6px;font-weight:600;cursor:pointer;">Print</button></div>
+        </body></html>`);
+      w.document.close();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
   }

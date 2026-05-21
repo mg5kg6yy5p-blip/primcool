@@ -428,6 +428,14 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
         Timesheets
       </div>
+      <div class="nav-item" onclick="showPanel('payroll')" id="nav-payroll" style="display:none;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
+        Payroll
+      </div>
+      <div class="nav-item" onclick="showPanel('mypay')" id="nav-mypay">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+        My Payslips
+      </div>
       <div class="nav-item" onclick="showPanel('admins')" id="nav-admins" style="display:none;">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
         Admins
@@ -671,6 +679,33 @@
         <p style="font-size:12px;color:var(--muted);margin-top:14px;line-height:1.5;">
           Hours are computed from the tech's Start Job / End Job timestamps. In-progress visits (no end time) are listed but excluded from totals. To correct a missed clock-in/out, edit the visit directly.
         </p>
+      </div>
+
+      <!-- ── Payroll panel (super_admin + hr_admin) ── -->
+      <div class="panel" id="panel-payroll">
+        <div class="top-bar">
+          <h2>Payroll</h2>
+          <button id="newPayPeriodBtn" class="btn btn-primary" onclick="openModal('newPayPeriod')" style="display:none;">+ New Pay Period</button>
+        </div>
+        <p style="font-size:13px;color:var(--muted);line-height:1.5;margin-bottom:14px;">
+          HR generates payslips for a pay period; the Director approves. Once approved, payslips appear in each employee's
+          <em>My Payslips</em> tab. Statutory deductions (PAYE / NIS / NHT / Education Tax) are computed automatically — verify against
+          current Tax Administration Jamaica rates before approval.
+        </p>
+        <div id="payPeriodsList" style="display:flex;flex-direction:column;gap:10px;"></div>
+      </div>
+
+      <!-- ── My Payslips (every authenticated admin) ── -->
+      <div class="panel" id="panel-mypay">
+        <div class="top-bar">
+          <h2>My Payslips</h2>
+        </div>
+        <p style="font-size:13px;color:var(--muted);margin-bottom:14px;">
+          Your payslips appear here once the pay period is approved. Each view is logged in the audit trail.
+        </p>
+        <div id="myPayslipsList" style="display:flex;flex-direction:column;gap:10px;">
+          <div style="color:var(--muted);font-size:13px;">Loading…</div>
+        </div>
       </div>
 
       <!-- ── Admins panel ── -->
@@ -1048,6 +1083,82 @@
 <!-- Adjust Stock -->
 <!-- ── Procurement modal (POs + Physical counts) ── -->
 <!-- ── Offboarding modal (S1/S3/S4) ── -->
+<!-- ── New Pay Period modal ── -->
+<div class="modal-overlay" id="modal-newPayPeriod">
+  <div class="modal" style="max-width:520px;">
+    <div class="modal-header">
+      <h3>New Pay Period</h3>
+      <button class="modal-close" onclick="closeModal('newPayPeriod')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field"><label>Label (visible to staff)</label><input id="pp-label" placeholder="e.g. May 2026, Wk 22 2026"></div>
+      <div class="field-row">
+        <div class="field"><label>Period start</label><input id="pp-start" type="date"></div>
+        <div class="field"><label>Period end</label><input id="pp-end" type="date"></div>
+      </div>
+      <div class="field"><label>Currency</label>
+        <select id="pp-currency"><option value="JMD">JMD</option><option value="USD">USD</option></select>
+      </div>
+      <div class="form-error" id="err-newPayPeriod"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('newPayPeriod')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitNewPayPeriod()">Create draft</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Payslip entry modal ── -->
+<div class="modal-overlay" id="modal-payslip">
+  <div class="modal" style="max-width:640px;">
+    <div class="modal-header">
+      <h3 id="payslipModalTitle">New Payslip</h3>
+      <button class="modal-close" onclick="closeModal('payslip')">×</button>
+    </div>
+    <div class="modal-body">
+      <div style="background:var(--light);padding:10px 12px;border-radius:8px;margin-bottom:12px;">
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.6px;font-weight:700;">Period</div>
+        <div id="ps-period-label" style="font-weight:700;color:var(--navy);"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Employee</label>
+          <select id="ps-employee"><option value="">Select…</option></select>
+        </div>
+        <div class="field"><label>Pay periods/year</label>
+          <select id="ps-ppy">
+            <option value="26">Bi-weekly (26)</option>
+            <option value="24">Semi-monthly (24)</option>
+            <option value="12">Monthly (12)</option>
+            <option value="52">Weekly (52)</option>
+          </select>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Regular hours</label><input id="ps-hr" type="number" step="0.01" value="0"></div>
+        <div class="field"><label>Overtime hours</label><input id="ps-ot" type="number" step="0.01" value="0"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Hourly rate</label><input id="ps-rate" type="number" step="0.01" value="0"></div>
+        <div class="field"><label>Overtime rate</label><input id="ps-otrate" type="number" step="0.01" value="0"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Fixed salary (this period)</label><input id="ps-fixed" type="number" step="0.01" value="0"></div>
+        <div class="field"><label>Bonus</label><input id="ps-bonus" type="number" step="0.01" value="0"></div>
+      </div>
+      <div class="field"><label>Other deductions</label><input id="ps-other" type="number" step="0.01" value="0"></div>
+      <div class="field"><label>Notes (encrypted, internal only)</label><textarea id="ps-notes" placeholder="Reason for bonus, deduction details…"></textarea></div>
+
+      <div id="ps-preview" style="display:none;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:10px 12px;margin-bottom:8px;font-size:13px;line-height:1.6;"></div>
+      <button class="btn btn-ghost btn-sm" onclick="previewPayslip()">Preview deductions</button>
+      <div class="form-error" id="err-payslip"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('payslip')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitPayslip()">Save payslip</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modal-offboard">
   <div class="modal" style="max-width:680px;">
     <div class="modal-header">
@@ -1551,10 +1662,10 @@
   let resetAdminPwId = null;
 
   const ADMIN_PERMS = {
-    super_admin: new Set(['admin:create','admin:set_role','admin:set_active','admin:reset_password','admin:view_all','audit:view_all','tech:view','tech:create','tech:delete','tech:export','customer:view','customer:create','customer:delete','customer:export','visit:view','visit:create','visit:delete','visit:export','review:view','review:approve','review:delete','visit:view_photos','visit:flag','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','inventory:delete','inventory:export','po:create','po:send','po:receive','po:close_out','po:approve_variance','count:create','count:approve','invoice:view','invoice:create','invoice:update','invoice:delete','invoice:record_payment','invoice:export','documents:upload','documents:view','documents:view_highly_sensitive','documents:delete','documents:delete_highly_sensitive','security:view_alerts','security:resolve_alerts']),
+    super_admin: new Set(['admin:create','admin:set_role','admin:set_active','admin:reset_password','admin:view_all','audit:view_all','tech:view','tech:create','tech:delete','tech:export','customer:view','customer:create','customer:delete','customer:export','visit:view','visit:create','visit:delete','visit:export','review:view','review:approve','review:delete','visit:view_photos','visit:flag','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','inventory:delete','inventory:export','po:create','po:send','po:receive','po:close_out','po:approve_variance','count:create','count:approve','invoice:view','invoice:create','invoice:update','invoice:delete','invoice:record_payment','invoice:export','documents:upload','documents:view','documents:view_highly_sensitive','documents:delete','documents:delete_highly_sensitive','security:view_alerts','security:resolve_alerts','payroll:generate','payroll:view_all','payroll:approve','payroll:mark_paid']),
     supervisor_admin: new Set(['admin:view_all','audit:view_all','tech:view','tech:update','tech:export','customer:view','customer:update','customer:export','visit:view','visit:update','visit:export','review:view','visit:view_photos','visit:flag','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:adjust','inventory:export','po:create','po:send','po:receive','po:close_out','po:approve_variance','count:create','count:approve','invoice:view','invoice:update','invoice:record_payment','invoice:export','documents:upload','documents:view','documents:view_highly_sensitive','documents:delete','security:view_alerts']),
     system_admin: new Set(['tech:view','tech:create','customer:view','customer:create','visit:view','visit:create','review:view','audit:view_self','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','invoice:view','invoice:create','invoice:update','invoice:record_payment','documents:upload','documents:view']),
-    hr_admin: new Set(['tech:view','tech:create','audit:view_self','timesheet:view_all','invoice:view','documents:upload','documents:view','documents:view_highly_sensitive']),
+    hr_admin: new Set(['tech:view','tech:create','audit:view_self','timesheet:view_all','invoice:view','documents:upload','documents:view','documents:view_highly_sensitive','payroll:generate','payroll:view_all']),
     ceo_assistant: new Set(['audit:view_self','inventory:view','invoice:view','documents:view']),
     inventory_manager: new Set(['inventory:view','inventory:create','inventory:update','inventory:adjust','po:create','po:send','po:receive','count:create','audit:view_self']),
   };
@@ -1704,6 +1815,8 @@
     if (can('inventory:view')) loadInventory();
     if (can('invoice:view')) loadInvoices();
     if (can('documents:view')) loadDocuments();
+    if (can('payroll:view_all')) loadPayPeriods();
+    loadMyPayslips();
   }
 
   function applyRoleVisibility() {
@@ -1726,6 +1839,8 @@
     if (can('visit:export'))    document.getElementById('exportVisitsBtn').style.display = '';
     if (can('invoice:export'))  document.getElementById('exportInvoicesBtn').style.display = '';
     if (can('inventory:export')) document.getElementById('exportInventoryBtn').style.display = '';
+    if (can('payroll:view_all')) document.getElementById('nav-payroll').style.display = 'flex';
+    if (can('payroll:generate')) document.getElementById('newPayPeriodBtn').style.display = '';
     if (can('po:create') || can('po:close_out') || can('count:create') || can('count:approve'))
       document.getElementById('invProcurementBtn').style.display = '';
     if (can('security:view_alerts')) refreshSecurityBanner();
@@ -4675,6 +4790,279 @@
   document.getElementById('adminPw').addEventListener('keydown', e => {
     if (e.key === 'Enter') doAdminLogin();
   });
+
+  // ── Payroll ─────────────────────────────────────────────────────────────
+  let _currentPayPeriod = null;
+  const _fmtMoney = (n, cur='JMD') => {
+    const v = Number(n||0);
+    const sym = cur === 'JMD' ? 'J$' : (cur === 'USD' ? '$' : cur + ' ');
+    return sym + v.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+  };
+
+  async function loadPayPeriods() {
+    try {
+      const periods = await api('GET', '/api/admin/payroll/periods');
+      const wrap = document.getElementById('payPeriodsList');
+      if (!periods.length) {
+        wrap.innerHTML = '<div style="color:var(--muted);font-size:13px;">No pay periods yet. Create one to start payroll.</div>';
+        return;
+      }
+      wrap.innerHTML = periods.map(p => {
+        const sc = p.status === 'paid' ? 'background:#d1fae5;color:#065f46;'
+                 : p.status === 'approved' ? 'background:#dbeafe;color:#1e40af;'
+                 : p.status === 'cancelled' ? 'background:#fee2e2;color:#991b1b;'
+                 : 'background:#fef3c7;color:#92400e;';
+        return `<div style="border:1px solid var(--border);border-radius:8px;padding:12px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+            <div>
+              <strong>${escHtml(p.label)}</strong>
+              <span style="color:var(--muted);font-size:12px;margin-left:8px;">
+                ${escHtml(p.period_start)} → ${escHtml(p.period_end)} · ${escHtml(p.currency||'JMD')}
+              </span>
+              <div style="font-size:11px;color:var(--muted);margin-top:4px;">
+                Created by ${escHtml(p.created_by_name||'?')}${p.approved_by_name?' · Approved by '+escHtml(p.approved_by_name):''}
+              </div>
+            </div>
+            <span class="badge" style="${sc}">${escHtml(p.status.toUpperCase())}</span>
+          </div>
+          <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;">
+            <button class="btn btn-ghost btn-sm" onclick="openPayPeriod(${p.id})">View / edit payslips</button>
+            ${p.status === 'draft' && can('payroll:approve') ? `<button class="btn btn-primary btn-sm" onclick="approvePayPeriod(${p.id})">Approve</button>` : ''}
+            ${p.status === 'approved' && can('payroll:mark_paid') ? `<button class="btn btn-ghost btn-sm" onclick="markPayPeriodPaid(${p.id})">Mark paid</button>` : ''}
+          </div>
+        </div>`;
+      }).join('');
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  function openModalNewPayPeriod() { openModal('newPayPeriod'); }
+  async function submitNewPayPeriod() {
+    const label = document.getElementById('pp-label').value.trim();
+    const s = document.getElementById('pp-start').value;
+    const e = document.getElementById('pp-end').value;
+    const cur = document.getElementById('pp-currency').value;
+    const err = document.getElementById('err-newPayPeriod');
+    err.style.display = 'none';
+    if (!label || !s || !e) { err.textContent = 'Label, start, and end are required.'; err.style.display='block'; return; }
+    try {
+      await api('POST', '/api/admin/payroll/periods', {label, period_start:s, period_end:e, currency:cur});
+      closeModal('newPayPeriod');
+      ['pp-label','pp-start','pp-end'].forEach(id => document.getElementById(id).value='');
+      loadPayPeriods();
+    } catch (ex) { err.textContent = ex.message; err.style.display='block'; }
+  }
+
+  async function openPayPeriod(id) {
+    try {
+      _currentPayPeriod = await api('GET', `/api/admin/payroll/periods/${id}`);
+      const cur = _currentPayPeriod.currency || 'JMD';
+      const ps = _currentPayPeriod.payslips || [];
+      const html = `<div style="border:1px solid var(--border);border-radius:8px;padding:12px;background:white;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <strong style="color:var(--navy);">${escHtml(_currentPayPeriod.label)} · ${escHtml(_currentPayPeriod.status.toUpperCase())}</strong>
+          <div style="display:flex;gap:6px;">
+            ${_currentPayPeriod.status==='draft' && can('payroll:generate') ? `<button class="btn btn-primary btn-sm" onclick="openPayslipForm()">+ Add payslip</button>` : ''}
+            <button class="btn btn-ghost btn-sm" onclick="loadPayPeriods()">← Back</button>
+          </div>
+        </div>
+        <table style="width:100%;font-size:13px;">
+          <thead><tr style="background:var(--light);">
+            <th style="text-align:left;padding:6px;">Employee</th>
+            <th style="text-align:right;padding:6px;">Hours</th>
+            <th style="text-align:right;padding:6px;">Gross</th>
+            <th style="text-align:right;padding:6px;">Deductions</th>
+            <th style="text-align:right;padding:6px;">Net</th>
+            <th style="padding:6px;">Viewed</th>
+          </tr></thead>
+          <tbody>${ps.length ? ps.map(p => `
+            <tr style="border-top:1px solid var(--border);">
+              <td style="padding:6px;">${escHtml(p.subject_name)} <span style="color:var(--muted);font-size:11px;">(${escHtml(p.subject_type)} · ${escHtml(p.subject_prid||'')})</span></td>
+              <td style="text-align:right;padding:6px;">${(p.hours_regular||0)+(p.hours_overtime||0)}</td>
+              <td style="text-align:right;padding:6px;">${_fmtMoney(p.gross_pay, cur)}</td>
+              <td style="text-align:right;padding:6px;color:#991b1b;">${_fmtMoney(p.total_deductions, cur)}</td>
+              <td style="text-align:right;padding:6px;font-weight:700;">${_fmtMoney(p.net_pay, cur)}</td>
+              <td style="padding:6px;font-size:11px;color:var(--muted);">${p.viewed_by_employee_at ? '✓' : '—'}</td>
+            </tr>`).join('') : '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:14px;">No payslips yet.</td></tr>'}
+          </tbody>
+        </table>
+      </div>`;
+      document.getElementById('payPeriodsList').innerHTML = html;
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function openPayslipForm() {
+    if (!_currentPayPeriod) return;
+    document.getElementById('ps-period-label').textContent = _currentPayPeriod.label;
+    const sel = document.getElementById('ps-employee');
+    sel.innerHTML = '<option value="">Select…</option>';
+    // Load admins (if visible) + techs
+    try {
+      const techs = await api('GET', '/api/admin/techs');
+      techs.forEach(t => {
+        const o = document.createElement('option');
+        o.value = 'tech:' + t.id; o.textContent = `${t.name} (tech · ${t.prid||t.tech_code||t.id})`;
+        sel.appendChild(o);
+      });
+    } catch {}
+    try {
+      const admins = await api('GET', '/api/admin/users');
+      admins.forEach(a => {
+        const o = document.createElement('option');
+        o.value = 'admin:' + a.id; o.textContent = `${a.name} (admin · ${a.prid||a.username||a.id})`;
+        sel.appendChild(o);
+      });
+    } catch {}
+    ['ps-hr','ps-ot','ps-rate','ps-otrate','ps-fixed','ps-bonus','ps-other','ps-notes'].forEach(id => document.getElementById(id).value='');
+    document.getElementById('ps-ppy').value = '26';
+    document.getElementById('ps-preview').style.display = 'none';
+    document.getElementById('err-payslip').style.display = 'none';
+    openModal('payslip');
+  }
+
+  function _payslipBody() {
+    const sel = document.getElementById('ps-employee').value;
+    if (!sel) return null;
+    const [type, id] = sel.split(':');
+    return {
+      subject_type: type, subject_id: parseInt(id),
+      hours_regular:   parseFloat(document.getElementById('ps-hr').value)||0,
+      hours_overtime:  parseFloat(document.getElementById('ps-ot').value)||0,
+      hourly_rate:     parseFloat(document.getElementById('ps-rate').value)||0,
+      overtime_rate:   parseFloat(document.getElementById('ps-otrate').value)||0,
+      fixed_salary:    parseFloat(document.getElementById('ps-fixed').value)||0,
+      bonus:           parseFloat(document.getElementById('ps-bonus').value)||0,
+      other_deductions:parseFloat(document.getElementById('ps-other').value)||0,
+      notes:           document.getElementById('ps-notes').value.trim(),
+      pay_periods_per_year: parseInt(document.getElementById('ps-ppy').value)||26,
+    };
+  }
+
+  function previewPayslip() {
+    const b = _payslipBody();
+    if (!b) { document.getElementById('err-payslip').textContent='Pick an employee first.'; document.getElementById('err-payslip').style.display='block'; return; }
+    // Mirror the Python compute — keep these formulas in sync with database.py
+    const ppy = b.pay_periods_per_year;
+    const gross = b.hours_regular*b.hourly_rate + b.hours_overtime*b.overtime_rate + b.fixed_salary + b.bonus;
+    const annual = gross * ppy;
+    const THRESH=1700000, BAND2=6000000;
+    let paye_annual = 0;
+    if (annual > THRESH) {
+      const at25 = Math.min(annual, BAND2) - THRESH;
+      paye_annual = at25*0.25;
+      if (annual > BAND2) paye_annual += (annual - BAND2)*0.30;
+    }
+    const paye = paye_annual / ppy;
+    const nis = gross*0.03, nht = gross*0.02, edu = gross*0.0225;
+    const total_ded = paye + nis + nht + edu + (b.other_deductions||0);
+    const net = gross - total_ded;
+    const cur = _currentPayPeriod ? _currentPayPeriod.currency : 'JMD';
+    const pre = document.getElementById('ps-preview');
+    pre.style.display = 'block';
+    pre.innerHTML = `
+      <div><strong>Gross:</strong> ${_fmtMoney(gross,cur)}</div>
+      <div style="color:#991b1b;">PAYE: ${_fmtMoney(paye,cur)} · NIS: ${_fmtMoney(nis,cur)} · NHT: ${_fmtMoney(nht,cur)} · Education: ${_fmtMoney(edu,cur)} · Other: ${_fmtMoney(b.other_deductions,cur)}</div>
+      <div><strong>Net pay: ${_fmtMoney(net,cur)}</strong></div>`;
+  }
+
+  async function submitPayslip() {
+    if (!_currentPayPeriod) return;
+    const b = _payslipBody();
+    const err = document.getElementById('err-payslip');
+    err.style.display = 'none';
+    if (!b) { err.textContent='Pick an employee first.'; err.style.display='block'; return; }
+    try {
+      await api('POST', `/api/admin/payroll/periods/${_currentPayPeriod.id}/payslips`, b);
+      closeModal('payslip');
+      openPayPeriod(_currentPayPeriod.id);
+    } catch (ex) { err.textContent = ex.message; err.style.display='block'; }
+  }
+
+  async function approvePayPeriod(id) {
+    if (!confirm('Approve this pay period? Once approved, payslips become visible to each employee.')) return;
+    try {
+      await api('PUT', `/api/admin/payroll/periods/${id}/approve`);
+      toast('Pay period approved', 'success');
+      loadPayPeriods();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+  async function markPayPeriodPaid(id) {
+    if (!confirm('Mark this pay period as paid? This is a record-keeping action.')) return;
+    try {
+      await api('PUT', `/api/admin/payroll/periods/${id}/paid`);
+      toast('Marked paid', 'success');
+      loadPayPeriods();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  // ── My Payslips (visible to every admin) ─────────────────────────────────
+  async function loadMyPayslips() {
+    try {
+      const rows = await api('GET', '/api/admin/me/payslips');
+      const wrap = document.getElementById('myPayslipsList');
+      if (!rows.length) {
+        wrap.innerHTML = '<div style="color:var(--muted);font-size:13px;">No payslips yet.</div>';
+        return;
+      }
+      wrap.innerHTML = rows.map(p => {
+        const cur = p.currency || 'JMD';
+        return `<div style="border:1px solid var(--border);border-radius:8px;padding:12px;cursor:pointer;" onclick="openMyPayslip(${p.id})">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div>
+              <strong>${escHtml(p.period_label)}</strong>
+              <div style="font-size:11px;color:var(--muted);">${escHtml(p.period_start)} → ${escHtml(p.period_end)}</div>
+            </div>
+            <div style="text-align:right;">
+              <div style="font-size:11px;color:var(--muted);">Net pay</div>
+              <div style="font-weight:700;color:var(--navy);">${_fmtMoney(p.net_pay, cur)}</div>
+            </div>
+          </div>
+        </div>`;
+      }).join('');
+    } catch (e) {
+      document.getElementById('myPayslipsList').innerHTML =
+        `<div style="color:var(--muted);font-size:13px;">Could not load: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  async function openMyPayslip(id) {
+    try {
+      const p = await api('GET', `/api/admin/me/payslips/${id}`);
+      const cur = p.currency || 'JMD';
+      const w = window.open('', '_blank', 'width=720,height=900');
+      w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Payslip — ${escHtml(p.period_label)}</title>
+        <style>body{font-family:-apple-system,sans-serif;padding:30px;color:#0B2545;max-width:600px;margin:0 auto;}
+        h1{color:#0B2545;margin:0 0 4px;} h2{color:#22A08A;font-size:14px;text-transform:uppercase;letter-spacing:1px;margin-top:24px;}
+        table{width:100%;border-collapse:collapse;margin-top:8px;}
+        td{padding:6px 0;border-bottom:1px solid #e8ecf0;font-size:14px;}
+        td:last-child{text-align:right;font-weight:600;} .net{background:#0B2545;color:white;padding:14px;border-radius:8px;font-size:18px;font-weight:700;display:flex;justify-content:space-between;margin-top:16px;}
+        .ded td{color:#991b1b;} @media print{button{display:none;}}</style></head><body>
+        <h1>PrimeCool Services — Payslip</h1>
+        <div style="color:#5A6472;font-size:13px;">Period: <strong>${escHtml(p.period_label)}</strong> (${escHtml(p.period_start)} → ${escHtml(p.period_end)})</div>
+        <div style="color:#5A6472;font-size:13px;">Employee: <strong>${escHtml(p.subject_name)}</strong> (${escHtml(p.subject_prid)})</div>
+        <h2>Earnings</h2>
+        <table>
+          <tr><td>Regular hours</td><td>${p.hours_regular} × ${_fmtMoney(p.hourly_rate, cur)}</td></tr>
+          <tr><td>Overtime hours</td><td>${p.hours_overtime} × ${_fmtMoney(p.overtime_rate, cur)}</td></tr>
+          <tr><td>Fixed salary</td><td>${_fmtMoney(p.fixed_salary, cur)}</td></tr>
+          <tr><td>Bonus</td><td>${_fmtMoney(p.bonus, cur)}</td></tr>
+          <tr style="font-weight:700;"><td>Gross pay</td><td>${_fmtMoney(p.gross_pay, cur)}</td></tr>
+        </table>
+        <h2>Deductions</h2>
+        <table class="ded">
+          <tr><td>PAYE income tax</td><td>${_fmtMoney(p.paye_tax, cur)}</td></tr>
+          <tr><td>NIS</td><td>${_fmtMoney(p.nis, cur)}</td></tr>
+          <tr><td>NHT</td><td>${_fmtMoney(p.nht, cur)}</td></tr>
+          <tr><td>Education Tax</td><td>${_fmtMoney(p.education_tax, cur)}</td></tr>
+          <tr><td>Other</td><td>${_fmtMoney(p.other_deductions, cur)}</td></tr>
+          <tr style="font-weight:700;"><td>Total deductions</td><td>${_fmtMoney(p.total_deductions, cur)}</td></tr>
+        </table>
+        <div class="net"><span>Net pay</span><span>${_fmtMoney(p.net_pay, cur)}</span></div>
+        ${p.notes ? `<h2>Notes</h2><p style="font-size:13px;line-height:1.6;">${escHtml(p.notes).replace(/\n/g,'<br>')}</p>` : ''}
+        <div style="margin-top:30px;text-align:center;"><button onclick="window.print()" style="padding:10px 30px;background:#22A08A;color:white;border:none;border-radius:6px;font-weight:600;cursor:pointer;">Print</button></div>
+        </body></html>`);
+      w.document.close();
+    } catch (e) { toast(e.message, 'error'); }
+  }
 
   init();
 </script>

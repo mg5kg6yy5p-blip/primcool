@@ -50,6 +50,10 @@ from database import (
     get_tech_by_code_and_email, create_pin_reset_token, consume_pin_reset_token,
     create_photo, get_visit_photos, get_photo_by_id, delete_photo,
     get_timesheet_data,
+    create_pay_period, list_pay_periods, get_pay_period,
+    upsert_payslip, list_payslips_for_period, list_payslips_for_subject,
+    get_payslip, mark_payslip_viewed, approve_pay_period, mark_pay_period_paid,
+    compute_payslip_amounts,
     get_all_parts, get_part_by_id, create_part, update_part, delete_part,
     adjust_part_quantity, get_part_movements,
     create_invoice, update_invoice, get_invoice_by_id, get_all_invoices,
@@ -101,6 +105,8 @@ ADMIN_PERMS = {
         "inventory:export",
         "po:create", "po:send", "po:receive", "po:close_out", "po:approve_variance",
         "count:create", "count:approve",
+        # Payroll — director sees everything and is the only approver.
+        "payroll:generate", "payroll:view_all", "payroll:approve", "payroll:mark_paid",
         "security:view_alerts", "security:resolve_alerts",
         "audit:view_all",
         "timesheet:view_all",
@@ -151,6 +157,8 @@ ADMIN_PERMS = {
         "timesheet:view_all",
         "invoice:view",
         "documents:upload", "documents:view", "documents:view_highly_sensitive",
+        # HR generates payroll; super_admin approves (separation of duties).
+        "payroll:generate", "payroll:view_all",
     },
     "ceo_assistant": {
         "audit:view_self",
@@ -2949,6 +2957,210 @@ def admin_timesheets(request: Request,
         else:
             r["duration_minutes"] = None
     return rows
+
+
+# ── Payroll (pay periods + payslips) ─────────────────────────────────────────
+# Separation of duties: hr_admin GENERATES payslips for a period and
+# super_admin (the only role with payroll:approve) APPROVES it. The same
+# admin can never both create and approve a period — enforced at the DB
+# layer AND at the endpoint. Employees see only their own payslips.
+
+class PayPeriodCreate(BaseModel):
+    period_start: str
+    period_end:   str
+    label:        str
+    currency:     str = "JMD"
+
+
+class PayslipUpsert(BaseModel):
+    subject_type:        str                # 'admin' | 'tech'
+    subject_id:          int
+    hours_regular:       float = 0
+    hours_overtime:      float = 0
+    hourly_rate:         float = 0
+    overtime_rate:       float = 0
+    fixed_salary:        float = 0
+    bonus:               float = 0
+    other_deductions:    float = 0
+    notes:               str   = ""
+    pay_periods_per_year: int  = 26
+
+
+@app.get("/api/admin/payroll/periods")
+def admin_list_pay_periods(request: Request):
+    _require_perm(request, "payroll:view_all")
+    return list_pay_periods()
+
+
+@app.post("/api/admin/payroll/periods")
+def admin_create_pay_period(request: Request, body: PayPeriodCreate):
+    admin = _require_perm(request, "payroll:generate")
+    if not body.period_start or not body.period_end or not body.label.strip():
+        raise HTTPException(400, "period_start, period_end, and label are required")
+    if body.period_end < body.period_start:
+        raise HTTPException(400, "period_end must be on or after period_start")
+    try:
+        pid = create_pay_period(body.period_start, body.period_end,
+                                 body.label.strip(), admin["id"], body.currency)
+    except Exception as e:
+        # UNIQUE collision on (period_start, period_end) lands here.
+        raise HTTPException(409, f"Could not create pay period: {e}")
+    _audit_from(admin, "payroll.period_create", request,
+                target_type="pay_period", target_id=pid,
+                target_label=body.label,
+                after={"period_start": body.period_start,
+                       "period_end":   body.period_end,
+                       "currency":     body.currency})
+    return {"id": pid, "status": "draft"}
+
+
+@app.get("/api/admin/payroll/periods/{period_id}")
+def admin_get_pay_period(request: Request, period_id: int):
+    _require_perm(request, "payroll:view_all")
+    pp = get_pay_period(period_id)
+    if not pp:
+        raise HTTPException(404, "Pay period not found")
+    pp["payslips"] = list_payslips_for_period(period_id)
+    return pp
+
+
+@app.post("/api/admin/payroll/periods/{period_id}/payslips")
+def admin_upsert_payslip(request: Request, period_id: int, body: PayslipUpsert):
+    """Create or update one payslip in a draft period. Once a period is
+    approved, payslips lock — only the director can re-open by cancelling
+    the period (not implemented; would be a future feature)."""
+    admin = _require_perm(request, "payroll:generate")
+    pp = get_pay_period(period_id)
+    if not pp:
+        raise HTTPException(404, "Pay period not found")
+    if pp["status"] != "draft":
+        raise HTTPException(409, f"Pay period is {pp['status']}, only draft is editable")
+    if body.subject_type not in ("admin", "tech"):
+        raise HTTPException(400, "subject_type must be 'admin' or 'tech'")
+    # Resolve the subject's name + prid so the payslip holds a snapshot
+    if body.subject_type == "admin":
+        target = get_admin_user_by_id(body.subject_id)
+        if not target:
+            raise HTTPException(404, "admin not found")
+        name, prid = target["name"], target.get("prid") or target.get("username")
+    else:
+        target = get_tech_by_id(body.subject_id)
+        if not target:
+            raise HTTPException(404, "tech not found")
+        name, prid = target["name"], target.get("prid") or target.get("tech_code")
+    pid = upsert_payslip(period_id, body.subject_type, body.subject_id,
+                          name, prid, body.model_dump(), admin["id"])
+    _audit_from(admin, "payslip.upsert", request,
+                target_type="payslip", target_id=pid,
+                target_label=f"{name} ({prid}) — {pp['label']}",
+                after={"hours_regular": body.hours_regular,
+                       "hours_overtime": body.hours_overtime,
+                       "hourly_rate": body.hourly_rate,
+                       "fixed_salary": body.fixed_salary,
+                       "bonus": body.bonus,
+                       "other_deductions": body.other_deductions,
+                       # NOTE: 'notes' is intentionally NOT in the audit
+                       # snapshot — payslips.notes is encrypted and we keep
+                       # PII out of audit_log per Phase 2 redaction.
+                       })
+    return {"id": pid, "ok": True}
+
+
+@app.put("/api/admin/payroll/periods/{period_id}/approve")
+def admin_approve_pay_period(request: Request, period_id: int):
+    """Director-only. Endpoint also enforces approved_by != created_by as
+    defense in depth — HR can never approve their own batch even if
+    granted payroll:approve in a future config error."""
+    admin = _require_perm(request, "payroll:approve")
+    pp = get_pay_period(period_id)
+    if not pp:
+        raise HTTPException(404, "Pay period not found")
+    if pp.get("created_by") == admin["id"]:
+        raise HTTPException(403, "You cannot approve a pay period you yourself created.")
+    try:
+        result = approve_pay_period(period_id, admin["id"])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    _audit_from(admin, "payroll.period_approve", request,
+                target_type="pay_period", target_id=period_id,
+                target_label=pp["label"], after=result)
+    return result
+
+
+@app.put("/api/admin/payroll/periods/{period_id}/paid")
+def admin_mark_pay_period_paid(request: Request, period_id: int):
+    admin = _require_perm(request, "payroll:mark_paid")
+    pp = get_pay_period(period_id)
+    if not pp:
+        raise HTTPException(404, "Pay period not found")
+    if pp["status"] != "approved":
+        raise HTTPException(409, f"Cannot mark a {pp['status']} period as paid")
+    mark_pay_period_paid(period_id)
+    _audit_from(admin, "payroll.period_paid", request,
+                target_type="pay_period", target_id=period_id,
+                target_label=pp["label"])
+    return {"ok": True}
+
+
+@app.get("/api/admin/payslips/{payslip_id}")
+def admin_get_payslip(request: Request, payslip_id: int):
+    """Director sees everyone's payslip. Any other admin who has
+    payroll:view_all also sees all (currently only hr_admin)."""
+    admin = _require_perm(request, "payroll:view_all")
+    ps = get_payslip(payslip_id)
+    if not ps:
+        raise HTTPException(404, "Payslip not found")
+    return ps
+
+
+# ── Self-service: every employee sees only their own payslips ────────────────
+@app.get("/api/admin/me/payslips")
+def admin_my_payslips(request: Request):
+    admin = _require_admin(request)
+    return list_payslips_for_subject("admin", admin["id"])
+
+
+@app.get("/api/admin/me/payslips/{payslip_id}")
+def admin_my_payslip(request: Request, payslip_id: int):
+    """IDOR-safe: the owner check is the gate — even with the right id, a
+    different admin gets 404."""
+    admin = _require_admin(request)
+    ps = get_payslip(payslip_id)
+    if (not ps
+        or ps["subject_type"] != "admin"
+        or ps["subject_id"] != admin["id"]
+        or ps.get("period_status") not in ("approved", "paid")):
+        raise HTTPException(404, "Payslip not found")
+    mark_payslip_viewed(payslip_id)
+    _audit_from(admin, "payslip.viewed", request,
+                target_type="payslip", target_id=payslip_id,
+                target_label=f"self ({ps['period_label']})")
+    return ps
+
+
+@app.get("/api/tech/me/payslips")
+def tech_my_payslips(request: Request):
+    tech_id = _require_tech(request)
+    return list_payslips_for_subject("tech", tech_id)
+
+
+@app.get("/api/tech/me/payslips/{payslip_id}")
+def tech_my_payslip(request: Request, payslip_id: int):
+    tech_id = _require_tech(request)
+    ps = get_payslip(payslip_id)
+    if (not ps
+        or ps["subject_type"] != "tech"
+        or ps["subject_id"] != tech_id
+        or ps.get("period_status") not in ("approved", "paid")):
+        raise HTTPException(404, "Payslip not found")
+    mark_payslip_viewed(payslip_id)
+    # Build a customer-style audit row keyed on tech actor.
+    log_audit(actor_type="tech", actor_id=tech_id,
+              action="payslip.viewed",
+              target_type="payslip", target_id=payslip_id,
+              target_label=f"self ({ps['period_label']})",
+              ip_address=_client_ip(request))
+    return ps
 
 
 # ── Inventory ────────────────────────────────────────────────────────────────
