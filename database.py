@@ -275,10 +275,19 @@ def init_db():
         # now is ~free; retrofitting it at multi-hub launch would touch
         # every aggregate query and report. We're buying the option.
         ("hub_id",         "ALTER TABLE customers ADD COLUMN hub_id INTEGER NOT NULL DEFAULT 1"),
+        # Optimistic concurrency token for If-Match. Backfilled from created_at
+        # for existing rows below.
+        ("updated_at",     "ALTER TABLE customers ADD COLUMN updated_at TEXT"),
     ):
         if col not in cust_cols:
             try: con.execute(sql)
             except sqlite3.OperationalError: pass
+    # Backfill updated_at = created_at for any customer rows that never had it.
+    try:
+        con.execute("UPDATE customers SET updated_at = created_at "
+                    "WHERE updated_at IS NULL OR updated_at = ''")
+    except sqlite3.OperationalError:
+        pass
 
     # Hubs table — single source of truth for branch/region. Seeded with one
     # row (Kingston) so existing FKs from hub_id=1 are valid from boot.
@@ -595,6 +604,15 @@ def init_db():
         )
     """)
     con.execute("CREATE INDEX IF NOT EXISTS idx_fx_rates_active ON fx_rates(from_currency, effective_date, active)")
+    # Tamper-evidence: chain-hash columns on fx_rates (idempotent).
+    fx_cols = {row[1] for row in con.execute("PRAGMA table_info(fx_rates)")}
+    for col, sql in (
+        ("prior_chain_hash", "ALTER TABLE fx_rates ADD COLUMN prior_chain_hash TEXT"),
+        ("chain_hash",       "ALTER TABLE fx_rates ADD COLUMN chain_hash TEXT"),
+    ):
+        if col not in fx_cols:
+            try: con.execute(sql)
+            except sqlite3.OperationalError: pass
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS documents (
@@ -1323,6 +1341,7 @@ def init_db():
     _backfill_field_encryption()
     _backfill_audit_pii_redaction()
     _backfill_audit_chain()
+    _backfill_table_chains()
     # Reclaim freed pages so plaintext that lived in pre-encryption rows is
     # not recoverable from the raw file. SQLite VACUUM rewrites the whole DB.
     if os.environ.get("FIELD_ENCRYPTION_KEY"):
@@ -1716,10 +1735,20 @@ def get_customer_with_decryption(customer_id: int):
     return get_customer_by_id(customer_id)
 
 
-def update_customer_fields(customer_id: int, data: dict):
+class StaleWriteError(Exception):
+    """Raised when an If-Match guard detects a concurrent write."""
+    pass
+
+
+def update_customer_fields(customer_id: int, data: dict,
+                           if_match: str = None):
     """Partial update of the customer profile. Only known keys are written;
     sensitive columns are re-encrypted via _enc/_det_enc. Returns the new
-    row (decrypted) so callers can echo it back to the UI and audit it."""
+    row (decrypted) so callers can echo it back to the UI and audit it.
+
+    If `if_match` is provided, the row's current updated_at must equal it
+    or `StaleWriteError` is raised (caller maps to HTTP 409). When omitted
+    the call is last-writer-wins (backwards-compat for legacy clients)."""
     allowed_plain     = {"name", "company", "customer_type", "active"}
     allowed_encrypted = {"phone", "address", "notes"}      # _enc
     sets, vals = [], []
@@ -1737,13 +1766,22 @@ def update_customer_fields(customer_id: int, data: dict):
             vals.append(_email_hash(v or ""))
     if not sets:
         return get_customer_by_id(customer_id)
+    now = datetime.now(timezone.utc).isoformat()
+    sets.append("updated_at = ?"); vals.append(now)
     vals.append(customer_id)
     con = _con()
+    if if_match is not None:
+        cur = con.execute(
+            "SELECT updated_at FROM customers WHERE id = ?", (customer_id,)
+        ).fetchone()
+        if cur and (cur["updated_at"] or "") != if_match:
+            con.close()
+            raise StaleWriteError("customer row updated_at does not match If-Match")
     con.execute(f"UPDATE customers SET {', '.join(sets)} WHERE id = ?", vals)
     if data.get("active") == 0:
         con.execute(
             "UPDATE customers SET terminated_at = ? WHERE id = ?",
-            (datetime.now(timezone.utc).isoformat(), customer_id),
+            (now, customer_id),
         )
     con.commit()
     con.close()
@@ -2035,86 +2073,121 @@ def get_visit_photos_for_admin(visit_id: int):
 def update_invoice_payment_status(invoice_id: int, status: str,
                                   payment_method: str = None,
                                   payment_date: str = None,
-                                  notes: str = None):
-    """Mirrors update_customer_fields: surgical write of ONLY the four
-    payment fields. Does not touch line items, totals, customer linkage,
-    or any other invoice column. Recomputes amount_paid from the
-    invoice_payments table (single source of truth) and synchronises the
-    invoice.status text. Returns the updated invoice (header only)."""
+                                  notes: str = None,
+                                  amount: float = None,
+                                  if_match: str = None,
+                                  actor_id: int = None,
+                                  actor_label: str = None,
+                                  actor_prid: str = None):
+    """Visit-side payment edit. Both visit-side and invoice-side payment
+    edits flow through record_invoice_payment_v2 — single source of truth.
+
+    Behavior:
+      * status='fully_paid': append a payment row equal to (total -
+        already_paid) via record_invoice_payment_v2 (chain-hashed).
+      * status='partially_paid': append a payment row of `amount` (caller
+        supplied). If amount is missing, no payment row is written — only
+        the header notes get updated.
+      * status='unpaid': append a *void* row with negative `amount` =
+        -(amount_paid) tagged via the `voided_at` marker so the chain stays
+        append-only; the prior payments remain on the books for forensic
+        review.
+    """
     now = datetime.now(timezone.utc).isoformat()
     con = _con()
 
     inv = con.execute(
-        "SELECT id, total, status FROM invoices WHERE id = ?",
+        "SELECT id, total, status, amount_paid, updated_at "
+        "FROM invoices WHERE id = ?",
         (invoice_id,),
     ).fetchone()
     if not inv:
         con.close()
         return None
+    if if_match is not None and (inv["updated_at"] or "") != if_match:
+        con.close()
+        raise StaleWriteError("invoice row updated_at does not match If-Match")
     total = float(inv["total"] or 0)
-
-    # Map UI payment_status to invoice.status text. The invoice table uses
-    # a richer status vocabulary (draft/sent/paid/void); we preserve any
-    # pre-existing non-paid status when going to "unpaid", and force "paid"
-    # only on fully_paid.
-    new_status = inv["status"] or "draft"
-    if status == "fully_paid":
-        new_status = "paid"
-    elif inv["status"] == "paid":
-        # Was fully paid, now going back — revert to "sent" so the legacy
-        # invoice screen behavior stays consistent.
-        new_status = "sent"
+    paid_so_far = float(inv["amount_paid"] or 0)
+    con.close()
 
     if status == "unpaid":
-        # Wipe all recorded payments on this invoice so amount_paid → 0.
-        con.execute("DELETE FROM invoice_payments WHERE invoice_id = ?", (invoice_id,))
-    else:
-        # Append a payment row (cash basis — we record the most recent
-        # transition as an event, not a balance overwrite). For fully_paid
-        # we top up to the invoice total; for partially_paid we record a
-        # nominal "see invoice notes" event (UI captures the manual amount
-        # in a future iteration — for now the dropdown is method/status only).
-        amount = 0.0
-        if status == "fully_paid":
-            # Top-up: invoice_total minus what's already recorded.
-            already = con.execute(
-                "SELECT COALESCE(SUM(amount), 0) AS p FROM invoice_payments WHERE invoice_id = ?",
-                (invoice_id,),
-            ).fetchone()["p"]
-            amount = max(0.0, round(total - float(already or 0), 2))
-        # else partially_paid: do not insert a payment row here — amount is
-        # not in scope of this endpoint. Existing payments are preserved.
-        if status == "fully_paid" and amount > 0:
-            con.execute(
-                """
-                INSERT INTO invoice_payments
-                    (invoice_id, payment_date, amount, method, reference, notes,
-                     recorded_by, recorded_by_label, recorded_by_prid, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (invoice_id,
-                 (payment_date or now[:10]),
-                 amount,
-                 (payment_method or "other"),
-                 None,
-                 (notes or ""),
-                 None, None, None, now),
+        # Void: append a negative-amount marker row with voided_at set.
+        # We do not DELETE — chain stays intact and prior payments remain
+        # visible to the auditor.
+        if paid_so_far > 0:
+            void_payload = {
+                "amount_jmd":     -round(paid_so_far, 2),
+                "payment_method": (payment_method or "other"),
+                "payment_date":   (payment_date or now[:10]),
+                "notes":          (notes or "Voided by visit-side payment edit"),
+            }
+            record_invoice_payment_v2(
+                invoice_id, void_payload,
+                recorded_by=actor_id,
+                recorded_by_label=actor_label,
+                recorded_by_prid=actor_prid,
+            )
+            # Mark the most recent payment row as voided for surfaceable UI.
+            c2 = _con()
+            c2.execute(
+                "UPDATE invoice_payments SET voided_at = ? "
+                "WHERE invoice_id = ? AND id = ("
+                "  SELECT id FROM invoice_payments WHERE invoice_id = ? "
+                "  ORDER BY id DESC LIMIT 1)",
+                (now, invoice_id, invoice_id),
+            )
+            c2.commit()
+            c2.close()
+    elif status == "fully_paid":
+        delta = round(total - paid_so_far, 2)
+        if delta > 0.005:
+            payload = {
+                "amount_jmd":     delta,
+                "payment_method": (payment_method or "other"),
+                "payment_date":   (payment_date or now[:10]),
+                "notes":          (notes or ""),
+            }
+            record_invoice_payment_v2(
+                invoice_id, payload,
+                recorded_by=actor_id,
+                recorded_by_label=actor_label,
+                recorded_by_prid=actor_prid,
+            )
+    elif status == "partially_paid":
+        # Honor explicit amount if supplied; else write header-only update.
+        if amount is not None and float(amount) > 0:
+            payload = {
+                "amount_jmd":     float(amount),
+                "payment_method": (payment_method or "other"),
+                "payment_date":   (payment_date or now[:10]),
+                "notes":          (notes or ""),
+            }
+            record_invoice_payment_v2(
+                invoice_id, payload,
+                recorded_by=actor_id,
+                recorded_by_label=actor_label,
+                recorded_by_prid=actor_prid,
             )
 
-    # Header notes + paid_at (status text is set above)
-    paid_at = now if status == "fully_paid" else None
+    # Header notes + status text reconciliation (record_invoice_payment_v2
+    # already flips to 'paid' when fully covered; we sync the legacy text
+    # for the partial/unpaid cases and persist the user-supplied notes).
+    con = _con()
+    inv_now = con.execute(
+        "SELECT status, total, amount_paid FROM invoices WHERE id = ?",
+        (invoice_id,),
+    ).fetchone()
+    new_status = inv_now["status"] or "draft"
+    if status == "unpaid" and new_status == "paid":
+        new_status = "sent"
+    elif status == "partially_paid" and new_status == "paid":
+        new_status = "sent"
     con.execute(
-        """
-        UPDATE invoices SET
-            status     = ?,
-            notes      = ?,
-            paid_at    = COALESCE(?, CASE WHEN ? = 'paid' THEN paid_at ELSE NULL END),
-            updated_at = ?
-        WHERE id = ?
-        """,
-        (new_status, (notes or ""), paid_at, new_status, now, invoice_id),
+        "UPDATE invoices SET status = ?, notes = ?, updated_at = ? "
+        "WHERE id = ?",
+        (new_status, (notes or ""), now, invoice_id),
     )
-    _recompute_invoice_totals(con, invoice_id)
     con.commit()
     out = con.execute(
         "SELECT id, invoice_number, status, total, amount_paid, notes, paid_at, updated_at "
@@ -2141,6 +2214,30 @@ def get_customer_equipment(customer_id: int):
     ).fetchall()
     con.close()
     return _dec_rows("equipment", rows)
+
+
+def get_customer_equipment_portal_safe(customer_id: int):
+    """Portal-safe view of a customer's equipment register. Selects ONLY
+    the columns that are appropriate for the self-service portal — never
+    returns the decrypted `serial_number` or `notes` columns (admin-only
+    PII). Used by GET /api/portal/me to plug the equipment leak.
+    """
+    con = _con()
+    rows = con.execute(
+        "SELECT id, customer_id, name, type, model, location, created_at "
+        "FROM equipment WHERE customer_id = ? ORDER BY name",
+        (customer_id,),
+    ).fetchall()
+    con.close()
+    # `location` is encrypted at rest — we still decrypt it because the
+    # portal already shows the install location to the customer. Serial
+    # numbers and free-form notes are admin-only and never returned here.
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["location"] = _dec(d.get("location") or "")
+        out.append(d)
+    return out
 
 
 def create_equipment(data: dict) -> int:
@@ -6791,6 +6888,54 @@ _TECH_KPI_OV_HASH_FIELDS = (
 _TECH_5S_OV_HASH_FIELDS = (
     "exception_id", "tech_id", "overridden_by", "overridden_at", "hub_id",
 )
+_FX_RATE_HASH_FIELDS = (
+    "from_currency", "to_currency", "buy_rate", "source",
+    "fetched_at", "effective_date", "entered_by", "active",
+)
+
+
+def _backfill_table_chains():
+    """Idempotent chain backfill for tables that recently grew chain_hash
+    columns or that may have legacy rows missing them. Walks each table in
+    deterministic id ASC order and hashes any row that has NULL chain_hash
+    using the same `_fs_compute_hash` helper. Safe to re-run."""
+    targets = (
+        ("technician_reviews",        _TECH_REVIEW_HASH_FIELDS),
+        ("technician_kpi_overrides",  _TECH_KPI_OV_HASH_FIELDS),
+        ("technician_5s_overrides",   _TECH_5S_OV_HASH_FIELDS),
+        ("fx_rates",                  _FX_RATE_HASH_FIELDS),
+    )
+    con = _con()
+    for table, fields in targets:
+        try:
+            cols = {r[1] for r in con.execute(f"PRAGMA table_info({table})")}
+            if "chain_hash" not in cols:
+                continue
+            rows = con.execute(
+                f"SELECT * FROM {table} ORDER BY id ASC"
+            ).fetchall()
+            prev = AUDIT_GENESIS
+            updates = []
+            for r in rows:
+                d = dict(r)
+                existing = d.get("chain_hash")
+                if existing:
+                    prev = existing
+                    continue
+                ch = _fs_compute_hash(prev, d, fields)
+                updates.append((prev, ch, d["id"]))
+                prev = ch
+            if updates:
+                con.executemany(
+                    f"UPDATE {table} SET prior_chain_hash = ?, "
+                    f"chain_hash = ? WHERE id = ?",
+                    updates,
+                )
+        except sqlite3.OperationalError:
+            # Table missing or column missing — skip silently.
+            pass
+    con.commit()
+    con.close()
 
 
 def _last_chain(con, table: str) -> str:
@@ -7488,12 +7633,21 @@ def set_fx_rate_manual(from_currency: str, buy_rate: float,
         (from_currency, effective_date),
     )
     payload = _enc_dict("fx_rates", {"notes": notes}) if notes else {"notes": None}
+    prev = _last_chain(con, "fx_rates")
+    canonical = {
+        "from_currency": from_currency, "to_currency": "JMD",
+        "buy_rate": float(buy_rate), "source": "manual",
+        "fetched_at": now, "effective_date": effective_date,
+        "entered_by": entered_by, "active": 1,
+    }
+    ch = _fs_compute_hash(prev, canonical, _FX_RATE_HASH_FIELDS)
     cur = con.execute(
         "INSERT INTO fx_rates (from_currency, to_currency, buy_rate, source, "
-        "fetched_at, effective_date, entered_by, notes, active) "
-        "VALUES (?, 'JMD', ?, 'manual', ?, ?, ?, ?, 1)",
+        "fetched_at, effective_date, entered_by, notes, active, "
+        "prior_chain_hash, chain_hash) "
+        "VALUES (?, 'JMD', ?, 'manual', ?, ?, ?, ?, 1, ?, ?)",
         (from_currency, float(buy_rate), now, effective_date, entered_by,
-         payload.get("notes")),
+         payload.get("notes"), prev, ch),
     )
     con.commit()
     rid = cur.lastrowid
@@ -7514,11 +7668,20 @@ def set_fx_rate_from_api(from_currency: str, buy_rate: float,
         "WHERE from_currency = ? AND effective_date = ? AND active = 1",
         (from_currency, effective_date),
     )
+    prev = _last_chain(con, "fx_rates")
+    canonical = {
+        "from_currency": from_currency, "to_currency": "JMD",
+        "buy_rate": float(buy_rate), "source": "api",
+        "fetched_at": now, "effective_date": effective_date,
+        "entered_by": None, "active": 1,
+    }
+    ch = _fs_compute_hash(prev, canonical, _FX_RATE_HASH_FIELDS)
     cur = con.execute(
         "INSERT INTO fx_rates (from_currency, to_currency, buy_rate, source, "
-        "fetched_at, effective_date, entered_by, notes, active) "
-        "VALUES (?, 'JMD', ?, 'api', ?, ?, NULL, NULL, 1)",
-        (from_currency, float(buy_rate), now, effective_date),
+        "fetched_at, effective_date, entered_by, notes, active, "
+        "prior_chain_hash, chain_hash) "
+        "VALUES (?, 'JMD', ?, 'api', ?, ?, NULL, NULL, 1, ?, ?)",
+        (from_currency, float(buy_rate), now, effective_date, prev, ch),
     )
     con.commit()
     rid = cur.lastrowid
@@ -7665,18 +7828,39 @@ def export_invoices_csv(filters: dict):
             days_overdue = 0
         total = float(r.get("total") or 0)
         paid  = float(r.get("amount_paid") or 0)
+        # FX columns: blank when invoice is JMD-only; computed via
+        # compute_fx_display for foreign-currency invoices so finance
+        # exports show the locked-rate JMD-vs-foreign breakdown.
+        dc            = (r.get("display_currency") or "JMD").upper()
+        fx_rate_used  = r.get("fx_rate_used")
+        fx_source     = r.get("fx_rate_source") or ""
+        fx_fee_pct    = r.get("fx_fee_pct")
+        foreign_total = ""
+        if dc != "JMD" and fx_rate_used:
+            try:
+                disp = compute_fx_display(
+                    total, dc, float(fx_rate_used),
+                    float(fx_fee_pct if fx_fee_pct is not None else 2.0),
+                )
+                foreign_total = round(disp["foreign_total"], 2)
+            except Exception:
+                foreign_total = ""
         out.append({
-            "invoice_number":   r.get("invoice_number"),
-            "customer_name":    r.get("customer_name") or "",
-            "company":          r.get("customer_company") or "",
-            "issue_date":       r.get("issue_date") or "",
-            "due_date":         r.get("due_date") or "",
-            "total_jmd":        round(total, 2),
-            "amount_paid_jmd":  round(paid, 2),
-            "outstanding_jmd":  round(total - paid, 2),
-            "status":           r.get("status") or "",
-            "days_overdue":     days_overdue,
-            "display_currency": r.get("display_currency") or "JMD",
+            "invoice_number":     r.get("invoice_number"),
+            "customer_name":      r.get("customer_name") or "",
+            "company":            r.get("customer_company") or "",
+            "issue_date":         r.get("issue_date") or "",
+            "due_date":           r.get("due_date") or "",
+            "total_jmd":          round(total, 2),
+            "amount_paid_jmd":    round(paid, 2),
+            "outstanding_jmd":    round(total - paid, 2),
+            "status":             r.get("status") or "",
+            "days_overdue":       days_overdue,
+            "display_currency":   dc,
+            "fx_rate_used":       fx_rate_used if fx_rate_used is not None else "",
+            "fx_rate_source":     fx_source,
+            "fx_fee_pct":         fx_fee_pct if fx_fee_pct is not None else "",
+            "foreign_total_due":  foreign_total,
         })
     return out
 
@@ -7888,8 +8072,20 @@ def create_invoice_with_lines(data: dict, created_by: int = None) -> int:
     return invoice_id
 
 
-def update_invoice_with_lines(invoice_id: int, data: dict):
-    """Atomic header + replace-lines update including the new columns."""
+def update_invoice_with_lines(invoice_id: int, data: dict,
+                              if_match: str = None):
+    """Atomic header + replace-lines update including the new columns.
+
+    If `if_match` is provided, current invoices.updated_at must match it or
+    StaleWriteError is raised. Bumps updated_at to now on success."""
+    if if_match is not None:
+        _con_check = _con()
+        cur = _con_check.execute(
+            "SELECT updated_at FROM invoices WHERE id = ?", (invoice_id,)
+        ).fetchone()
+        _con_check.close()
+        if cur and (cur["updated_at"] or "") != if_match:
+            raise StaleWriteError("invoice row updated_at does not match If-Match")
     update_invoice(invoice_id, data)
     now = datetime.now(timezone.utc).isoformat()
     con = _con()

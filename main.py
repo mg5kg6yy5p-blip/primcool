@@ -33,7 +33,8 @@ from database import (
     validate_pin_policy, record_pin_failure, reset_pin_failures,
     is_customer_pin_locked,
     get_customer_by_code_and_email, create_customer_pin_reset, consume_customer_pin_reset,
-    get_customer_equipment, get_equipment_by_id, create_equipment, delete_equipment,
+    get_customer_equipment, get_customer_equipment_portal_safe,
+    get_equipment_by_id, create_equipment, delete_equipment,
     get_customer_with_decryption, update_customer_fields,
     get_customer_equipment_with_visits, get_customer_visits_paginated,
     get_visit_full_detail, get_visit_photos_for_admin,
@@ -130,6 +131,7 @@ from database import (
     get_invoice_full, record_invoice_payment_v2,
     transition_invoice_status, create_invoice_with_lines,
     update_invoice_with_lines,
+    StaleWriteError,
 )
 import imghdr as _imghdr
 import mimetypes as _mimetypes
@@ -1465,6 +1467,7 @@ class InvoicePaymentUpdate(BaseModel):
     payment_method: Optional[str] = None         # 'cash'|'bank_transfer'|'check'|'card'|'other'
     payment_date:   Optional[str] = None         # ISO date — server treats as a hint only
     notes:          Optional[str] = None
+    amount:         Optional[float] = None       # Required for status='partially_paid' (else ignored)
 
 
 class EquipmentCreate(BaseModel):
@@ -2081,7 +2084,10 @@ def portal_me(request: Request):
     safe_customer = {k: v for k, v in customer.items()
                      if k not in ("pin_hash", "password_hash",
                                   "mfa_secret", "backup_codes")}
-    equipment = get_customer_equipment(customer_id)
+    # Portal-safe equipment view: strips serial_number + notes so admin-
+    # only PII never leaks into the customer-facing endpoint. See
+    # get_customer_equipment_portal_safe in database.py.
+    equipment = get_customer_equipment_portal_safe(customer_id)
     # Portal-shaped visit list — only client-facing fields, served from
     # work_done_summary (raw work_done stays internal per spec).
     visits = get_customer_visits_portal(customer_id)
@@ -4123,7 +4129,11 @@ async def admin_invoice_patch(request: Request, invoice_id: int):
         ff = float(body["fx_fee_pct"])
         if ff < 0 or ff > 50:
             raise HTTPException(400, "fx_fee_pct must be 0–50")
-    update_invoice_with_lines(invoice_id, body)
+    if_match = request.headers.get("if-match") or request.headers.get("If-Match")
+    try:
+        update_invoice_with_lines(invoice_id, body, if_match=if_match)
+    except StaleWriteError:
+        raise HTTPException(409, "Row was updated by another admin. Refresh to see latest.")
     after = get_invoice_by_id(invoice_id, with_lines=False)
     _audit_from(admin, "invoice.updated", request,
                 target_type="invoice", target_id=invoice_id,
@@ -4988,12 +4998,14 @@ def admin_customer_update(request: Request, customer_id: int, body: CustomerProf
     if body.account_status is not None:
         updates["active"] = 1 if body.account_status == "active" else 0
 
-    # TODO(concurrency): customers table has no updated_at / version column,
-    # so we cannot enforce optimistic-concurrency via If-Match. Last-writer
-    # wins for now; add an updated_at column + 409 path when conflicts
-    # actually start happening in practice.
+    # Optimistic concurrency via If-Match: client echoes the row's
+    # updated_at; mismatch → 409. Absent header = last-writer-wins
+    # (backwards-compat for older admin clients).
+    if_match = request.headers.get("if-match") or request.headers.get("If-Match")
     try:
-        after = update_customer_fields(customer_id, updates)
+        after = update_customer_fields(customer_id, updates, if_match=if_match)
+    except StaleWriteError:
+        raise HTTPException(409, "Row was updated by another admin. Refresh to see latest.")
     except Exception as e:
         raise HTTPException(500, f"Unable to save: {type(e).__name__}")
 
@@ -5165,14 +5177,14 @@ def admin_visit_photos(request: Request, visit_id: int):
 def admin_visit_invoice_payment(request: Request, visit_id: int,
                                 body: InvoicePaymentUpdate):
     """super_admin-only: edit ONLY the invoice payment fields for the
-    invoice attached to this visit. The database helper enforces that no
-    other invoice column is touched.
+    invoice attached to this visit.
 
-    TODO(concurrency): invoices.updated_at exists but the legacy invoice
-    editor does not yet emit/honour If-Match. To stay consistent with the
-    customer-detail deviation we go last-writer-wins for now; add an
-    If-Match path (and the 409 branch below) once the wider invoice
-    surface is migrated. Mirrors the deviation in admin_customer_update."""
+    Both visit-side and invoice-side payment edits flow through
+    record_invoice_payment_v2 — single source of truth. The header status
+    text gets reconciled afterward; payment rows themselves are
+    append-only and chain-hashed. Voids (status='unpaid') append a
+    negative-amount marker row with voided_at set, keeping the chain
+    intact."""
     admin = _require_super_admin(request)
 
     # Resolve the invoice for this visit. We deliberately do not accept an
@@ -5192,6 +5204,7 @@ def admin_visit_invoice_payment(request: Request, visit_id: int,
     # before/after diff is meaningful.
     before_inv = dict(detail["invoice"])
 
+    if_match = request.headers.get("if-match") or request.headers.get("If-Match")
     try:
         after_header = update_invoice_payment_status(
             invoice_id,
@@ -5199,7 +5212,14 @@ def admin_visit_invoice_payment(request: Request, visit_id: int,
             payment_method=body.payment_method,
             payment_date=body.payment_date,
             notes=body.notes,
+            amount=body.amount,
+            if_match=if_match,
+            actor_id=admin["id"],
+            actor_label=admin.get("name"),
+            actor_prid=admin.get("prid"),
         )
+    except StaleWriteError:
+        raise HTTPException(409, "Row was updated by another admin. Refresh to see latest.")
     except Exception as e:
         raise HTTPException(500, f"Unable to save payment status: {type(e).__name__}")
 
@@ -5403,8 +5423,7 @@ def admin_technician_kpi(request: Request, tech_id: int, window: int = 30):
                 target_type="technician", target_id=tech_id,
                 target_label=t.get("name"),
                 after={"window_days": window})
-    # FIXME(kpi-module): when the KPI module ships, replace this stub with a
-    # real read of kpi_scores joined with technician_kpi_overrides.
+    # FIXME(kpi-module): KPI ingest pending — see roadmap.
     return {
         "available": False,
         "message":   "KPI tracking not yet active — scores will populate "
