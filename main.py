@@ -104,6 +104,7 @@ from database import (
     find_overdue_exceptions as fs_find_overdue_exceptions,
     compute_compliance_score as fs_compute_compliance_score,
     list_compliance_overview as fs_list_compliance_overview,
+    correlate_5s_to_kpi as fs_correlate_5s_to_kpi,
     open_coaching as fs_open_coaching, close_coaching as fs_close_coaching,
     list_coaching as fs_list_coaching,
     fs_today_status_for_tech, fs_export_all,
@@ -5089,6 +5090,17 @@ def admin_fs_list_coaching(request: Request,
                             status: Optional[str] = None):
     _require_perm(request, "fs:report_view")
     return fs_list_coaching(tech_id=tech_id, status=status)
+
+
+# Phase 4: KPI cross-correlation. Joint diagnostic — if the KPI module is not
+# wired up yet, the database helper returns fs_band only with a placeholder
+# diagnostic string. The admin Dashboard surfaces "systemic / performance /
+# lucky / healthy" labels off this endpoint.
+@app.get("/api/admin/5s/kpi-correlation/{tech_id}")
+def admin_fs_kpi_correlation(request: Request, tech_id: int,
+                              window_days: int = 30):
+    _require_perm(request, "fs:report_view")
+    return fs_correlate_5s_to_kpi(tech_id, window_days=window_days)
 
 
 @app.get("/api/admin/5s/export")
