@@ -2709,6 +2709,11 @@
         try { if (typeof loadSchedule          === 'function' && can('schedule:view')) loadSchedule(); } catch(_) {}
         try { if (typeof loadPayPeriods        === 'function' && can('payroll:view_all')) loadPayPeriods(); } catch(_) {}
         try { if (typeof loadMyPayslips        === 'function') loadMyPayslips(); } catch(_) {}
+        try { if (typeof loadDocuments         === 'function' && can('documents:view')) loadDocuments(); } catch(_) {}
+        try { if (typeof renderReviews         === 'function' && Array.isArray(allReviews) && allReviews.length) renderReviews(); } catch(_) {}
+        try { if (typeof fsLoadCurrentTab      === 'function' && document.getElementById('panel-fs') && document.getElementById('panel-fs').classList.contains('active')) fsLoadCurrentTab(); } catch(_) {}
+        try { if (typeof loadDelegationsPanel  === 'function' && document.getElementById('panel-delegations') && document.getElementById('panel-delegations').classList.contains('active')) loadDelegationsPanel(); } catch(_) {}
+        try { if (typeof renderAdmins          === 'function' && Array.isArray(allAdmins) && allAdmins.length) renderAdmins(); } catch(_) {}
       }).catch(function (e) { try { console.warn('access-bundle load failed:', e); } catch(_) {} });
     }
   }
@@ -5264,54 +5269,68 @@
       wrap.innerHTML = `<div class="empty" style="background:white;border:1px solid var(--border);border-radius:12px;">No ${reviewFilter === 'all' ? '' : reviewFilter + ' '}reviews.</div>`;
       return;
     }
+    const _gateRev = (typeof PC !== 'undefined' && PC.gateLinkHtml);
     wrap.innerHTML = rows.map(r => {
       const stars = '★'.repeat(r.rating) + `<span class="empty">${'★'.repeat(5 - r.rating)}</span>`;
       const typePill = r.review_type === 'visit'
         ? `<span class="review-type-pill pill-visit">Visit Review</span>`
         : `<span class="review-type-pill pill-company">Annual Review</span>`;
-      const techLine = r.tech_snapshot
-        ? ` · Tech: <strong>${escHtml(r.tech_snapshot)}</strong>`
+      // Sensitive-value gating: review comment text only renders if the
+      //  viewer can read the review record. Stars (already coarse) still show.
+      const _revVis = (typeof PC === 'undefined' || !PC.canRead) ? true : PC.canRead('review', r.id);
+      // Customer + visit + technician references.
+      const custCell = (_gateRev && r.customer_id)
+        ? PC.gateLinkHtml('customer', r.customer_id, r.customer_name || '', {})
+        : `<strong>${escHtml(r.customer_name)}</strong>`;
+      const visitCell = (_gateRev && r.visit_id)
+        ? ' · Visit ' + PC.gateLinkHtml('visit', r.visit_id, '#'+r.visit_id, {})
+        : '';
+      const techCell = (r.tech_snapshot)
+        ? ((_gateRev && r.tech_id)
+            ? ' · Tech: ' + PC.gateLinkHtml('technician', r.tech_id, r.tech_snapshot, {})
+            : ` · Tech: <strong>${escHtml(r.tech_snapshot)}</strong>`)
         : '';
       const date = (r.created_at || '').slice(0, 10);
 
       let actions = '';
       if (r.status === 'pending') {
         actions = `
-          <button class="btn btn-primary btn-sm" onclick="approveReview(${r.id})">✓ Approve &amp; Publish</button>
-          <button class="btn btn-ghost btn-sm" onclick="rejectReview(${r.id})">Reject</button>
-          <button class="btn btn-danger btn-sm" onclick="removeReview(${r.id})">Delete</button>`;
+          <button class="btn btn-primary btn-sm pc-stop-prop" onclick="event.stopPropagation();approveReview(${r.id})">✓ Approve &amp; Publish</button>
+          <button class="btn btn-ghost btn-sm pc-stop-prop" onclick="event.stopPropagation();rejectReview(${r.id})">Reject</button>
+          <button class="btn btn-danger btn-sm pc-stop-prop" onclick="event.stopPropagation();removeReview(${r.id})">Delete</button>`;
       } else if (r.status === 'approved') {
         actions = `
-          <span class="badge badge-completed">Public</span>
-          <button class="btn btn-ghost btn-sm" onclick="rejectReview(${r.id})">Unpublish</button>
-          <button class="btn btn-danger btn-sm" onclick="removeReview(${r.id})">Delete</button>`;
+          <span class="badge badge-completed pc-stop-prop">Public</span>
+          <button class="btn btn-ghost btn-sm pc-stop-prop" onclick="event.stopPropagation();rejectReview(${r.id})">Unpublish</button>
+          <button class="btn btn-danger btn-sm pc-stop-prop" onclick="event.stopPropagation();removeReview(${r.id})">Delete</button>`;
       } else {
         actions = `
-          <span class="badge" style="background:#fee2e2;color:#991b1b;">Rejected</span>
-          <button class="btn btn-primary btn-sm" onclick="approveReview(${r.id})">Approve Now</button>
-          <button class="btn btn-danger btn-sm" onclick="removeReview(${r.id})">Delete</button>`;
+          <span class="badge pc-stop-prop" style="background:#fee2e2;color:#991b1b;">Rejected</span>
+          <button class="btn btn-primary btn-sm pc-stop-prop" onclick="event.stopPropagation();approveReview(${r.id})">Approve Now</button>
+          <button class="btn btn-danger btn-sm pc-stop-prop" onclick="event.stopPropagation();removeReview(${r.id})">Delete</button>`;
       }
 
       return `
-        <div class="review-card">
+        <div class="review-card" data-pc-row-review="${r.id}">
           <div class="review-top">
             <div>
               <div class="review-stars">${stars}</div>
               <div class="review-meta" style="margin-top:4px;">
-                <strong>${escHtml(r.customer_name)}</strong>
+                ${custCell}
                 ${r.customer_company ? ` · ${escHtml(r.customer_company)}` : ''}
                 ${r.role ? ` · ${escHtml(r.role)}` : ''}
               </div>
             </div>
             <div style="text-align:right;">
               ${typePill}
-              <div class="review-meta" style="margin-top:6px;">${date}${techLine}</div>
+              <div class="review-meta" style="margin-top:6px;">${date}${visitCell}${techCell}</div>
             </div>
           </div>
-          <div class="review-body">${escHtml(r.text).replace(/\n/g, '<br>')}</div>
+          <div class="review-body">${_revVis ? escHtml(r.text).replace(/\n/g, '<br>') : '<span style="color:var(--muted);">—</span>'}</div>
           <div class="review-actions">${actions}</div>
         </div>`;
     }).join('');
+    // Reviews don't have a dedicated detail page — the card is the detail. Skip gateRow click.
   }
 
   async function approveReview(id) {
@@ -5357,31 +5376,45 @@
       return;
     }
     const canManage = can('admin:set_role');
+    const _gateAd = (typeof PC !== 'undefined' && PC.gateLinkHtml);
     tbody.innerHTML = allAdmins.map(a => {
       const isMe = currentAdmin && currentAdmin.id === a.id;
+      // Sensitive-value gating: email + phone collapse to "—" when viewer
+      //  cannot read this admin record. Name + role badge always render.
+      const _adVis = (typeof PC === 'undefined' || !PC.canRead) ? true : (PC.canRead('admin_user', a.id) || isMe);
+      // Name → admin_user (FIXME: admin_user has no SPA route today; the
+      //  helper still renders a link with proper aria-label).
+      const nameLink = (_gateAd && !isMe)
+        ? PC.gateLinkHtml('admin_user', a.id, a.username || a.name || '', {})
+        : `<strong>${escHtml(a.username)}</strong>`;
+      const supervisorRow = a.supervisor_id
+        ? `<br><span style="font-size:10px;color:var(--muted);">Supervisor: ${(_gateAd ? PC.gateLinkHtml('admin_user', a.supervisor_id, a.supervisor_name || ('#'+a.supervisor_id), {}) : ('#'+a.supervisor_id))}</span>`
+        : '';
       return `
-      <tr style="${a.active ? '' : 'opacity:0.55;'}">
+      <tr data-pc-row-admin="${a.id}" style="${a.active ? '' : 'opacity:0.55;'}">
         <td><span class="code-pill">${a.prid || '—'}</span></td>
-        <td><strong>${escHtml(a.username)}</strong>${isMe ? ' <span style="font-size:10px;color:var(--teal);">(you)</span>' : ''}<br><span style="font-size:11px;color:var(--muted);">${escHtml(a.email)}</span></td>
-        <td>${escHtml(a.name)}${a.phone ? `<br><span style="font-size:11px;color:var(--muted);">${escHtml(a.phone)}</span>` : ''}</td>
+        <td>${nameLink}${isMe ? ' <span style="font-size:10px;color:var(--teal);">(you)</span>' : ''}<br><span style="font-size:11px;color:var(--muted);">${_adVis ? escHtml(a.email) : '—'}</span>${supervisorRow}</td>
+        <td>${escHtml(a.name)}${a.phone ? `<br><span style="font-size:11px;color:var(--muted);">${_adVis ? escHtml(a.phone) : '—'}</span>` : ''}</td>
         <td>${
           canManage && !isMe
-            ? `<select onchange="changeAdminRole(${a.id}, this.value)" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
+            ? `<select class="pc-stop-prop" onchange="event.stopPropagation();changeAdminRole(${a.id}, this.value)" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
                  ${Object.entries(ROLE_LABEL).map(([k,v]) => `<option value="${k}" ${a.role===k?'selected':''}>${v}</option>`).join('')}
                </select>`
             : `<span class="badge badge-confirmed">${ROLE_LABEL[a.role] || a.role}</span>`
         }</td>
         <td>${a.active ? '<span class="badge badge-confirmed">Active</span>' : '<span class="badge" style="background:#f3f4f6;color:var(--muted);">Inactive</span>'}</td>
         <td style="white-space:nowrap;">
-          <button class="btn btn-edit btn-sm" onclick="openResetAdminPw(${a.id},'${escHtml(a.name)}')">Reset PW</button>
+          <button class="btn btn-edit btn-sm pc-stop-prop" onclick="event.stopPropagation();openResetAdminPw(${a.id},'${escHtml(a.name)}')">Reset PW</button>
           ${canManage && !isMe ? (
             a.active
-              ? `<button class="btn btn-danger btn-sm" onclick="openOffboard('admin',${a.id},'${escHtml(a.name)}')" style="margin-left:6px;">🚪 Offboard</button>`
-              : `<button class="btn btn-ghost btn-sm" onclick="reinstateAccount('admin',${a.id})" style="margin-left:6px;">Reinstate</button>`
+              ? `<button class="btn btn-danger btn-sm pc-stop-prop" onclick="event.stopPropagation();openOffboard('admin',${a.id},'${escHtml(a.name)}')" style="margin-left:6px;">🚪 Offboard</button>`
+              : `<button class="btn btn-ghost btn-sm pc-stop-prop" onclick="event.stopPropagation();reinstateAccount('admin',${a.id})" style="margin-left:6px;">Reinstate</button>`
           ) : ''}
         </td>
       </tr>`;
     }).join('');
+    // FIXME: admin_user has no SPA detail route today — gateRow does not bind
+    //  a click handler (rows are not clickable beyond action buttons).
   }
 
   async function submitAddAdmin() {
@@ -5580,23 +5613,48 @@
       else                  { bg = '#d1fae5'; fg = '#065f46'; label = `In ${days}d`; }
       return `<div style="font-size:12px;font-weight:600;">${dateStr}</div><span class="badge" style="background:${bg};color:${fg};font-size:9px;margin-top:2px;display:inline-block;">${label}</span>`;
     };
-    tbody.innerHTML = rows.map(d => `
+    const _gateDoc = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    // Sensitive-value gating: file size + sensitivity badge + version-ish
+    //  metadata collapse to "—" when the viewer cannot read this document.
+    tbody.innerHTML = rows.map(d => {
+      const _docVis = (typeof PC === 'undefined' || !PC.canRead) ? true : PC.canRead('document', d.id);
+      // Attached entity link — per-attached-type
+      let attached = d.linked_to_label ? escHtml(d.linked_to_label) : '<span style="color:var(--muted);">—</span>';
+      if (_gateDoc && d.linked_to_label) {
+        const at = (d.attached_type || d.linked_to_type || '').toLowerCase();
+        const aid = d.attached_id || d.linked_to_id;
+        if (aid && (at === 'customer' || at === 'invoice' || at === 'visit' || at === 'work_order' || at === 'technician')) {
+          const ttype = (at === 'work_order') ? 'visit' : at;
+          attached = PC.gateLinkHtml(ttype, aid, d.linked_to_label, {});
+        }
+      }
+      // Uploader — actor may be technician or admin_user. We can't always tell
+      //  which from the row payload, so prefer admin_user when uploaded_by_kind
+      //  is 'admin', else technician. FIXME: admin_user route may not exist —
+      //  the helper still renders a link (text+aria) without a destination.
+      let uploader = `<span style="font-size:11px;">${escHtml(d.uploaded_by_label || '?')}</span>`;
+      if (_gateDoc && d.uploaded_by_id) {
+        const utype = (d.uploaded_by_kind === 'admin') ? 'admin_user' : 'technician';
+        uploader = PC.gateLinkHtml(utype, d.uploaded_by_id, d.uploaded_by_label || '?', {});
+      }
+      return `
       <tr>
         <td><strong>${escHtml(d.title)}</strong>${d.description ? `<br><span style="font-size:11px;color:var(--muted);">${escHtml(d.description)}</span>` : ''}<br><span style="font-size:11px;color:var(--muted);font-family:'Courier New',monospace;">${escHtml(d.original_filename)}</span></td>
         <td>${escHtml(DOC_TYPE_LABELS[d.document_type] || d.document_type)}</td>
-        <td>${sensitivityBadge(d.sensitivity)}</td>
-        <td>${d.linked_to_label ? escHtml(d.linked_to_label) : '<span style="color:var(--muted);">—</span>'}</td>
+        <td>${_docVis ? sensitivityBadge(d.sensitivity) : '<span style="color:var(--muted);">—</span>'}</td>
+        <td>${attached}</td>
         <td>${expiryCell(d)}</td>
-        <td style="white-space:nowrap;">${fmtBytes(d.size_bytes)}</td>
+        <td style="white-space:nowrap;">${_docVis ? fmtBytes(d.size_bytes) : '—'}</td>
         <td style="white-space:nowrap;font-size:12px;color:var(--muted);">${(d.uploaded_at||'').slice(0,16).replace('T',' ')}</td>
-        <td><span style="font-size:11px;">${escHtml(d.uploaded_by_label || '?')}</span><br><span style="font-size:10px;color:var(--muted);font-family:'Courier New',monospace;">${escHtml(d.uploaded_by_prid||'')}</span></td>
+        <td>${uploader}<br><span style="font-size:10px;color:var(--muted);font-family:'Courier New',monospace;">${escHtml(d.uploaded_by_prid||'')}</span></td>
         <td style="white-space:nowrap;">
-          <button class="btn btn-edit btn-sm" onclick="downloadDocument(${d.id})">📥 Download</button>
+          <button class="btn btn-edit btn-sm pc-stop-prop" onclick="event.stopPropagation();downloadDocument(${d.id})">📥 Download</button>
           ${can('documents:delete') || (d.sensitivity==='highly_sensitive' && can('documents:delete_highly_sensitive'))
-            ? `<button class="btn btn-danger btn-sm" onclick="deleteDocument(${d.id},'${escHtml(d.title)}',${d.sensitivity==='highly_sensitive'})" style="margin-left:4px;">Delete</button>`
+            ? `<button class="btn btn-danger btn-sm pc-stop-prop" onclick="event.stopPropagation();deleteDocument(${d.id},'${escHtml(d.title)}',${d.sensitivity==='highly_sensitive'})" style="margin-left:4px;">Delete</button>`
             : ''}
         </td>
-      </tr>`).join('');
+      </tr>`;
+    }).join('');
   }
 
   async function downloadDocument(id) {
@@ -8041,31 +8099,55 @@
   }
   function fsBandColor(b) { return b==='green'?'#059669':b==='amber'?'#f59e0b':'#dc2626'; }
   async function fsRenderDashboard(body) {
-    const d = await api('GET', '/api/admin/5s/dashboard');
+    const d = await api('GET', '/api/admin/5s/dashboard').catch(function(e){
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return null;
+      throw e;
+    });
+    if (!d) return;
     const banner = document.getElementById('fsSafetyBanner');
     if (d.safety_red_count > 0) {
       banner.style.display = 'block';
       banner.textContent = `⚠ ${d.safety_red_count} safety/LOTO exception(s) open — review immediately.`;
     } else { banner.style.display = 'none'; }
-    const tilesHtml = (d.compliance || []).map(c => `
+    const _gateFS = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    const tilesHtml = (d.compliance || []).map(c => {
+      const nameCell = (_gateFS && c.tech_id)
+        ? PC.gateLinkHtml('technician', c.tech_id, c.name || ('tech '+c.tech_id), {})
+        : esc(c.name || ('tech '+c.tech_id));
+      return `
       <div style="background:#f9fafb;border:1px solid var(--border);border-radius:8px;padding:10px;display:flex;align-items:center;gap:10px;">
         <div style="width:10px;height:40px;background:${fsBandColor(c.band)};border-radius:4px;"></div>
         <div>
-          <div style="font-weight:700;font-size:13px;">${esc(c.name || ('tech '+c.tech_id))}</div>
+          <div style="font-weight:700;font-size:13px;">${nameCell}</div>
           <div style="color:var(--muted);font-size:12px;">${c.pass_audits}/${c.total_audits} pass · ${c.score_pct}%</div>
         </div>
       </div>
-    `).join('') || '<div style="color:var(--muted);">No tech compliance data yet.</div>';
+    `;
+    }).join('') || '<div style="color:var(--muted);">No tech compliance data yet.</div>';
     body.innerHTML = `
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:18px;">
-        <div style="background:#eff6ff;padding:12px;border-radius:8px;"><div style="font-size:11px;color:#1d4ed8;font-weight:700;">OPEN</div><div style="font-size:22px;font-weight:800;">${d.open_exceptions}</div></div>
-        <div style="background:#fef3c7;padding:12px;border-radius:8px;"><div style="font-size:11px;color:#92400e;font-weight:700;">ESCALATED</div><div style="font-size:22px;font-weight:800;">${d.escalated_exceptions}</div></div>
-        <div style="background:#fee2e2;padding:12px;border-radius:8px;"><div style="font-size:11px;color:#991b1b;font-weight:700;">TO DIRECTOR</div><div style="font-size:22px;font-weight:800;">${d.director_exceptions}</div></div>
-        <div style="background:#f3f4f6;padding:12px;border-radius:8px;"><div style="font-size:11px;color:#374151;font-weight:700;">SAFETY RED</div><div style="font-size:22px;font-weight:800;">${d.safety_red_count}</div></div>
+        <div data-tile="fs-open" style="background:#eff6ff;padding:12px;border-radius:8px;cursor:pointer;"><div style="font-size:11px;color:#1d4ed8;font-weight:700;">OPEN</div><div data-tile-count="fs-open" style="font-size:22px;font-weight:800;">${d.open_exceptions}</div></div>
+        <div data-tile="fs-escalated" style="background:#fef3c7;padding:12px;border-radius:8px;cursor:pointer;"><div style="font-size:11px;color:#92400e;font-weight:700;">ESCALATED</div><div data-tile-count="fs-escalated" style="font-size:22px;font-weight:800;">${d.escalated_exceptions}</div></div>
+        <div data-tile="fs-director" style="background:#fee2e2;padding:12px;border-radius:8px;cursor:pointer;"><div style="font-size:11px;color:#991b1b;font-weight:700;">TO DIRECTOR</div><div data-tile-count="fs-director" style="font-size:22px;font-weight:800;">${d.director_exceptions}</div></div>
+        <div data-tile="fs-safety" style="background:#f3f4f6;padding:12px;border-radius:8px;cursor:pointer;"><div style="font-size:11px;color:#374151;font-weight:700;">SAFETY RED</div><div data-tile-count="fs-safety" style="font-size:22px;font-weight:800;">${d.safety_red_count}</div></div>
       </div>
       <h3 style="margin-bottom:10px;">Tech compliance (rolling 30 days)</h3>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;">${tilesHtml}</div>
     `;
+    // PC.gateBadge — 5S dashboard tiles. Filter functions resolve against the
+    //  exceptions list when the user clicks the tile.
+    if (typeof PC !== 'undefined' && PC.gateBadge) {
+      try {
+        const t1 = body.querySelector('[data-tile-count="fs-open"]');
+        if (t1) PC.gateBadge(t1, d.open_exceptions, 'fs_exception', function (e) { return e && e.status === 'open'; });
+        const t2 = body.querySelector('[data-tile-count="fs-escalated"]');
+        if (t2) PC.gateBadge(t2, d.escalated_exceptions, 'fs_exception', function (e) { return e && e.status === 'escalated'; });
+        const t3 = body.querySelector('[data-tile-count="fs-director"]');
+        if (t3) PC.gateBadge(t3, d.director_exceptions, 'fs_exception', function (e) { return e && e.escalated_to_director; });
+        const t4 = body.querySelector('[data-tile-count="fs-safety"]');
+        if (t4) PC.gateBadge(t4, d.safety_red_count, 'fs_exception', function (e) { return e && e.severity === 'safety_loto'; });
+      } catch(_) {}
+    }
     // 5S+KPI signal hints
     for (const c of (d.compliance || [])) {
       if (c.band === 'red') {
@@ -8082,23 +8164,50 @@
     }
   }
   async function fsRenderAudits(body) {
-    const audits = await api('GET', '/api/admin/5s/audits?limit=100');
+    const audits = await api('GET', '/api/admin/5s/audits?limit=100').catch(function(e){
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return null;
+      throw e;
+    });
+    if (!audits) return;
     if (!audits.length) { body.innerHTML = '<div style="color:var(--muted);">No audits recorded yet.</div>'; return; }
+    const _gateFS = (typeof PC !== 'undefined' && PC.gateLinkHtml);
     body.innerHTML = `
       <table>
         <thead><tr><th>ID</th><th>When</th><th>Asset</th><th>Phase</th><th>Auditor</th><th>Result</th></tr></thead>
-        <tbody>${audits.map(a=>`
-          <tr style="cursor:pointer;" onclick="fsOpenAudit(${a.id})">
+        <tbody>${audits.map(a=>{
+          // asset_code → fs_asset (FIXME: fs_asset detail route does not exist
+          //  in current SPA; helper renders text-only fallback link).
+          const assetCell = (_gateFS && a.asset_id)
+            ? PC.gateLinkHtml('fs_asset', a.asset_id, a.asset_code || ('#'+a.asset_id), {})
+            : (a.asset_code || a.asset_id);
+          // Auditor — when auditor_kind is 'tech', link to technician.
+          const auditorCell = (_gateFS && a.auditor_kind === 'tech' && a.auditor_id)
+            ? PC.gateLinkHtml('technician', a.auditor_id, esc(a.auditor_kind)+':'+a.auditor_id, {})
+            : (esc(a.auditor_kind)+':'+a.auditor_id);
+          return `
+          <tr data-pc-row-fsaudit="${a.id}">
             <td>#${a.id}</td>
             <td>${esc((a.audit_ts||'').slice(0,16).replace('T',' '))}</td>
-            <td>${a.asset_id}</td>
+            <td>${assetCell}</td>
             <td>${esc(a.phase)}</td>
-            <td>${esc(a.auditor_kind)}:${a.auditor_id}</td>
+            <td>${auditorCell}</td>
             <td>${a.overall_pass ? '<span style="color:#059669;font-weight:700;">PASS</span>' : '<span style="color:#dc2626;font-weight:700;">FAIL</span>'}</td>
-          </tr>`).join('')}
+          </tr>`;
+        }).join('')}
         </tbody>
       </table>
     `;
+    // FIXME: fs_audit detail route exists (fsOpenAudit) but no dedicated SPA
+    //  route — the row click opens the existing audit-detail modal.
+    if (typeof PC !== 'undefined' && PC.gateRow) {
+      body.querySelectorAll('tr[data-pc-row-fsaudit]').forEach(function (tr) {
+        const aid = Number(tr.getAttribute('data-pc-row-fsaudit'));
+        PC.gateRow(tr, 'fs_audit', aid, {
+          onClick: function () { fsOpenAudit(aid); },
+          ariaLabel: 'View 5S audit #' + aid,
+        });
+      });
+    }
   }
   async function fsOpenAudit(id) {
     let d;
@@ -8179,23 +8288,45 @@
     document.getElementById('modal-fsAuditDetail').classList.add('open');
   }
   async function fsRenderExceptions(body) {
-    const rows = await api('GET', '/api/admin/5s/exceptions?status=open');
-    const esc2 = rows.length ? rows.map(e=>`
-      <tr>
-        <td>#${e.id}</td>
+    const rows = await api('GET', '/api/admin/5s/exceptions?status=open').catch(function(e){
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return null;
+      throw e;
+    });
+    if (!rows) return;
+    const _gateFS = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    const esc2 = rows.length ? rows.map(e=>{
+      // Sensitive-value gating: description (and any resolution/override
+      //  detail) collapses to "—" when viewer cannot read exception record.
+      //  Kind/status badges remain.
+      const _exVis = (typeof PC === 'undefined' || !PC.canRead) ? true : PC.canRead('fs_exception', e.id);
+      const auditCell = (_gateFS && e.audit_id)
+        ? PC.gateLinkHtml('fs_audit', e.audit_id, '#'+e.audit_id, {onClick: 'function(){ fsOpenAudit(' + e.audit_id + '); }'})
+        : (e.audit_id ? '#'+e.audit_id : '—');
+      const assetCell = (_gateFS && e.asset_id)
+        ? PC.gateLinkHtml('fs_asset', e.asset_id, e.asset_code || ('#'+e.asset_id), {})
+        : (e.asset_code || e.asset_id || '—');
+      const techCell = (_gateFS && e.tech_id)
+        ? PC.gateLinkHtml('technician', e.tech_id, e.tech_name || ('tech '+e.tech_id), {})
+        : (e.tech_name || (e.tech_id ? 'tech '+e.tech_id : ''));
+      return `
+      <tr data-pc-row-fsex="${e.id}">
+        <td>#${e.id} <span style="font-size:10px;color:var(--muted);">audit ${auditCell} · ${assetCell}${techCell?' · '+techCell:''}</span></td>
         <td>${esc((e.opened_at||'').slice(0,16).replace('T',' '))}</td>
         <td>${esc(e.category)}</td>
-        <td>${e.severity==='safety_loto'?'<span style="background:#fee2e2;color:#991b1b;padding:2px 6px;border-radius:8px;font-size:11px;font-weight:700;">SAFETY</span>':'normal'}</td>
+        <td>${e.severity==='safety_loto'?'<span class="pc-stop-prop" style="background:#fee2e2;color:#991b1b;padding:2px 6px;border-radius:8px;font-size:11px;font-weight:700;">SAFETY</span>':'normal'}</td>
         <td>${esc(e.status)}</td>
-        <td>${esc((e.description||'').slice(0,80))}</td>
+        <td>${_exVis ? esc((e.description||'').slice(0,80)) : '<span style="color:var(--muted);">—</span>'}</td>
         <td style="white-space:nowrap;">
-          ${can('fs:exception_resolve') ? `<button class="btn btn-edit btn-sm" onclick="fsResolve(${e.id})">Resolve</button>` : ''}
-          ${can('fs:exception_escalate_director') ? `<button class="btn btn-danger btn-sm" style="margin-left:4px;" onclick="fsEscalate(${e.id})">Escalate</button>` : ''}
+          ${can('fs:exception_resolve') ? `<button class="btn btn-edit btn-sm pc-stop-prop" onclick="event.stopPropagation();fsResolve(${e.id})">Resolve</button>` : ''}
+          ${can('fs:exception_escalate_director') ? `<button class="btn btn-danger btn-sm pc-stop-prop" style="margin-left:4px;" onclick="event.stopPropagation();fsEscalate(${e.id})">Escalate</button>` : ''}
         </td>
-      </tr>`).join('') : '<tr><td colspan="7" class="empty">No open exceptions.</td></tr>';
+      </tr>`;
+    }).join('') : '<tr><td colspan="7" class="empty">No open exceptions.</td></tr>';
     body.innerHTML = `<table>
       <thead><tr><th>ID</th><th>Opened</th><th>Category</th><th>Severity</th><th>Status</th><th>Description</th><th>Actions</th></tr></thead>
       <tbody>${esc2}</tbody></table>`;
+    // FIXME: fs_exception has no dedicated detail route; leaving rows without
+    //  a click handler (badges + buttons still actionable via stop-prop).
   }
   async function fsResolve(id) {
     const note = prompt('Resolution note (required):', '');
@@ -8209,19 +8340,32 @@
     catch (e) { toast(e.message,'error'); }
   }
   async function fsRenderAssets(body) {
-    const assets = await api('GET', '/api/admin/5s/assets?active_only=false');
+    const assets = await api('GET', '/api/admin/5s/assets?active_only=false').catch(function(e){
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return null;
+      throw e;
+    });
+    if (!assets) return;
+    const _gateFS = (typeof PC !== 'undefined' && PC.gateLinkHtml);
     body.innerHTML = `
-      ${can('fs:asset_manage') ? '<button class="btn btn-primary btn-sm" onclick="fsAddAsset()" style="margin-bottom:10px;">+ Add Asset</button>' : ''}
+      ${can('fs:asset_manage') ? '<button class="btn btn-primary btn-sm pc-stop-prop" onclick="fsAddAsset()" style="margin-bottom:10px;">+ Add Asset</button>' : ''}
       <table>
         <thead><tr><th>Code</th><th>Type</th><th>Label</th><th>Tech</th><th>Active</th></tr></thead>
-        <tbody>${assets.length ? assets.map(a => `
+        <tbody>${assets.length ? assets.map(a => {
+          const codeCell = (_gateFS)
+            ? PC.gateLinkHtml('fs_asset', a.id, a.asset_code || ('#'+a.id), {})
+            : `<span class="code-pill">${esc(a.asset_code)}</span>`;
+          const techCell = (_gateFS && a.assigned_tech_id)
+            ? PC.gateLinkHtml('technician', a.assigned_tech_id, a.assigned_tech_name || ('tech '+a.assigned_tech_id), {})
+            : (a.assigned_tech_id || '—');
+          return `
           <tr style="${a.active?'':'opacity:0.5;'}">
-            <td><span class="code-pill">${esc(a.asset_code)}</span></td>
+            <td>${codeCell}</td>
             <td>${esc(a.asset_type)}</td>
             <td>${esc(a.label)}</td>
-            <td>${a.assigned_tech_id || '—'}</td>
+            <td>${techCell}</td>
             <td>${a.active ? 'yes' : 'no'}</td>
-          </tr>`).join('') : '<tr><td colspan="5" class="empty">No assets.</td></tr>'}
+          </tr>`;
+        }).join('') : '<tr><td colspan="5" class="empty">No assets.</td></tr>'}
         </tbody>
       </table>
     `;
@@ -8238,14 +8382,19 @@
     catch (e) { toast(e.message,'error'); }
   }
   async function fsRenderCompliance(body) {
-    const list = await api('GET', '/api/admin/5s/compliance');
+    const list = await api('GET', '/api/admin/5s/compliance').catch(function(e){
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return null;
+      throw e;
+    });
+    if (!list) return;
     if (!list.length) { body.innerHTML = '<div style="color:var(--muted);">No technicians or no audits yet.</div>'; return; }
+    const _gateFS = (typeof PC !== 'undefined' && PC.gateLinkHtml);
     body.innerHTML = `
       <table>
         <thead><tr><th>Tech</th><th>Band</th><th>Score</th><th>Audits</th><th>Safety</th><th>4-wk trend</th></tr></thead>
         <tbody>${list.map(c=>`
           <tr>
-            <td><strong>${esc(c.name||('tech '+c.tech_id))}</strong></td>
+            <td>${(_gateFS && c.tech_id) ? PC.gateLinkHtml('technician', c.tech_id, c.name||('tech '+c.tech_id), {}) : `<strong>${esc(c.name||('tech '+c.tech_id))}</strong>`}</td>
             <td><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${fsBandColor(c.band)};margin-right:6px;"></span>${c.band.toUpperCase()}</td>
             <td>${c.score_pct}%</td>
             <td>${c.pass_audits}/${c.total_audits}</td>
@@ -8975,21 +9124,48 @@
       if (!rows.length) {
         tbody.innerHTML = '<tr><td colspan="8" style="padding:20px;text-align:center;color:#888;">No delegations.</td></tr>';
       } else {
+        const _gateDg = (typeof PC !== 'undefined' && PC.gateLinkHtml);
         tbody.innerHTML = rows.map(r => {
-          const scope = (r.delegation_type === 'power') ? 'ALL (Power)'
-                      : (r.delegation_type === 'record_type') ? esc(r.scope_record_type || '')
-                      : `${esc(r.scope_record_type || '')} #${r.scope_record_id}`;
+          // Sensitive-value gating: grantor_notes / scope detail collapse to
+          //  "—" when viewer cannot read the delegation record. Recipient name
+          //  + status badge always render.
+          const _dgVis = (typeof PC === 'undefined' || !PC.canRead) ? true : PC.canRead('delegation', r.id);
+          // Grantor — always admin_user (FIXME: admin_user has no detail route)
+          const grantorCell = _gateDg
+            ? PC.gateLinkHtml('admin_user', r.grantor_id, r.grantor_name || ('#'+r.grantor_id), {})
+            : ('#'+r.grantor_id);
+          // Recipient — kind-dependent
+          let recipientCell = '#'+r.recipient_id;
+          if (_gateDg && r.recipient_id) {
+            const rkind = (r.recipient_kind === 'tech' || r.recipient_kind === 'technician') ? 'technician' : 'admin_user';
+            recipientCell = PC.gateLinkHtml(rkind, r.recipient_id, r.recipient_name || ('#'+r.recipient_id), {});
+          }
+          let scope;
+          if (r.delegation_type === 'power') {
+            scope = 'ALL (Power)';
+          } else if (r.delegation_type === 'record_type') {
+            scope = esc(r.scope_record_type || '');
+          } else {
+            // record-scoped — link the underlying scope record where possible
+            if (_gateDg && r.scope_record_type && r.scope_record_id && _dgVis) {
+              scope = esc(r.scope_record_type) + ' ' + PC.gateLinkHtml(r.scope_record_type, r.scope_record_id, '#'+r.scope_record_id, {});
+            } else if (_dgVis) {
+              scope = `${esc(r.scope_record_type || '')} #${r.scope_record_id}`;
+            } else {
+              scope = '<span style="color:var(--muted);">—</span>';
+            }
+          }
           const status = r.revoked_at ? `Revoked (${esc(r.revoke_kind || '')})` : 'Active';
           const canRevoke = !r.revoked_at && (currentAdmin && (currentAdmin.role === 'super_admin' || currentAdmin.id === r.grantor_id));
           const actions = canRevoke
-            ? `<button class="btn btn-danger btn-sm" onclick="revokeDelegation(${r.id})">Revoke</button>`
+            ? `<button class="btn btn-danger btn-sm pc-stop-prop" onclick="event.stopPropagation();revokeDelegation(${r.id})">Revoke</button>`
             : '';
           return `<tr>
-            <td>#${r.grantor_id}</td>
-            <td>#${r.recipient_id}</td>
+            <td>${grantorCell}</td>
+            <td>${recipientCell}</td>
             <td>${esc(r.delegation_type)}</td>
             <td>${scope}</td>
-            <td>${esc(r.permission_level || '—')}</td>
+            <td>${_dgVis ? esc(r.permission_level || '—') : '<span style="color:var(--muted);">—</span>'}</td>
             <td>${esc(r.valid_until || 'Permanent')}</td>
             <td>${status}</td>
             <td>${actions}</td>
@@ -8997,6 +9173,7 @@
         }).join('');
       }
     } catch (e) {
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return;
       tbody.innerHTML = '<tr><td colspan="8" style="padding:14px;color:var(--danger);">Failed to load.</td></tr>';
     }
     // Re-grant queue — super_admin only
