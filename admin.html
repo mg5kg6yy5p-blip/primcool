@@ -2689,6 +2689,21 @@
     setTimeout(_maybeOpenVisitFromHash, 60);
     // Honor /admin#technician/{id} deep-link for super_admin
     setTimeout(_maybeOpenTechnicianFromHash, 60);
+    // ── Pattern A: re-render Tier A lists once the PC access-bundle resolves so
+    //    PC.gateRow / PC.gateLinkHtml gating reflects actual permissions.
+    if (typeof PC !== 'undefined' && PC.access) {
+      PC.access().then(function () {
+        try { if (typeof renderCustomerTable === 'function') renderCustomerTable(); } catch(_) {}
+        try { if (typeof renderVisitTable    === 'function') renderVisitTable();    } catch(_) {}
+        try { if (typeof renderInvoices      === 'function') renderInvoices();      } catch(_) {}
+        try { if (typeof loadArAging         === 'function') loadArAging();         } catch(_) {}
+        try { if (typeof renderTechs         === 'function') renderTechs();         } catch(_) {}
+        try { if (typeof kpiRenderScoreboard === 'function') kpiRenderScoreboard(); } catch(_) {}
+        try { if (typeof kpiRenderFlagQueue  === 'function') kpiRenderFlagQueue();  } catch(_) {}
+        try { if (typeof renderCdfVisits     === 'function' && cdfState && cdfState.customer) renderCdfVisits(); } catch(_) {}
+        try { if (typeof renderTdfJobs       === 'function' && tdfState && tdfState.tech) renderTdfJobs(); } catch(_) {}
+      }).catch(function (e) { try { console.warn('access-bundle load failed:', e); } catch(_) {} });
+    }
   }
 
   function applyRoleVisibility() {
@@ -3038,23 +3053,36 @@
       const isActive = c.active !== 0 && c.active !== false;
       const ctype = c.customer_type || 'residential';
       const safeName = esc(c.name);
+      const nameLink = (typeof PC !== 'undefined' && PC.gateLinkHtml)
+        ? PC.gateLinkHtml('customer', c.id, c.name || '', {onClick: 'function(){ routeCustomerDetail(' + c.id + '); }'})
+        : `<strong>${safeName}</strong>`;
       return `
-      <tr class="pc-row-clickable" tabindex="0" role="button" aria-label="View customer ${safeName}" onclick="routeCustomerDetail(${c.id})" onkeydown="pcRowKey(event, function(){ routeCustomerDetail(${c.id}); })" style="${isActive ? '' : 'opacity:0.55;'}">
-        <td><span class="code-pill">${c.customer_code}</span>${c.has_pin ? '' : '<br><span class="badge" style="background:#fee2e2;color:#991b1b;margin-top:4px;display:inline-block;">No PIN</span>'}${!isActive ? '<br><span class="badge" style="background:#f3f4f6;color:var(--muted);margin-top:4px;display:inline-block;">Closed</span>' : ''}</td>
-        <td><strong>${safeName}</strong>${ctype === 'commercial' ? ' <span class="badge" style="background:#eff6ff;color:#1d4ed8;font-size:10px;">Commercial</span>' : ''}</td>
+      <tr data-pc-row-customer="${c.id}" style="${isActive ? '' : 'opacity:0.55;'}">
+        <td><span class="code-pill">${c.customer_code}</span>${c.has_pin ? '' : '<br><span class="badge pc-stop-prop" style="background:#fee2e2;color:#991b1b;margin-top:4px;display:inline-block;">No PIN</span>'}${!isActive ? '<br><span class="badge pc-stop-prop" style="background:#f3f4f6;color:var(--muted);margin-top:4px;display:inline-block;">Closed</span>' : ''}</td>
+        <td><strong>${nameLink}</strong>${ctype === 'commercial' ? ' <span class="badge pc-stop-prop" style="background:#eff6ff;color:#1d4ed8;font-size:10px;">Commercial</span>' : ''}</td>
         <td>${c.company || '—'}</td>
         <td>${c.phone || '—'}</td>
         <td style="white-space:nowrap;" onclick="event.stopPropagation();">
-          <button class="btn btn-edit btn-sm" onclick="event.stopPropagation();routeCustomerDetail(${c.id})">View →</button>
-          <button class="btn btn-edit btn-sm" onclick="event.stopPropagation();openResetCustomerPin(${c.id},'${safeName}')" style="margin-left:6px;">${c.has_pin ? 'Reset PIN' : 'Set PIN'}</button>
+          <button class="btn btn-edit btn-sm pc-stop-prop" onclick="event.stopPropagation();routeCustomerDetail(${c.id})">View →</button>
+          <button class="btn btn-edit btn-sm pc-stop-prop" onclick="event.stopPropagation();openResetCustomerPin(${c.id},'${safeName}')" style="margin-left:6px;">${c.has_pin ? 'Reset PIN' : 'Set PIN'}</button>
           ${can('customer:delete') ? (
             isActive
-              ? `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();openOffboard('customer',${c.id},'${safeName}')" style="margin-left:6px;">🚪 Close</button>`
-              : `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();reinstateAccount('customer',${c.id})" style="margin-left:6px;">Reopen</button>`
+              ? `<button class="btn btn-danger btn-sm pc-stop-prop" onclick="event.stopPropagation();openOffboard('customer',${c.id},'${safeName}')" style="margin-left:6px;">🚪 Close</button>`
+              : `<button class="btn btn-ghost btn-sm pc-stop-prop" onclick="event.stopPropagation();reinstateAccount('customer',${c.id})" style="margin-left:6px;">Reopen</button>`
           ) : ''}
         </td>
       </tr>`;
     }).join('');
+    // PC.gateRow decoration — clickable row + keyboard a11y for entities the user can read.
+    if (typeof PC !== 'undefined' && PC.gateRow) {
+      tbody.querySelectorAll('tr[data-pc-row-customer]').forEach(function (tr) {
+        const cid = Number(tr.getAttribute('data-pc-row-customer'));
+        PC.gateRow(tr, 'customer', cid, {
+          onClick: function () { routeCustomerDetail(cid); },
+          ariaLabel: 'View customer ' + cid,
+        });
+      });
+    }
   }
 
   function openCustomerDetail(id) {
@@ -3114,6 +3142,10 @@
       loadCdfEquipment();
       loadCdfVisits();
     } catch(e) {
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) {
+        showCustomerList();
+        return;
+      }
       toast('Unable to load customer: ' + e.message, 'error');
       showCustomerList();
     }
@@ -3162,9 +3194,8 @@
       tbody.innerHTML = cdfState.equipment.map(e => {
         const notes = (e.notes || '');
         const short = notes.length > 100 ? notes.slice(0,100) + '…' : notes;
-        const isSuper = currentAdmin && currentAdmin.role === 'super_admin';
-        const nameCell = isSuper
-          ? `<a href="#" onclick="event.preventDefault();openEquipmentDetail(${e.id});" style="color:var(--navy);font-weight:600;text-decoration:underline;cursor:pointer;" aria-label="Open equipment detail for ${escHtml(e.name)}"><strong>${escHtml(e.name)}</strong></a>`
+        const nameCell = (typeof PC !== 'undefined' && PC.gateLinkHtml)
+          ? PC.gateLinkHtml('equipment', e.id, e.name || '', {onClick: 'function(){ openEquipmentDetail(' + e.id + '); }'})
           : `<strong>${escHtml(e.name)}</strong>`;
         return `<tr>
           <td>${nameCell}</td>
@@ -3314,6 +3345,7 @@
     if (!rows.length) {
       tbody.innerHTML = '<tr><td colspan="7" class="empty">No service history for this customer.</td></tr>';
     } else {
+      const _gate = (typeof PC !== 'undefined' && PC.gateLinkHtml);
       tbody.innerHTML = rows.map(v => {
         const vt = (v.visit_type||'').toUpperCase();
         const typeBadge = vt === 'PM'
@@ -3330,16 +3362,31 @@
         const scope = v.scope_of_work || v.work_done_summary || v.work_done || '';
         const shortScope = scope.length > 100 ? scope.slice(0,100)+'…' : scope;
         const when = fmtDateTime(v.scheduled_date, v.scheduled_time) || fmtDate(v.completed_date) || fmtDate(v.created_at) || '—';
-        return `<tr>
+        const equipCell = (v.equipment_id && _gate)
+          ? PC.gateLinkHtml('equipment', v.equipment_id, v.equipment_name || '—', {onClick: 'function(){ pcOpenEquipment(' + (v.customer_id||cdfState.customer.id) + ',' + v.equipment_id + '); }'})
+          : (escHtml(v.equipment_name) || '—');
+        const techCell = (v.assigned_tech_id && _gate)
+          ? PC.gateLinkHtml('technician', v.assigned_tech_id, v.tech_name || '—', {})
+          : (escHtml(v.tech_name) || '—');
+        return `<tr data-pc-row-visit="${v.id}">
           <td>${when}</td>
           <td>${typeBadge}</td>
-          <td>${escHtml(v.equipment_name) || '—'}</td>
-          <td>${escHtml(v.tech_name) || '—'}</td>
+          <td>${equipCell}</td>
+          <td>${techCell}</td>
           <td><span class="badge" style="background:${statusBg};color:${statusFg};">${escHtml(statusLabel)}</span></td>
           <td title="${escHtml(scope)}">${escHtml(shortScope) || '—'}</td>
-          <td><button class="btn btn-ghost btn-sm" onclick="cdfViewVisit(${v.id})">View →</button></td>
+          <td><button class="btn btn-ghost btn-sm pc-stop-prop" onclick="event.stopPropagation();cdfViewVisit(${v.id})">View →</button></td>
         </tr>`;
       }).join('');
+      if (typeof PC !== 'undefined' && PC.gateRow) {
+        tbody.querySelectorAll('tr[data-pc-row-visit]').forEach(function (tr) {
+          const vid = Number(tr.getAttribute('data-pc-row-visit'));
+          PC.gateRow(tr, 'visit', vid, {
+            onClick: function () { if (typeof routeVisitDetail==='function') routeVisitDetail(vid); else cdfViewVisit(vid); },
+            ariaLabel: 'View visit #' + vid,
+          });
+        });
+      }
     }
     const start = cdfState.total ? ((cdfState.page-1)*cdfState.limit)+1 : 0;
     const end   = Math.min(cdfState.page*cdfState.limit, cdfState.total);
@@ -3556,6 +3603,10 @@
       renderVdfCallbacks();
       loadVdfPhotos();
     } catch (e) {
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) {
+        closeVisitDetailFull();
+        return;
+      }
       if ((e.message || '').indexOf('403') >= 0) {
         toast('Insufficient permission — super_admin only', 'error');
       } else {
@@ -3598,8 +3649,10 @@
     document.getElementById('vdf-breadcrumb-customer').textContent = v.customer_name || '—';
     document.getElementById('vdf-breadcrumb-id').textContent = '#' + v.id;
 
-    const linkCustomer = `<a href="#" onclick="event.preventDefault();vdfOpenCustomer(${v.customer_id});" style="color:var(--navy);font-weight:600;text-decoration:underline;">${escHtml(v.customer_name || '—')}</a>`;
-    const customerCell = (currentAdmin && currentAdmin.role === 'super_admin') ? linkCustomer : (escHtml(v.customer_name) || '—');
+    const _gate = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    const customerCell = _gate
+      ? PC.gateLinkHtml('customer', v.customer_id, v.customer_name || '—', {onClick: 'function(){ vdfOpenCustomer(' + v.customer_id + '); }'})
+      : (escHtml(v.customer_name) || '—');
     document.getElementById('vdf-customer-name').innerHTML = customerCell;
 
     const sched = fmtDateTime(v.scheduled_date, v.scheduled_time) || '—';
@@ -3609,19 +3662,18 @@
         <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);font-weight:600;margin-bottom:2px;">${label}</div>
         <div style="color:var(--text);">${val || '—'}</div>
       </div>`;
-    const isSuper = (currentAdmin && currentAdmin.role === 'super_admin');
-    const techCellLink = (v.assigned_tech_id && isSuper)
-      ? `<a href="#technician/${v.assigned_tech_id}" class="pc-link">${escHtml(v.tech_name || '—')}</a>`
+    const techCellLink = (v.assigned_tech_id && _gate)
+      ? PC.gateLinkHtml('technician', v.assigned_tech_id, v.tech_name || '—', {})
       : escHtml(v.tech_name || '—');
-    const invoiceCellLink = (v.invoice_id && isSuper)
-      ? `<a href="#invoice/${v.invoice_id}/edit" class="pc-link">${escHtml(v.invoice_number || ('#' + v.invoice_id))}</a>`
+    const invoiceCellLink = (v.invoice_id && _gate)
+      ? PC.gateLinkHtml('invoice', v.invoice_id, v.invoice_number || ('#' + v.invoice_id), {onClick: 'function(){ pcGoInvoice(' + v.invoice_id + '); }'})
       : (v.invoice_number ? escHtml(v.invoice_number) : '—');
     document.getElementById('vdf-meta-grid').innerHTML = [
       fld('Customer',         customerCell),
       fld('Customer Type',    ctypeBadge),
       fld('Equipment',
-        (v.equipment_id && isSuper)
-          ? `<a href="#" class="pc-link" onclick="event.preventDefault();openEquipmentDetailFromVisit(${v.customer_id}, ${v.equipment_id});">${escHtml(v.equipment_name || '—')}</a>`
+        (v.equipment_id && _gate)
+          ? PC.gateLinkHtml('equipment', v.equipment_id, v.equipment_name || '—', {onClick: 'function(){ openEquipmentDetailFromVisit(' + v.customer_id + ',' + v.equipment_id + '); }'})
           : escHtml(v.equipment_name)),
       fld('Visit Type',       typeBadge),
       fld('Status',           statusBadge),
@@ -4924,22 +4976,22 @@
       return;
     }
     const isSuper = (currentAdmin && currentAdmin.role === 'super_admin');
+    const _gate = (typeof PC !== 'undefined' && PC.gateLinkHtml);
     tbody.innerHTML = rows.map(v => {
       const tech = allTechs.find(t => t.id === v.assigned_tech_id);
-      const techLinked = (tech && isSuper)
-        ? `<a href="#technician/${tech.id}" class="pc-link" onclick="event.stopPropagation();" aria-label="View technician ${escHtml(tech.name)}"><strong>${escHtml(tech.name)}</strong></a><br><span class="code-pill">${tech.tech_code}</span>`
-        : (tech ? `<strong>${escHtml(tech.name)}</strong><br><span class="code-pill">${tech.tech_code}</span>` : '<span style="color:var(--muted);">Unassigned</span>');
-      const custLinked = isSuper
-        ? `<a href="#customer/${v.customer_id}" class="pc-link" onclick="event.stopPropagation();" aria-label="View customer ${escHtml(v.customer_name)}"><strong>${escHtml(v.customer_name)}</strong></a><br><span class="code-pill">${v.customer_code}</span>`
+      const techLinked = tech
+        ? (_gate
+            ? PC.gateLinkHtml('technician', tech.id, tech.name, {}) + '<br><span class="code-pill">' + tech.tech_code + '</span>'
+            : `<strong>${escHtml(tech.name)}</strong><br><span class="code-pill">${tech.tech_code}</span>`)
+        : '<span style="color:var(--muted);">Unassigned</span>';
+      const custLinked = _gate
+        ? PC.gateLinkHtml('customer', v.customer_id, v.customer_name, {}) + '<br><span class="code-pill">' + escHtml(v.customer_code) + '</span>'
         : `<strong>${escHtml(v.customer_name)}</strong><br><span class="code-pill">${v.customer_code}</span>`;
-      const equipLinked = (v.equipment_id && isSuper)
-        ? `<a href="#" class="pc-link" onclick="event.stopPropagation();event.preventDefault();pcOpenEquipment(${v.customer_id}, ${v.equipment_id});" aria-label="View equipment ${escHtml(v.equipment_name||'')}">${escHtml(v.equipment_name || '—')}</a>`
+      const equipLinked = (v.equipment_id && _gate)
+        ? PC.gateLinkHtml('equipment', v.equipment_id, v.equipment_name || '—', {onClick: 'function(){ pcOpenEquipment(' + v.customer_id + ',' + v.equipment_id + '); }'})
         : (v.equipment_name || '—');
-      const rowClick = isSuper
-        ? `class="pc-row-clickable" tabindex="0" role="button" aria-label="View visit #${v.id}" onclick="routeVisitDetail(${v.id})" onkeydown="pcRowKey(event, function(){ routeVisitDetail(${v.id}); })"`
-        : '';
       return `
-      <tr ${rowClick}>
+      <tr data-pc-row-visit="${v.id}">
         <td>${custLinked}</td>
         <td><span class="badge badge-${v.visit_type.toLowerCase()}">${v.visit_type}</span></td>
         <td><span class="badge badge-${v.status}">${v.status.replace('_',' ')}</span></td>
@@ -4952,10 +5004,19 @@
           <button class="btn btn-edit btn-sm" onclick="event.stopPropagation();openEditVisit(${v.id})" style="margin-left:6px;">Edit</button>
           ${v.status === 'completed' && can('visit:flag') ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();toggleVisitFlag(${v.id}, ${v.flagged_for_review ? 'false' : 'true'})" style="margin-left:6px;${v.flagged_for_review ? 'background:#fef3c7;color:#92400e;border-color:#fcd34d;' : ''}">${v.flagged_for_review ? '🚩 Flagged' : 'Flag for review'}</button>` : ''}
           ${v.status === 'completed' && can('invoice:create') ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();generateInvoiceFromVisit(${v.id})" style="margin-left:6px;background:#059669;">+ Invoice</button>` : ''}
-          <button class="btn btn-danger btn-sm" onclick="event.stopPropagation();deleteVisit(${v.id})" style="margin-left:6px;">Delete</button>
+          <button class="btn btn-danger btn-sm pc-stop-prop" onclick="event.stopPropagation();deleteVisit(${v.id})" style="margin-left:6px;">Delete</button>
         </td>
       </tr>`;
     }).join('');
+    if (typeof PC !== 'undefined' && PC.gateRow) {
+      tbody.querySelectorAll('tr[data-pc-row-visit]').forEach(function (tr) {
+        const vid = Number(tr.getAttribute('data-pc-row-visit'));
+        PC.gateRow(tr, 'visit', vid, {
+          onClick: function () { routeVisitDetail(vid); },
+          ariaLabel: 'View visit #' + vid,
+        });
+      });
+    }
   }
 
   async function toggleVisitFlag(visitId, flagged) {
@@ -5690,7 +5751,7 @@
       const cells = order.map(k => {
         const b = buckets[k] || {label:k, count:0, total_outstanding:0};
         const active = invoiceAgingBucket === k ? 'box-shadow:0 0 0 2px #22A08A;' : '';
-        return `<div class="pc-aging-bucket-clickable" tabindex="0" role="button" aria-label="Filter invoices by ${escHtml(b.label)}" onclick="setInvoiceAgingFilter('${k}')" onkeydown="pcRowKey(event, function(){ setInvoiceAgingFilter('${k}'); })" style="${colors[k]||''};padding:10px;border-radius:8px;${active}">
+        return `<div class="pc-aging-bucket-clickable" data-bucket="${k}" tabindex="0" role="button" aria-label="Filter invoices by ${escHtml(b.label)}" onclick="setInvoiceAgingFilter('${k}')" onkeydown="pcRowKey(event, function(){ setInvoiceAgingFilter('${k}'); })" style="${colors[k]||''};padding:10px;border-radius:8px;${active}">
           <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.6px;font-weight:700;opacity:0.9;">${escHtml(b.label)}</div>
           <div style="font-size:18px;font-weight:700;margin-top:4px;">${fmt(cur(b))}</div>
           <div style="font-size:11px;opacity:0.85;">${b.count} invoice${b.count===1?'':'s'}</div>
@@ -5702,7 +5763,7 @@
           <h3 style="margin:0;color:var(--navy);">Accounts Receivable Aging</h3>
           <span style="font-size:12px;color:var(--muted);">as of ${escHtml(a.as_of)} · total outstanding <strong>${fmt(a.grand_total)}</strong></span>
         </div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;">${cells}</div>
+        <div id="ar-aging-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;">${cells}</div>
         ${top5.length ? `
           <div style="margin-top:14px;font-size:11px;text-transform:uppercase;letter-spacing:0.6px;color:var(--muted);font-weight:700;">Top customers by outstanding</div>
           <table style="width:100%;font-size:13px;margin-top:6px;">
@@ -5716,6 +5777,13 @@
               </tr>`).join('')}</tbody>
           </table>
         ` : ''}`;
+      // Wire each aging bucket as a PC.gateBadge for keyboard / click + access gating.
+      if (typeof PC !== 'undefined' && PC.gateBadge) {
+        order.forEach(function (k) {
+          const el = host.querySelector('.pc-aging-bucket-clickable[data-bucket="' + k + '"]');
+          if (el) PC.gateBadge(el, '', 'invoice', function () { setInvoiceAgingFilter(k); });
+        });
+      }
     } catch (e) {
       host.innerHTML = `<div style="color:var(--muted);font-size:13px;">AR aging unavailable: ${escHtml(e.message)}</div>`;
     }
@@ -5795,7 +5863,7 @@
       tbody.innerHTML = '<tr><td colspan="9" class="empty">No invoices match this filter.</td></tr>';
       return;
     }
-    const isSuper = (currentAdmin && currentAdmin.role === 'super_admin');
+    const _gate = (typeof PC !== 'undefined' && PC.gateLinkHtml);
     tbody.innerHTML = rows.map(i => {
       const balance = (i.total || 0) - (i.amount_paid || 0);
       const overdue = isOverdue(i);
@@ -5806,18 +5874,14 @@
       const statusFg = {
         draft: '#374151', sent: '#92400e', overdue: '#991b1b', paid: '#065f46', cancelled: '#6b7280'
       }[statusLabel] || '#374151';
-      // FIXME: no read-only invoice detail view yet — row click routes to edit view (closest equivalent).
-      const rowClick = (isSuper && i.customer_id)
-        ? `class="pc-row-clickable" tabindex="0" role="button" aria-label="View invoice ${escHtml(i.invoice_number)}" onclick="pcGoInvoice(${i.id})" onkeydown="pcRowKey(event, function(){ pcGoInvoice(${i.id}); })"`
-        : '';
-      const custLink = (isSuper && i.customer_id)
-        ? `<a href="#customer/${i.customer_id}" class="pc-link" onclick="event.stopPropagation();" aria-label="View customer ${escHtml(i.customer_name)}"><strong>${escHtml(i.customer_name)}</strong></a>`
+      const custLink = (_gate && i.customer_id)
+        ? PC.gateLinkHtml('customer', i.customer_id, i.customer_name || '', {})
         : `<strong>${escHtml(i.customer_name)}</strong>`;
-      const companyLink = (i.company_name && isSuper && i.customer_id)
-        ? `<br><a href="#customer/${i.customer_id}" class="pc-link" onclick="event.stopPropagation();" style="font-size:11px;" aria-label="View customer ${escHtml(i.customer_name)}">${escHtml(i.company_name)}</a>`
+      const companyLink = (i.company_name && _gate && i.customer_id)
+        ? '<br>' + PC.gateLinkHtml('customer', i.customer_id, i.company_name, {})
         : (i.company_name ? `<br><span style="font-size:11px;color:var(--muted);">${escHtml(i.company_name)}</span>` : '');
       return `
-        <tr ${rowClick}>
+        <tr data-pc-row-invoice="${i.id}">
           <td><span class="code-pill">${escHtml(i.invoice_number)}</span></td>
           <td>${custLink}${companyLink}<br><span style="font-size:11px;color:var(--muted);">${escHtml(i.customer_code)}</span></td>
           <td style="white-space:nowrap;">${fmtDate(i.issue_date)}</td>
@@ -5831,10 +5895,36 @@
             ${(i.status === 'draft' || i.status === 'sent') && can('invoice:update') ? `<button class="btn btn-edit btn-sm" onclick="event.stopPropagation();openInvoiceModal(${i.id})" style="margin-left:4px;">Edit</button>` : ''}
             ${i.status === 'draft' && can('invoice:update') ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();markInvoiceStatus(${i.id},'sent')" style="margin-left:4px;background:#059669;">Send</button>` : ''}
             ${(i.status === 'sent' || overdue) && balance > 0.005 && can('invoice:record_payment') ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();openPaymentModal(${i.id})" style="margin-left:4px;">+ Payment</button>` : ''}
-            ${(i.status === 'draft' || i.status === 'cancelled') && can('invoice:delete') ? `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();deleteInvoiceCmd(${i.id},'${escHtml(i.invoice_number)}')" style="margin-left:4px;">Delete</button>` : ''}
+            ${(i.status === 'draft' || i.status === 'cancelled') && can('invoice:delete') ? `<button class="btn btn-danger btn-sm pc-stop-prop" onclick="event.stopPropagation();deleteInvoiceCmd(${i.id},'${escHtml(i.invoice_number)}')" style="margin-left:4px;">Delete</button>` : ''}
           </td>
         </tr>`;
     }).join('');
+    if (typeof PC !== 'undefined' && PC.gateRow) {
+      tbody.querySelectorAll('tr[data-pc-row-invoice]').forEach(function (tr) {
+        const iid = Number(tr.getAttribute('data-pc-row-invoice'));
+        PC.gateRow(tr, 'invoice', iid, {
+          onClick: function () { pcGoInvoice(iid); },
+          ariaLabel: 'View invoice ' + iid,
+        });
+      });
+    }
+
+    // Wire summary metric tiles + AR-aging buckets via PC.gateBadge.
+    if (typeof PC !== 'undefined' && PC.gateBadge) {
+      const tilesHost = document.getElementById('inv-totals');
+      if (tilesHost) {
+        const tiles = tilesHost.querySelectorAll('.summary-card, [data-summary-card]');
+        const filters = [
+          function () { setInvoiceFilter('sent', document.querySelector('#invoiceFilters .filter-btn[data-filter="sent"]') || document.querySelector('#invoiceFilters .filter-btn')); },
+          function () { setInvoiceFilter('overdue', document.querySelector('#invoiceFilters .filter-btn[data-filter="overdue"]') || document.querySelector('#invoiceFilters .filter-btn')); },
+          null,
+          null,
+        ];
+        tiles.forEach(function (el, idx) {
+          if (filters[idx]) PC.gateBadge(el, '', 'invoice', filters[idx]);
+        });
+      }
+    }
   }
 
   // ── Invoice create/edit modal ──
