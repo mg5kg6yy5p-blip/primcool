@@ -2322,6 +2322,11 @@ async def tech_upload_photo(
     visit_id: int,
     category: str = Form(...),
     file:     UploadFile = File(...),
+    # Chain-of-custody metadata — all OPTIONAL. The PWA captures and sends
+    # what it can; we stamp the server-side fields regardless. Client values
+    # are recorded as 'client-claimed', never trusted as authoritative on
+    # their own.
+    client_meta: Optional[str]  = Form(None),   # JSON blob, see schema in OpManual 8.10
 ):
     tech_id = _require_tech(request)
     visit   = get_visit_by_id(visit_id)
@@ -2343,8 +2348,57 @@ async def tech_upload_photo(
     out_path = PHOTOS_DIR / fname
     out_path.write_bytes(body)
 
-    photo_id = create_photo(visit_id, category, fname, tech_id)
-    return {"id": photo_id, "filename": fname, "url": _sign_photo_url(fname), "category": category}
+    # ── Metadata assembly ────────────────────────────────────────────────
+    # Server-authoritative fields are stamped here from the request; the
+    # client payload (geo + device + camera) is parsed defensively and
+    # promoted only for fields we recognise. Anything else lands in the
+    # encrypted client_meta_json catch-all.
+    meta = {
+        "server_ip": _client_ip(request),
+        "server_ua": (request.headers.get("user-agent") or "")[:512],
+    }
+    if client_meta:
+        try:
+            cm = _json.loads(client_meta)
+            if not isinstance(cm, dict):
+                cm = {}
+        except Exception:
+            cm = {}
+        # Promote known keys to typed columns. Cap strings; reject absurd
+        # values silently rather than 400 — we never let a bad meta payload
+        # block a photo upload.
+        def _s(v, n=255):
+            try: return str(v)[:n] if v is not None else None
+            except Exception: return None
+        def _f(v):
+            try: return float(v) if v is not None else None
+            except Exception: return None
+        def _i(v):
+            try: return int(v) if v is not None else None
+            except Exception: return None
+        meta["client_captured_at"] = _s(cm.get("client_captured_at"), 40)
+        meta["geo_lat"]            = _f(cm.get("geo", {}).get("lat") if isinstance(cm.get("geo"), dict) else None)
+        meta["geo_lng"]            = _f(cm.get("geo", {}).get("lng") if isinstance(cm.get("geo"), dict) else None)
+        meta["geo_accuracy_m"]     = _f(cm.get("geo", {}).get("accuracy_m") if isinstance(cm.get("geo"), dict) else None)
+        meta["geo_captured_at"]    = _s(cm.get("geo", {}).get("captured_at") if isinstance(cm.get("geo"), dict) else None, 40)
+        meta["device_platform"]    = _s(cm.get("device", {}).get("platform") if isinstance(cm.get("device"), dict) else None, 64)
+        meta["device_model"]       = _s(cm.get("device", {}).get("model") if isinstance(cm.get("device"), dict) else None, 128)
+        meta["device_screen"]      = _s(cm.get("device", {}).get("screen") if isinstance(cm.get("device"), dict) else None, 48)
+        meta["camera_facing"]      = _s(cm.get("camera", {}).get("facing") if isinstance(cm.get("camera"), dict) else None, 32)
+        meta["camera_width"]       = _i(cm.get("camera", {}).get("width") if isinstance(cm.get("camera"), dict) else None)
+        meta["camera_height"]      = _i(cm.get("camera", {}).get("height") if isinstance(cm.get("camera"), dict) else None)
+        meta["network_type"]       = _s(cm.get("network_type"), 32)
+        meta["app_version"]        = _s(cm.get("app_version"), 32)
+        # Anything else the client sent that we didn't promote — keep it.
+        promoted = {"client_captured_at", "geo", "device", "camera",
+                    "network_type", "app_version"}
+        leftover = {k: v for k, v in cm.items() if k not in promoted}
+        if leftover:
+            meta["client_meta_json"] = _json.dumps(leftover)[:8000]
+
+    photo_id = create_photo(visit_id, category, fname, tech_id, metadata=meta)
+    return {"id": photo_id, "filename": fname,
+            "url": _sign_photo_url(fname), "category": category}
 
 
 @app.delete("/api/tech/photos/{photo_id}")
@@ -4554,6 +4608,18 @@ def admin_delete_tech(request: Request, tech_id: int):
                 target_label=tech["tech_code"],
                 before=tech)
     return {"ok": True}
+
+
+@app.get("/api/admin/photos/{photo_id}/meta")
+def admin_photo_meta(request: Request, photo_id: int):
+    """Full chain-of-custody metadata for a single photo: server stamps
+    + client claims (geo, device, camera). Gated by visit:view_photos
+    so HR/inv_mgr can't pull tech geolocation history."""
+    _require_perm(request, "visit:view_photos")
+    p = get_photo_by_id(photo_id)
+    if not p:
+        raise HTTPException(404, "Photo not found")
+    return p
 
 
 @app.get("/api/admin/visits/{visit_id}/photos")

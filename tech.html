@@ -1043,9 +1043,19 @@
   }
 
   function photoTile(p, canDelete) {
+    // Chain-of-custody chip: shows what the system actually captured for
+    // this photo so the tech can confirm geo+timestamp made it through.
+    const cap = p.client_captured_at ? new Date(p.client_captured_at).toLocaleString() : null;
+    const geo = (p.geo_lat != null && p.geo_lng != null)
+      ? `📍 ${Number(p.geo_lat).toFixed(4)}, ${Number(p.geo_lng).toFixed(4)} (±${Math.round(p.geo_accuracy_m || 0)}m)`
+      : null;
+    const chips = [];
+    if (cap) chips.push(`<span title="captured ${esc(cap)}" style="background:rgba(0,0,0,0.55);color:white;font-size:9px;padding:1px 5px;border-radius:8px;">🕒 ${esc(new Date(p.client_captured_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}))}</span>`);
+    if (geo) chips.push(`<span title="${esc(geo)}" style="background:rgba(0,0,0,0.55);color:white;font-size:9px;padding:1px 5px;border-radius:8px;">📍</span>`);
     return `
       <div class="photo-item" onclick="event.target.tagName==='BUTTON'||openLightbox('${p.url}')">
         <span class="photo-cat">${p.category}</span>
+        ${chips.length ? `<div style="position:absolute;bottom:4px;left:4px;display:flex;gap:3px;pointer-events:none;">${chips.join('')}</div>` : ''}
         ${canDelete ? `<button class="photo-del" onclick="event.stopPropagation();deletePhoto(${p.id})">×</button>` : ''}
         <img src="${p.url}" alt="${p.category}" loading="lazy">
       </div>`;
@@ -1161,6 +1171,70 @@
     } catch (e) { toast(e.message, 'error'); }
   }
 
+  // ── App-version constant (bumped on each PWA release) ─────────────────
+  const PC_APP_VERSION = 'tech-1.4.0';
+
+  // Best-effort geolocation. Returns null on permission denial / timeout
+  // / unavailable. NEVER throws — a missing geo must not block the upload.
+  function _captureGeolocation(timeoutMs = 8000) {
+    return new Promise(resolve => {
+      if (!navigator.geolocation) return resolve(null);
+      let settled = false;
+      const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+      const t = setTimeout(() => done(null), timeoutMs);
+      navigator.geolocation.getCurrentPosition(
+        pos => {
+          clearTimeout(t);
+          done({
+            lat:          pos.coords.latitude,
+            lng:          pos.coords.longitude,
+            accuracy_m:   pos.coords.accuracy,
+            captured_at:  new Date(pos.timestamp).toISOString(),
+          });
+        },
+        _err => { clearTimeout(t); done(null); },
+        { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: 30000 }
+      );
+    });
+  }
+
+  // Device info gathered from APIs available everywhere we ship.
+  function _captureDevice() {
+    const uad = navigator.userAgentData;
+    return {
+      platform: (uad && uad.platform) || navigator.platform || '',
+      model:    navigator.userAgent || '',     // server caps + encrypts in server_ua
+      screen:   `${screen.width}x${screen.height}@${window.devicePixelRatio || 1}`,
+    };
+  }
+
+  // Camera info — only useful when the photo originated from getUserMedia.
+  // For the legacy file-input path we pass null so the columns stay empty.
+  function _captureCameraFromTrack(track) {
+    if (!track) return null;
+    try {
+      const s = track.getSettings ? track.getSettings() : {};
+      return {
+        facing: s.facingMode || null,
+        width:  s.width  || null,
+        height: s.height || null,
+      };
+    } catch { return null; }
+  }
+
+  async function _assembleClientMeta(cameraInfo) {
+    const geo = await _captureGeolocation();
+    const conn = navigator.connection || {};
+    return {
+      client_captured_at: new Date().toISOString(),
+      geo:                geo,                          // may be null
+      device:             _captureDevice(),
+      camera:             cameraInfo,                   // may be null
+      network_type:       conn.effectiveType || null,
+      app_version:        PC_APP_VERSION,
+    };
+  }
+
   async function uploadPhoto(category, inputEl) {
     const file = inputEl.files[0];
     if (!file) return;
@@ -1171,9 +1245,16 @@
     }
     const btn = document.getElementById(`upload-${category}`);
     btn.classList.add('uploading');
+
+    // Capture metadata BEFORE the upload so even slow geo lookup doesn't
+    // race the network call. Geolocation prompt may appear here on first
+    // use — handled by the browser, not by us.
+    const meta = await _assembleClientMeta(null);
+
     const fd = new FormData();
-    fd.append('category', category);
-    fd.append('file', file);
+    fd.append('category',   category);
+    fd.append('file',       file);
+    fd.append('client_meta', JSON.stringify(meta));
     try {
       await api('POST', `/api/tech/jobs/${currentJob.id}/photos`, fd);
       toast(`${category === 'before' ? 'Before' : 'After'} photo added`, 'success');

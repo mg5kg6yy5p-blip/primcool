@@ -144,6 +144,10 @@ _PII_RAND = {
                               "contact_person_phone"],
     "visit_signatures":     ["signature_b64"],
     "payslips":             ["notes"],
+    # Photo metadata: free-text catch-all + the full UA are encrypted at rest.
+    # Numeric geo / camera fields stay readable so we can render maps later
+    # without bulk-decryption. server_ip is short and useful for plain joins.
+    "visit_photos":         ["server_ua", "client_meta_json"],
 }
 # Columns that need equality lookup → deterministic encryption + blind index.
 _PII_DET = {
@@ -645,6 +649,43 @@ def init_db():
             uploaded_at   TEXT NOT NULL
         )
     """)
+    # Idempotent additions — chain-of-custody metadata. Two groups:
+    #   server_*  → authoritative; stamped by the API on receipt.
+    #   client_*  → captured in the PWA at shutter time; can be wrong/missing
+    #                 if the user denied permission or the clock is off.
+    # We keep both so a reviewer always knows which is which.
+    photo_cols = {row[1] for row in con.execute("PRAGMA table_info(visit_photos)")}
+    for col, sql in (
+        # Authoritative — server-side stamps
+        ("server_ip",          "ALTER TABLE visit_photos ADD COLUMN server_ip TEXT"),
+        ("server_ua",          "ALTER TABLE visit_photos ADD COLUMN server_ua TEXT"),
+        # Client-captured wall-clock at shutter (ISO 8601 with timezone)
+        ("client_captured_at", "ALTER TABLE visit_photos ADD COLUMN client_captured_at TEXT"),
+        # Geolocation (lat/lng/accuracy in meters; ISO captured_at). Kept
+        # plaintext numeric for any future map overlay; if you later need
+        # to encrypt, the column types don't have to change.
+        ("geo_lat",            "ALTER TABLE visit_photos ADD COLUMN geo_lat REAL"),
+        ("geo_lng",            "ALTER TABLE visit_photos ADD COLUMN geo_lng REAL"),
+        ("geo_accuracy_m",     "ALTER TABLE visit_photos ADD COLUMN geo_accuracy_m REAL"),
+        ("geo_captured_at",    "ALTER TABLE visit_photos ADD COLUMN geo_captured_at TEXT"),
+        # Device — short identifiers; the full UA is in server_ua.
+        ("device_platform",    "ALTER TABLE visit_photos ADD COLUMN device_platform TEXT"),
+        ("device_model",       "ALTER TABLE visit_photos ADD COLUMN device_model TEXT"),
+        ("device_screen",      "ALTER TABLE visit_photos ADD COLUMN device_screen TEXT"),
+        # Camera (only meaningful when getUserMedia path is used)
+        ("camera_facing",      "ALTER TABLE visit_photos ADD COLUMN camera_facing TEXT"),
+        ("camera_width",       "ALTER TABLE visit_photos ADD COLUMN camera_width INTEGER"),
+        ("camera_height",      "ALTER TABLE visit_photos ADD COLUMN camera_height INTEGER"),
+        # Network + app context
+        ("network_type",       "ALTER TABLE visit_photos ADD COLUMN network_type TEXT"),
+        ("app_version",        "ALTER TABLE visit_photos ADD COLUMN app_version TEXT"),
+        # Catch-all for anything we don't promote to a column — encrypted at
+        # rest like other free-text PII fields. Kept compact (no images).
+        ("client_meta_json",   "ALTER TABLE visit_photos ADD COLUMN client_meta_json TEXT"),
+    ):
+        if col not in photo_cols:
+            try: con.execute(sql)
+            except sqlite3.OperationalError: pass
     con.execute("""
         CREATE TABLE IF NOT EXISTS reviews (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1872,14 +1913,42 @@ def delete_tech(tech_id: int):
 
 # ── Visit Photos ──────────────────────────────────────────────────────────────
 
-def create_photo(visit_id: int, category: str, filename: str, tech_id: int = None) -> int:
+_PHOTO_META_COLS = (
+    "server_ip", "server_ua",
+    "client_captured_at",
+    "geo_lat", "geo_lng", "geo_accuracy_m", "geo_captured_at",
+    "device_platform", "device_model", "device_screen",
+    "camera_facing", "camera_width", "camera_height",
+    "network_type", "app_version",
+    "client_meta_json",
+)
+
+
+def create_photo(visit_id: int, category: str, filename: str,
+                  tech_id: int = None, metadata: dict = None) -> int:
+    """metadata is a dict whose keys are a subset of _PHOTO_META_COLS.
+    Encrypted columns (server_ua, client_meta_json) go through _enc_dict.
+    Unknown keys are silently ignored."""
+    import json as _json
+    md = dict(metadata or {})
+    # Normalise: client_meta_json may arrive as a dict — store as JSON string.
+    if isinstance(md.get("client_meta_json"), (dict, list)):
+        md["client_meta_json"] = _json.dumps(md["client_meta_json"])
+    # Encrypt the at-rest columns named in the registry.
+    md_enc = _enc_dict("visit_photos", md)
+    # Build dynamic INSERT including only the meta columns the caller passed.
+    cols  = ["visit_id", "category", "filename", "uploaded_by", "uploaded_at"]
+    vals  = [visit_id, category, filename, tech_id,
+             datetime.now(timezone.utc).isoformat()]
+    for k in _PHOTO_META_COLS:
+        if k in md_enc and md_enc[k] is not None:
+            cols.append(k)
+            vals.append(md_enc[k])
+    placeholders = ", ".join("?" for _ in vals)
     con = _con()
     cur = con.execute(
-        """
-        INSERT INTO visit_photos (visit_id, category, filename, uploaded_by, uploaded_at)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (visit_id, category, filename, tech_id, datetime.now(timezone.utc).isoformat()),
+        f"INSERT INTO visit_photos ({', '.join(cols)}) VALUES ({placeholders})",
+        vals,
     )
     photo_id = cur.lastrowid
     con.commit()
@@ -1894,14 +1963,14 @@ def get_visit_photos(visit_id: int):
         (visit_id,),
     ).fetchall()
     con.close()
-    return [dict(r) for r in rows]
+    return _dec_rows("visit_photos", rows)
 
 
 def get_photo_by_id(photo_id: int):
     con = _con()
     row = con.execute("SELECT * FROM visit_photos WHERE id = ?", (photo_id,)).fetchone()
     con.close()
-    return dict(row) if row else None
+    return _dec_row("visit_photos", row) if row else None
 
 
 def delete_photo(photo_id: int):
