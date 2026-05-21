@@ -356,6 +356,183 @@
       header { padding: 0 16px; }
       .card { padding: 20px 16px; }
     }
+
+    /* ── My Account view ───────────────────────────────────────────── */
+    .view-tabs {
+      display: flex;
+      gap: 4px;
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 4px;
+      margin-bottom: 24px;
+      width: fit-content;
+    }
+    .view-tab {
+      background: transparent;
+      border: none;
+      padding: 8px 18px;
+      border-radius: 7px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--muted);
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+      font-family: inherit;
+    }
+    .view-tab:hover { color: var(--navy); }
+    .view-tab.active { background: var(--navy); color: white; }
+
+    /* Profile card */
+    .profile-card {
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 22px 24px;
+    }
+    .profile-head {
+      display: flex; align-items: center; gap: 16px;
+      padding-bottom: 16px; margin-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
+    }
+    .profile-avatar {
+      width: 54px; height: 54px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #22A08A 0%, #0B2545 100%);
+      color: white; display: flex; align-items: center; justify-content: center;
+      font-weight: 700; font-size: 20px; flex-shrink: 0;
+    }
+    .profile-id { flex: 1; min-width: 0; }
+    .profile-name { font-size: 17px; font-weight: 700; color: var(--navy); }
+    .profile-code { font-family: 'Courier New', monospace; font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .badge-acct-res  { background: #dbeafe; color: #1e40af; }
+    .badge-acct-com  { background: #ccfbf1; color: #115e59; }
+    .badge-status-active { background: #d1fae5; color: #065f46; }
+    .badge-status-closed { background: #e5e7eb; color: #374151; }
+
+    .profile-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+    }
+    .profile-field .pf-label {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.6px; color: var(--muted); margin-bottom: 4px;
+    }
+    .profile-field .pf-val {
+      font-size: 14px; color: var(--text); white-space: pre-line; word-break: break-word;
+    }
+    .profile-field .pf-val.muted { color: var(--muted); font-style: italic; }
+    .profile-note {
+      margin-top: 18px;
+      padding: 12px 14px;
+      background: var(--light);
+      border-left: 3px solid var(--teal);
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    /* Equipment table */
+    .data-table {
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .data-table table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .data-table th {
+      text-align: left; padding: 12px 14px;
+      background: var(--light);
+      color: var(--muted);
+      font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px;
+      font-weight: 700;
+      border-bottom: 1px solid var(--border);
+    }
+    .data-table td { padding: 12px 14px; border-bottom: 1px solid var(--border); color: var(--text); vertical-align: top; }
+    .data-table tr:last-child td { border-bottom: none; }
+    .data-table tr.clickable { cursor: pointer; }
+    .data-table tr.clickable:hover { background: #fafbfc; }
+    .data-table td.num { font-variant-numeric: tabular-nums; }
+
+    .filter-bar {
+      display: flex; gap: 10px; align-items: center;
+      margin-bottom: 12px; flex-wrap: wrap;
+    }
+    .filter-bar label {
+      font-size: 12px; font-weight: 600; color: var(--muted);
+    }
+    .filter-bar select {
+      padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border);
+      font-size: 13px; background: white; font-family: inherit; color: var(--text);
+    }
+    .pager {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 10px 14px; background: var(--light);
+      border-top: 1px solid var(--border); font-size: 12px; color: var(--muted);
+    }
+    .pager button {
+      background: white; border: 1px solid var(--border);
+      padding: 5px 12px; border-radius: 6px; font-size: 12px;
+      font-weight: 600; cursor: pointer; color: var(--navy);
+    }
+    .pager button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .unpaid-banner {
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      border-left: 4px solid #dc2626;
+      border-radius: 10px;
+      padding: 14px 18px;
+      margin-bottom: 14px;
+      color: #7f1d1d;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .unpaid-banner strong { color: #991b1b; }
+    .badge-inv-unpaid    { background: #fee2e2; color: #991b1b; }
+    .badge-inv-partial   { background: #fef3c7; color: #92400e; }
+    .badge-inv-paid      { background: #d1fae5; color: #065f46; }
+    .badge-inv-cancelled { background: #e5e7eb; color: #6b7280; }
+
+    .inv-actions {
+      display: inline-flex; gap: 6px;
+    }
+    .inv-actions a, .inv-actions button {
+      background: white; border: 1px solid var(--border);
+      padding: 4px 10px; border-radius: 6px; font-size: 12px;
+      color: var(--navy); cursor: pointer; text-decoration: none; font-weight: 600;
+      font-family: inherit;
+    }
+    .inv-actions a:hover, .inv-actions button:hover { background: var(--light); }
+
+    /* Toast */
+    .toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: var(--navy); color: white;
+      padding: 12px 22px; border-radius: 8px;
+      font-size: 13px; z-index: 2000;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+      opacity: 0; pointer-events: none; transition: opacity 0.2s;
+    }
+    .toast.show { opacity: 1; }
+
+    .spinner {
+      width: 24px; height: 24px;
+      border: 3px solid #e0e5eb;
+      border-top-color: var(--teal);
+      border-radius: 50%;
+      animation: spin 0.9s linear infinite;
+      margin: 24px auto;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    @media (max-width: 600px) {
+      .data-table { overflow-x: auto; }
+      .data-table table { min-width: 560px; }
+    }
   </style>
 </head>
 <body>
@@ -372,6 +549,15 @@
   <div class="container">
     <div class="page-title" id="pageTitle">Loading…</div>
     <div class="page-sub" id="pageSub"></div>
+
+    <!-- View tab switcher -->
+    <div class="view-tabs" role="tablist" aria-label="Dashboard view">
+      <button type="button" class="view-tab active" id="tab-overview" role="tab" aria-selected="true" onclick="switchView('overview')">Overview</button>
+      <button type="button" class="view-tab" id="tab-account" role="tab" aria-selected="false" onclick="switchView('account')">My Account</button>
+    </div>
+
+    <!-- ── Overview view (existing) ───────────────────────────── -->
+    <div id="view-overview">
 
     <!-- Summary cards -->
     <div class="summary-grid">
@@ -438,6 +624,70 @@
         <button class="btn-leave" onclick="openReviewModal('company')">Leave Annual Review</button>
       </div>
     </section>
+    </div><!-- /view-overview -->
+
+    <!-- ── My Account view ───────────────────────────────────────── -->
+    <div id="view-account" style="display:none;">
+
+      <!-- Profile -->
+      <section>
+        <div class="section-title">Profile</div>
+        <div id="acctProfile">
+          <div class="spinner"></div>
+        </div>
+      </section>
+
+      <!-- Equipment -->
+      <section>
+        <div class="section-title">My Equipment</div>
+        <div id="acctEquipment">
+          <div class="spinner"></div>
+        </div>
+      </section>
+
+      <!-- Service history -->
+      <section>
+        <div class="section-title">My Service History</div>
+        <div class="filter-bar">
+          <label for="histFilter">Visit Type:</label>
+          <select id="histFilter" onchange="renderHistory()">
+            <option value="all">All</option>
+            <option value="PM">Preventive (PM)</option>
+            <option value="CM">Corrective (CM)</option>
+          </select>
+        </div>
+        <div id="acctHistory">
+          <div class="spinner"></div>
+        </div>
+      </section>
+
+      <!-- Invoices -->
+      <section>
+        <div class="section-title">My Invoices</div>
+        <div id="acctInvoices">
+          <div class="spinner"></div>
+        </div>
+      </section>
+
+    </div><!-- /view-account -->
+
+  </div>
+
+  <!-- Toast -->
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <!-- Visit detail modal -->
+  <div class="modal-overlay" id="visitDetailModal">
+    <div class="modal" style="max-width:620px;">
+      <div class="modal-h">
+        <h3 id="visitDetailTitle">Service Visit</h3>
+        <button class="modal-close" onclick="closeVisitDetail()">×</button>
+      </div>
+      <div class="modal-b" id="visitDetailBody"></div>
+      <div class="modal-f">
+        <button class="btn-ghost" onclick="closeVisitDetail()">Close</button>
+      </div>
+    </div>
   </div>
 
   <!-- Lightbox -->
@@ -1198,6 +1448,341 @@
       const el = document.getElementById('acct-error');
       el.textContent = msg; el.style.display = 'block';
     }
+
+    // ── My Account view ──────────────────────────────────────────────────
+    let acctInvoices = [];
+    let histPage = 0;
+    const HIST_PAGE_SIZE = 10;
+
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.classList.add('show');
+      clearTimeout(showToast._timer);
+      showToast._timer = setTimeout(() => t.classList.remove('show'), 2400);
+    }
+
+    function switchView(which) {
+      const isAccount = which === 'account';
+      document.getElementById('view-overview').style.display = isAccount ? 'none' : '';
+      document.getElementById('view-account').style.display  = isAccount ? '' : 'none';
+      document.getElementById('tab-overview').classList.toggle('active', !isAccount);
+      document.getElementById('tab-account').classList.toggle('active', isAccount);
+      document.getElementById('tab-overview').setAttribute('aria-selected', String(!isAccount));
+      document.getElementById('tab-account').setAttribute('aria-selected', String(isAccount));
+      try {
+        history.replaceState(null, '', '#' + which);
+      } catch {}
+      if (isAccount) renderMyAccount();
+    }
+
+    function initials(name) {
+      return String(name || '?').split(/\s+/).filter(Boolean).slice(0, 2)
+        .map(s => s[0].toUpperCase()).join('') || '?';
+    }
+    function ymd(s) {
+      if (!s) return null;
+      return String(s).slice(0, 10);
+    }
+
+    function renderMyAccount() {
+      if (!dashboardData) return;
+      renderProfile();
+      renderAcctEquipment();
+      histPage = 0;
+      renderHistory();
+      renderAcctInvoices();
+    }
+
+    function renderProfile() {
+      const c = dashboardData.customer || {};
+      const isCom = (c.customer_type || '').toLowerCase() === 'commercial';
+      const acctBadge = isCom
+        ? `<span class="badge badge-acct-com">Commercial</span>`
+        : `<span class="badge badge-acct-res">Residential</span>`;
+      // `active` is the canonical flag on customers; treat absence as active.
+      const isActive = (c.active === undefined || c.active === null) ? true : !!c.active;
+      const statusBadge = isActive
+        ? `<span class="badge badge-status-active">Active</span>`
+        : `<span class="badge badge-status-closed">Closed</span>`;
+
+      const fields = [
+        { l: 'Email',           v: c.email },
+        { l: 'Phone',           v: c.phone },
+        { l: 'Mailing Address', v: c.address },
+        { l: 'Company',         v: c.company },
+        { l: 'Member Since',    v: ymd(c.created_at) },
+      ];
+
+      document.getElementById('acctProfile').innerHTML = `
+        <div class="profile-card">
+          <div class="profile-head">
+            <div class="profile-avatar">${esc(initials(c.name))}</div>
+            <div class="profile-id">
+              <div class="profile-name">${esc(c.name || '—')}</div>
+              <div class="profile-code">${esc(c.customer_code || '')}</div>
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;">
+              ${acctBadge}
+              ${statusBadge}
+            </div>
+          </div>
+          <div class="profile-grid">
+            ${fields.map(f => `
+              <div class="profile-field">
+                <div class="pf-label">${esc(f.l)}</div>
+                <div class="pf-val${f.v ? '' : ' muted'}">${f.v ? esc(f.v) : 'Not on file'}</div>
+              </div>`).join('')}
+          </div>
+          <div class="profile-note">
+            To update your contact information, please contact PrimeCool Support.
+          </div>
+        </div>`;
+    }
+
+    function lastServiceFor(equipmentId) {
+      const visits = (dashboardData.visits || [])
+        .filter(v => v.equipment_id === equipmentId && v.status === 'completed' && v.completed_date)
+        .sort((a, b) => (b.completed_date || '').localeCompare(a.completed_date || ''));
+      return visits[0] ? ymd(visits[0].completed_date) : null;
+    }
+
+    function renderAcctEquipment() {
+      const eqs = dashboardData.equipment || [];
+      const el = document.getElementById('acctEquipment');
+      if (!eqs.length) {
+        el.innerHTML = `
+          <div class="empty-state">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="6" width="18" height="14" rx="2"/><path d="M8 6V4h8v2"/></svg>
+            <p>No equipment registered. Once we set up service, your equipment will appear here.</p>
+          </div>`;
+        return;
+      }
+      const rows = eqs.map(eq => {
+        const last = lastServiceFor(eq.id);
+        return `
+          <tr>
+            <td>${esc(eq.name || '—')}</td>
+            <td>${esc(eq.type || '—')}</td>
+            <td>${esc(eq.model || '—')}</td>
+            <td>${esc(eq.location || '—')}</td>
+            <td class="num">${last ? esc(last) : '<span style="color:var(--muted);">—</span>'}</td>
+          </tr>`;
+      }).join('');
+      el.innerHTML = `
+        <div class="data-table">
+          <table>
+            <thead>
+              <tr><th>Name</th><th>Type</th><th>Model</th><th>Location</th><th>Last Service</th></tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>`;
+    }
+
+    function renderHistory() {
+      const filter = document.getElementById('histFilter').value;
+      const all = (dashboardData.visits || []).slice();
+      all.sort((a, b) => {
+        const ad = a.completed_date || a.scheduled_date || '';
+        const bd = b.completed_date || b.scheduled_date || '';
+        return bd.localeCompare(ad);
+      });
+      const filtered = filter === 'all' ? all : all.filter(v => v.visit_type === filter);
+      const el = document.getElementById('acctHistory');
+      if (!filtered.length) {
+        el.innerHTML = `
+          <div class="empty-state">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            <p>No service history yet.</p>
+          </div>`;
+        return;
+      }
+      const totalPages = Math.max(1, Math.ceil(filtered.length / HIST_PAGE_SIZE));
+      if (histPage >= totalPages) histPage = totalPages - 1;
+      if (histPage < 0) histPage = 0;
+      const start = histPage * HIST_PAGE_SIZE;
+      const page  = filtered.slice(start, start + HIST_PAGE_SIZE);
+
+      const typeBadge = t => t === 'PM'
+        ? '<span class="badge" style="background:#d1fae5;color:#065f46;">PM</span>'
+        : '<span class="badge" style="background:#ffedd5;color:#9a3412;">CM</span>';
+
+      const rows = page.map(v => {
+        const date = ymd(v.completed_date || v.scheduled_date) || '—';
+        const scope = v.work_done_summary || v.scope || '';
+        const scopeShort = scope.length > 100 ? scope.slice(0, 100) + '…' : scope;
+        return `
+          <tr class="clickable" onclick='openVisitDetail(${v.id})'>
+            <td class="num">${esc(date)}</td>
+            <td>${typeBadge(v.visit_type)}</td>
+            <td>${esc(v.equipment_name || '—')}</td>
+            <td>${badge(v.status)}</td>
+            <td>${esc(scopeShort) || '<span style="color:var(--muted);">—</span>'}</td>
+          </tr>`;
+      }).join('');
+
+      el.innerHTML = `
+        <div class="data-table">
+          <table>
+            <thead>
+              <tr><th>Visit Date</th><th>Type</th><th>Equipment</th><th>Status</th><th>Scope</th></tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+          <div class="pager">
+            <span>Page ${histPage + 1} of ${totalPages} · ${filtered.length} visit${filtered.length === 1 ? '' : 's'}</span>
+            <span>
+              <button onclick="histPage--;renderHistory();" ${histPage === 0 ? 'disabled' : ''}>‹ Prev</button>
+              <button onclick="histPage++;renderHistory();" ${histPage >= totalPages - 1 ? 'disabled' : ''}>Next ›</button>
+            </span>
+          </div>
+        </div>`;
+    }
+
+    function openVisitDetail(visitId) {
+      const v = (dashboardData.visits || []).find(x => x.id === visitId);
+      if (!v) return;
+      const date = ymd(v.completed_date || v.scheduled_date) || '—';
+      const typeFull = v.visit_type === 'PM' ? 'Preventive Maintenance' : 'Corrective Maintenance';
+      document.getElementById('visitDetailTitle').textContent = `${typeFull} — ${date}`;
+
+      const rows = [
+        v.scheduled_date  ? ['Scheduled',   `${fmt(v.scheduled_date) || ''}${v.scheduled_time ? ' · ' + fmtTime12(v.scheduled_time) : ''}`] : null,
+        v.completed_date  ? ['Completed',   fmt(v.completed_date) || ''] : null,
+        v.equipment_name  ? ['Equipment',   v.equipment_name] : null,
+        v.technician      ? ['Technician',  v.technician] : null,
+        ['Status', '__BADGE__:' + v.status],
+      ].filter(Boolean);
+
+      const scopeBlock = v.work_done_summary
+        ? `<div style="margin-top:14px;"><div class="pf-label">Work Performed</div><div class="pf-val" style="margin-top:4px;line-height:1.5;">${esc(v.work_done_summary)}</div></div>`
+        : '';
+
+      const photos = photosHtml(v.photos || []);
+
+      document.getElementById('visitDetailBody').innerHTML = `
+        <div class="profile-grid">
+          ${rows.map(([l, val]) => `
+            <div class="profile-field">
+              <div class="pf-label">${esc(l)}</div>
+              <div class="pf-val">${val.startsWith('__BADGE__:') ? badge(val.slice(10)) : esc(val)}</div>
+            </div>`).join('')}
+        </div>
+        ${scopeBlock}
+        ${photos}
+      `;
+      document.getElementById('visitDetailModal').classList.add('open');
+    }
+    function closeVisitDetail() {
+      document.getElementById('visitDetailModal').classList.remove('open');
+    }
+    document.getElementById('visitDetailModal').addEventListener('click', e => {
+      if (e.target.id === 'visitDetailModal') closeVisitDetail();
+    });
+
+    async function renderAcctInvoices() {
+      const el = document.getElementById('acctInvoices');
+      el.innerHTML = '<div class="spinner"></div>';
+      try {
+        const res = await fetch('/api/portal/invoices', {
+          headers: { 'Authorization': `Bearer ${token}` },
+        });
+        if (!res.ok) throw new Error();
+        const all = await res.json();
+        acctInvoices = all.filter(i => i.status !== 'draft');
+      } catch {
+        el.innerHTML = `<div class="empty-state"><p>Could not load invoices. Please refresh.</p></div>`;
+        return;
+      }
+      if (!acctInvoices.length) {
+        el.innerHTML = `
+          <div class="empty-state">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="16" x2="12" y2="16"/></svg>
+            <p>No invoices yet.</p>
+          </div>`;
+        return;
+      }
+      // Sort reverse chronological by issue_date
+      acctInvoices.sort((a, b) => String(b.issue_date || '').localeCompare(String(a.issue_date || '')));
+
+      // Unpaid summary
+      const unpaid = acctInvoices.filter(i => {
+        if (i.status === 'paid' || i.status === 'cancelled') return false;
+        return ((i.total || 0) - (i.amount_paid || 0)) > 0.005;
+      });
+      const totalOutstanding = unpaid.reduce(
+        (s, i) => s + ((i.total || 0) - (i.amount_paid || 0)), 0);
+      const currency = acctInvoices[0]?.currency || 'JMD';
+
+      const banner = unpaid.length ? `
+        <div class="unpaid-banner">
+          You have an outstanding balance of <strong>${fmtMoney(totalOutstanding, currency)}</strong>
+          across <strong>${unpaid.length}</strong> invoice${unpaid.length === 1 ? '' : 's'}.
+        </div>` : '';
+
+      const statusMeta = (i) => {
+        const balance = (i.total || 0) - (i.amount_paid || 0);
+        if (i.status === 'paid')      return { cls: 'badge-inv-paid',      label: 'Paid' };
+        if (i.status === 'cancelled') return { cls: 'badge-inv-cancelled', label: 'Cancelled' };
+        if ((i.amount_paid || 0) > 0 && balance > 0.005) return { cls: 'badge-inv-partial', label: 'Partially Paid' };
+        return { cls: 'badge-inv-unpaid', label: 'Unpaid' };
+      };
+
+      const rows = acctInvoices.map(i => {
+        const balance = (i.total || 0) - (i.amount_paid || 0);
+        const s = statusMeta(i);
+        return `
+          <tr>
+            <td><code style="font-family:'Courier New',monospace;font-weight:700;color:var(--navy);">${esc(i.invoice_number || '—')}</code></td>
+            <td class="num">${esc(ymd(i.issue_date) || '—')}</td>
+            <td class="num">${fmtMoney(i.total, i.currency)}</td>
+            <td class="num">${fmtMoney(i.amount_paid || 0, i.currency)}</td>
+            <td class="num"><strong>${fmtMoney(balance, i.currency)}</strong></td>
+            <td><span class="badge ${s.cls}">${s.label}</span></td>
+            <td>
+              <span class="inv-actions">
+                <a href="/portal/invoice/${i.id}" target="_blank" rel="noopener">View</a>
+                <a href="/portal/invoice/${i.id}?print=1" target="_blank" rel="noopener" onclick="showToast('Opening print view…')">Print</a>
+              </span>
+            </td>
+          </tr>`;
+      }).join('');
+
+      el.innerHTML = `
+        ${banner}
+        <div class="data-table">
+          <table>
+            <thead>
+              <tr>
+                <th>Invoice #</th>
+                <th>Issue Date</th>
+                <th>Total</th>
+                <th>Amount Paid</th>
+                <th>Outstanding</th>
+                <th>Status</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>`;
+    }
+
+    // Honor deep-link to #account on load.
+    function applyInitialView() {
+      if (window.location.hash === '#account') {
+        switchView('account');
+      }
+    }
+
+    // Wrap load() so the account view auto-renders once data arrives
+    // if the user navigated directly to #account.
+    const _origLoad = load;
+    load = async function() {
+      await _origLoad();
+      applyInitialView();
+    };
 
     load();
 
