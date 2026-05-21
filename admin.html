@@ -2702,6 +2702,7 @@
         try { if (typeof kpiRenderFlagQueue  === 'function') kpiRenderFlagQueue();  } catch(_) {}
         try { if (typeof renderCdfVisits     === 'function' && cdfState && cdfState.customer) renderCdfVisits(); } catch(_) {}
         try { if (typeof renderTdfJobs       === 'function' && tdfState && tdfState.tech) renderTdfJobs(); } catch(_) {}
+        try { if (typeof loadAudit           === 'function' && (can('audit:view_all') || can('audit:view_self'))) loadAudit(); } catch(_) {}
       }).catch(function (e) { try { console.warn('access-bundle load failed:', e); } catch(_) {} });
     }
   }
@@ -4111,6 +4112,10 @@
       loadTdfCertifications();
       loadTdfPayroll();
     } catch (e) {
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) {
+        showTechList();
+        return;
+      }
       toast('Unable to load technician: ' + e.message, 'error');
       showTechList();
     }
@@ -4420,15 +4425,23 @@
         const dur  = v.duration_min != null ? `${v.duration_min} min` : '—';
         const parts = (v.parts_cost != null) ? `J$${Math.round(v.parts_cost).toLocaleString()}` : '—';
         const rev  = (v.revenue != null) ? `J$${Math.round(v.revenue).toLocaleString()}` : '—';
+        const _gate = (typeof PC !== 'undefined' && PC.gateLinkHtml);
         const custLink = v.customer_id
-          ? `<a href="#customer/${v.customer_id}" onclick="event.preventDefault();routeCustomerDetail(${v.customer_id});" style="color:var(--navy);font-weight:600;">${escHtml(v.customer_name||v.customer_code||'—')}</a>`
+          ? (_gate
+              ? PC.gateLinkHtml('customer', v.customer_id, v.customer_name || v.customer_code || '—', {onClick: 'function(){ routeCustomerDetail(' + v.customer_id + '); }'})
+              : `<strong>${escHtml(v.customer_name||v.customer_code||'—')}</strong>`)
           : '—';
-        const visitLink = `<a href="#visit/${v.id}" onclick="event.preventDefault();routeVisitDetail(${v.id});" style="color:var(--navy);font-weight:600;">#${v.id}</a>`;
-        return `<tr>
+        const visitLink = _gate
+          ? PC.gateLinkHtml('visit', v.id, '#' + v.id, {onClick: 'function(){ routeVisitDetail(' + v.id + '); }'})
+          : `#${v.id}`;
+        const equipCell = (v.equipment_id && _gate)
+          ? PC.gateLinkHtml('equipment', v.equipment_id, v.equipment_name || '—', {onClick: 'function(){ pcOpenEquipment(' + (v.customer_id||0) + ',' + v.equipment_id + '); }'})
+          : (escHtml(v.equipment_name) || '—');
+        return `<tr data-pc-row-visit="${v.id}">
           <td>${when}</td>
           <td>${visitLink}</td>
           <td>${custLink}</td>
-          <td>${escHtml(v.equipment_name) || '—'}</td>
+          <td>${equipCell}</td>
           <td>${typeBadge}</td>
           <td><span class="badge" style="background:${statusBg};color:${statusFg};">${escHtml((status||'').replace('_',' '))}</span></td>
           <td title="Callback linkage column not yet present">—</td>
@@ -4437,6 +4450,15 @@
           <td>${rev}</td>
         </tr>`;
       }).join('');
+      if (typeof PC !== 'undefined' && PC.gateRow) {
+        tbody.querySelectorAll('tr[data-pc-row-visit]').forEach(function (tr) {
+          const vid = Number(tr.getAttribute('data-pc-row-visit'));
+          PC.gateRow(tr, 'visit', vid, {
+            onClick: function () { if (typeof routeVisitDetail==='function') routeVisitDetail(vid); },
+            ariaLabel: 'View visit #' + vid,
+          });
+        });
+      }
     }
     const start = tdfState.total ? ((tdfState.page-1)*tdfState.limit)+1 : 0;
     const end   = Math.min(tdfState.page*tdfState.limit, tdfState.total);
@@ -4469,8 +4491,13 @@
       const tt = TDF_REVIEW_TYPE_LABEL[r.review_type] || TDF_REVIEW_TYPE_LABEL.other;
       const st = TDF_REVIEW_STATUS_LABEL[r.status] || TDF_REVIEW_STATUS_LABEL.open;
       const date = (r.created_at || '').slice(0,10);
+      // Gate the per-review "view/edit" reference: if the viewer cannot read
+      // performance reviews they still see the card metadata, but the action
+      // button collapses to a no-op span.
       const editBtn = r.status === 'open'
-        ? `<button class="btn btn-ghost btn-sm" onclick="openEditTechReview(${r.id})">Edit</button>`
+        ? ((typeof PC !== 'undefined' && PC.gateLinkHtml)
+            ? PC.gateLinkHtml('review', r.id, 'Edit', {onClick: 'function(){ openEditTechReview(' + r.id + '); }'})
+            : `<button class="btn btn-ghost btn-sm pc-stop-prop" onclick="openEditTechReview(${r.id})">Edit</button>`)
         : '';
       const actions = r.action_items
         ? `<details style="margin-top:8px;"><summary style="cursor:pointer;color:var(--navy);font-weight:600;font-size:12px;">Action items</summary><div style="margin-top:6px;font-size:13px;color:var(--text);white-space:pre-wrap;">${escHtml(r.action_items)}</div></details>`
@@ -4697,6 +4724,17 @@
         el.innerHTML = '<em>No payslips generated for this technician yet.</em>';
         return;
       }
+      // Sensitive-value gating: payslip amounts only render if the viewer can
+      // read payslips for this technician. Otherwise the labels still appear
+      // but the monetary cells are masked with "—".
+      const _payVis = (typeof PC !== 'undefined' && PC.canRead && PC.canRead('payslip', null));
+      const _labelLink = function (r) {
+        const label = escHtml(r.label || '');
+        if (r.payslip_id && typeof PC !== 'undefined' && PC.gateLinkHtml) {
+          return PC.gateLinkHtml('payslip', r.payslip_id, r.label || '', {});
+        }
+        return label;
+      };
       el.innerHTML = `<table style="width:100%;font-size:12px;border-collapse:collapse;">
         <thead><tr style="text-align:left;color:var(--muted);">
           <th style="padding:4px 6px;border-bottom:1px solid var(--border);">Period</th>
@@ -4706,11 +4744,11 @@
           <th style="padding:4px 6px;border-bottom:1px solid var(--border);">Net</th>
         </tr></thead>
         <tbody>${p.rows.map(r => `<tr>
-          <td style="padding:4px 6px;border-bottom:1px solid var(--border);">${escHtml(r.label || '')}</td>
+          <td style="padding:4px 6px;border-bottom:1px solid var(--border);">${_labelLink(r)}</td>
           <td style="padding:4px 6px;border-bottom:1px solid var(--border);">${escHtml(r.period_status || '—')}</td>
-          <td style="padding:4px 6px;border-bottom:1px solid var(--border);">${r.gross_pay != null ? 'J$'+Math.round(r.gross_pay).toLocaleString() : '—'}</td>
-          <td style="padding:4px 6px;border-bottom:1px solid var(--border);">${r.bonus != null ? 'J$'+Math.round(r.bonus).toLocaleString() : '—'}</td>
-          <td style="padding:4px 6px;border-bottom:1px solid var(--border);">${r.net_pay != null ? 'J$'+Math.round(r.net_pay).toLocaleString() : '—'}</td>
+          <td style="padding:4px 6px;border-bottom:1px solid var(--border);">${_payVis && r.gross_pay != null ? 'J$'+Math.round(r.gross_pay).toLocaleString() : '—'}</td>
+          <td style="padding:4px 6px;border-bottom:1px solid var(--border);">${_payVis && r.bonus != null ? 'J$'+Math.round(r.bonus).toLocaleString() : '—'}</td>
+          <td style="padding:4px 6px;border-bottom:1px solid var(--border);">${_payVis && r.net_pay != null ? 'J$'+Math.round(r.net_pay).toLocaleString() : '—'}</td>
         </tr>`).join('')}</tbody></table>`;
     } catch (e) {
       el.innerHTML = '<em>Unable to load payroll: ' + escHtml(e.message) + '</em>';
@@ -7335,17 +7373,35 @@
       tbody.innerHTML = '<tr><td colspan="5" class="empty">No audit entries.</td></tr>';
       return;
     }
+    const _gate = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    const _actorTypeMap = {admin:'admin', tech:'technician', technician:'technician', customer:'customer'};
     tbody.innerHTML = rows.map(r => {
       const t = new Date(r.created_at);
       const when = t.toLocaleString('en-TT', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+      const actorTargetType = _actorTypeMap[r.actor_type] || r.actor_type;
+      const actorLabelHtml = r.actor_label && r.actor_id && _gate && actorTargetType
+        ? PC.gateLinkHtml(actorTargetType, r.actor_id, r.actor_label, {})
+        : (r.actor_label ? `<strong>${escHtml(r.actor_label)}</strong>` : `<span style="color:var(--muted);">${r.actor_type || '?'}</span>`);
       const actor = r.actor_label
-        ? `<strong>${escHtml(r.actor_label)}</strong><br><span style="font-size:10px;color:var(--muted);font-family:'Courier New',monospace;">${r.actor_prid || ''}</span>${r.actor_role ? `<br><span style="font-size:10px;color:var(--muted);">${r.actor_role.replace(/_/g,' ')}</span>` : ''}`
-        : `<span style="color:var(--muted);">${r.actor_type || '?'}</span>`;
+        ? `${actorLabelHtml}<br><span style="font-size:10px;color:var(--muted);font-family:'Courier New',monospace;">${r.actor_prid || ''}</span>${r.actor_role ? `<br><span style="font-size:10px;color:var(--muted);">${r.actor_role.replace(/_/g,' ')}</span>` : ''}`
+        : actorLabelHtml;
+      const targetLinkable = r.target_type && r.target_id && _gate;
+      const targetLabelHtml = targetLinkable
+        ? PC.gateLinkHtml(r.target_type, r.target_id, r.target_label || ('#' + r.target_id), {})
+        : (r.target_label ? `<strong>${escHtml(r.target_label)}</strong>` : '');
       const target = r.target_label
-        ? `${escHtml(r.target_type || '')} <strong>${escHtml(r.target_label)}</strong>`
+        ? `${escHtml(r.target_type || '')} ${targetLabelHtml}`
         : (r.target_type ? `${escHtml(r.target_type)} #${r.target_id || '?'}` : '—');
+      // Sensitive-value gating: target metadata (before/after JSON) only shown if
+      // the viewer can read the target record. Otherwise the row still appears
+      // but the diff details collapse to "—".
+      const _canSeeDetail = targetLinkable
+        ? (typeof PC !== 'undefined' && PC.canRead && PC.canRead(r.target_type, r.target_id))
+        : true;
       const detail = (r.before_value || r.after_value)
-        ? `<details><summary style="cursor:pointer;font-size:11px;color:var(--teal);">view</summary><div style="font-size:11px;font-family:'Courier New',monospace;background:var(--light);padding:8px;border-radius:6px;margin-top:4px;max-width:400px;white-space:pre-wrap;word-break:break-word;">${r.before_value ? 'BEFORE: ' + escHtml(r.before_value) + '\n\n' : ''}${r.after_value ? 'AFTER: ' + escHtml(r.after_value) : ''}</div></details>`
+        ? (_canSeeDetail
+            ? `<details><summary style="cursor:pointer;font-size:11px;color:var(--teal);">view</summary><div style="font-size:11px;font-family:'Courier New',monospace;background:var(--light);padding:8px;border-radius:6px;margin-top:4px;max-width:400px;white-space:pre-wrap;word-break:break-word;">${r.before_value ? 'BEFORE: ' + escHtml(r.before_value) + '\n\n' : ''}${r.after_value ? 'AFTER: ' + escHtml(r.after_value) : ''}</div></details>`
+            : '<span style="color:var(--muted);font-size:11px;">—</span>')
         : '';
       return `
       <tr>
@@ -7376,28 +7432,34 @@
     const roleLabel = { lead_tech: 'Lead Tech', tech: 'Technician', apprentice: 'Apprentice' };
     const isSuper = (currentAdmin && currentAdmin.role === 'super_admin');
     tbody.innerHTML = allTechs.map(t => {
-      const rowClick = isSuper
-        ? `class="pc-row-clickable" tabindex="0" role="button" aria-label="View technician ${escHtml(t.name)}" onclick="routeTechnicianDetail(${t.id})" onkeydown="pcRowKey(event, function(){ routeTechnicianDetail(${t.id}); })"`
-        : '';
       return `
-      <tr ${rowClick} style="${t.active ? '' : 'opacity:0.55;'}">
+      <tr data-pc-row-tech="${t.id}" style="${t.active ? '' : 'opacity:0.55;'}">
         <td><span class="code-pill">${t.tech_code}</span>${t.prid ? `<br><span style="font-size:10px;color:var(--muted);font-family:'Courier New',monospace;">${t.prid}</span>` : ''}</td>
         <td><strong>${escHtml(t.name)}</strong>${t.email ? `<br><span style="font-size:11px;color:var(--muted);">${escHtml(t.email)}</span>` : ''}<br><span class="badge" style="background:#eff6ff;color:#1d4ed8;margin-top:3px;display:inline-block;">${roleLabel[t.role] || 'Technician'}</span>${t.hourly_rate > 0 ? `<br><span style="font-size:11px;color:var(--muted);margin-top:2px;display:inline-block;">J$${Number(t.hourly_rate).toFixed(2)}/hr</span>` : '<br><span style="font-size:11px;color:#dc2626;margin-top:2px;display:inline-block;">No rate set</span>'}</td>
         <td>${escHtml(t.phone) || '—'}</td>
         <td>${t.active_jobs > 0 ? `<span class="badge badge-in_progress">${t.active_jobs} active</span>` : '<span style="color:var(--muted);">0</span>'}</td>
         <td>${t.active ? '<span class="badge badge-confirmed">Active</span>' : '<span class="badge" style="background:#f3f4f6;color:var(--muted);">Inactive</span>'}</td>
         <td style="white-space:nowrap;" onclick="event.stopPropagation();">
-          ${isSuper ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();routeTechnicianDetail(${t.id})" aria-label="View technician detail" style="margin-right:6px;">View →</button>` : ''}
-          <button class="btn btn-edit btn-sm" onclick="event.stopPropagation();openEditTech(${t.id})">Edit</button>
-          <button class="btn btn-edit btn-sm" onclick="event.stopPropagation();openResetPin(${t.id},'${escHtml(t.name)}')" style="margin-left:6px;">Reset PIN</button>
+          ${isSuper ? `<button class="btn btn-ghost btn-sm pc-stop-prop" onclick="event.stopPropagation();routeTechnicianDetail(${t.id})" aria-label="View technician detail" style="margin-right:6px;">View →</button>` : ''}
+          <button class="btn btn-edit btn-sm pc-stop-prop" onclick="event.stopPropagation();openEditTech(${t.id})">Edit</button>
+          <button class="btn btn-edit btn-sm pc-stop-prop" onclick="event.stopPropagation();openResetPin(${t.id},'${escHtml(t.name)}')" style="margin-left:6px;">Reset PIN</button>
           ${can('tech:delete') ? (
             t.active
-              ? `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();openOffboard('tech',${t.id},'${escHtml(t.name)}')" style="margin-left:6px;">🚪 Offboard</button>`
-              : `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();reinstateAccount('tech',${t.id})" style="margin-left:6px;">Reinstate</button>`
+              ? `<button class="btn btn-danger btn-sm pc-stop-prop" onclick="event.stopPropagation();openOffboard('tech',${t.id},'${escHtml(t.name)}')" style="margin-left:6px;">🚪 Offboard</button>`
+              : `<button class="btn btn-ghost btn-sm pc-stop-prop" onclick="event.stopPropagation();reinstateAccount('tech',${t.id})" style="margin-left:6px;">Reinstate</button>`
           ) : ''}
         </td>
       </tr>`;
     }).join('');
+    if (typeof PC !== 'undefined' && PC.gateRow) {
+      tbody.querySelectorAll('tr[data-pc-row-tech]').forEach(function (tr) {
+        const tid = Number(tr.getAttribute('data-pc-row-tech'));
+        PC.gateRow(tr, 'technician', tid, {
+          onClick: function () { routeTechnicianDetail(tid); },
+          ariaLabel: 'View technician #' + tid,
+        });
+      });
+    }
   }
 
   function populateTechSelect() {
@@ -9158,10 +9220,20 @@
     try {
       const s = await api('GET', '/api/admin/kpi/flags/summary');
       const c = s.counts || {};
-      document.getElementById('kpiTileCS').textContent = c.coaching_suggested || 0;
-      document.getElementById('kpiTileCR').textContent = c.coaching_required || 0;
-      document.getElementById('kpiTileWW').textContent = c.written_warning_recommended || 0;
-      document.getElementById('kpiTileIE').textContent = c.immediate_escalation || 0;
+      // Wire KPI severity tiles via PC.gateBadge so the count cells gain
+      // role/tabindex when the viewer can read kpi_flag records, otherwise the
+      // existing onclick still works but the badge has no extra a11y wrapper.
+      if (typeof PC !== 'undefined' && PC.gateBadge) {
+        PC.gateBadge(document.getElementById('kpiTileCS'), c.coaching_suggested || 0,             'kpi_flag', function(){ kpiSetSubtab('flags', document.getElementById('kpiSubFlags')); kpiFilterFlags({severity:'coaching_suggested'}); });
+        PC.gateBadge(document.getElementById('kpiTileCR'), c.coaching_required || 0,              'kpi_flag', function(){ kpiSetSubtab('flags', document.getElementById('kpiSubFlags')); kpiFilterFlags({severity:'coaching_required'}); });
+        PC.gateBadge(document.getElementById('kpiTileWW'), c.written_warning_recommended || 0,    'kpi_flag', function(){ kpiSetSubtab('flags', document.getElementById('kpiSubFlags')); kpiFilterFlags({severity:'written_warning_recommended'}); });
+        PC.gateBadge(document.getElementById('kpiTileIE'), c.immediate_escalation || 0,           'kpi_flag', function(){ kpiSetSubtab('flags', document.getElementById('kpiSubFlags')); kpiFilterFlags({severity:'immediate_escalation'}); });
+      } else {
+        document.getElementById('kpiTileCS').textContent = c.coaching_suggested || 0;
+        document.getElementById('kpiTileCR').textContent = c.coaching_required || 0;
+        document.getElementById('kpiTileWW').textContent = c.written_warning_recommended || 0;
+        document.getElementById('kpiTileIE').textContent = c.immediate_escalation || 0;
+      }
       document.getElementById('kpiSafetyBanner').style.display =
         (c.immediate_escalation && c.immediate_escalation > 0) ? '' : 'none';
     } catch {}
@@ -9190,12 +9262,16 @@
       tbody.innerHTML = '<tr><td colspan="12" style="padding:20px;text-align:center;color:#888;">No techs with sufficient data for this period.</td></tr>';
       return;
     }
+    const _gate = (typeof PC !== 'undefined' && PC.gateLinkHtml);
     tbody.innerHTML = rows.map(r => {
       const pct = r.composite_pct == null ? '—' : r.composite_pct + '%';
       const kpis = r.kpis || {};
       const cell = k => kpiBandPill(kpis[k]?.band);
-      return `<tr class="pc-row-clickable" tabindex="0" onclick="kpiOpenScorecard(${r.tech_id})">
-        <td><strong>${esc(r.name || '')}</strong></td>
+      const nameCell = _gate
+        ? PC.gateLinkHtml('technician', r.tech_id, r.name || '', {onClick: 'function(){ kpiOpenScorecard(' + r.tech_id + '); }'})
+        : `<strong>${esc(r.name || '')}</strong>`;
+      return `<tr data-pc-row-kpitech="${r.tech_id}">
+        <td>${nameCell}</td>
         <td>${esc(r.role || '')}</td>
         <td>${esc(r.tier || '')}</td>
         <td>${kpiBandPill(r.composite_band)}</td>
@@ -9209,6 +9285,15 @@
         <td><span class="badge" style="background:#eff6ff;color:#1e40af;" title="Open flags">view</span></td>
       </tr>`;
     }).join('');
+    if (typeof PC !== 'undefined' && PC.gateRow) {
+      tbody.querySelectorAll('tr[data-pc-row-kpitech]').forEach(function (tr) {
+        const tid = Number(tr.getAttribute('data-pc-row-kpitech'));
+        PC.gateRow(tr, 'technician', tid, {
+          onClick: function () { kpiOpenScorecard(tid); },
+          ariaLabel: 'Open KPI scorecard for technician #' + tid,
+        });
+      });
+    }
   }
 
   async function kpiRecomputeAll() {
@@ -9266,11 +9351,18 @@
       <button class="btn btn-primary btn-sm" onclick="kpiActionResolve(${f.id})">Resolve</button>
       ${can('kpi:flag_override') ? `<button class="btn btn-danger btn-sm" onclick="kpiActionOverride(${f.id})">Override</button>` : ''}
     `;
+    const _gate = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    const techRef = _gate
+      ? PC.gateLinkHtml('technician', f.tech_id, f.tech_name || ('tech #' + f.tech_id), {onClick: 'function(){ kpiOpenScorecard(' + f.tech_id + '); }'})
+      : `<strong>${esc(f.tech_name || ('tech #' + f.tech_id))}</strong>`;
+    const kpiRef = (_gate && f.score_id)
+      ? PC.gateLinkHtml('kpi_score', f.score_id, KPI_KEY_LABELS[f.kpi_key] || f.kpi_key || '', {})
+      : esc(KPI_KEY_LABELS[f.kpi_key] || f.kpi_key || '');
     return `<div class="kpi-flag-card" style="padding:14px;border-radius:8px;border-left:5px solid ${sevColor};background:#fff;box-shadow:0 1px 3px rgba(0,0,0,0.05);margin-bottom:10px;">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
         <div style="flex:1;">
           <div style="font-weight:700;color:${sevColor};font-size:13px;text-transform:uppercase;letter-spacing:.3px;">${KPI_SEV_LABELS[f.severity] || f.severity}</div>
-          <div style="margin-top:4px;font-size:15px;"><strong>${esc(f.tech_name || ('tech #' + f.tech_id))}</strong> <span style="color:#666;">— ${esc(KPI_KEY_LABELS[f.kpi_key] || f.kpi_key || '')}</span></div>
+          <div style="margin-top:4px;font-size:15px;">${techRef} <span style="color:#666;">— ${kpiRef}</span></div>
           <div style="margin-top:4px;color:#555;font-size:13px;">${esc(f.reason || '')}</div>
           <div style="margin-top:8px;font-size:12px;color:#888;">Period: ${esc(f.period_key)} · Created ${created} · ${daysOpen} open · Status: <strong>${esc(f.status)}</strong></div>
         </div>
@@ -9420,7 +9512,7 @@
       <div style="display:flex;gap:24px;align-items:center;border-bottom:1px solid #e5e7eb;padding-bottom:18px;margin-bottom:18px;">
         <div>${kpiCompositeGauge(comp.composite_pct, comp.band)}</div>
         <div style="flex:1;">
-          <h3 style="margin:0;">${esc(t.name || sc.tech_id)}</h3>
+          <h3 style="margin:0;">${(typeof PC !== 'undefined' && PC.gateLinkHtml) ? PC.gateLinkHtml('technician', t.id || sc.tech_id, t.name || sc.tech_id, {onClick: 'function(){ routeTechnicianDetail(' + (t.id || sc.tech_id) + '); }'}) : esc(t.name || sc.tech_id)}</h3>
           <div style="color:#666;">${esc(t.role || '')} · ${esc(comp.tier_at_computation || '')}</div>
           <div style="margin-top:10px;color:#444;">Period: <strong>${esc(sc.period_key || '')}</strong>${comp.forced_red_reason ? ' · <span style="color:#991b1b;">Forced RED: ' + esc(comp.forced_red_reason) + '</span>' : ''}</div>
           <div style="margin-top:14px;">
