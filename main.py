@@ -5066,6 +5066,65 @@ def admin_fs_export(request: Request, format: str = "json"):
     return data
 
 
+# ── 5S background auto-escalation tick (Phase 2) ──────────────────────────────
+# Every 15 min, move overdue exceptions up the ladder:
+#   open > 24h  → escalated (to supervisor_admin)
+#   escalated > 48h → escalated_director (to super_admin)
+import asyncio as _asyncio
+
+
+async def _fs_escalation_loop():
+    while True:
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            overdue = fs_find_overdue_exceptions(now_iso)
+            sup = None; director = None
+            for a in get_all_admin_users():
+                if a.get("role") == "supervisor_admin" and a.get("active"):
+                    sup = a; break
+            for a in get_all_admin_users():
+                if a.get("role") == "super_admin" and a.get("active"):
+                    director = a; break
+            for eid in overdue.get("to_manager", []):
+                try:
+                    fs_escalate_exception(eid,
+                                          escalated_to_id=(sup["id"] if sup else 0),
+                                          actor_id=0, actor_kind="system",
+                                          target_status="escalated")
+                    _notify_manager(eid)
+                except Exception:
+                    pass
+            for eid in overdue.get("to_director", []):
+                try:
+                    fs_escalate_exception(eid,
+                                          escalated_to_id=(director["id"] if director else 0),
+                                          actor_id=0, actor_kind="system",
+                                          target_status="escalated_director")
+                    _notify_director(eid)
+                except Exception:
+                    pass
+        except Exception as _e:
+            print(f"5S escalation tick error: {_e}")
+        await _asyncio.sleep(15 * 60)
+
+
+def _notify_manager(exception_id: int):
+    """Phase 4 push-integration point. For now, logs to audit_log."""
+    log_audit(actor_type="system", action="fs.notify.manager",
+              target_type="fs_exception", target_id=exception_id)
+
+
+def _notify_director(exception_id: int):
+    """Phase 4 push-integration point. For now, logs to audit_log."""
+    log_audit(actor_type="system", action="fs.notify.director",
+              target_type="fs_exception", target_id=exception_id)
+
+
+@app.on_event("startup")
+async def _start_fs_escalation_loop():
+    _asyncio.create_task(_fs_escalation_loop())
+
+
 @app.get("/tech")
 def tech_page():
     return FileResponse("tech.html")
