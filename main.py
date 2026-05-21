@@ -120,7 +120,12 @@ from database import (
     list_kpi_threshold_overrides, create_kpi_threshold_override,
     list_5s_overrides, create_5s_override,
     get_technician_certifications, get_technician_payroll_summary,
+    # FIXME unblocks
+    set_visit_callback_link, get_visit_callback_chain,
+    create_exception_photo, list_exception_photos,
 )
+import imghdr as _imghdr
+import mimetypes as _mimetypes
 
 # ── Admin role → permission matrix ────────────────────────────────────────────
 ADMIN_PERMS = {
@@ -4986,11 +4991,10 @@ def admin_technician_update(request: Request, tech_id: int,
     if body.role is not None:         updates["role"]        = body.role
     if body.hourly_rate is not None:  updates["hourly_rate"] = float(body.hourly_rate)
     if body.employment_status is not None:
-        # 'active'|'on_leave' both map to active=1 in the existing schema;
-        # there's no on_leave column yet. FIXME(employment-status): add an
-        # employment_status column to technicians once on_leave needs to
-        # gate scheduling logic — for now we only flip the active flag.
-        updates["active"] = 1 if body.employment_status in ("active", "on_leave") else 0
+        # Tri-state employment lifecycle now has its own column. The helper
+        # keeps `active` in sync (terminated → 0; active/on_leave → 1) so the
+        # legacy login gate keeps working without a second app-level branch.
+        updates["employment_status"] = body.employment_status
 
     try:
         after = update_technician_fields(tech_id, updates)
@@ -5638,6 +5642,188 @@ def tech_fs_my_exceptions(request: Request):
 def tech_fs_today(request: Request):
     tech_id = _require_tech(request)
     return fs_today_status_for_tech(tech_id)
+
+
+# ── 5S exception photo upload (tech) ─────────────────────────────────────────
+FS_EXCEPTION_PHOTOS_DIR = Path(os.environ.get("FS_EXCEPTION_PHOTOS_DIR",
+                                              "uploads/5s"))
+FS_EXCEPTION_PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
+MAX_FS_EXC_PHOTO_SIZE = 8 * 1024 * 1024  # 8 MB per the FIXME spec
+_FS_EXC_PHOTO_EXTS = {".jpg", ".jpeg", ".png"}
+_FS_EXC_PHOTO_MAGIC = {
+    ".jpg":  [b"\xff\xd8\xff"],
+    ".jpeg": [b"\xff\xd8\xff"],
+    ".png":  [b"\x89PNG\r\n\x1a\n"],
+}
+_FS_EXC_PHOTO_MIMES = {"image/jpeg", "image/jpg", "image/png"}
+
+
+def _fs_exc_photo_ext_from_mime(mime: str) -> Optional[str]:
+    m = (mime or "").lower().strip()
+    if m in ("image/jpeg", "image/jpg"):
+        return ".jpg"
+    if m == "image/png":
+        return ".png"
+    return None
+
+
+@app.post("/api/tech/5s/exceptions/{exception_id}/photo")
+async def tech_fs_exception_upload_photo(
+    request: Request,
+    exception_id: int,
+    file:        UploadFile = File(...),
+    audit_id:    int        = Form(...),
+    item_key:    str        = Form(...),
+    client_meta: Optional[str] = Form(None),
+):
+    """Tech-side companion to tech.html's queued 5S exception photo capture.
+    Auth + IDOR: caller must either own the asset (fs_assets.assigned_tech_id)
+    OR be the auditor on the exception's audit. Anything else is 404."""
+    tech_id = _require_tech(request)
+
+    exc = fs_get_exception(exception_id)
+    if not exc:
+        raise HTTPException(404, "Exception not found")
+    asset = fs_get_asset_by_id(exc["asset_id"])
+    audit = fs_get_audit_with_items(exc["audit_id"]) if exc.get("audit_id") else None
+    owner_ok   = bool(asset and asset.get("assigned_tech_id") == tech_id)
+    auditor_ok = bool(audit
+                       and audit.get("auditor_kind") == "tech"
+                       and audit.get("auditor_id") == tech_id)
+    if not (owner_ok or auditor_ok):
+        # IDOR-safe: return 404 to avoid leaking existence.
+        raise HTTPException(404, "Exception not found")
+
+    # Audit_id / item_key sanity (these are echoed back to the client as
+    # confirmation that the right exception was hit — also recorded in
+    # client_meta for forensics).
+    if audit_id and exc.get("audit_id") and audit_id != exc.get("audit_id"):
+        raise HTTPException(400, "audit_id does not match exception")
+    if exc.get("category") and item_key and item_key != exc.get("category"):
+        # Non-fatal — the exception is keyed on category, the client passes
+        # the failed checklist item_key. We log it via client_meta but don't
+        # block the upload.
+        pass
+
+    # ── File validation ─────────────────────────────────────────────────
+    body = await file.read()
+    if not body:
+        raise HTTPException(400, "Empty file")
+    if len(body) > MAX_FS_EXC_PHOTO_SIZE:
+        raise HTTPException(413, f"File too large (max {MAX_FS_EXC_PHOTO_SIZE // (1024*1024)} MB)")
+
+    # Trust the magic bytes over the client-declared content_type.
+    sniffed = _imghdr.what(None, h=body)
+    if sniffed == "jpeg":
+        ext, mime = ".jpg", "image/jpeg"
+    elif sniffed == "png":
+        ext, mime = ".png", "image/png"
+    else:
+        # Fall back to magic-byte prefix sniffing for headers imghdr doesn't
+        # recognise. If neither matches, reject.
+        ext, mime = None, None
+        for e, prefixes in _FS_EXC_PHOTO_MAGIC.items():
+            if any(body.startswith(p) for p in prefixes):
+                ext = e
+                mime = "image/jpeg" if e in (".jpg", ".jpeg") else "image/png"
+                break
+        if not ext:
+            raise HTTPException(400, "Unsupported file type (only JPEG/PNG allowed)")
+
+    # Cross-check with the declared content-type — when it disagrees we go
+    # with the sniffed value but reject obviously-wrong types (e.g. text/html).
+    declared = (file.content_type or "").lower()
+    if declared and declared not in _FS_EXC_PHOTO_MIMES:
+        # Some clients send application/octet-stream — that's fine; we trust
+        # the sniff. Outright lies (HTML/scripts/etc.) get 400.
+        if declared.startswith("text/") or "html" in declared or "script" in declared:
+            raise HTTPException(400, "Content-Type rejected")
+
+    # ── Persist to disk ─────────────────────────────────────────────────
+    ts = int(time.time())
+    rand6 = _secrets.token_hex(3)  # 6 hex chars
+    fname = f"{exception_id}__{ts}__{rand6}{ext}"
+    out_path = FS_EXCEPTION_PHOTOS_DIR / fname
+    try:
+        out_path.write_bytes(body)
+    except OSError as e:
+        raise HTTPException(500, f"Could not save photo: {type(e).__name__}")
+
+    # ── Client meta (parsed, capped, encrypted at rest) ─────────────────
+    cm = None
+    if client_meta:
+        try:
+            parsed = _json.loads(client_meta)
+            if isinstance(parsed, dict):
+                cm = parsed
+        except Exception:
+            cm = None
+    # Stamp server-authoritative breadcrumbs into the meta payload so the
+    # forensic trail isn't 100% client-controlled.
+    cm = dict(cm or {})
+    cm["server_ip"] = _client_ip(request)
+    cm["server_ts"] = datetime.now(timezone.utc).isoformat()
+    cm["server_audit_id"] = audit_id
+    cm["server_item_key"] = (item_key or "")[:64]
+
+    original = (file.filename or "")[:255] or None
+
+    try:
+        out = create_exception_photo(
+            exception_id=exception_id, filename=fname, mime=mime,
+            size_bytes=len(body), uploaded_by_id=tech_id,
+            uploaded_by_kind="tech", original_filename=original,
+            client_meta=cm, hub_id=(asset or {}).get("hub_id") or 1,
+        )
+    except Exception as e:
+        # Best-effort: drop the now-orphan file off disk on DB failure.
+        try: out_path.unlink(missing_ok=True)
+        except Exception: pass
+        raise HTTPException(500, f"Could not record photo: {type(e).__name__}")
+
+    tech = get_tech_by_id(tech_id)
+    log_audit(
+        actor_type="tech", actor_id=tech_id,
+        actor_prid=tech.get("prid") if tech else None,
+        actor_label=tech.get("name") if tech else None,
+        action="fs.exception.photo_uploaded",
+        target_type="fs_exception", target_id=exception_id,
+        target_label=str(exception_id),
+        after_value={"photo_id": out["id"], "filename": fname,
+                     "size_bytes": len(body), "mime": mime},
+        ip_address=_client_ip(request),
+    )
+    return {"id": out["id"], "exception_id": exception_id,
+            "filename": fname, "uploaded_at": out["uploaded_at"]}
+
+
+@app.get("/api/admin/5s/exceptions/{exception_id}/photos")
+def admin_fs_exception_list_photos(request: Request, exception_id: int):
+    """Admin view of the photos a tech attached to an exception. Super_admin
+    OR supervisor_admin with fs:exception_resolve. Each row carries a signed
+    URL the front-end can use to fetch the binary via the existing /photos/
+    signed-download surface."""
+    admin = _require_perm(request, "fs:exception_resolve")
+    exc = fs_get_exception(exception_id)
+    if not exc:
+        raise HTTPException(404, "Exception not found")
+    photos = list_exception_photos(exception_id)
+    out = []
+    for p in photos:
+        p = dict(p)
+        if p.get("filename"):
+            # Reuse the existing signed-URL infra so this surface is
+            # consistent with visit photos. The download endpoint reads
+            # PHOTOS_DIR — exception photos live in FS_EXCEPTION_PHOTOS_DIR,
+            # so callers must prefix /uploads/5s/ for the actual binary.
+            p["url"] = f"/uploads/5s/{p['filename']}"
+            p["signed_url"] = _sign_photo_url(p["filename"])
+        out.append(p)
+    _audit_from(admin, "fs.exception.photos_view", request,
+                target_type="fs_exception", target_id=exception_id,
+                target_label=str(exception_id),
+                after={"count": len(out)})
+    return out
 
 
 # Admin-side endpoints

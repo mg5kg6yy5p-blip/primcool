@@ -154,6 +154,7 @@ _PII_RAND = {
     "fs_audit_items":       ["note"],
     "fs_exceptions":        ["description", "resolution_note"],
     "fs_exception_events":  ["note"],
+    "fs_exception_photos":  ["client_meta_json"],
     "fs_coaching_log":      ["plan_text", "close_note"],
     # Technician Detail View (Phase: super_admin profile editor)
     "technician_reviews":       ["summary", "action_items"],
@@ -329,6 +330,8 @@ def init_db():
             hire_date   TEXT,
             hourly_rate REAL NOT NULL DEFAULT 0,
             active      INTEGER NOT NULL DEFAULT 1,
+            employment_status TEXT NOT NULL DEFAULT 'active'
+                CHECK (employment_status IN ('active','on_leave','terminated')),
             created_at  TEXT NOT NULL
         )
     """)
@@ -362,10 +365,30 @@ def init_db():
         ("email_hash",    "ALTER TABLE technicians ADD COLUMN email_hash TEXT"),
         # Multi-hub: every tech belongs to a primary hub.
         ("hub_id",        "ALTER TABLE technicians ADD COLUMN hub_id INTEGER NOT NULL DEFAULT 1"),
+        # Tri-state employment lifecycle.  active/terminated_at remain in
+        # sync (active=0 ⇔ employment_status='terminated'); on_leave keeps
+        # active=1 so the technician retains login if they return. SQLite
+        # doesn't enforce CHECK on ALTER ADD, so validation lives at the
+        # endpoint/helper layer for existing DBs. New DBs get the CHECK in
+        # the CREATE block.
+        ("employment_status", "ALTER TABLE technicians ADD COLUMN employment_status TEXT NOT NULL DEFAULT 'active'"),
     ):
         if name not in tech_cols:
             try: con.execute(sql)
             except sqlite3.OperationalError: pass
+
+    # One-time backfill for existing rows that pre-date the column. Safe to
+    # run on every boot — only touches rows that haven't been populated.
+    try:
+        con.execute(
+            "UPDATE technicians SET employment_status = "
+            "CASE WHEN active = 1 THEN 'active' "
+            "     WHEN terminated_at IS NOT NULL THEN 'terminated' "
+            "     ELSE 'active' END "
+            "WHERE employment_status IS NULL OR employment_status = ''"
+        )
+    except sqlite3.OperationalError:
+        pass
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS admin_users (
@@ -759,6 +782,12 @@ def init_db():
         ("work_done_summary",      "ALTER TABLE maintenance_visits ADD COLUMN work_done_summary TEXT"),
         # Multi-hub: each visit belongs to a hub for dispatch + reporting scope.
         ("hub_id",                 "ALTER TABLE maintenance_visits ADD COLUMN hub_id INTEGER NOT NULL DEFAULT 1"),
+        # Callback link — when a maintenance visit is opened because a prior
+        # visit's work failed, this points at the originating visit. SQLite
+        # ALTER doesn't enforce FKs, so the helper layer validates the target
+        # exists. Unblocks Visit Detail § 9 (Callback History) + the tech
+        # detail "callbacks-only" filter.
+        ("callback_of_visit_id",   "ALTER TABLE maintenance_visits ADD COLUMN callback_of_visit_id INTEGER"),
     ):
         if col_sql[0] not in existing_cols:
             try: con.execute(col_sql[1])
@@ -1097,6 +1126,28 @@ def init_db():
         )
     """)
     con.execute("CREATE INDEX IF NOT EXISTS idx_fs_exc_evt_exc ON fs_exception_events(exception_id)")
+
+    # Photos attached to a 5S exception (tech-captured evidence of the
+    # safety/quality issue). Mirrors the visit_photos chain-of-custody
+    # pattern: on-disk blobs, encrypted client_meta_json, per-row chain_hash.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS fs_exception_photos (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            exception_id       INTEGER NOT NULL REFERENCES fs_exceptions(id),
+            filename           TEXT NOT NULL,
+            original_filename  TEXT,
+            mime               TEXT NOT NULL,
+            size_bytes         INTEGER NOT NULL,
+            uploaded_by_id     INTEGER NOT NULL,
+            uploaded_by_kind   TEXT NOT NULL CHECK (uploaded_by_kind IN ('tech','admin')),
+            uploaded_at        TEXT NOT NULL,
+            client_meta_json   TEXT,
+            hub_id             INTEGER NOT NULL DEFAULT 1,
+            prior_chain_hash   TEXT,
+            chain_hash         TEXT NOT NULL
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_fs_exc_photos_exc ON fs_exception_photos(exception_id)")
 
     # Coaching log (Phase 3).
     con.execute("""
@@ -6742,12 +6793,22 @@ def update_technician_fields(tech_id: int, data: dict):
         elif k == "hourly_rate":
             sets.append("hourly_rate = ?")
             vals.append(float(v or 0))
+        elif k == "employment_status":
+            # Tri-state lifecycle. App-level validation only (CHECK isn't
+            # enforced on ALTER ADD in SQLite). Keep `active` in lockstep:
+            # terminated → 0; active/on_leave → 1.
+            if v not in ("active", "on_leave", "terminated"):
+                raise ValueError(f"invalid employment_status: {v!r}")
+            sets.append("employment_status = ?")
+            vals.append(v)
+            sets.append("active = ?")
+            vals.append(0 if v == "terminated" else 1)
     if not sets:
         return get_technician_with_decryption(tech_id)
     vals.append(tech_id)
     con = _con()
     con.execute(f"UPDATE technicians SET {', '.join(sets)} WHERE id = ?", vals)
-    if data.get("active") == 0:
+    if data.get("active") == 0 or data.get("employment_status") == "terminated":
         con.execute(
             "UPDATE technicians SET terminated_at = ? WHERE id = ?",
             (datetime.now(timezone.utc).isoformat(), tech_id),
@@ -7130,3 +7191,142 @@ def get_technician_payroll_summary(tech_id: int, limit: int = 6):
     ).fetchall()
     con.close()
     return {"available": True, "rows": [dict(r) for r in rows]}
+
+
+# ── Visit callback link (FIXME unblock for Visit Detail § 9) ────────────────
+def set_visit_callback_link(visit_id: int, originates_from_visit_id: int) -> None:
+    """Mark `visit_id` as a callback generated by `originates_from_visit_id`.
+    Both visits must exist; the link must not be self-referential. Idempotent —
+    re-pointing at the same source is a no-op."""
+    if visit_id == originates_from_visit_id:
+        raise ValueError("a visit cannot be a callback of itself")
+    con = _con()
+    a = con.execute(
+        "SELECT id FROM maintenance_visits WHERE id = ?", (visit_id,)
+    ).fetchone()
+    b = con.execute(
+        "SELECT id FROM maintenance_visits WHERE id = ?", (originates_from_visit_id,)
+    ).fetchone()
+    if not a or not b:
+        con.close()
+        raise ValueError("visit not found")
+    con.execute(
+        "UPDATE maintenance_visits SET callback_of_visit_id = ? WHERE id = ?",
+        (originates_from_visit_id, visit_id),
+    )
+    con.commit()
+    con.close()
+
+
+def get_visit_callback_chain(visit_id: int) -> dict:
+    """Returns the callback wiring for a visit:
+        {
+          "is_callback_of":   {id, visit_type, status, completed_date} | None,
+          "generated_callbacks": [ {id, ...}, ... ],
+        }
+    Both directions are returned regardless of which side the caller is on."""
+    con = _con()
+    cur = con.execute(
+        "SELECT callback_of_visit_id FROM maintenance_visits WHERE id = ?",
+        (visit_id,),
+    ).fetchone()
+    if not cur:
+        con.close()
+        return {"is_callback_of": None, "generated_callbacks": []}
+    is_callback_of = None
+    parent_id = cur["callback_of_visit_id"] if "callback_of_visit_id" in cur.keys() else None
+    if parent_id:
+        p = con.execute(
+            "SELECT id, visit_type, status, completed_date, scheduled_date "
+            "FROM maintenance_visits WHERE id = ?", (parent_id,),
+        ).fetchone()
+        if p:
+            is_callback_of = dict(p)
+    children = con.execute(
+        "SELECT id, visit_type, status, completed_date, scheduled_date "
+        "FROM maintenance_visits WHERE callback_of_visit_id = ? ORDER BY id ASC",
+        (visit_id,),
+    ).fetchall()
+    con.close()
+    return {
+        "is_callback_of": is_callback_of,
+        "generated_callbacks": [dict(r) for r in children],
+    }
+
+
+# ── 5S exception photos (FIXME unblock for tech.html queue) ─────────────────
+_FS_EXC_PHOTO_HASH_FIELDS = (
+    "exception_id", "filename", "mime", "size_bytes",
+    "uploaded_by_id", "uploaded_by_kind", "uploaded_at", "hub_id",
+)
+
+
+def _fs_last_exc_photo_hash(con) -> str:
+    r = con.execute(
+        "SELECT chain_hash FROM fs_exception_photos ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    return (dict(r)["chain_hash"] if r else None) or AUDIT_GENESIS
+
+
+def create_exception_photo(exception_id: int, filename: str, mime: str,
+                            size_bytes: int, uploaded_by_id: int,
+                            uploaded_by_kind: str, original_filename: str = None,
+                            client_meta: dict = None, hub_id: int = 1) -> dict:
+    """Insert a fs_exception_photos row + chain-hash it. Returns the new id +
+    uploaded_at. Matches the chain-hash discipline of fs_exceptions."""
+    if uploaded_by_kind not in ("tech", "admin"):
+        raise ValueError("invalid uploaded_by_kind")
+    now = datetime.now(timezone.utc).isoformat()
+    enc_meta = None
+    if client_meta is not None:
+        try:
+            payload = _json.dumps(client_meta) if not isinstance(client_meta, str) else client_meta
+            enc_meta = _enc_dict(
+                "fs_exception_photos", {"client_meta_json": payload}
+            )["client_meta_json"]
+        except Exception:
+            enc_meta = None
+    con = _con()
+    try:
+        con.execute("BEGIN")
+        prev = _fs_last_exc_photo_hash(con)
+        row = {
+            "exception_id": exception_id, "filename": filename, "mime": mime,
+            "size_bytes": int(size_bytes), "uploaded_by_id": uploaded_by_id,
+            "uploaded_by_kind": uploaded_by_kind, "uploaded_at": now,
+            "hub_id": int(hub_id or 1),
+        }
+        ch = _fs_compute_hash(prev, row, _FS_EXC_PHOTO_HASH_FIELDS)
+        cur = con.execute(
+            "INSERT INTO fs_exception_photos "
+            "(exception_id, filename, original_filename, mime, size_bytes, "
+            " uploaded_by_id, uploaded_by_kind, uploaded_at, client_meta_json, "
+            " hub_id, prior_chain_hash, chain_hash) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (exception_id, filename, original_filename, mime, int(size_bytes),
+             uploaded_by_id, uploaded_by_kind, now, enc_meta,
+             int(hub_id or 1), prev, ch),
+        )
+        new_id = cur.lastrowid
+        con.commit()
+    except Exception:
+        con.rollback()
+        con.close()
+        raise
+    con.close()
+    return {"id": new_id, "exception_id": exception_id,
+            "filename": filename, "uploaded_at": now}
+
+
+def list_exception_photos(exception_id: int) -> list:
+    """All photos for an exception, oldest-first. client_meta_json decrypted
+    on the way out so callers don't have to know about the encryption layer."""
+    con = _con()
+    rows = con.execute(
+        "SELECT id, exception_id, filename, original_filename, mime, size_bytes, "
+        "uploaded_by_id, uploaded_by_kind, uploaded_at, client_meta_json, hub_id "
+        "FROM fs_exception_photos WHERE exception_id = ? ORDER BY id ASC",
+        (exception_id,),
+    ).fetchall()
+    con.close()
+    return _dec_rows("fs_exception_photos", rows)
