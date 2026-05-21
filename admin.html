@@ -480,7 +480,76 @@
           </div>
         </div>
 
-        <!-- Customer detail view -->
+        <!-- ── super_admin Customer Detail View (full, editable profile) ── -->
+        <div id="customerDetailFull" style="display:none;">
+          <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">
+            <a href="#" onclick="event.preventDefault();showCustomerList();" style="color:var(--navy);text-decoration:none;font-weight:600;">Customers</a>
+            <span style="margin:0 6px;">›</span>
+            <span id="cdf-breadcrumb-name" style="color:var(--text);"></span>
+          </div>
+          <div class="back-btn" onclick="showCustomerList()" style="cursor:pointer;display:inline-flex;align-items:center;gap:6px;margin-bottom:14px;color:var(--navy);font-weight:600;font-size:13px;">
+            ← Back to Customers
+          </div>
+
+          <!-- Profile Card -->
+          <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:18px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+              <div>
+                <h3 style="margin:0;color:var(--navy);font-size:18px;" id="cdf-name"></h3>
+                <div style="font-size:12px;color:var(--muted);margin-top:3px;" id="cdf-meta"></div>
+              </div>
+              <button class="btn btn-primary btn-sm" id="cdf-edit-btn" onclick="openEditCustomerProfile()" aria-label="Edit customer profile">✎ Edit Profile</button>
+            </div>
+            <div id="cdf-profile-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px 24px;font-size:13px;"></div>
+          </div>
+
+          <!-- Equipment Register -->
+          <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:18px;">
+            <h3 style="margin:0 0 12px;color:var(--navy);font-size:16px;">Equipment Register</h3>
+            <div class="table-wrap">
+              <table>
+                <thead><tr>
+                  <th>Equipment Name</th><th>Type</th><th>Model</th>
+                  <th>Serial #</th><th>Location</th>
+                  <th>Last PM</th><th>Last CM</th><th>Notes</th>
+                </tr></thead>
+                <tbody id="cdf-equip-body"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Service History -->
+          <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;">
+            <h3 style="margin:0 0 12px;color:var(--navy);font-size:16px;">Service History</h3>
+            <div class="filter-bar" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;font-size:12px;align-items:center;">
+              <label>Type
+                <select id="cdf-filter-type" onchange="renderCdfVisits()" style="margin-left:4px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;">
+                  <option value="">All</option><option value="PM">PM</option><option value="CM">CM</option>
+                </select>
+              </label>
+              <label>From <input type="date" id="cdf-filter-from" onchange="renderCdfVisits()" style="margin-left:4px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;"></label>
+              <label>To <input type="date" id="cdf-filter-to" onchange="renderCdfVisits()" style="margin-left:4px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;"></label>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr>
+                  <th>Date</th><th>Type</th><th>Equipment</th>
+                  <th>Technician</th><th>Status</th><th>Scope</th><th></th>
+                </tr></thead>
+                <tbody id="cdf-visits-body"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+              </table>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;font-size:12px;color:var(--muted);">
+              <div id="cdf-visits-range">—</div>
+              <div>
+                <button class="btn btn-ghost btn-sm" id="cdf-prev" onclick="cdfVisitsPage(-1)">← Prev</button>
+                <button class="btn btn-ghost btn-sm" id="cdf-next" onclick="cdfVisitsPage(1)" style="margin-left:6px;">Next →</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Customer detail view (legacy / non-super_admin) -->
         <div id="customerDetail" style="display:none;">
           <div class="back-btn" onclick="showCustomerList()">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
@@ -1373,6 +1442,64 @@
   </div>
 </div>
 
+<!-- ── Edit Customer Profile (super_admin) ── -->
+<div class="modal-overlay" id="modal-editCustomerProfile">
+  <div class="modal" style="max-width:620px;">
+    <div class="modal-header">
+      <h3>Edit Customer Profile</h3>
+      <button class="modal-close" onclick="closeModal('editCustomerProfile')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field-row">
+        <div class="field"><label>Customer ID</label><input id="ecp-code" disabled style="background:var(--light);color:var(--muted);"></div>
+        <div class="field"><label>Full Name <span style="color:var(--danger);">*</span></label>
+          <input id="ecp-name" maxlength="100" aria-required="true">
+          <div class="field-err" id="ecp-err-name" style="display:none;color:var(--danger);font-size:11px;margin-top:3px;"></div>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Account Type</label>
+          <select id="ecp-customer-type">
+            <option value="residential">Residential</option>
+            <option value="commercial">Commercial</option>
+          </select>
+        </div>
+        <div class="field"><label>Account Status</label>
+          <select id="ecp-account-status">
+            <option value="active">Active</option>
+            <option value="closed">Closed</option>
+          </select>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Phone</label>
+          <input id="ecp-phone" maxlength="40">
+          <div class="field-err" id="ecp-err-phone" style="display:none;color:var(--danger);font-size:11px;margin-top:3px;"></div>
+        </div>
+        <div class="field"><label>Email</label>
+          <input id="ecp-email" type="email" maxlength="200">
+          <div class="field-err" id="ecp-err-email" style="display:none;color:var(--danger);font-size:11px;margin-top:3px;"></div>
+        </div>
+      </div>
+      <div class="field"><label>Company</label><input id="ecp-company" maxlength="100"></div>
+      <div class="field"><label>Mailing Address</label>
+        <textarea id="ecp-address" rows="3" maxlength="500"></textarea>
+        <div class="field-err" id="ecp-err-address" style="display:none;color:var(--danger);font-size:11px;margin-top:3px;"></div>
+      </div>
+      <div class="field"><label>Internal Notes</label>
+        <textarea id="ecp-notes" rows="4" maxlength="2000"></textarea>
+        <div class="field-err" id="ecp-err-notes" style="display:none;color:var(--danger);font-size:11px;margin-top:3px;"></div>
+      </div>
+      <input type="hidden" id="ecp-status-reason" value="">
+      <div class="form-error" id="err-editCustomerProfile" style="display:none;"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('editCustomerProfile')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitEditCustomerProfile()" id="ecp-save-btn">Save</button>
+    </div>
+  </div>
+</div>
+
 <!-- Add Equipment -->
 <div class="modal-overlay" id="modal-addEquipment">
   <div class="modal">
@@ -1850,6 +1977,8 @@
     if (can('documents:view')) loadDocuments();
     if (can('payroll:view_all')) loadPayPeriods();
     loadMyPayslips();
+    // Honor /admin#customer/{id} deep-link for super_admin
+    setTimeout(_maybeOpenCustomerFromHash, 60);
   }
 
   function applyRoleVisibility() {
@@ -2184,7 +2313,7 @@
         <td>${c.company || '—'}</td>
         <td>${c.phone || '—'}</td>
         <td style="white-space:nowrap;">
-          <button class="btn btn-edit btn-sm" onclick="openCustomerDetail(${c.id})">View →</button>
+          <button class="btn btn-edit btn-sm" onclick="routeCustomerDetail(${c.id})">View →</button>
           <button class="btn btn-edit btn-sm" onclick="openResetCustomerPin(${c.id},'${esc(c.name)}')" style="margin-left:6px;">${c.has_pin ? 'Reset PIN' : 'Set PIN'}</button>
           ${can('customer:delete') ? (
             isActive
@@ -2215,9 +2344,332 @@
 
   function showCustomerList() {
     currentCustomer = null;
-    document.getElementById('customerList').style.display   = 'block';
-    document.getElementById('customerDetail').style.display = 'none';
+    cdfState = { customer: null, equipment: [], visits: [], page: 1, total: 0, limit: 10 };
+    document.getElementById('customerList').style.display       = 'block';
+    document.getElementById('customerDetail').style.display     = 'none';
+    const full = document.getElementById('customerDetailFull');
+    if (full) full.style.display = 'none';
+    // Clean up hash routing
+    if (location.hash.indexOf('#customer/') === 0) {
+      history.replaceState(null, '', location.pathname + location.search);
+    }
   }
+
+  // ── super_admin Customer Detail View ─────────────────────────────────────
+  // State for the full editable detail view. Pagination is server-side
+  // (10 per page); type / date filters are client-side on the already-loaded page.
+  let cdfState = { customer: null, equipment: [], visits: [], page: 1, total: 0, limit: 10 };
+
+  function routeCustomerDetail(id) {
+    // super_admin → new full detail view; other roles → legacy basic detail.
+    if (currentAdmin && currentAdmin.role === 'super_admin') {
+      openCustomerDetailFull(id);
+    } else {
+      openCustomerDetail(id);
+    }
+  }
+
+  async function openCustomerDetailFull(id) {
+    document.getElementById('customerList').style.display       = 'none';
+    document.getElementById('customerDetail').style.display     = 'none';
+    document.getElementById('customerDetailFull').style.display = 'block';
+    cdfState = { customer: null, equipment: [], visits: [], page: 1, total: 0, limit: 10 };
+    history.replaceState(null, '', location.pathname + location.search + '#customer/' + id);
+    try {
+      const cust = await api('GET', `/api/admin/customers/${id}`);
+      cdfState.customer = cust;
+      renderCdfProfile();
+      loadCdfEquipment();
+      loadCdfVisits();
+    } catch(e) {
+      toast('Unable to load customer: ' + e.message, 'error');
+      showCustomerList();
+    }
+  }
+
+  function renderCdfProfile() {
+    const c = cdfState.customer; if (!c) return;
+    document.getElementById('cdf-name').textContent = c.name || '—';
+    document.getElementById('cdf-breadcrumb-name').textContent = c.name || '—';
+    const meta = [];
+    meta.push(`<span class="code-pill">${escHtml(c.customer_code)}</span>`);
+    const ctype = c.customer_type || 'residential';
+    meta.push(ctype === 'commercial'
+      ? '<span class="badge" style="background:#e0f2f1;color:#0a7d68;">Commercial</span>'
+      : '<span class="badge" style="background:#eff6ff;color:#1d4ed8;">Residential</span>');
+    const active = (c.active !== 0 && c.active !== false);
+    meta.push(active
+      ? '<span class="badge" style="background:#dcfce7;color:#166534;">Active</span>'
+      : '<span class="badge" style="background:#f3f4f6;color:var(--muted);">Closed</span>');
+    document.getElementById('cdf-meta').innerHTML = meta.join(' ');
+
+    const fld = (label, val, multi) => `
+      <div>
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);font-weight:600;margin-bottom:3px;">${label}</div>
+        <div style="color:var(--text);${multi?'white-space:pre-wrap;':''}">${escHtml(val) || '—'}</div>
+      </div>`;
+    document.getElementById('cdf-profile-grid').innerHTML = [
+      fld('Phone', c.phone || ''),
+      fld('Email', c.email || ''),
+      fld('Company', c.company || ''),
+      fld('Mailing Address', c.address || '', true),
+      fld('Internal Notes', c.notes || '', true),
+    ].join('');
+  }
+
+  async function loadCdfEquipment() {
+    if (!cdfState.customer) return;
+    const tbody = document.getElementById('cdf-equip-body');
+    try {
+      const eq = await api('GET', `/api/admin/customers/${cdfState.customer.id}/equipment`);
+      cdfState.equipment = eq || [];
+      if (!cdfState.equipment.length) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty">No equipment registered for this customer.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = cdfState.equipment.map(e => {
+        // Equipment name non-clickable for now.
+        // TODO: future equipment detail drilldown.
+        const notes = (e.notes || '');
+        const short = notes.length > 100 ? notes.slice(0,100) + '…' : notes;
+        return `<tr>
+          <td><strong>${escHtml(e.name)}</strong></td>
+          <td>${escHtml(e.type) || '—'}</td>
+          <td>${escHtml(e.model) || '—'}</td>
+          <td>${escHtml(e.serial_number) || '—'}</td>
+          <td>${escHtml(e.location) || '—'}</td>
+          <td>${e.last_pm_visit ? fmtDate(e.last_pm_visit) : '—'}</td>
+          <td>${e.last_cm_visit ? fmtDate(e.last_cm_visit) : '—'}</td>
+          <td title="${escHtml(notes)}">${escHtml(short) || '—'}</td>
+        </tr>`;
+      }).join('');
+    } catch(e) {
+      tbody.innerHTML = `<tr><td colspan="8" class="empty">Unable to load equipment: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  async function loadCdfVisits() {
+    if (!cdfState.customer) return;
+    const tbody = document.getElementById('cdf-visits-body');
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">Loading…</td></tr>';
+    try {
+      const res = await api('GET',
+        `/api/admin/customers/${cdfState.customer.id}/visits?page=${cdfState.page}&limit=${cdfState.limit}`);
+      cdfState.visits = res.rows || [];
+      cdfState.total  = res.total || 0;
+      renderCdfVisits();
+    } catch(e) {
+      tbody.innerHTML = `<tr><td colspan="7" class="empty">Unable to load service history: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  function renderCdfVisits() {
+    const tbody = document.getElementById('cdf-visits-body');
+    const typeF = document.getElementById('cdf-filter-type').value;
+    const fromF = document.getElementById('cdf-filter-from').value;
+    const toF   = document.getElementById('cdf-filter-to').value;
+    let rows = cdfState.visits.slice();
+    if (typeF) rows = rows.filter(v => (v.visit_type||'').toUpperCase() === typeF);
+    if (fromF) rows = rows.filter(v => (v.scheduled_date||v.completed_date||v.created_at||'') >= fromF);
+    if (toF)   rows = rows.filter(v => (v.scheduled_date||v.completed_date||v.created_at||'') <= toF);
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="7" class="empty">No service history for this customer.</td></tr>';
+    } else {
+      tbody.innerHTML = rows.map(v => {
+        const vt = (v.visit_type||'').toUpperCase();
+        const typeBadge = vt === 'PM'
+          ? '<span class="badge" style="background:#dcfce7;color:#166534;">PM</span>'
+          : '<span class="badge" style="background:#ffedd5;color:#9a3412;">CM</span>';
+        const status = (v.status||'').toLowerCase();
+        const statusLabel = status.replace('_',' ');
+        const statusBg = status === 'completed' ? '#dcfce7'
+                       : status === 'in_progress' ? '#dbeafe'
+                       : '#f3f4f6';
+        const statusFg = status === 'completed' ? '#166534'
+                       : status === 'in_progress' ? '#1d4ed8'
+                       : '#374151';
+        const scope = v.scope_of_work || v.work_done_summary || v.work_done || '';
+        const shortScope = scope.length > 100 ? scope.slice(0,100)+'…' : scope;
+        const when = fmtDateTime(v.scheduled_date, v.scheduled_time) || fmtDate(v.completed_date) || fmtDate(v.created_at) || '—';
+        return `<tr>
+          <td>${when}</td>
+          <td>${typeBadge}</td>
+          <td>${escHtml(v.equipment_name) || '—'}</td>
+          <td>${escHtml(v.tech_name) || '—'}</td>
+          <td><span class="badge" style="background:${statusBg};color:${statusFg};">${escHtml(statusLabel)}</span></td>
+          <td title="${escHtml(scope)}">${escHtml(shortScope) || '—'}</td>
+          <td><button class="btn btn-ghost btn-sm" onclick="cdfViewVisit(${v.id})">View →</button></td>
+        </tr>`;
+      }).join('');
+    }
+    const start = cdfState.total ? ((cdfState.page-1)*cdfState.limit)+1 : 0;
+    const end   = Math.min(cdfState.page*cdfState.limit, cdfState.total);
+    document.getElementById('cdf-visits-range').textContent =
+      cdfState.total ? `Showing ${start}–${end} of ${cdfState.total} visits` : 'Showing 0 visits';
+    document.getElementById('cdf-prev').disabled = cdfState.page <= 1;
+    document.getElementById('cdf-next').disabled = end >= cdfState.total;
+  }
+
+  function cdfVisitsPage(delta) {
+    const next = cdfState.page + delta;
+    if (next < 1) return;
+    if ((next-1)*cdfState.limit >= cdfState.total) return;
+    cdfState.page = next;
+    loadCdfVisits();
+  }
+
+  function cdfViewVisit(id) {
+    // TODO: full visit detail drilldown later. Read-only preview for now.
+    const v = cdfState.visits.find(x => x.id === id);
+    if (!v) return;
+    const lines = [
+      `Visit #${v.id} — ${v.visit_type}`,
+      `Status: ${v.status}`,
+      `Scheduled: ${fmtDateTime(v.scheduled_date, v.scheduled_time) || '—'}`,
+      `Completed: ${fmtDate(v.completed_date) || '—'}`,
+      `Equipment: ${v.equipment_name || '—'}`,
+      `Technician: ${v.tech_name || '—'}`,
+      '',
+      'Scope:',
+      v.scope_of_work || v.work_done_summary || v.work_done || '(no scope recorded)',
+    ];
+    alert(lines.join('\n'));
+  }
+
+  // ── Edit Profile flow ─────────────────────────────────────────────────────
+  function openEditCustomerProfile() {
+    const c = cdfState.customer; if (!c) return;
+    document.getElementById('ecp-code').value          = c.customer_code || '';
+    document.getElementById('ecp-name').value          = c.name || '';
+    document.getElementById('ecp-company').value       = c.company || '';
+    document.getElementById('ecp-phone').value         = c.phone || '';
+    document.getElementById('ecp-email').value         = c.email || '';
+    document.getElementById('ecp-address').value       = c.address || '';
+    document.getElementById('ecp-notes').value         = c.notes || '';
+    document.getElementById('ecp-customer-type').value = c.customer_type || 'residential';
+    document.getElementById('ecp-account-status').value = (c.active === 0 || c.active === false) ? 'closed' : 'active';
+    document.getElementById('ecp-status-reason').value = '';
+    ['name','phone','email','address','notes'].forEach(f => {
+      const el = document.getElementById('ecp-err-' + f);
+      if (el) el.style.display = 'none';
+    });
+    document.getElementById('err-editCustomerProfile').style.display = 'none';
+    document.getElementById('modal-editCustomerProfile').classList.add('open');
+  }
+
+  function _ecpShowFieldErr(field, msg) {
+    const el = document.getElementById('ecp-err-' + field);
+    if (el) { el.textContent = msg; el.style.display = 'block'; }
+  }
+
+  async function submitEditCustomerProfile() {
+    if (!cdfState.customer) return;
+    ['name','phone','email','address','notes'].forEach(f => {
+      const el = document.getElementById('ecp-err-' + f);
+      if (el) el.style.display = 'none';
+    });
+    const c = cdfState.customer;
+    const body = {
+      name:           document.getElementById('ecp-name').value.trim(),
+      company:        document.getElementById('ecp-company').value.trim(),
+      phone:          document.getElementById('ecp-phone').value.trim(),
+      email:          document.getElementById('ecp-email').value.trim(),
+      address:        document.getElementById('ecp-address').value,
+      notes:          document.getElementById('ecp-notes').value,
+      customer_type:  document.getElementById('ecp-customer-type').value,
+      account_status: document.getElementById('ecp-account-status').value,
+    };
+
+    // Client-side validation
+    let bad = false;
+    if (body.name.length < 2 || body.name.length > 100) {
+      _ecpShowFieldErr('name', 'Full name must be 2–100 characters'); bad = true;
+    }
+    if (body.phone && !/^[\d\+\-\(\) ]+$/.test(body.phone)) {
+      _ecpShowFieldErr('phone', 'Phone may contain digits, +, -, (), and spaces only'); bad = true;
+    }
+    if (body.email && (body.email.indexOf('@') < 1 || body.email.split('@')[1].indexOf('.') < 1)) {
+      _ecpShowFieldErr('email', 'Enter a valid email address'); bad = true;
+    }
+    if (body.address && body.address.length > 500) {
+      _ecpShowFieldErr('address', 'Address must be at most 500 characters'); bad = true;
+    }
+    if (body.notes && body.notes.length > 2000) {
+      _ecpShowFieldErr('notes', 'Notes must be at most 2000 characters'); bad = true;
+    }
+    if (body.company && body.company.length > 100) {
+      const err = document.getElementById('err-editCustomerProfile');
+      err.textContent = 'Company must be at most 100 characters'; err.style.display='block'; bad = true;
+    }
+    if (bad) return;
+
+    // Confirmation dialogs for special-case transitions
+    if ((c.customer_type || 'residential') === 'residential' && body.customer_type === 'commercial') {
+      if (!confirm('Changing to Commercial will require this customer to set up MFA on next portal login. Continue?')) return;
+    }
+    const wasActive = (c.active !== 0 && c.active !== false);
+    if (wasActive && body.account_status === 'closed') {
+      if (!confirm('Closing this account will prevent login but will NOT delete equipment or visit history. Continue?')) return;
+      const reason = prompt('Optional: reason for closing this account (recorded in the audit log only):', '');
+      if (reason !== null) body.status_change_reason = reason;
+    }
+
+    const btn = document.getElementById('ecp-save-btn');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const res = await fetch(`/api/admin/customers/${c.id}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + adminToken,
+        },
+        body: JSON.stringify(body),
+      });
+      if (res.status === 400) {
+        const d = await res.json().catch(() => ({}));
+        const detail = d.detail;
+        if (Array.isArray(detail)) {
+          detail.forEach(e => _ecpShowFieldErr(e.field, e.message));
+        } else {
+          const err = document.getElementById('err-editCustomerProfile');
+          err.textContent = (typeof detail === 'string') ? detail : 'Validation failed';
+          err.style.display = 'block';
+        }
+        return;
+      }
+      if (res.status === 403) {
+        toast('Insufficient permission — super_admin only', 'error'); return;
+      }
+      if (res.status === 409) {
+        toast('This customer was updated by another admin. Refresh to see latest changes.', 'error'); return;
+      }
+      if (!res.ok) {
+        toast('Unable to save. Please try again or contact support.', 'error'); return;
+      }
+      const data = await res.json();
+      cdfState.customer = data.customer || cdfState.customer;
+      toast('Customer profile updated successfully', 'success');
+      closeModal('editCustomerProfile');
+      renderCdfProfile();
+      // Refresh list cache so changes are visible when going back
+      loadCustomers();
+    } catch(e) {
+      toast('Unable to save. Please try again or contact support.', 'error');
+    } finally {
+      btn.disabled = false; btn.textContent = 'Save';
+    }
+  }
+
+  // Hash-routing — when admin lands on /admin#customer/123 directly,
+  // open the detail view as soon as auth + role are settled.
+  function _maybeOpenCustomerFromHash() {
+    const m = (location.hash || '').match(/^#customer\/(\d+)$/);
+    if (!m) return;
+    if (!currentAdmin || currentAdmin.role !== 'super_admin') return;
+    showPanel('customers');
+    openCustomerDetailFull(parseInt(m[1], 10));
+  }
+  window.addEventListener('hashchange', _maybeOpenCustomerFromHash);
 
   async function loadCustomerEquipment() {
     if (!currentCustomer) return;

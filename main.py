@@ -11,6 +11,7 @@ import hmac
 import io
 import json as _json
 import os
+import re
 import secrets as _secrets
 import time
 import uuid
@@ -33,6 +34,8 @@ from database import (
     is_customer_pin_locked,
     get_customer_by_code_and_email, create_customer_pin_reset, consume_customer_pin_reset,
     get_customer_equipment, get_equipment_by_id, create_equipment, delete_equipment,
+    get_customer_with_decryption, update_customer_fields,
+    get_customer_equipment_with_visits, get_customer_visits_paginated,
     get_customer_visits, get_all_visits, create_visit, update_visit, delete_visit,
     get_visit_by_id, update_visit_time, tech_complete_visit, get_tech_jobs,
     add_visit_reading, get_visit_readings,
@@ -1371,6 +1374,21 @@ class CustomerCreate(BaseModel):
     address:       str = ""
     notes:         str = ""
     customer_type: str = "residential"   # 'residential' | 'commercial' — commercial requires MFA
+
+
+class CustomerProfileUpdate(BaseModel):
+    """super_admin Customer Detail View — editable profile fields.
+    All fields optional so the modal can submit a partial body. Server
+    re-validates lengths + regexes regardless of client validation."""
+    name:                  Optional[str] = None
+    company:               Optional[str] = None
+    email:                 Optional[str] = None
+    phone:                 Optional[str] = None
+    address:               Optional[str] = None
+    notes:                 Optional[str] = None
+    customer_type:         Optional[str] = None    # 'residential' | 'commercial'
+    account_status:        Optional[str] = None    # 'active' | 'closed'
+    status_change_reason:  Optional[str] = None    # free-text → audit only
 
 
 class EquipmentCreate(BaseModel):
@@ -4463,10 +4481,176 @@ def admin_delete_customer(request: Request, customer_id: int):
     return {"ok": True}
 
 
+# ── Customer Detail View (super_admin only) ──────────────────────────────────
+# Full read of customer profile + equipment + service history, plus editable
+# profile via POST. Hard role check (not _require_perm) per spec — these
+# endpoints are super_admin-only, never delegated to supervisor or system.
+
+_CUSTOMER_DETAIL_PII_FIELDS = ("phone", "email", "address", "notes")
+
+
+def _require_super_admin(request: Request):
+    admin = _require_admin(request)
+    if admin["role"] != "super_admin":
+        raise HTTPException(403, "insufficient permission — super_admin only")
+    return admin
+
+
+def _validate_customer_profile(body: CustomerProfileUpdate) -> list:
+    """Returns a list of {field, message} dicts. Empty list = OK."""
+    errs = []
+    if body.name is not None:
+        n = (body.name or "").strip()
+        if len(n) < 2 or len(n) > 100:
+            errs.append({"field": "name", "message": "Full name must be 2–100 characters"})
+    if body.company is not None and len(body.company or "") > 100:
+        errs.append({"field": "company", "message": "Company must be at most 100 characters"})
+    if body.phone:
+        if not re.fullmatch(r"[\d\+\-\(\) ]+", body.phone):
+            errs.append({"field": "phone", "message": "Phone may contain digits, +, -, (), and spaces only"})
+    if body.email:
+        e = body.email.strip()
+        if "@" not in e or "." not in e.split("@", 1)[-1]:
+            errs.append({"field": "email", "message": "Enter a valid email address"})
+    if body.address is not None and len(body.address or "") > 500:
+        errs.append({"field": "address", "message": "Address must be at most 500 characters"})
+    if body.notes is not None and len(body.notes or "") > 2000:
+        errs.append({"field": "notes", "message": "Notes must be at most 2000 characters"})
+    if body.customer_type is not None and body.customer_type not in ("residential", "commercial"):
+        errs.append({"field": "customer_type", "message": "Must be 'residential' or 'commercial'"})
+    if body.account_status is not None and body.account_status not in ("active", "closed"):
+        errs.append({"field": "account_status", "message": "Must be 'active' or 'closed'"})
+    return errs
+
+
+@app.get("/api/admin/customers/{customer_id}")
+def admin_customer_detail(request: Request, customer_id: int):
+    """super_admin-only: full decrypted customer profile."""
+    admin = _require_super_admin(request)
+    cust = get_customer_with_decryption(customer_id)
+    if not cust:
+        raise HTTPException(404, "Customer not found")
+    _audit_from(admin, "customer.detail_view", request,
+                target_type="customer", target_id=customer_id,
+                target_label=cust.get("customer_code"))
+    _audit_from(admin, "customer.decrypted_data_accessed", request,
+                target_type="customer", target_id=customer_id,
+                target_label=cust.get("customer_code"),
+                after={"field_names": list(_CUSTOMER_DETAIL_PII_FIELDS)})
+    return cust
+
+
+@app.post("/api/admin/customers/{customer_id}")
+def admin_customer_update(request: Request, customer_id: int, body: CustomerProfileUpdate):
+    """super_admin-only: edit customer profile (re-encrypts sensitive fields)."""
+    admin = _require_super_admin(request)
+    before = get_customer_with_decryption(customer_id)
+    if not before:
+        raise HTTPException(404, "Customer not found")
+
+    errs = _validate_customer_profile(body)
+    if errs:
+        raise HTTPException(400, errs)
+
+    # Build the set of fields actually changing. Account status maps to
+    # the existing `active` column (1 = active, 0 = closed) — we do NOT
+    # touch equipment / visits / payments on close (statutory retention).
+    updates = {}
+    if body.name is not None:           updates["name"] = body.name.strip()
+    if body.company is not None:        updates["company"] = (body.company or "").strip()
+    if body.email is not None:          updates["email"] = (body.email or "").strip()
+    if body.phone is not None:          updates["phone"] = (body.phone or "").strip()
+    if body.address is not None:        updates["address"] = (body.address or "").strip()
+    if body.notes is not None:          updates["notes"] = (body.notes or "").strip()
+    if body.customer_type is not None:  updates["customer_type"] = body.customer_type
+    if body.account_status is not None:
+        updates["active"] = 1 if body.account_status == "active" else 0
+
+    # TODO(concurrency): customers table has no updated_at / version column,
+    # so we cannot enforce optimistic-concurrency via If-Match. Last-writer
+    # wins for now; add an updated_at column + 409 path when conflicts
+    # actually start happening in practice.
+    try:
+        after = update_customer_fields(customer_id, updates)
+    except Exception as e:
+        raise HTTPException(500, f"Unable to save: {type(e).__name__}")
+
+    # Primary audit — before/after sensitive fields are redacted at the
+    # log_audit layer via _redact_pii_for_audit.
+    _audit_from(admin, "customer.update", request,
+                target_type="customer", target_id=customer_id,
+                target_label=before.get("customer_code"),
+                before=before, after=after)
+
+    # Account-type transition → portal MFA flag. We honor the existing
+    # mfa_enabled column if commercial → residential downgrade happens;
+    # the residential→commercial path leaves enforcement to the portal
+    # login flow (which already requires MFA for commercial accounts).
+    if body.customer_type and before.get("customer_type") != body.customer_type:
+        _audit_from(admin, "customer.account_type_changed", request,
+                    target_type="customer", target_id=customer_id,
+                    target_label=before.get("customer_code"),
+                    before={"customer_type": before.get("customer_type")},
+                    after={"customer_type": body.customer_type})
+        # TODO(mfa_required): No dedicated mfa_required flag on customers —
+        # commercial accounts are enforced to set up MFA at portal login by
+        # the existing portal flow. If a stricter pre-enforcement is needed,
+        # add a column and toggle it here.
+
+    # Account-status transition → write a dedicated audit row with reason.
+    if body.account_status:
+        was_active = (before.get("active") in (1, True, None))
+        going_closed = body.account_status == "closed"
+        if was_active and going_closed:
+            _audit_from(admin, "customer.status_closed", request,
+                        target_type="customer", target_id=customer_id,
+                        target_label=before.get("customer_code"),
+                        after={"reason": body.status_change_reason or ""})
+        elif (not was_active) and (not going_closed):
+            _audit_from(admin, "customer.status_reopened", request,
+                        target_type="customer", target_id=customer_id,
+                        target_label=before.get("customer_code"),
+                        after={"reason": body.status_change_reason or ""})
+
+    return {"ok": True, "customer": after}
+
+
 @app.get("/api/admin/customers/{customer_id}/equipment")
 def admin_list_equipment(request: Request, customer_id: int):
-    _require_admin(request)
+    """super_admin sees the enriched view (PM/CM dates + decrypted serial/
+    location/notes) and an audit row is written. Other roles fall back to
+    the legacy basic equipment list — needed because the existing Customers
+    tab "View" button is wired to this endpoint for all admin roles."""
+    admin = _require_admin(request)
+    if admin["role"] == "super_admin":
+        cust = get_customer_by_id(customer_id)
+        if not cust:
+            raise HTTPException(404, "Customer not found")
+        _audit_from(admin, "customer.equipment_view", request,
+                    target_type="customer", target_id=customer_id,
+                    target_label=cust.get("customer_code"))
+        return get_customer_equipment_with_visits(customer_id)
+    if not _admin_can(admin["role"], "customer:view"):
+        raise HTTPException(403, "Forbidden")
     return get_customer_equipment(customer_id)
+
+
+@app.get("/api/admin/customers/{customer_id}/visits")
+def admin_customer_visits(request: Request, customer_id: int,
+                          page: int = 1, limit: int = 10):
+    """super_admin-only: paginated reverse-chronological service history."""
+    admin = _require_super_admin(request)
+    cust = get_customer_by_id(customer_id)
+    if not cust:
+        raise HTTPException(404, "Customer not found")
+    _audit_from(admin, "customer.visits_view", request,
+                target_type="customer", target_id=customer_id,
+                target_label=cust.get("customer_code"),
+                after={"page": page, "limit": limit})
+    return get_customer_visits_paginated(customer_id, page=page, limit=limit)
+
+
+# ── Legacy equipment endpoint preserved above; the GET below is removed.
 
 
 @app.post("/api/admin/equipment")

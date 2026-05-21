@@ -1519,6 +1519,112 @@ def delete_customer(customer_id: int):
     con.close()
 
 
+# ── Customer Detail View (super_admin) ──────────────────────────────────────
+# Helpers backing the super_admin customer-detail screen. Sensitive columns
+# are decrypted on read; redaction at the audit layer keeps plaintext PII
+# out of audit_log even when callers pass the full before/after dict.
+
+def get_customer_with_decryption(customer_id: int):
+    """Full customer row with PII decrypted. super_admin-only endpoint
+    contract — the caller is responsible for gating."""
+    return get_customer_by_id(customer_id)
+
+
+def update_customer_fields(customer_id: int, data: dict):
+    """Partial update of the customer profile. Only known keys are written;
+    sensitive columns are re-encrypted via _enc/_det_enc. Returns the new
+    row (decrypted) so callers can echo it back to the UI and audit it."""
+    allowed_plain     = {"name", "company", "customer_type", "active"}
+    allowed_encrypted = {"phone", "address", "notes"}      # _enc
+    sets, vals = [], []
+    for k, v in data.items():
+        if k in allowed_plain:
+            sets.append(f"{k} = ?")
+            vals.append(v)
+        elif k in allowed_encrypted:
+            sets.append(f"{k} = ?")
+            vals.append(_enc(v if v is not None else ""))
+        elif k == "email":
+            sets.append("email = ?")
+            sets.append("email_hash = ?")
+            vals.append(_det_enc(v or ""))
+            vals.append(_email_hash(v or ""))
+    if not sets:
+        return get_customer_by_id(customer_id)
+    vals.append(customer_id)
+    con = _con()
+    con.execute(f"UPDATE customers SET {', '.join(sets)} WHERE id = ?", vals)
+    if data.get("active") == 0:
+        con.execute(
+            "UPDATE customers SET terminated_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(), customer_id),
+        )
+    con.commit()
+    con.close()
+    return get_customer_by_id(customer_id)
+
+
+def get_customer_equipment_with_visits(customer_id: int):
+    """Equipment register joined with the most recent PM + CM dates per unit.
+    Sensitive columns (serial_number, location, notes) are decrypted."""
+    con = _con()
+    rows = con.execute(
+        """
+        SELECT e.*,
+               (SELECT MAX(COALESCE(completed_date, scheduled_date))
+                  FROM maintenance_visits v
+                  WHERE v.equipment_id = e.id AND v.visit_type = 'PM') AS last_pm_visit,
+               (SELECT MAX(COALESCE(completed_date, scheduled_date))
+                  FROM maintenance_visits v
+                  WHERE v.equipment_id = e.id AND v.visit_type = 'CM') AS last_cm_visit
+        FROM equipment e
+        WHERE e.customer_id = ?
+        ORDER BY e.name
+        """,
+        (customer_id,),
+    ).fetchall()
+    con.close()
+    return _dec_rows("equipment", rows)
+
+
+def get_customer_visits_paginated(customer_id: int, page: int = 1, limit: int = 10):
+    """Reverse-chronological visit list for one customer, paginated. Returns
+    {rows, page, limit, total}. Joins technician name + equipment name."""
+    page  = max(1, int(page or 1))
+    limit = max(1, min(100, int(limit or 10)))
+    offset = (page - 1) * limit
+    con = _con()
+    total = con.execute(
+        "SELECT COUNT(*) AS n FROM maintenance_visits WHERE customer_id = ?",
+        (customer_id,),
+    ).fetchone()["n"]
+    rows = con.execute(
+        """
+        SELECT v.id, v.customer_id, v.equipment_id, v.visit_type, v.status,
+               v.scheduled_date, v.scheduled_time, v.completed_date,
+               v.created_at, v.scope_of_work, v.work_done, v.work_done_summary,
+               v.assigned_tech_id,
+               e.name AS equipment_name,
+               COALESCE(t.name, v.technician) AS tech_name
+        FROM maintenance_visits v
+        LEFT JOIN equipment   e ON v.equipment_id     = e.id
+        LEFT JOIN technicians t ON v.assigned_tech_id = t.id
+        WHERE v.customer_id = ?
+        ORDER BY COALESCE(v.completed_date, v.scheduled_date, v.created_at) DESC,
+                 v.id DESC
+        LIMIT ? OFFSET ?
+        """,
+        (customer_id, limit, offset),
+    ).fetchall()
+    con.close()
+    return {
+        "rows":  _dec_rows("maintenance_visits", rows),
+        "page":  page,
+        "limit": limit,
+        "total": int(total or 0),
+    }
+
+
 # ── Equipment ─────────────────────────────────────────────────────────────────
 
 def get_equipment_by_id(equipment_id: int):
