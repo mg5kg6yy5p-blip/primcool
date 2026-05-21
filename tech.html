@@ -380,7 +380,7 @@
       text-align: center;
     }
   </style>
-  <script src="/icons/pc_shared.js"></script>
+  <script src="/static/pc_shared.js"></script>
 </head>
 <body>
 
@@ -1343,7 +1343,7 @@
     return `⏱  ${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
   }
 
-  // toast() delegated to PC.toast via window.toast shim in /icons/pc_shared.js.
+  // toast() delegated to PC.toast via window.toast shim in /static/pc_shared.js.
   // (Removed local 5-line implementation that used the inline #toast element.)
 
   document.getElementById('techCode').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });

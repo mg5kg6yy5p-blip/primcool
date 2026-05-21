@@ -1265,6 +1265,9 @@ app.mount("/images", StaticFiles(directory="images"), name="images")
 # /photos is intentionally NOT mounted as public static — it serves through
 # /photos/{filename} below, which verifies a short-lived signature.
 app.mount("/icons",  StaticFiles(directory="icons"),  name="icons")
+# Shared frontend assets (pc_shared.js — toast, apiFetch, modal helpers used by all 3 SPAs).
+# Loaded as <script src="/static/pc_shared.js"></script> from admin.html, tech.html, portal_dashboard.html.
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 @app.get("/photos/{filename}")

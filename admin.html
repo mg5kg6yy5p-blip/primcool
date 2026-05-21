@@ -332,7 +332,7 @@
     .pc-aging-bucket-clickable:hover { background: #eef2f5; }
     .pc-aging-bucket-clickable:focus-visible { outline: 2px solid #22A08A; outline-offset: 1px; }
   </style>
-  <script src="/icons/pc_shared.js"></script>
+  <script src="/static/pc_shared.js"></script>
 </head>
 <body>
 
@@ -5097,7 +5097,7 @@
     return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
-  // ── Toast (delegated to PC.toast from /icons/pc_shared.js) ─────────────
+  // ── Toast (delegated to PC.toast from /static/pc_shared.js) ─────────────
   // Local alias kept for backward compatibility; bare `toast(...)` call sites continue to work.
   const toast = (message, kind) => window.PC.toast(message, kind);
 
