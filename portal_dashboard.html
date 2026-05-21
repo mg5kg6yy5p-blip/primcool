@@ -905,15 +905,19 @@
         if (review) {
           reviewBtn = `<span class="review-status ${review.status}" title="Review ${review.status}">${review.status}</span>`;
         } else {
-          reviewBtn = `<button class="btn-leave-small" onclick="event.stopPropagation();openReviewModal('visit',${v.id})">★ Rate Tech</button>`;
+          reviewBtn = `<button class="btn-leave-small pc-stop-prop" onclick="event.stopPropagation();openReviewModal('visit',${v.id})">★ Rate Tech</button>`;
         }
       }
 
+      const _g = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+      const equipCell = (v.equipment_id && _g)
+        ? PC.gateLinkHtml('equipment', v.equipment_id, v.equipment_name || '—', {})
+        : esc(v.equipment_name || '');
       const details = [
         v.scheduled_date ? { l: 'Scheduled', v: fmtDateTime(v.scheduled_date, v.scheduled_time) } : null,
         v.completed_date ? { l: 'Completed Date', v: fmt(v.completed_date) } : null,
         v.technician     ? { l: 'Technician',     v: esc(v.technician) }     : null,
-        v.equipment_name ? { l: 'Equipment',       v: esc(v.equipment_name) } : null,
+        v.equipment_name ? { l: 'Equipment',       v: equipCell } : null,
       ].filter(Boolean);
 
       // Customer sees only the polished summary, never the raw work_done /
@@ -1049,7 +1053,7 @@
         if (equipment.length > 0) {
           document.getElementById('equipmentSection').style.display = 'block';
           document.getElementById('equipmentList').innerHTML = equipment.map(eq => `
-            <div class="eq-card">
+            <div class="eq-card" data-pc-row-equipment="${eq.id}">
               <div class="eq-icon">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M12 2a10 10 0 1 0 10 10H12V2z"/><path d="M12 2a10 10 0 0 1 10 10"/>
@@ -1061,6 +1065,16 @@
                 <div class="eq-meta">${[eq.type, eq.model, eq.location].filter(Boolean).join(' · ') || 'No details recorded'}</div>
               </div>
             </div>`).join('');
+          // FIXME: portal has no equipment-detail modal yet — gate row only adds
+          // a clickable affordance once a detail screen ships. For now we just
+          // attach the access-bundle marker (no onClick) so the row reflects
+          // canRead state visually.
+          if (typeof PC !== 'undefined' && PC.gateRow) {
+            document.querySelectorAll('#equipmentList [data-pc-row-equipment]').forEach(function (card) {
+              const eid = Number(card.getAttribute('data-pc-row-equipment'));
+              PC.gateRow(card, 'equipment', eid, { ariaLabel: 'Equipment #' + eid });
+            });
+          }
         }
 
         // Upcoming visits
@@ -1107,9 +1121,21 @@
           document.getElementById('annualReviewSection').style.display = 'block';
         }
 
-      } catch {
+      } catch (e) {
+        if (typeof PC !== 'undefined' && PC.handleAccessDenied && e && e.body && PC.handleAccessDenied(e)) return;
         document.getElementById('pageTitle').textContent = 'Error loading data';
         document.getElementById('pageSub').textContent  = 'Please refresh the page or contact PrimeCool support.';
+      }
+      // ── Pattern A: once the access bundle resolves, re-paint the surfaces so
+      //    PC.gateRow / PC.gateLinkHtml gating reflects actual scope (e.g., the
+      //    customer-owned visit/equipment/invoice records).
+      if (typeof PC !== 'undefined' && PC.access) {
+        PC.access().then(function () {
+          try { if (typeof renderHistory === 'function' && document.getElementById('acctHistory')) renderHistory(); } catch(_) {}
+          try { if (typeof renderAcctEquipment === 'function' && document.getElementById('acctEquipment')) renderAcctEquipment(); } catch(_) {}
+          try { if (typeof renderAcctInvoices === 'function' && document.getElementById('acctInvoices')) renderAcctInvoices(); } catch(_) {}
+          try { if (typeof loadCustomerInvoices === 'function') loadCustomerInvoices().catch(()=>{}); } catch(_) {}
+        }).catch(function (e) { try { console.warn('access-bundle load failed:', e); } catch(_) {} });
       }
     }
 
@@ -1216,6 +1242,13 @@
       const res = await fetch('/api/portal/invoices', {
         headers: { 'Authorization': `Bearer ${token}` },
       });
+      if (res.status === 403) {
+        try {
+          const body = await res.json();
+          if (typeof PC !== 'undefined' && PC.handleAccessDenied) PC.handleAccessDenied({ body });
+        } catch (_) {}
+        return;
+      }
       if (!res.ok) return;
       const all = await res.json();
       // Filter out drafts — customers shouldn't see those
@@ -1265,8 +1298,8 @@
         const statusBg = {sent:'#fef3c7',overdue:'#fee2e2',paid:'#d1fae5',cancelled:'#e5e7eb'}[status] || '#f3f4f6';
         const statusFg = {sent:'#92400e',overdue:'#991b1b',paid:'#065f46',cancelled:'#6b7280'}[status] || '#374151';
         return `
-          <div class="visit-card">
-            <div class="visit-header" onclick="window.open('/portal/invoice/${i.id}', '_blank')" style="cursor:pointer;">
+          <div class="visit-card" data-pc-row-invoice="${i.id}">
+            <div class="visit-header">
               <div class="visit-left">
                 <div style="font-family:'Courier New',monospace;font-weight:700;color:var(--navy);background:#f0f4f8;padding:4px 10px;border-radius:6px;font-size:13px;">${i.invoice_number}</div>
                 <div class="visit-info">
@@ -1275,12 +1308,55 @@
                 </div>
               </div>
               <div class="visit-right">
-                <span class="badge" style="background:${statusBg};color:${statusFg};">${status}</span>
+                <span class="badge pc-stop-prop" style="background:${statusBg};color:${statusFg};">${status}</span>
                 <span style="color:var(--teal);font-size:13px;font-weight:600;">View →</span>
               </div>
             </div>
           </div>`;
       }).join('');
+      // FIXME: /api/portal/invoices payload does not currently include visit_id;
+      // once it does, render a PC.gateLinkHtml('visit', i.visit_id, ...) line
+      // inside .visit-sub above.
+      if (typeof PC !== 'undefined' && PC.gateRow) {
+        list.querySelectorAll('[data-pc-row-invoice]').forEach(function (card) {
+          const iid = Number(card.getAttribute('data-pc-row-invoice'));
+          PC.gateRow(card, 'invoice', iid, {
+            onClick: function () { window.open('/portal/invoice/' + iid, '_blank'); },
+            ariaLabel: 'Open invoice #' + iid,
+          });
+        });
+      } else {
+        list.querySelectorAll('[data-pc-row-invoice]').forEach(function (card) {
+          const iid = Number(card.getAttribute('data-pc-row-invoice'));
+          card.addEventListener('click', function () { window.open('/portal/invoice/' + iid, '_blank'); });
+        });
+      }
+
+      // Aggregate banner — make the unpaid-balance summary clickable so the
+      // customer can jump to the Invoices tab. PC.gateBadge overwrites the
+      // textContent, which would destroy the rich HTML banner we composed, so
+      // we hand-wire equivalent click/keyboard affordances and gate them via
+      // PC.canRead instead.
+      const banner = document.getElementById('invoicesSummary');
+      const unpaidCount = visible.filter(x => {
+        if (x.status === 'paid' || x.status === 'cancelled') return false;
+        return ((x.total || 0) - (x.amount_paid || 0)) > 0.005;
+      }).length;
+      const canReadInv = (typeof PC === 'undefined' || !PC.canRead) ? true : PC.canRead('invoice', null);
+      if (banner && unpaidCount && canReadInv) {
+        banner.classList.add('pc-badge-clickable');
+        banner.setAttribute('role', 'button');
+        banner.setAttribute('tabindex', '0');
+        const goInvoices = function (e) {
+          e && e.preventDefault && e.preventDefault();
+          try { if (typeof switchView === 'function') switchView('account'); } catch(_) {}
+          try { const t = document.querySelector('[data-tab="invoices"]'); if (t) t.click(); } catch(_) {}
+        };
+        banner.addEventListener('click', goInvoices);
+        banner.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter' || e.key === ' ') goInvoices(e);
+        });
+      }
     }
 
     // ── Service Request ──────────────────────────────────────────────────
@@ -1554,11 +1630,15 @@
           </div>`;
         return;
       }
+      const _g = (typeof PC !== 'undefined' && PC.gateLinkHtml);
       const rows = eqs.map(eq => {
         const last = lastServiceFor(eq.id);
+        const nameCell = _g
+          ? PC.gateLinkHtml('equipment', eq.id, eq.name || '—', {})
+          : esc(eq.name || '—');
         return `
-          <tr>
-            <td>${esc(eq.name || '—')}</td>
+          <tr data-pc-row-equipment="${eq.id}">
+            <td>${nameCell}</td>
             <td>${esc(eq.type || '—')}</td>
             <td>${esc(eq.model || '—')}</td>
             <td>${esc(eq.location || '—')}</td>
@@ -1574,6 +1654,14 @@
             <tbody>${rows}</tbody>
           </table>
         </div>`;
+      // FIXME: no equipment-detail modal in the customer portal yet — gateRow
+      // sets only access-marker attributes (no onClick) until that screen ships.
+      if (typeof PC !== 'undefined' && PC.gateRow) {
+        el.querySelectorAll('tr[data-pc-row-equipment]').forEach(function (tr) {
+          const eid = Number(tr.getAttribute('data-pc-row-equipment'));
+          PC.gateRow(tr, 'equipment', eid, { ariaLabel: 'Equipment #' + eid });
+        });
+      }
     }
 
     function renderHistory() {
@@ -1604,15 +1692,19 @@
         ? '<span class="badge" style="background:#d1fae5;color:#065f46;">PM</span>'
         : '<span class="badge" style="background:#ffedd5;color:#9a3412;">CM</span>';
 
+      const _g = (typeof PC !== 'undefined' && PC.gateLinkHtml);
       const rows = page.map(v => {
         const date = ymd(v.completed_date || v.scheduled_date) || '—';
         const scope = v.work_done_summary || v.scope || '';
         const scopeShort = scope.length > 100 ? scope.slice(0, 100) + '…' : scope;
+        const equipCell = (v.equipment_id && _g)
+          ? PC.gateLinkHtml('equipment', v.equipment_id, v.equipment_name || '—', {})
+          : esc(v.equipment_name || '—');
         return `
-          <tr class="clickable" onclick='openVisitDetail(${v.id})'>
+          <tr data-pc-row-visit="${v.id}">
             <td class="num">${esc(date)}</td>
             <td>${typeBadge(v.visit_type)}</td>
-            <td>${esc(v.equipment_name || '—')}</td>
+            <td>${equipCell}</td>
             <td>${badge(v.status)}</td>
             <td>${esc(scopeShort) || '<span style="color:var(--muted);">—</span>'}</td>
           </tr>`;
@@ -1634,6 +1726,15 @@
             </span>
           </div>
         </div>`;
+      if (typeof PC !== 'undefined' && PC.gateRow) {
+        el.querySelectorAll('tr[data-pc-row-visit]').forEach(function (tr) {
+          const vid = Number(tr.getAttribute('data-pc-row-visit'));
+          PC.gateRow(tr, 'visit', vid, {
+            onClick: function () { openVisitDetail(vid); },
+            ariaLabel: 'Open visit #' + vid,
+          });
+        });
+      }
     }
 
     function openVisitDetail(visitId) {
@@ -1643,10 +1744,14 @@
       const typeFull = v.visit_type === 'PM' ? 'Preventive Maintenance' : 'Corrective Maintenance';
       document.getElementById('visitDetailTitle').textContent = `${typeFull} — ${date}`;
 
+      const _g = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+      const equipCell = (v.equipment_id && _g)
+        ? '__HTML__:' + PC.gateLinkHtml('equipment', v.equipment_id, v.equipment_name || '—', {})
+        : (v.equipment_name || '');
       const rows = [
         v.scheduled_date  ? ['Scheduled',   `${fmt(v.scheduled_date) || ''}${v.scheduled_time ? ' · ' + fmtTime12(v.scheduled_time) : ''}`] : null,
         v.completed_date  ? ['Completed',   fmt(v.completed_date) || ''] : null,
-        v.equipment_name  ? ['Equipment',   v.equipment_name] : null,
+        v.equipment_name  ? ['Equipment',   equipCell] : null,
         v.technician      ? ['Technician',  v.technician] : null,
         ['Status', '__BADGE__:' + v.status],
       ].filter(Boolean);
@@ -1662,7 +1767,7 @@
           ${rows.map(([l, val]) => `
             <div class="profile-field">
               <div class="pf-label">${esc(l)}</div>
-              <div class="pf-val">${val.startsWith('__BADGE__:') ? badge(val.slice(10)) : esc(val)}</div>
+              <div class="pf-val">${val.startsWith('__BADGE__:') ? badge(val.slice(10)) : (val.startsWith('__HTML__:') ? val.slice(9) : esc(val))}</div>
             </div>`).join('')}
         </div>
         ${scopeBlock}
@@ -1684,6 +1789,14 @@
         const res = await fetch('/api/portal/invoices', {
           headers: { 'Authorization': `Bearer ${token}` },
         });
+        if (res.status === 403) {
+          try {
+            const body = await res.json();
+            if (typeof PC !== 'undefined' && PC.handleAccessDenied) PC.handleAccessDenied({ body });
+          } catch (_) {}
+          el.innerHTML = `<div class="empty-state"><p>You do not have permission to view invoices.</p></div>`;
+          return;
+        }
         if (!res.ok) throw new Error();
         const all = await res.json();
         acctInvoices = all.filter(i => i.status !== 'draft');
@@ -1725,21 +1838,31 @@
         return { cls: 'badge-inv-unpaid', label: 'Unpaid' };
       };
 
+      // FIXME: /api/portal/invoices payload does not currently include the
+      // backing visit_id; once it does we can add a PC.gateLinkHtml('visit',
+      // i.visit_id, ...) column here.
+      const _g = (typeof PC !== 'undefined' && PC.gateLinkHtml);
       const rows = acctInvoices.map(i => {
         const balance = (i.total || 0) - (i.amount_paid || 0);
         const s = statusMeta(i);
+        const numCell = _g
+          ? PC.gateLinkHtml('invoice', i.id, i.invoice_number || '—', {
+              onClick: 'function(){ window.open("/portal/invoice/' + i.id + '", "_blank"); }',
+              href: '/portal/invoice/' + i.id,
+            })
+          : esc(i.invoice_number || '—');
         return `
-          <tr>
-            <td><code style="font-family:'Courier New',monospace;font-weight:700;color:var(--navy);">${esc(i.invoice_number || '—')}</code></td>
+          <tr data-pc-row-invoice="${i.id}">
+            <td><code style="font-family:'Courier New',monospace;font-weight:700;color:var(--navy);">${numCell}</code></td>
             <td class="num">${esc(ymd(i.issue_date) || '—')}</td>
             <td class="num">${fmtMoney(i.total, i.currency)}</td>
             <td class="num">${fmtMoney(i.amount_paid || 0, i.currency)}</td>
             <td class="num"><strong>${fmtMoney(balance, i.currency)}</strong></td>
             <td><span class="badge ${s.cls}">${s.label}</span></td>
             <td>
-              <span class="inv-actions">
+              <span class="inv-actions pc-stop-prop">
                 <a href="/portal/invoice/${i.id}" target="_blank" rel="noopener">View</a>
-                <a href="/portal/invoice/${i.id}?print=1" target="_blank" rel="noopener" onclick="showToast('Opening print view…')">Print</a>
+                <a href="/portal/invoice/${i.id}?print=1" target="_blank" rel="noopener" onclick="event.stopPropagation();showToast('Opening print view…')">Print</a>
               </span>
             </td>
           </tr>`;
@@ -1747,7 +1870,7 @@
 
       el.innerHTML = `
         ${banner}
-        <div class="data-table">
+        <div class="data-table" id="acctInvoicesTable">
           <table>
             <thead>
               <tr>
@@ -1763,6 +1886,15 @@
             <tbody>${rows}</tbody>
           </table>
         </div>`;
+      if (typeof PC !== 'undefined' && PC.gateRow) {
+        el.querySelectorAll('tr[data-pc-row-invoice]').forEach(function (tr) {
+          const iid = Number(tr.getAttribute('data-pc-row-invoice'));
+          PC.gateRow(tr, 'invoice', iid, {
+            onClick: function () { window.open('/portal/invoice/' + iid, '_blank'); },
+            ariaLabel: 'Open invoice #' + iid,
+          });
+        });
+      }
     }
 
     // Honor deep-link to #account on load.
