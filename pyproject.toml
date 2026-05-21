@@ -1,0 +1,23 @@
+[tool.ruff]
+line-length = 110
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S"]
+ignore = [
+  "E501",  # line too long (handled by formatter)
+  "S101",  # asserts in test files are fine
+  "B008",  # function calls in default args — FastAPI Depends() etc.
+  "S105", "S106",  # password-string literals — these are TEST defaults only
+]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/seed_*.py" = ["S311"]  # non-crypto random in seed scripts is fine
+
+[tool.black]
+line-length = 110
+target-version = ["py39"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

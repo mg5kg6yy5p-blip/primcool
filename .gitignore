@@ -1,26 +1,39 @@
-# Runtime data — never commit
+# ─── Runtime data — never commit ───────────────────────────────────────────
+# Local databases — NEVER commit (contain encrypted-at-app-layer PII; chain-hash material)
 submissions.db
+submissions.db-shm
+submissions.db-wal
+submissions.db.bak-*
+
+# Uploads — customer PII, photo evidence
 uploads/photos/*
 !uploads/photos/.gitkeep
 uploads/documents/*/*
 !uploads/documents/*/.gitkeep
 
-# Python
+# Boot manifests — operational artifacts, not source
+boot_manifests/
+
+# ─── Env files ─────────────────────────────────────────────────────────────
+# Dev env file — contains secrets
+.dev.env
+.env
+.env.local
+
+# ─── Python build artifacts ────────────────────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
+.pytest_cache/
 venv/
 .venv/
 
-# Local Claude settings
+# ─── Local Claude settings ─────────────────────────────────────────────────
 .claude/settings.local.json
 
-# Env files
-.env
-.env.local
-
-# OS
+# ─── IDE / OS ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
 .DS_Store
 Thumbs.db
-boot_manifests/
