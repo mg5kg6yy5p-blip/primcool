@@ -1625,6 +1625,320 @@ def get_customer_visits_paginated(customer_id: int, page: int = 1, limit: int = 
     }
 
 
+# ── Visit Detail View (super_admin) ─────────────────────────────────────────
+# Helpers backing the super_admin visit-detail screen. Mirrors the
+# customer-detail pattern: decryption on read, audit redaction in the
+# update path, no other invoice columns touched besides payment fields.
+
+def get_visit_full_detail(visit_id: int):
+    """Returns the full read-only payload for the Visit Detail View:
+    visit + customer + equipment + tech + scope + notes + readings + parts
+    (with per-line totals and grand total) + invoice summary + callback info.
+    Encrypted columns are decrypted. Returns None if visit not found."""
+    con = _con()
+    row = con.execute(
+        """
+        SELECT v.*,
+               c.id           AS customer_id,
+               c.customer_code,
+               c.name         AS customer_name,
+               c.company      AS customer_company,
+               c.customer_type AS customer_type,
+               c.email        AS customer_email,
+               c.phone        AS customer_phone,
+               c.address      AS customer_address,
+               c.active       AS customer_active,
+               e.name         AS equipment_name,
+               e.type         AS equipment_type,
+               e.model        AS equipment_model,
+               e.location     AS equipment_location,
+               t.id           AS tech_id,
+               t.tech_code    AS tech_code,
+               t.name         AS tech_name,
+               t.hourly_rate  AS tech_hourly_rate
+        FROM maintenance_visits v
+        JOIN customers c ON v.customer_id = c.id
+        LEFT JOIN equipment   e ON v.equipment_id     = e.id
+        LEFT JOIN technicians t ON v.assigned_tech_id = t.id
+        WHERE v.id = ?
+        """,
+        (visit_id,),
+    ).fetchone()
+    if not row:
+        con.close()
+        return None
+    d = dict(row)
+
+    # Decrypt visit-level encrypted columns
+    for k in ("work_done", "parts_replaced", "notes",
+              "contact_person_phone", "hazards", "access_codes"):
+        if d.get(k):
+            try: d[k] = _dec(d[k])
+            except Exception: pass
+    # Decrypt joined-from-customer / equipment encrypted columns
+    for k in ("customer_phone", "customer_address", "equipment_location"):
+        if d.get(k):
+            try: d[k] = _dec(d[k])
+            except Exception: pass
+    # Customer email is deterministic-encrypted
+    if d.get("customer_email"):
+        try: d["customer_email"] = _det_dec(d["customer_email"])
+        except Exception: pass
+
+    # ── Duration (decimal hours from start_time/end_time) ──────────────────
+    duration_hours = None
+    if d.get("start_time") and d.get("end_time"):
+        try:
+            s = datetime.fromisoformat(d["start_time"].replace("Z", "+00:00"))
+            e = datetime.fromisoformat(d["end_time"].replace("Z",   "+00:00"))
+            duration_hours = round((e - s).total_seconds() / 3600.0, 2)
+        except Exception:
+            duration_hours = None
+    d["duration_hours"] = duration_hours
+
+    # ── Readings ──────────────────────────────────────────────────────────
+    readings = [dict(r) for r in con.execute(
+        "SELECT * FROM visit_readings WHERE visit_id = ? ORDER BY recorded_at ASC",
+        (visit_id,),
+    ).fetchall()]
+    # Flatten to UI-friendly per-metric rows; skip metrics with no value.
+    reading_rows = []
+    if readings:
+        r0 = readings[0]
+        for label, key, unit in [
+            ("Pressure (High)", "pressure_high", "psi"),
+            ("Pressure (Low)",  "pressure_low",  "psi"),
+            ("Supply Temp",     "temp_supply",   "°F"),
+            ("Return Temp",     "temp_return",   "°F"),
+            ("Delta T",         "delta_t",       "°F"),
+            ("Superheat",       "superheat",     "°F"),
+            ("Subcool",         "subcool",       "°F"),
+            ("Approach Temp",   "approach_temp", "°F"),
+        ]:
+            val = r0.get(key)
+            if val is None or val == "":
+                continue
+            reading_rows.append({
+                "reading": label, "value": val, "unit": unit,
+                "notes": r0.get("notes") or "",
+            })
+    d["readings"] = reading_rows
+
+    # ── Parts used (with per-line + grand total) ──────────────────────────
+    part_rows = con.execute(
+        """
+        SELECT vp.id, vp.visit_id, vp.part_id, vp.quantity, vp.unit_price,
+               vp.notes, vp.created_at,
+               p.sku, p.name AS part_name, p.unit AS part_unit
+        FROM visit_parts vp
+        JOIN parts p ON vp.part_id = p.id
+        WHERE vp.visit_id = ?
+        ORDER BY vp.created_at, vp.id
+        """,
+        (visit_id,),
+    ).fetchall()
+    parts_total = 0.0
+    parts = []
+    for pr in part_rows:
+        pr = dict(pr)
+        q = float(pr.get("quantity") or 0)
+        up = float(pr.get("unit_price") or 0)
+        line_total = round(q * up, 2)
+        parts_total += line_total
+        pr["line_total"] = line_total
+        parts.append(pr)
+    d["parts_used"] = parts
+    d["parts_total"] = round(parts_total, 2)
+
+    # ── Invoice summary (payment fields are the only editable bit) ────────
+    inv_row = con.execute(
+        """
+        SELECT id, invoice_number, issue_date, due_date, status,
+               subtotal, tax_rate, tax_amount, total, amount_paid,
+               currency, notes, paid_at, updated_at
+        FROM invoices WHERE visit_id = ?
+        ORDER BY id DESC LIMIT 1
+        """,
+        (visit_id,),
+    ).fetchone()
+    if inv_row:
+        inv = dict(inv_row)
+        # Sum labor lines vs. parts lines for the read-only breakdown
+        line_rows = con.execute(
+            "SELECT line_type, line_total FROM invoice_line_items WHERE invoice_id = ?",
+            (inv["id"],),
+        ).fetchall()
+        labor_total = 0.0
+        parts_line_total = 0.0
+        other_total = 0.0
+        for li in line_rows:
+            lt = float(li["line_total"] or 0)
+            kind = (li["line_type"] or "other").lower()
+            if   kind == "labor": labor_total += lt
+            elif kind == "part":  parts_line_total += lt
+            else:                  other_total += lt
+        inv["labor_total"]  = round(labor_total, 2)
+        inv["parts_total"]  = round(parts_line_total, 2)
+        inv["other_total"]  = round(other_total, 2)
+        inv["outstanding"]  = round(float(inv["total"] or 0) - float(inv["amount_paid"] or 0), 2)
+        # Most-recent recorded payment method/date (read-only mirror for UI)
+        last_pay = con.execute(
+            "SELECT method, payment_date, notes FROM invoice_payments "
+            "WHERE invoice_id = ? ORDER BY payment_date DESC, id DESC LIMIT 1",
+            (inv["id"],),
+        ).fetchone()
+        if last_pay:
+            inv["last_payment_method"] = last_pay["method"]
+            inv["last_payment_date"]   = last_pay["payment_date"]
+            inv["last_payment_notes"]  = last_pay["notes"] or ""
+        else:
+            inv["last_payment_method"] = None
+            inv["last_payment_date"]   = None
+            inv["last_payment_notes"]  = ""
+        # Derive UI-facing payment_status from invoice.status + amount_paid
+        ip = float(inv["amount_paid"] or 0)
+        tot = float(inv["total"] or 0)
+        if (inv["status"] == "paid") or (tot > 0 and ip >= tot):
+            inv["payment_status"] = "fully_paid"
+        elif ip > 0:
+            inv["payment_status"] = "partially_paid"
+        else:
+            inv["payment_status"] = "unpaid"
+        d["invoice"] = inv
+    else:
+        d["invoice"] = None
+
+    # ── Callback linkage ──────────────────────────────────────────────────
+    # FIXME(callback-schema): the maintenance_visits table does not have a
+    # callback_of_visit_id column today. We surface a placeholder so the UI
+    # can render its empty state; add a real column + backfill before
+    # promising this feature in product comms.
+    d["callback"] = {
+        "is_callback": False,
+        "callback_of": None,
+        "callbacks":   [],
+        "schema_note": "callback linkage column not present; tracking not yet implemented",
+    }
+
+    con.close()
+    return d
+
+
+def get_visit_photos_for_admin(visit_id: int):
+    """Admin-facing photo list for the Visit Detail View. Returns a list of
+    dicts: photo_id, label (category), timestamp, uploader_name, filename.
+    Signed URLs are added by the caller (main.py) via _enrich_photos so the
+    HMAC secret stays out of database.py."""
+    con = _con()
+    rows = con.execute(
+        """
+        SELECT vp.id, vp.visit_id, vp.category, vp.filename,
+               vp.uploaded_by, vp.uploaded_at, vp.client_captured_at,
+               t.name AS uploader_name
+        FROM visit_photos vp
+        LEFT JOIN technicians t ON vp.uploaded_by = t.id
+        WHERE vp.visit_id = ?
+        ORDER BY vp.category, vp.uploaded_at, vp.id
+        """,
+        (visit_id,),
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def update_invoice_payment_status(invoice_id: int, status: str,
+                                  payment_method: str = None,
+                                  payment_date: str = None,
+                                  notes: str = None):
+    """Mirrors update_customer_fields: surgical write of ONLY the four
+    payment fields. Does not touch line items, totals, customer linkage,
+    or any other invoice column. Recomputes amount_paid from the
+    invoice_payments table (single source of truth) and synchronises the
+    invoice.status text. Returns the updated invoice (header only)."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+
+    inv = con.execute(
+        "SELECT id, total, status FROM invoices WHERE id = ?",
+        (invoice_id,),
+    ).fetchone()
+    if not inv:
+        con.close()
+        return None
+    total = float(inv["total"] or 0)
+
+    # Map UI payment_status to invoice.status text. The invoice table uses
+    # a richer status vocabulary (draft/sent/paid/void); we preserve any
+    # pre-existing non-paid status when going to "unpaid", and force "paid"
+    # only on fully_paid.
+    new_status = inv["status"] or "draft"
+    if status == "fully_paid":
+        new_status = "paid"
+    elif inv["status"] == "paid":
+        # Was fully paid, now going back — revert to "sent" so the legacy
+        # invoice screen behavior stays consistent.
+        new_status = "sent"
+
+    if status == "unpaid":
+        # Wipe all recorded payments on this invoice so amount_paid → 0.
+        con.execute("DELETE FROM invoice_payments WHERE invoice_id = ?", (invoice_id,))
+    else:
+        # Append a payment row (cash basis — we record the most recent
+        # transition as an event, not a balance overwrite). For fully_paid
+        # we top up to the invoice total; for partially_paid we record a
+        # nominal "see invoice notes" event (UI captures the manual amount
+        # in a future iteration — for now the dropdown is method/status only).
+        amount = 0.0
+        if status == "fully_paid":
+            # Top-up: invoice_total minus what's already recorded.
+            already = con.execute(
+                "SELECT COALESCE(SUM(amount), 0) AS p FROM invoice_payments WHERE invoice_id = ?",
+                (invoice_id,),
+            ).fetchone()["p"]
+            amount = max(0.0, round(total - float(already or 0), 2))
+        # else partially_paid: do not insert a payment row here — amount is
+        # not in scope of this endpoint. Existing payments are preserved.
+        if status == "fully_paid" and amount > 0:
+            con.execute(
+                """
+                INSERT INTO invoice_payments
+                    (invoice_id, payment_date, amount, method, reference, notes,
+                     recorded_by, recorded_by_label, recorded_by_prid, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (invoice_id,
+                 (payment_date or now[:10]),
+                 amount,
+                 (payment_method or "other"),
+                 None,
+                 (notes or ""),
+                 None, None, None, now),
+            )
+
+    # Header notes + paid_at (status text is set above)
+    paid_at = now if status == "fully_paid" else None
+    con.execute(
+        """
+        UPDATE invoices SET
+            status     = ?,
+            notes      = ?,
+            paid_at    = COALESCE(?, CASE WHEN ? = 'paid' THEN paid_at ELSE NULL END),
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (new_status, (notes or ""), paid_at, new_status, now, invoice_id),
+    )
+    _recompute_invoice_totals(con, invoice_id)
+    con.commit()
+    out = con.execute(
+        "SELECT id, invoice_number, status, total, amount_paid, notes, paid_at, updated_at "
+        "FROM invoices WHERE id = ?",
+        (invoice_id,),
+    ).fetchone()
+    con.close()
+    return dict(out) if out else None
+
+
 # ── Equipment ─────────────────────────────────────────────────────────────────
 
 def get_equipment_by_id(equipment_id: int):

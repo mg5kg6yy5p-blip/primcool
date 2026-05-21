@@ -36,6 +36,8 @@ from database import (
     get_customer_equipment, get_equipment_by_id, create_equipment, delete_equipment,
     get_customer_with_decryption, update_customer_fields,
     get_customer_equipment_with_visits, get_customer_visits_paginated,
+    get_visit_full_detail, get_visit_photos_for_admin,
+    update_invoice_payment_status,
     get_customer_visits, get_all_visits, create_visit, update_visit, delete_visit,
     get_visit_by_id, update_visit_time, tech_complete_visit, get_tech_jobs,
     add_visit_reading, get_visit_readings,
@@ -1389,6 +1391,18 @@ class CustomerProfileUpdate(BaseModel):
     customer_type:         Optional[str] = None    # 'residential' | 'commercial'
     account_status:        Optional[str] = None    # 'active' | 'closed'
     status_change_reason:  Optional[str] = None    # free-text → audit only
+
+
+class InvoicePaymentUpdate(BaseModel):
+    """super_admin Visit Detail View — invoice payment-status edit.
+    Strictly the four payment fields. The server rejects any attempt to
+    modify other invoice columns by routing through update_invoice_payment_status
+    which only writes status / paid_at / notes / amount_paid (and the
+    invoice_payments side-table)."""
+    status:         str                          # 'unpaid' | 'partially_paid' | 'fully_paid'
+    payment_method: Optional[str] = None         # 'cash'|'bank_transfer'|'check'|'card'|'other'
+    payment_date:   Optional[str] = None         # ISO date — server treats as a hint only
+    notes:          Optional[str] = None
 
 
 class EquipmentCreate(BaseModel):
@@ -4650,7 +4664,163 @@ def admin_customer_visits(request: Request, customer_id: int,
     return get_customer_visits_paginated(customer_id, page=page, limit=limit)
 
 
-# ── Legacy equipment endpoint preserved above; the GET below is removed.
+# ── Visit Detail View (super_admin only) ─────────────────────────────────────
+# Mirrors the Customer Detail View pattern: hard role check, decrypted full
+# read with field-name audit, narrow surgical update for invoice payment
+# state only. Photo URLs reuse the existing _sign_photo_url infrastructure
+# so we don't invent a parallel signed-URL system.
+
+_VISIT_DETAIL_PII_FIELDS = (
+    # Visit-level encrypted columns
+    "work_done", "parts_replaced", "notes",
+    "contact_person_phone", "hazards", "access_codes",
+    # Joined-in customer columns
+    "customer_phone", "customer_address", "customer_email",
+    # Joined-in equipment column
+    "equipment_location",
+)
+
+_PAYMENT_STATUS_VALUES  = ("unpaid", "partially_paid", "fully_paid")
+_PAYMENT_METHOD_VALUES  = ("cash", "bank_transfer", "check", "card", "other")
+
+
+def _validate_invoice_payment(body: InvoicePaymentUpdate) -> list:
+    errs = []
+    if body.status not in _PAYMENT_STATUS_VALUES:
+        errs.append({"field": "status",
+                     "message": "Must be 'unpaid', 'partially_paid', or 'fully_paid'"})
+    if body.payment_method is not None and body.payment_method not in _PAYMENT_METHOD_VALUES:
+        errs.append({"field": "payment_method",
+                     "message": "Must be one of: cash, bank_transfer, check, card, other"})
+    if body.status in ("fully_paid", "partially_paid") and not body.payment_method:
+        errs.append({"field": "payment_method",
+                     "message": "Payment method is required when status is paid/partially paid"})
+    if body.payment_date:
+        # Accept YYYY-MM-DD only (no time component per spec)
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", body.payment_date):
+            errs.append({"field": "payment_date",
+                         "message": "Payment date must be ISO date (YYYY-MM-DD)"})
+    if body.notes is not None and len(body.notes) > 1000:
+        errs.append({"field": "notes", "message": "Notes must be at most 1000 characters"})
+    return errs
+
+
+@app.get("/api/admin/visits/{visit_id}")
+def admin_visit_detail(request: Request, visit_id: int):
+    """super_admin-only: full decrypted visit detail payload."""
+    admin = _require_super_admin(request)
+    detail = get_visit_full_detail(visit_id)
+    if not detail:
+        raise HTTPException(404, "Visit not found")
+    _audit_from(admin, "visit.detail_view", request,
+                target_type="visit", target_id=visit_id,
+                target_label=f"Visit #{visit_id}")
+    _audit_from(admin, "visit.decrypted_data_accessed", request,
+                target_type="visit", target_id=visit_id,
+                target_label=f"Visit #{visit_id}",
+                after={"field_names": list(_VISIT_DETAIL_PII_FIELDS)})
+    return detail
+
+
+@app.get("/api/admin/visits/{visit_id}/photos")
+def admin_visit_photos(request: Request, visit_id: int):
+    """super_admin-only: photo metadata + signed URLs for the Visit
+    Detail View. We reuse the existing _sign_photo_url HMAC infra rather
+    than inventing a parallel admin-only blob endpoint — signatures are
+    short-lived (PHOTO_URL_TTL) and tied to the filename."""
+    admin = _require_super_admin(request)
+    # 404 if no such visit at all (avoids silent empty list for bad ids)
+    v = get_visit_by_id(visit_id)
+    if not v:
+        raise HTTPException(404, "Visit not found")
+    photos = get_visit_photos_for_admin(visit_id)
+    out = []
+    for p in photos:
+        fname = p.get("filename") or ""
+        out.append({
+            "photo_id":      p["id"],
+            "url":           _sign_photo_url(fname) if fname else None,
+            "label":         (p.get("category") or "Photo").replace("_", " ").title(),
+            "category":      p.get("category"),
+            "timestamp":     p.get("client_captured_at") or p.get("uploaded_at"),
+            "uploader_name": p.get("uploader_name") or "Technician",
+            "filename":      fname,
+        })
+    _audit_from(admin, "visit.photos_view", request,
+                target_type="visit", target_id=visit_id,
+                target_label=f"Visit #{visit_id}",
+                after={"count": len(out)})
+    return out
+
+
+@app.post("/api/admin/visits/{visit_id}/invoice-payment")
+def admin_visit_invoice_payment(request: Request, visit_id: int,
+                                body: InvoicePaymentUpdate):
+    """super_admin-only: edit ONLY the invoice payment fields for the
+    invoice attached to this visit. The database helper enforces that no
+    other invoice column is touched.
+
+    TODO(concurrency): invoices.updated_at exists but the legacy invoice
+    editor does not yet emit/honour If-Match. To stay consistent with the
+    customer-detail deviation we go last-writer-wins for now; add an
+    If-Match path (and the 409 branch below) once the wider invoice
+    surface is migrated. Mirrors the deviation in admin_customer_update."""
+    admin = _require_super_admin(request)
+
+    # Resolve the invoice for this visit. We deliberately do not accept an
+    # invoice_id in the URL — the contract is "the invoice for this visit".
+    detail = get_visit_full_detail(visit_id)
+    if not detail:
+        raise HTTPException(404, "Visit not found")
+    if not detail.get("invoice"):
+        raise HTTPException(404, "No invoice has been generated for this visit yet")
+    invoice_id = detail["invoice"]["id"]
+
+    errs = _validate_invoice_payment(body)
+    if errs:
+        raise HTTPException(400, errs)
+
+    # Snapshot before for audit. Pull the same payload the UI sees so the
+    # before/after diff is meaningful.
+    before_inv = dict(detail["invoice"])
+
+    try:
+        after_header = update_invoice_payment_status(
+            invoice_id,
+            status=body.status,
+            payment_method=body.payment_method,
+            payment_date=body.payment_date,
+            notes=body.notes,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"Unable to save payment status: {type(e).__name__}")
+
+    if not after_header:
+        raise HTTPException(404, "Invoice disappeared mid-update")
+
+    # Rebuild the surfaced invoice block for the audit trail.
+    after_detail = get_visit_full_detail(visit_id)
+    after_inv = after_detail.get("invoice") if after_detail else after_header
+
+    _audit_from(admin, "visit.invoice_payment_status_updated", request,
+                target_type="invoice", target_id=invoice_id,
+                target_label=before_inv.get("invoice_number"),
+                before={
+                    "payment_status":    before_inv.get("payment_status"),
+                    "amount_paid":       before_inv.get("amount_paid"),
+                    "notes":             before_inv.get("notes"),
+                    "last_payment_method": before_inv.get("last_payment_method"),
+                    "last_payment_date":   before_inv.get("last_payment_date"),
+                },
+                after={
+                    "payment_status":    body.status,
+                    "payment_method":    body.payment_method,
+                    "payment_date":      body.payment_date,
+                    "notes":             body.notes,
+                    "amount_paid":       (after_inv or {}).get("amount_paid"),
+                })
+
+    return {"ok": True, "invoice": after_inv}
 
 
 @app.post("/api/admin/equipment")

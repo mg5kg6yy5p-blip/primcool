@@ -1500,6 +1500,102 @@
   </div>
 </div>
 
+<!-- ── Visit Detail View (super_admin) ── -->
+<div class="modal-overlay" id="modal-visitDetailFull">
+  <div class="modal" style="max-width:800px;width:96%;">
+    <div class="modal-header">
+      <div style="display:flex;flex-direction:column;gap:4px;flex:1;">
+        <div style="font-size:11px;color:var(--muted);">
+          <a href="#" onclick="event.preventDefault();closeVisitDetailFull();" style="color:var(--navy);text-decoration:none;font-weight:600;">Visits</a>
+          <span style="margin:0 5px;">›</span>
+          <span id="vdf-breadcrumb-customer"></span>
+          <span style="margin:0 5px;">›</span>
+          <span id="vdf-breadcrumb-id"></span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <span id="vdf-visit-id-badge" style="background:var(--navy);color:#fff;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:700;letter-spacing:0.4px;"></span>
+          <span id="vdf-type-badge"></span>
+          <span id="vdf-status-badge"></span>
+          <span id="vdf-customer-name" style="color:var(--text);font-weight:600;font-size:14px;"></span>
+        </div>
+      </div>
+      <button class="modal-close" onclick="closeVisitDetailFull()" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body" style="max-height:75vh;overflow:auto;">
+
+      <!-- Job Metadata -->
+      <div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:14px;">
+        <h4 style="margin:0 0 10px;color:var(--navy);font-size:14px;">Job Metadata</h4>
+        <div id="vdf-meta-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px 18px;font-size:13px;"></div>
+      </div>
+
+      <!-- Scope of Work -->
+      <div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:14px;">
+        <h4 style="margin:0 0 8px;color:var(--navy);font-size:14px;">Scope of Work</h4>
+        <div id="vdf-scope" style="white-space:pre-wrap;font-size:13px;color:var(--text);"></div>
+      </div>
+
+      <!-- Client Complaint / Notes -->
+      <div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:14px;">
+        <h4 style="margin:0 0 8px;color:var(--navy);font-size:14px;">Client Complaint / Notes</h4>
+        <div id="vdf-notes" style="white-space:pre-wrap;font-size:13px;color:var(--text);"></div>
+      </div>
+
+      <!-- Service Photos -->
+      <div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:14px;">
+        <h4 style="margin:0 0 8px;color:var(--navy);font-size:14px;">Service Photos</h4>
+        <div id="vdf-photos" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;font-size:12px;color:var(--muted);">Loading…</div>
+      </div>
+
+      <!-- Performance Readings -->
+      <div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:14px;">
+        <h4 style="margin:0 0 8px;color:var(--navy);font-size:14px;">Performance Readings</h4>
+        <div class="table-wrap"><table style="font-size:12px;">
+          <thead><tr><th>Reading</th><th>Value</th><th>Unit</th><th>Notes</th></tr></thead>
+          <tbody id="vdf-readings-body"><tr><td colspan="4" class="empty">—</td></tr></tbody>
+        </table></div>
+      </div>
+
+      <!-- Parts Used -->
+      <div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:14px;">
+        <h4 style="margin:0 0 8px;color:var(--navy);font-size:14px;">Parts Used</h4>
+        <div class="table-wrap"><table style="font-size:12px;">
+          <thead><tr><th>SKU</th><th>Part Name</th><th>Qty</th><th>Unit Cost</th><th>Line Total</th><th>Notes</th></tr></thead>
+          <tbody id="vdf-parts-body"><tr><td colspan="6" class="empty">—</td></tr></tbody>
+          <tfoot id="vdf-parts-foot"></tfoot>
+        </table></div>
+      </div>
+
+      <!-- Invoice -->
+      <div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:14px;">
+        <h4 style="margin:0 0 8px;color:var(--navy);font-size:14px;">Invoice</h4>
+        <div id="vdf-invoice"></div>
+      </div>
+
+      <!-- Callback History -->
+      <div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:6px;">
+        <h4 style="margin:0 0 8px;color:var(--navy);font-size:14px;">Callback History</h4>
+        <div id="vdf-callbacks" style="font-size:13px;color:var(--muted);"></div>
+      </div>
+
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeVisitDetailFull()">← Back to Visits</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Photo lightbox (generic, reused by Visit Detail) ── -->
+<div id="vdf-lightbox" style="display:none;position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,0.85);align-items:center;justify-content:center;">
+  <button onclick="vdfLightboxClose()" aria-label="Close lightbox" style="position:absolute;top:14px;right:18px;background:transparent;border:0;color:#fff;font-size:32px;cursor:pointer;">×</button>
+  <button onclick="vdfLightboxNav(-1)" aria-label="Previous" style="position:absolute;left:20px;top:50%;transform:translateY(-50%);background:transparent;border:0;color:#fff;font-size:42px;cursor:pointer;">‹</button>
+  <button onclick="vdfLightboxNav(1)" aria-label="Next" style="position:absolute;right:20px;top:50%;transform:translateY(-50%);background:transparent;border:0;color:#fff;font-size:42px;cursor:pointer;">›</button>
+  <div style="text-align:center;max-width:92vw;max-height:92vh;">
+    <img id="vdf-lightbox-img" alt="" style="max-width:92vw;max-height:80vh;border-radius:6px;">
+    <div id="vdf-lightbox-caption" style="color:#fff;margin-top:10px;font-size:13px;"></div>
+  </div>
+</div>
+
 <!-- Add Equipment -->
 <div class="modal-overlay" id="modal-addEquipment">
   <div class="modal">
@@ -1979,6 +2075,8 @@
     loadMyPayslips();
     // Honor /admin#customer/{id} deep-link for super_admin
     setTimeout(_maybeOpenCustomerFromHash, 60);
+    // Honor /admin#visit/{id} deep-link for super_admin
+    setTimeout(_maybeOpenVisitFromHash, 60);
   }
 
   function applyRoleVisibility() {
@@ -2671,6 +2769,403 @@
   }
   window.addEventListener('hashchange', _maybeOpenCustomerFromHash);
 
+  // ── super_admin Visit Detail View ────────────────────────────────────────
+  // State for the visit-detail modal. Mirrors the Customer Detail View
+  // pattern: hard role gate, hash deep-link, audited reads, surgical
+  // invoice-payment edit.
+  let vdfState = { visit: null, photos: [], lightboxIndex: 0,
+                   payment: { status: null, method: null, date: null, notes: null } };
+
+  function _vdfFmtJ(n) {
+    if (n === null || n === undefined || n === '') return '—';
+    const v = Math.round(Number(n) || 0);
+    return 'J$' + v.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  }
+
+  function routeVisitDetail(visit_id) {
+    if (!currentAdmin || currentAdmin.role !== 'super_admin') {
+      toast('Visit detail view is restricted to super_admin', 'error');
+      return;
+    }
+    openVisitDetailFull(visit_id);
+  }
+
+  async function openVisitDetailFull(visit_id) {
+    vdfState = { visit: null, photos: [], lightboxIndex: 0,
+                 payment: { status: null, method: null, date: null, notes: null } };
+    history.replaceState(null, '', location.pathname + location.search + '#visit/' + visit_id);
+    document.getElementById('modal-visitDetailFull').classList.add('open');
+    document.getElementById('vdf-meta-grid').innerHTML = '<div style="grid-column:1/-1;color:var(--muted);">Loading…</div>';
+    document.getElementById('vdf-scope').textContent = '';
+    document.getElementById('vdf-notes').textContent = '';
+    document.getElementById('vdf-readings-body').innerHTML = '<tr><td colspan="4" class="empty">Loading…</td></tr>';
+    document.getElementById('vdf-parts-body').innerHTML   = '<tr><td colspan="6" class="empty">Loading…</td></tr>';
+    document.getElementById('vdf-parts-foot').innerHTML   = '';
+    document.getElementById('vdf-invoice').innerHTML      = '<div style="color:var(--muted);font-size:13px;">Loading…</div>';
+    document.getElementById('vdf-callbacks').innerHTML    = 'Loading…';
+    document.getElementById('vdf-photos').innerHTML       = '<div style="grid-column:1/-1;color:var(--muted);">Loading…</div>';
+    try {
+      const v = await api('GET', `/api/admin/visits/${visit_id}`);
+      vdfState.visit = v;
+      renderVdfMetadata();
+      renderVdfScope();
+      renderVdfReadings();
+      renderVdfParts();
+      renderVdfInvoice();
+      renderVdfCallbacks();
+      loadVdfPhotos();
+    } catch (e) {
+      if ((e.message || '').indexOf('403') >= 0) {
+        toast('Insufficient permission — super_admin only', 'error');
+      } else {
+        toast('Unable to load visit: ' + e.message, 'error');
+      }
+      closeVisitDetailFull();
+    }
+  }
+
+  function closeVisitDetailFull() {
+    document.getElementById('modal-visitDetailFull').classList.remove('open');
+    if (location.hash.indexOf('#visit/') === 0) {
+      history.replaceState(null, '', location.pathname + location.search);
+    }
+  }
+
+  function renderVdfMetadata() {
+    const v = vdfState.visit; if (!v) return;
+    const vt = (v.visit_type || '').toUpperCase();
+    const typeBadge = vt === 'PM'
+      ? '<span class="badge" style="background:#dcfce7;color:#166534;">PM</span>'
+      : '<span class="badge" style="background:#ffedd5;color:#9a3412;">CM</span>';
+    const status = (v.status || '').toLowerCase();
+    const statusMap = {
+      scheduled:    ['#f3f4f6', '#374151', 'Scheduled'],
+      confirmed:    ['#e0f2fe', '#075985', 'Confirmed'],
+      in_progress:  ['#dbeafe', '#1d4ed8', 'In Progress'],
+      completed:    ['#dcfce7', '#166534', 'Completed'],
+    };
+    const [bg, fg, lbl] = statusMap[status] || ['#f3f4f6', '#374151', status || '—'];
+    const statusBadge = `<span class="badge" style="background:${bg};color:${fg};">${escHtml(lbl)}</span>`;
+    const ctype = v.customer_type || 'residential';
+    const ctypeBadge = ctype === 'commercial'
+      ? '<span class="badge" style="background:#e0f2f1;color:#0a7d68;">Commercial</span>'
+      : '<span class="badge" style="background:#eff6ff;color:#1d4ed8;">Residential</span>';
+
+    document.getElementById('vdf-visit-id-badge').textContent = '#' + v.id;
+    document.getElementById('vdf-type-badge').innerHTML = typeBadge;
+    document.getElementById('vdf-status-badge').innerHTML = statusBadge;
+    document.getElementById('vdf-breadcrumb-customer').textContent = v.customer_name || '—';
+    document.getElementById('vdf-breadcrumb-id').textContent = '#' + v.id;
+
+    const linkCustomer = `<a href="#" onclick="event.preventDefault();vdfOpenCustomer(${v.customer_id});" style="color:var(--navy);font-weight:600;text-decoration:underline;">${escHtml(v.customer_name || '—')}</a>`;
+    const customerCell = (currentAdmin && currentAdmin.role === 'super_admin') ? linkCustomer : (escHtml(v.customer_name) || '—');
+    document.getElementById('vdf-customer-name').innerHTML = customerCell;
+
+    const sched = fmtDateTime(v.scheduled_date, v.scheduled_time) || '—';
+    const dur = (v.duration_hours === null || v.duration_hours === undefined) ? '—' : (v.duration_hours + ' h');
+    const fld = (label, val) => `
+      <div>
+        <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);font-weight:600;margin-bottom:2px;">${label}</div>
+        <div style="color:var(--text);">${val || '—'}</div>
+      </div>`;
+    document.getElementById('vdf-meta-grid').innerHTML = [
+      fld('Customer',         customerCell),
+      fld('Customer Type',    ctypeBadge),
+      fld('Equipment',        escHtml(v.equipment_name)),
+      // TODO: equipment drilldown is future work; field is read-only.
+      fld('Visit Type',       typeBadge),
+      fld('Status',           statusBadge),
+      fld('Scheduled',        escHtml(sched)),
+      fld('Actual Start',     v.start_time ? escHtml(v.start_time.replace('T', ' ').slice(0,16)) : '—'),
+      fld('Actual End',       v.end_time   ? escHtml(v.end_time.replace('T', ' ').slice(0,16))   : '—'),
+      fld('Duration',         escHtml(dur)),
+      fld('Assigned Technician', escHtml(v.tech_name || '—')),
+    ].join('');
+  }
+
+  function renderVdfScope() {
+    const v = vdfState.visit;
+    const scope = (v && (v.scope_of_work || '')) || '';
+    const notes = (v && (v.notes || v.work_done || '')) || '';
+    document.getElementById('vdf-scope').textContent = scope || 'No scope of work documented.';
+    document.getElementById('vdf-scope').style.color = scope ? 'var(--text)' : 'var(--muted)';
+    document.getElementById('vdf-notes').textContent = notes || 'No complaint or notes recorded.';
+    document.getElementById('vdf-notes').style.color = notes ? 'var(--text)' : 'var(--muted)';
+  }
+
+  function renderVdfReadings() {
+    const v = vdfState.visit;
+    const tbody = document.getElementById('vdf-readings-body');
+    const rs = (v && v.readings) || [];
+    if (!rs.length) {
+      tbody.innerHTML = '<tr><td colspan="4" class="empty">No readings recorded for this visit.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rs.map(r => `
+      <tr>
+        <td>${escHtml(r.reading)}</td>
+        <td>${escHtml(String(r.value))}</td>
+        <td>${escHtml(r.unit || '')}</td>
+        <td>${escHtml(r.notes || '')}</td>
+      </tr>`).join('');
+  }
+
+  function renderVdfParts() {
+    const v = vdfState.visit;
+    const tbody = document.getElementById('vdf-parts-body');
+    const tfoot = document.getElementById('vdf-parts-foot');
+    const ps = (v && v.parts_used) || [];
+    if (!ps.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty">No parts used on this visit.</td></tr>';
+      tfoot.innerHTML = '';
+      return;
+    }
+    tbody.innerHTML = ps.map(p => `
+      <tr>
+        <td>${escHtml(p.sku || '')}</td>
+        <td>${escHtml(p.part_name || '')}</td>
+        <td>${escHtml(String(p.quantity))}</td>
+        <td>${_vdfFmtJ(p.unit_price)}</td>
+        <td><strong>${_vdfFmtJ(p.line_total)}</strong></td>
+        <td>${escHtml(p.notes || '')}</td>
+      </tr>`).join('');
+    tfoot.innerHTML = `<tr><td colspan="4" style="text-align:right;font-weight:600;">Total Parts Cost:</td><td colspan="2"><strong>${_vdfFmtJ(v.parts_total)}</strong></td></tr>`;
+  }
+
+  function renderVdfInvoice() {
+    const v = vdfState.visit;
+    const host = document.getElementById('vdf-invoice');
+    const inv = v && v.invoice;
+    if (!inv) {
+      host.innerHTML = `<div style="color:var(--muted);font-size:13px;">
+        No invoice generated yet. <button class="btn btn-ghost btn-sm" disabled title="Future feature">+ Generate Invoice</button>
+      </div>`;
+      return;
+    }
+    vdfState.payment = {
+      status: inv.payment_status,
+      method: inv.last_payment_method || '',
+      date:   inv.last_payment_date   || '',
+      notes:  inv.notes               || '',
+    };
+    const ro = (lbl, val) => `<div><div style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);font-weight:600;margin-bottom:2px;">${lbl}</div><div>${val}</div></div>`;
+    host.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px 18px;font-size:13px;margin-bottom:12px;">
+        ${ro('Invoice #', escHtml(inv.invoice_number))}
+        ${ro('Invoice Date', escHtml(inv.issue_date || '—'))}
+        ${ro('Labor', _vdfFmtJ(inv.labor_total))}
+        ${ro('Parts', _vdfFmtJ(inv.parts_total))}
+        ${ro('Other Charges', _vdfFmtJ(inv.other_total))}
+        ${ro('Subtotal', _vdfFmtJ(inv.subtotal))}
+        ${ro('GCT (' + ((Number(inv.tax_rate||0)*100).toFixed(0)) + '%)', _vdfFmtJ(inv.tax_amount))}
+        ${ro('Total Due', '<strong>' + _vdfFmtJ(inv.total) + '</strong>')}
+        ${ro('Amount Paid', _vdfFmtJ(inv.amount_paid))}
+        ${ro('Outstanding', '<strong>' + _vdfFmtJ(inv.outstanding) + '</strong>')}
+      </div>
+      <div style="border-top:1px solid var(--border);padding-top:12px;margin-top:6px;">
+        <div style="font-weight:600;color:var(--navy);margin-bottom:8px;font-size:13px;">Payment</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;font-size:12px;">
+          <label>Payment Status <span style="color:var(--danger);">*</span>
+            <select id="vdf-pay-status" onchange="vdfPaymentStatusChanged()" aria-label="Payment status" style="display:block;width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;margin-top:3px;">
+              <option value="unpaid">Unpaid</option>
+              <option value="partially_paid">Partially Paid</option>
+              <option value="fully_paid">Fully Paid</option>
+            </select>
+          </label>
+          <label>Payment Method
+            <select id="vdf-pay-method" aria-label="Payment method" style="display:block;width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;margin-top:3px;">
+              <option value="">—</option>
+              <option value="cash">Cash</option>
+              <option value="bank_transfer">Bank Transfer</option>
+              <option value="check">Check</option>
+              <option value="card">Card</option>
+              <option value="other">Other</option>
+            </select>
+          </label>
+          <label>Payment Date
+            <input type="date" id="vdf-pay-date" aria-label="Payment date" style="display:block;width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;margin-top:3px;">
+          </label>
+        </div>
+        <label style="display:block;margin-top:10px;font-size:12px;">Notes
+          <textarea id="vdf-pay-notes" maxlength="1000" rows="2" aria-label="Payment notes" style="display:block;width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;margin-top:3px;"></textarea>
+        </label>
+        <div class="form-error" id="vdf-pay-err" style="display:none;color:var(--danger);font-size:12px;margin-top:6px;"></div>
+        <div style="display:flex;justify-content:flex-end;margin-top:10px;">
+          <button class="btn btn-primary btn-sm" id="vdf-pay-save" onclick="submitVdfPayment()" disabled>Save Payment</button>
+        </div>
+      </div>
+    `;
+    document.getElementById('vdf-pay-status').value = vdfState.payment.status || 'unpaid';
+    document.getElementById('vdf-pay-method').value = vdfState.payment.method || '';
+    document.getElementById('vdf-pay-date').value   = (vdfState.payment.date || '').slice(0,10);
+    document.getElementById('vdf-pay-notes').value  = vdfState.payment.notes || '';
+    ['vdf-pay-status','vdf-pay-method','vdf-pay-date','vdf-pay-notes'].forEach(id => {
+      const el = document.getElementById(id);
+      el.addEventListener('input',  vdfPaymentDirtyCheck);
+      el.addEventListener('change', vdfPaymentDirtyCheck);
+    });
+    vdfPaymentStatusChanged();
+  }
+
+  function vdfPaymentStatusChanged() {
+    const s = document.getElementById('vdf-pay-status').value;
+    const methodEl = document.getElementById('vdf-pay-method');
+    const dateEl   = document.getElementById('vdf-pay-date');
+    const notesEl  = document.getElementById('vdf-pay-notes');
+    if (s === 'unpaid') {
+      methodEl.value = ''; dateEl.value = ''; notesEl.value = '';
+      methodEl.disabled = true;
+    } else {
+      methodEl.disabled = false;
+      if (s === 'fully_paid' && !dateEl.value) {
+        const today = new Date().toISOString().slice(0,10);
+        dateEl.value = today;
+      }
+    }
+    vdfPaymentDirtyCheck();
+  }
+
+  function vdfPaymentDirtyCheck() {
+    const base = vdfState.payment;
+    const cur = {
+      status: document.getElementById('vdf-pay-status').value,
+      method: document.getElementById('vdf-pay-method').value,
+      date:   document.getElementById('vdf-pay-date').value,
+      notes:  document.getElementById('vdf-pay-notes').value,
+    };
+    const dirty = (cur.status !== (base.status || 'unpaid'))
+              || (cur.method !== (base.method || ''))
+              || ((cur.date || '') !== ((base.date || '').slice(0,10)))
+              || ((cur.notes || '') !== (base.notes || ''));
+    document.getElementById('vdf-pay-save').disabled = !dirty;
+  }
+
+  async function submitVdfPayment() {
+    if (!vdfState.visit) return;
+    const errBox = document.getElementById('vdf-pay-err');
+    errBox.style.display = 'none';
+    const body = {
+      status:         document.getElementById('vdf-pay-status').value,
+      payment_method: document.getElementById('vdf-pay-method').value || null,
+      payment_date:   document.getElementById('vdf-pay-date').value || null,
+      notes:          document.getElementById('vdf-pay-notes').value,
+    };
+    if (body.status === 'unpaid') {
+      body.payment_method = null; body.payment_date = null;
+    } else if (!body.payment_method) {
+      errBox.textContent = 'Payment method is required when status is paid/partially paid';
+      errBox.style.display = 'block'; return;
+    }
+    const btn = document.getElementById('vdf-pay-save');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const res = await fetch(`/api/admin/visits/${vdfState.visit.id}/invoice-payment`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + adminToken },
+        body: JSON.stringify(body),
+      });
+      if (res.status === 400) {
+        const d = await res.json().catch(() => ({}));
+        const detail = d.detail;
+        if (Array.isArray(detail)) {
+          errBox.textContent = detail.map(x => x.message || x).join('; ');
+        } else {
+          errBox.textContent = (typeof detail === 'string') ? detail : 'Validation failed';
+        }
+        errBox.style.display = 'block'; return;
+      }
+      if (res.status === 403) { toast('Insufficient permission — super_admin only', 'error'); return; }
+      if (res.status === 404) { toast('No invoice for this visit (was it deleted?).', 'error'); return; }
+      if (res.status === 409) { toast('This invoice was updated by another admin. Refresh to see latest changes.', 'error'); return; }
+      if (!res.ok) { toast('Unable to save payment status. Please try again.', 'error'); return; }
+      toast('Payment status updated', 'success');
+      // Refresh the modal data
+      await openVisitDetailFull(vdfState.visit.id);
+    } catch (e) {
+      toast('Unable to save payment status. Please try again.', 'error');
+    } finally {
+      btn.disabled = false; btn.textContent = 'Save Payment';
+    }
+  }
+
+  async function loadVdfPhotos() {
+    const host = document.getElementById('vdf-photos');
+    if (!vdfState.visit) return;
+    try {
+      const ps = await api('GET', `/api/admin/visits/${vdfState.visit.id}/photos`);
+      vdfState.photos = ps || [];
+      if (!vdfState.photos.length) {
+        host.innerHTML = '<div style="grid-column:1/-1;color:var(--muted);font-size:13px;">No photos attached to this visit.</div>';
+        return;
+      }
+      host.innerHTML = vdfState.photos.map((p, i) => `
+        <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden;background:#fff;cursor:pointer;" onclick="vdfLightboxOpen(${i})">
+          <img src="${escHtml(p.url || '')}" alt="${escHtml(p.label)}" style="display:block;width:100%;height:110px;object-fit:cover;background:#f5f7fa;">
+          <div style="padding:6px 8px;">
+            <div style="font-weight:600;color:var(--text);font-size:11px;">${escHtml(p.label)}</div>
+            <div style="color:var(--muted);font-size:10px;">${escHtml((p.timestamp || '').slice(0,16).replace('T',' '))}</div>
+            <div style="color:var(--muted);font-size:10px;">${escHtml(p.uploader_name)}</div>
+          </div>
+        </div>
+      `).join('');
+    } catch (e) {
+      host.innerHTML = `<div style="grid-column:1/-1;color:var(--danger);font-size:12px;">Unable to load photos: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  function renderVdfCallbacks() {
+    const host = document.getElementById('vdf-callbacks');
+    const cb = (vdfState.visit && vdfState.visit.callback) || null;
+    // FIXME(callback-schema): the maintenance_visits table currently has no
+    // callback_of_visit_id column. Backend returns the empty-state shape;
+    // when the column is added, swap to render is_callback / callbacks list.
+    if (!cb || (!cb.is_callback && (!cb.callbacks || !cb.callbacks.length))) {
+      host.textContent = 'No callbacks associated with this visit.';
+      return;
+    }
+    host.textContent = 'No callbacks associated with this visit.';
+  }
+
+  function vdfOpenCustomer(customer_id) {
+    if (!currentAdmin || currentAdmin.role !== 'super_admin') return;
+    closeVisitDetailFull();
+    showPanel('customers');
+    openCustomerDetailFull(customer_id);
+  }
+
+  // ── Lightbox ──
+  function vdfLightboxOpen(i) {
+    vdfState.lightboxIndex = i;
+    _vdfLightboxRender();
+    document.getElementById('vdf-lightbox').style.display = 'flex';
+  }
+  function vdfLightboxClose() {
+    document.getElementById('vdf-lightbox').style.display = 'none';
+  }
+  function vdfLightboxNav(delta) {
+    if (!vdfState.photos.length) return;
+    let n = vdfState.lightboxIndex + delta;
+    if (n < 0) n = vdfState.photos.length - 1;
+    if (n >= vdfState.photos.length) n = 0;
+    vdfState.lightboxIndex = n;
+    _vdfLightboxRender();
+  }
+  function _vdfLightboxRender() {
+    const p = vdfState.photos[vdfState.lightboxIndex];
+    if (!p) return;
+    document.getElementById('vdf-lightbox-img').src = p.url || '';
+    document.getElementById('vdf-lightbox-caption').textContent =
+      (p.label || '') + ' — ' + (p.uploader_name || '') + ' — ' + ((p.timestamp || '').slice(0,16).replace('T',' '));
+  }
+
+  function _maybeOpenVisitFromHash() {
+    const m = (location.hash || '').match(/^#visit\/(\d+)$/);
+    if (!m) return;
+    if (!currentAdmin || currentAdmin.role !== 'super_admin') return;
+    openVisitDetailFull(parseInt(m[1], 10));
+  }
+  window.addEventListener('hashchange', _maybeOpenVisitFromHash);
+
   async function loadCustomerEquipment() {
     if (!currentCustomer) return;
     try {
@@ -2922,7 +3417,8 @@
         <td>${techCell}</td>
         <td>${v.equipment_name || '—'}</td>
         <td style="white-space:nowrap;">
-          <button class="btn btn-edit btn-sm" onclick="openEditVisit(${v.id})">Edit</button>
+          ${(currentAdmin && currentAdmin.role === 'super_admin') ? `<button class="btn btn-ghost btn-sm" onclick="routeVisitDetail(${v.id})" aria-label="View visit detail">View →</button>` : ''}
+          <button class="btn btn-edit btn-sm" onclick="openEditVisit(${v.id})" style="margin-left:6px;">Edit</button>
           ${v.status === 'completed' && can('visit:flag') ? `<button class="btn btn-ghost btn-sm" onclick="toggleVisitFlag(${v.id}, ${v.flagged_for_review ? 'false' : 'true'})" style="margin-left:6px;${v.flagged_for_review ? 'background:#fef3c7;color:#92400e;border-color:#fcd34d;' : ''}">${v.flagged_for_review ? '🚩 Flagged' : 'Flag for review'}</button>` : ''}
           ${v.status === 'completed' && can('invoice:create') ? `<button class="btn btn-primary btn-sm" onclick="generateInvoiceFromVisit(${v.id})" style="margin-left:6px;background:#059669;">+ Invoice</button>` : ''}
           <button class="btn btn-danger btn-sm" onclick="deleteVisit(${v.id})" style="margin-left:6px;">Delete</button>
