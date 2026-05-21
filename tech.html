@@ -483,6 +483,7 @@
       <div class="tab" data-tab="upcoming" onclick="setTab('upcoming')">Upcoming <span class="count" id="cnt-upcoming">0</span></div>
       <div class="tab" data-tab="done" onclick="setTab('done')">Done <span class="count" id="cnt-done">0</span></div>
       <div class="tab" data-tab="payslips" onclick="setTab('payslips')">My Pay</div>
+      <div class="tab" data-tab="kpi" onclick="setTab('kpi')">My Performance</div>
     </div>
     <div class="list" id="jobList"></div>
   </div>
@@ -644,6 +645,11 @@
     // My-payslips tab swaps the job list for the employee's own payslips.
     if (currentTab === 'payslips') {
       renderMyPayslips();
+      return;
+    }
+    // My-Performance tab — own KPI scorecard (read-only, redacted overrides).
+    if (currentTab === 'kpi') {
+      renderMyKpi();
       return;
     }
 
@@ -1426,6 +1432,97 @@
     const v = Number(n||0);
     const sym = cur === 'JMD' ? 'J$' : (cur === 'USD' ? '$' : cur + ' ');
     return sym + v.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+  }
+
+  // ── My Performance (Phase 4 — KPI scorecard, read-only) ──────────────────
+  const TECH_KPI_LABELS = {
+    callback_rate: 'Callback',
+    documentation_quality: 'Docs',
+    pm_completion: 'PM',
+    utilization: 'Utilization',
+    sla_adherence: 'SLA',
+    safety_compliance: 'Safety',
+    first_time_fix: 'First-time Fix',
+    revenue_per_tech: 'Rev/Tech',
+  };
+  function _techBandPill(band) {
+    const cmap = {
+      green: 'background:#d1fae5;color:#065f46;',
+      amber: 'background:#fef3c7;color:#92400e;',
+      red:   'background:#fee2e2;color:#991b1b;',
+      insufficient_data: 'background:#f3f4f6;color:#666;',
+    };
+    const label = !band || band === 'insufficient_data' ? 'N/A' : band.toUpperCase();
+    return `<span style="${cmap[band] || cmap.insufficient_data}padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;">${label}</span>`;
+  }
+  async function renderMyKpi() {
+    const wrap = document.getElementById('jobList');
+    wrap.innerHTML = '<div class="empty"><div>Loading your performance…</div></div>';
+    try {
+      const sc = await api('GET', '/api/tech/me/kpi');
+      const fl = await api('GET', '/api/tech/me/kpi/flags').catch(() => ({flags: []}));
+      const comp = (sc.current && sc.current.composite) || {};
+      const kpis = (sc.current && sc.current.kpis) || {};
+      const trend = sc.trend || [];
+      const updated = (comp.computed_at || '').slice(0,16).replace('T',' ');
+      const trendStrip = trend.slice().reverse().map(t => {
+        const b = t.band || 'insufficient_data';
+        const c = b === 'green' ? '#10b981' : b === 'amber' ? '#f59e0b' : b === 'red' ? '#ef4444' : '#9ca3af';
+        return `<div title="${esc(t.period_key)}"
+          style="flex:1;height:26px;border-radius:4px;background:${c};display:flex;align-items:center;justify-content:center;color:white;font-size:10px;font-weight:600;">
+          ${t.composite_pct == null ? '—' : t.composite_pct + '%'}
+        </div>`;
+      }).join('');
+      const kpiRows = Object.keys(TECH_KPI_LABELS).map(k => {
+        const r = kpis[k] || {};
+        return `<tr>
+          <td style="padding:8px;">${TECH_KPI_LABELS[k]}</td>
+          <td style="padding:8px;">${_techBandPill(r.band)}</td>
+          <td style="padding:8px;text-align:right;color:#555;">${r.raw_value == null ? '—' : r.raw_value}</td>
+        </tr>`;
+      }).join('');
+      const flagItems = (fl.flags || []).map(f => `
+        <div style="padding:10px;border-radius:8px;border:1px solid #e5e7eb;margin-bottom:8px;background:#fff;">
+          <div style="font-weight:600;color:#991b1b;">${esc(f.severity)}${f.has_override ? ' <span style="font-size:11px;color:#666;font-weight:400;">(' + esc(f.override_note || 'Override on file') + ')</span>' : ''}</div>
+          <div style="margin-top:4px;font-size:13px;color:#444;">${esc(f.reason || '')}</div>
+          <div style="margin-top:4px;font-size:11px;color:#888;">${esc(f.period_key)} · ${esc(f.status)}</div>
+        </div>`).join('');
+      wrap.innerHTML = `
+        <div style="padding:14px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+            <h3 style="margin:0;color:var(--navy);">My Performance</h3>
+            <div style="font-size:11px;color:#888;">${updated ? 'Updated ' + updated : ''}</div>
+          </div>
+          <div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:16px;margin-bottom:12px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <div>
+                <div style="font-size:11px;text-transform:uppercase;color:#888;letter-spacing:.4px;">Composite</div>
+                <div style="font-size:32px;font-weight:700;color:var(--navy);">${comp.composite_pct == null ? '—' : comp.composite_pct + '%'}</div>
+              </div>
+              ${_techBandPill(comp.band)}
+            </div>
+            ${trendStrip ? `<div style="margin-top:12px;">
+              <div style="font-size:11px;color:#888;margin-bottom:4px;">Trend</div>
+              <div style="display:flex;gap:4px;">${trendStrip}</div>
+            </div>` : ''}
+          </div>
+          <table style="width:100%;background:#fff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;border-collapse:collapse;">
+            <thead><tr style="background:#f9fafb;font-size:11px;text-transform:uppercase;color:#888;">
+              <th style="padding:8px;text-align:left;">KPI</th>
+              <th style="padding:8px;text-align:left;">Band</th>
+              <th style="padding:8px;text-align:right;">Value</th>
+            </tr></thead>
+            <tbody>${kpiRows}</tbody>
+          </table>
+          ${flagItems ? `
+            <h4 style="margin:16px 0 8px 0;color:var(--navy);">My coaching flags</h4>
+            ${flagItems}
+          ` : ''}
+        </div>
+      `;
+    } catch (e) {
+      wrap.innerHTML = `<div class="empty"><div>Could not load: ${esc(e.message)}</div></div>`;
+    }
   }
 
   async function renderMyPayslips() {

@@ -6003,6 +6003,59 @@ def tech_me_kpi_flags(request: Request, status: Optional[str] = None,
     return {"flags": [_redact_flag_for_tech(r) for r in rows]}
 
 
+class KpiFlashEmailBody(BaseModel):
+    period_key: Optional[str] = None
+
+
+@app.post("/api/admin/kpi/flash-report/email", response_model=Dict[str, Any])
+def admin_kpi_flash_report_email(request: Request, body: KpiFlashEmailBody):
+    """Phase 4 — weekly flash report email path. super_admin-only.
+    If RESEND_API_KEY + NOTIFY_EMAIL are set we'd send via Resend; otherwise
+    we audit-log a 'skipped' event and tell the UI to fall back to screen
+    rendering. This endpoint never auto-sends — it requires an explicit
+    super_admin button click per locked design."""
+    admin = _require_perm(request, "kpi:flag_override")  # super_admin only
+    pk = body.period_key or get_or_create_period()
+    api_key = os.environ.get("RESEND_API_KEY")
+    notify_email = os.environ.get("NOTIFY_EMAIL")
+    if not api_key or not notify_email:
+        _audit_from(admin, "kpi.flash_report.emit_skipped", request,
+                    target_type="kpi_flash_report", target_label=pk,
+                    after={"reason": "email_not_configured"})
+        return {"ok": True, "skipped": True,
+                "reason": "email_not_configured"}
+    # Email path: render a one-line summary; the UI already shows the full
+    # report. The detailed HTML body is built client-side; here we send a
+    # notification with a deep link.
+    try:
+        rows = get_team_scoreboard(pk)
+        red = [r["name"] for r in rows if r.get("composite_band") == "red"]
+        amber = [r["name"] for r in rows if r.get("composite_band") == "amber"]
+        counts = count_open_flags_by_severity()
+        html = (f"<h2>PrimeCool Weekly Flash — {pk}</h2>"
+                f"<p>RED: {len(red)} · AMBER: {len(amber)}</p>"
+                f"<p>Open flags: {counts}</p>"
+                f"<p>Open the admin console to view the full report.</p>")
+        import resend as resend_lib
+        resend_lib.api_key = api_key
+        resend_lib.Emails.send({
+            "from": "primecool@no-reply.primecool.com",
+            "to":  [notify_email],
+            "subject": f"PrimeCool weekly KPI flash — {pk}",
+            "html": html,
+        })
+    except Exception as e:
+        logger.warning(f"kpi flash email failed: {e}")
+        _audit_from(admin, "kpi.flash_report.emit_skipped", request,
+                    target_type="kpi_flash_report", target_label=pk,
+                    after={"reason": "send_error", "error": str(e)[:200]})
+        return {"ok": False, "skipped": True, "reason": "send_error"}
+    _audit_from(admin, "kpi.flash_report.emit", request,
+                target_type="kpi_flash_report", target_label=pk,
+                after={"recipient_email_hash": "redacted"})
+    return {"ok": True, "skipped": False}
+
+
 # ── KPI weekly recompute loop ───────────────────────────────────────────────
 # Mirrors the _fs_escalation_loop pattern. Runs every 24h: ensures the
 # current ISO-week period exists and recomputes scores for all active techs

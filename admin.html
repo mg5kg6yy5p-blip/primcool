@@ -478,6 +478,11 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><polyline points="17 11 19 13 23 9"/></svg>
         Delegations
       </div>
+      <div class="nav-item" onclick="showPanel('kpi')" id="nav-kpi" style="display:none;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+        Performance KPI
+        <span id="kpiFlagBadge" style="margin-left:auto;background:var(--danger);color:white;font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px;display:none;"></span>
+      </div>
     </nav>
 
     <div class="main">
@@ -1120,6 +1125,126 @@
               <tbody id="delegRegrantBody"><tr><td colspan="5" style="padding:14px;text-align:center;color:#888;">No open requests.</td></tr></tbody>
             </table>
           </div>
+        </div>
+      </div>
+
+      <!-- ── Performance KPI panel (Phase 4) ── -->
+      <div class="panel" id="panel-kpi">
+        <div class="top-bar">
+          <h2>Performance KPI</h2>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <select id="kpiPeriodSelect" onchange="kpiOnPeriodChange()" style="padding:8px 12px;border-radius:6px;border:1px solid #ddd;"></select>
+            <button class="btn btn-ghost" onclick="kpiLoadCurrentSubtab()">↻ Refresh</button>
+            <button class="btn btn-primary" id="kpiRecomputeBtn" onclick="kpiRecomputeAll()" style="display:none;">Recompute All</button>
+          </div>
+        </div>
+        <div class="filter-bar">
+          <button class="filter-btn active" id="kpiSubDashboard"  onclick="kpiSetSubtab('dashboard',  this)">Dashboard</button>
+          <button class="filter-btn"        id="kpiSubFlags"      onclick="kpiSetSubtab('flags',      this)">Flag Queue <span id="kpiSubFlagsCount" style="display:none;margin-left:6px;background:var(--danger);color:white;padding:1px 6px;border-radius:10px;font-size:11px;"></span></button>
+          <button class="filter-btn"        id="kpiSubScorecard"  onclick="kpiSetSubtab('scorecard',  this)">Scorecards</button>
+          <button class="filter-btn"        id="kpiSubThresholds" onclick="kpiSetSubtab('thresholds', this)" style="display:none;">Thresholds</button>
+          <button class="filter-btn"        id="kpiSubFlash"      onclick="kpiSetSubtab('flash',      this)">Weekly Flash</button>
+        </div>
+
+        <!-- ── Sub-panel: Dashboard ── -->
+        <div id="kpiSubpanel-dashboard">
+          <div id="kpiSafetyBanner" style="display:none;margin:0 0 12px 0;padding:12px 16px;border-radius:8px;background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;font-weight:600;">
+            ⚠️ Safety RED active — at least one tech requires immediate escalation.
+          </div>
+          <div class="dashboard-tiles" style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px;">
+            <div class="kpi-tile" data-sev="coaching_suggested" style="padding:14px;border-radius:8px;border:1px solid #fde68a;background:#fffbeb;cursor:pointer;" onclick="kpiSetSubtab('flags', document.getElementById('kpiSubFlags')); kpiFilterFlags({severity:'coaching_suggested'});">
+              <div style="font-size:11px;text-transform:uppercase;color:#92400e;font-weight:700;letter-spacing:.4px;">Coaching Suggested</div>
+              <div id="kpiTileCS" style="font-size:28px;font-weight:700;color:#92400e;margin-top:6px;">—</div>
+            </div>
+            <div class="kpi-tile" data-sev="coaching_required" style="padding:14px;border-radius:8px;border:1px solid #fdba74;background:#fff7ed;cursor:pointer;" onclick="kpiSetSubtab('flags', document.getElementById('kpiSubFlags')); kpiFilterFlags({severity:'coaching_required'});">
+              <div style="font-size:11px;text-transform:uppercase;color:#9a3412;font-weight:700;letter-spacing:.4px;">Coaching Required</div>
+              <div id="kpiTileCR" style="font-size:28px;font-weight:700;color:#9a3412;margin-top:6px;">—</div>
+            </div>
+            <div class="kpi-tile" data-sev="written_warning_recommended" style="padding:14px;border-radius:8px;border:1px solid #fca5a5;background:#fef2f2;cursor:pointer;" onclick="kpiSetSubtab('flags', document.getElementById('kpiSubFlags')); kpiFilterFlags({severity:'written_warning_recommended'});">
+              <div style="font-size:11px;text-transform:uppercase;color:#991b1b;font-weight:700;letter-spacing:.4px;">Written Warning</div>
+              <div id="kpiTileWW" style="font-size:28px;font-weight:700;color:#991b1b;margin-top:6px;">—</div>
+            </div>
+            <div class="kpi-tile" data-sev="immediate_escalation" style="padding:14px;border-radius:8px;border:1px solid #b91c1c;background:#fecaca;cursor:pointer;" onclick="kpiSetSubtab('flags', document.getElementById('kpiSubFlags')); kpiFilterFlags({severity:'immediate_escalation'});">
+              <div style="font-size:11px;text-transform:uppercase;color:#7f1d1d;font-weight:700;letter-spacing:.4px;">Immediate Escalation</div>
+              <div id="kpiTileIE" style="font-size:28px;font-weight:700;color:#7f1d1d;margin-top:6px;">—</div>
+            </div>
+          </div>
+          <div style="display:flex;gap:10px;margin-bottom:10px;">
+            <select id="kpiTierFilter" onchange="kpiLoadScoreboard()" style="padding:6px 10px;border-radius:6px;border:1px solid #ddd;">
+              <option value="">All tiers</option>
+              <option value="level_1">Tier 1</option>
+              <option value="level_2">Tier 2</option>
+              <option value="level_3">Tier 3</option>
+            </select>
+            <input id="kpiTechFilter" type="text" placeholder="Filter by name…" oninput="kpiRenderScoreboard()" style="flex:1;padding:6px 10px;border-radius:6px;border:1px solid #ddd;">
+          </div>
+          <div class="table-wrap">
+            <table id="kpiScoreboardTable">
+              <thead><tr>
+                <th>Tech</th><th>Role</th><th>Tier</th>
+                <th>Composite</th><th>Pct</th>
+                <th>Callback</th><th>Docs</th><th>PM</th><th>Util</th>
+                <th>SLA</th><th>Safety</th>
+                <th>Flags</th>
+              </tr></thead>
+              <tbody id="kpiScoreboardBody">
+                <tr><td colspan="12" style="padding:20px;text-align:center;color:#888;">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- ── Sub-panel: Flag Queue ── -->
+        <div id="kpiSubpanel-flags" style="display:none;">
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+            <select id="kpiFlagStatusFilter" onchange="kpiLoadFlagQueue()" style="padding:6px 10px;border-radius:6px;border:1px solid #ddd;">
+              <option value="">All statuses</option>
+              <option value="open">Open</option>
+              <option value="acknowledged">Acknowledged</option>
+              <option value="in_progress">In Progress</option>
+              <option value="resolved">Resolved</option>
+              <option value="overridden">Overridden</option>
+            </select>
+            <select id="kpiFlagSevFilter" onchange="kpiLoadFlagQueue()" style="padding:6px 10px;border-radius:6px;border:1px solid #ddd;">
+              <option value="">All severities</option>
+              <option value="immediate_escalation">Immediate Escalation</option>
+              <option value="written_warning_recommended">Written Warning</option>
+              <option value="coaching_required">Coaching Required</option>
+              <option value="coaching_suggested">Coaching Suggested</option>
+            </select>
+            <input id="kpiFlagDateFrom" type="date" onchange="kpiLoadFlagQueue()" style="padding:6px 10px;border-radius:6px;border:1px solid #ddd;">
+            <input id="kpiFlagDateTo"   type="date" onchange="kpiLoadFlagQueue()" style="padding:6px 10px;border-radius:6px;border:1px solid #ddd;">
+          </div>
+          <div id="kpiFlagQueueBody"><div style="padding:20px;text-align:center;color:#888;">Loading…</div></div>
+        </div>
+
+        <!-- ── Sub-panel: Scorecards ── -->
+        <div id="kpiSubpanel-scorecard" style="display:none;">
+          <div style="display:flex;gap:10px;margin-bottom:14px;align-items:center;">
+            <input id="kpiScorecardPicker" type="text" list="kpiTechList" placeholder="Pick a technician…" oninput="kpiOnScorecardPick()" style="flex:1;padding:8px 12px;border-radius:6px;border:1px solid #ddd;">
+            <datalist id="kpiTechList"></datalist>
+            <button class="btn btn-ghost" onclick="window.print()">🖨 Print</button>
+          </div>
+          <div id="kpiScorecardBody"><div style="padding:20px;color:#888;">Select a technician to view their scorecard.</div></div>
+        </div>
+
+        <!-- ── Sub-panel: Thresholds (super_admin) ── -->
+        <div id="kpiSubpanel-thresholds" style="display:none;">
+          <p style="color:#666;font-size:13px;">Tier × KPI grid. Click any cell to edit green / amber / red bands. Changes take effect from the next recompute.</p>
+          <div id="kpiThresholdsGrid"><div style="padding:20px;color:#888;">Loading…</div></div>
+          <div style="margin-top:18px;">
+            <button class="btn btn-danger" onclick="kpiThresholdResetConfirm()">Reset to defaults</button>
+          </div>
+        </div>
+
+        <!-- ── Sub-panel: Weekly Flash Report ── -->
+        <div id="kpiSubpanel-flash" style="display:none;">
+          <div style="display:flex;gap:10px;margin-bottom:12px;">
+            <button class="btn btn-primary" onclick="kpiGenerateFlashReport()">Generate Weekly Flash Report</button>
+            <button class="btn btn-ghost" onclick="window.print()" id="kpiFlashPrintBtn" style="display:none;">🖨 Print</button>
+            <button class="btn btn-edit" onclick="kpiEmailFlashReport()" id="kpiFlashEmailBtn" style="display:none;">📧 Email to Ops Team</button>
+          </div>
+          <div id="kpiFlashReportBody"><div style="padding:20px;color:#888;">Click "Generate" to render the weekly flash report.</div></div>
         </div>
       </div>
 
@@ -2403,10 +2528,10 @@
   let resetAdminPwId = null;
 
   const ADMIN_PERMS = {
-    super_admin: new Set(['admin:create','admin:set_role','admin:set_active','admin:reset_password','admin:view_all','audit:view_all','tech:view','tech:create','tech:delete','tech:export','customer:view','customer:create','customer:delete','customer:export','visit:view','visit:create','visit:delete','visit:export','review:view','review:approve','review:delete','visit:view_photos','visit:flag','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','inventory:delete','inventory:export','po:create','po:send','po:receive','po:close_out','po:approve_variance','count:create','count:approve','invoice:view','invoice:create','invoice:update','invoice:delete','invoice:record_payment','invoice:export','documents:upload','documents:view','documents:view_highly_sensitive','documents:delete','documents:delete_highly_sensitive','security:view_alerts','security:resolve_alerts','payroll:generate','payroll:view_all','payroll:approve','payroll:mark_paid','fs:audit_any','fs:exception_resolve','fs:exception_escalate_director','fs:asset_manage','fs:report_view','fs:audit_override','fs:coaching_manage']),
-    supervisor_admin: new Set(['admin:view_all','audit:view_all','tech:view','tech:update','tech:export','customer:view','customer:update','customer:export','visit:view','visit:update','visit:export','review:view','visit:view_photos','visit:flag','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:adjust','inventory:export','po:create','po:send','po:receive','po:close_out','po:approve_variance','count:create','count:approve','invoice:view','invoice:update','invoice:record_payment','invoice:export','documents:upload','documents:view','documents:view_highly_sensitive','documents:delete','security:view_alerts','fs:audit_any','fs:exception_resolve','fs:exception_escalate_director','fs:report_view','fs:coaching_manage']),
-    system_admin: new Set(['tech:view','tech:create','customer:view','customer:create','visit:view','visit:create','review:view','audit:view_self','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','invoice:view','invoice:create','invoice:update','invoice:record_payment','documents:upload','documents:view','fs:asset_manage','fs:report_view']),
-    hr_admin: new Set(['tech:view','tech:create','audit:view_self','timesheet:view_all','invoice:view','documents:upload','documents:view','documents:view_highly_sensitive','payroll:generate','payroll:view_all','fs:report_view']),
+    super_admin: new Set(['admin:create','admin:set_role','admin:set_active','admin:reset_password','admin:view_all','audit:view_all','tech:view','tech:create','tech:delete','tech:export','customer:view','customer:create','customer:delete','customer:export','visit:view','visit:create','visit:delete','visit:export','review:view','review:approve','review:delete','visit:view_photos','visit:flag','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','inventory:delete','inventory:export','po:create','po:send','po:receive','po:close_out','po:approve_variance','count:create','count:approve','invoice:view','invoice:create','invoice:update','invoice:delete','invoice:record_payment','invoice:export','documents:upload','documents:view','documents:view_highly_sensitive','documents:delete','documents:delete_highly_sensitive','security:view_alerts','security:resolve_alerts','payroll:generate','payroll:view_all','payroll:approve','payroll:mark_paid','fs:audit_any','fs:exception_resolve','fs:exception_escalate_director','fs:asset_manage','fs:report_view','fs:audit_override','fs:coaching_manage','kpi:view_team','kpi:edit_thresholds','kpi:recompute','kpi:view_definitions','kpi:close_period','kpi:flag_view','kpi:flag_resolve','kpi:flag_override']),
+    supervisor_admin: new Set(['admin:view_all','audit:view_all','tech:view','tech:update','tech:export','customer:view','customer:update','customer:export','visit:view','visit:update','visit:export','review:view','visit:view_photos','visit:flag','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:adjust','inventory:export','po:create','po:send','po:receive','po:close_out','po:approve_variance','count:create','count:approve','invoice:view','invoice:update','invoice:record_payment','invoice:export','documents:upload','documents:view','documents:view_highly_sensitive','documents:delete','security:view_alerts','fs:audit_any','fs:exception_resolve','fs:exception_escalate_director','fs:report_view','fs:coaching_manage','kpi:view_team','kpi:recompute','kpi:view_definitions','kpi:flag_view','kpi:flag_resolve']),
+    system_admin: new Set(['tech:view','tech:create','customer:view','customer:create','visit:view','visit:create','review:view','audit:view_self','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','invoice:view','invoice:create','invoice:update','invoice:record_payment','documents:upload','documents:view','fs:asset_manage','fs:report_view','kpi:view_team','kpi:view_definitions','kpi:flag_view']),
+    hr_admin: new Set(['tech:view','tech:create','audit:view_self','timesheet:view_all','invoice:view','documents:upload','documents:view','documents:view_highly_sensitive','payroll:generate','payroll:view_all','fs:report_view','kpi:view_team','kpi:view_definitions','kpi:flag_view']),
     ceo_assistant: new Set(['audit:view_self','inventory:view','invoice:view','documents:view','fs:report_view']),
     inventory_manager: new Set(['inventory:view','inventory:create','inventory:update','inventory:adjust','po:create','po:send','po:receive','count:create','audit:view_self']),
   };
@@ -2588,6 +2713,11 @@
     if (can('inventory:export')) document.getElementById('exportInventoryBtn').style.display = '';
     if (can('payroll:view_all')) document.getElementById('nav-payroll').style.display = 'flex';
     if (can('fs:report_view')) document.getElementById('nav-fs').style.display = 'flex';
+    if (can('kpi:view_team') || can('kpi:view_definitions') || can('kpi:flag_view')) {
+      document.getElementById('nav-kpi').style.display = 'flex';
+      // Fire-and-forget refresh of the flag badge.
+      refreshKpiFlagBadge();
+    }
     // Delegations — super_admin OR admin with delegation power.
     if (currentAdmin && (currentAdmin.role === 'super_admin'
         || currentAdmin.has_delegation_power === 1
@@ -8830,6 +8960,552 @@
   }
 
   init();
+
+  // ════════════════════════════════════════════════════════════════════════
+  // Performance KPI module (Phase 4) — UI controller
+  // ════════════════════════════════════════════════════════════════════════
+  const KPI_KEYS_ORDER = [
+    'callback_rate','documentation_quality','pm_completion','utilization',
+    'sla_adherence','safety_compliance','first_time_fix','revenue_per_tech'
+  ];
+  const KPI_KEY_LABELS = {
+    callback_rate: 'Callback',
+    documentation_quality: 'Docs',
+    pm_completion: 'PM',
+    utilization: 'Util',
+    sla_adherence: 'SLA',
+    safety_compliance: 'Safety',
+    first_time_fix: 'FTF',
+    revenue_per_tech: 'Rev/Tech',
+  };
+  const KPI_SEV_LABELS = {
+    coaching_suggested: 'Coaching Suggested',
+    coaching_required: 'Coaching Required',
+    written_warning_recommended: 'Written Warning',
+    immediate_escalation: 'Immediate Escalation',
+  };
+  const KPI_SEV_COLORS = {
+    coaching_suggested: '#92400e',
+    coaching_required:  '#9a3412',
+    written_warning_recommended: '#991b1b',
+    immediate_escalation: '#7f1d1d',
+  };
+  let kpiCurrentPeriod = null;
+  let kpiAllPeriods = [];
+  let kpiScoreboardRows = [];
+  let kpiSubtab = 'dashboard';
+  let kpiFlagsCache = [];
+  let kpiAllTechs = [];
+  let kpiThresholdDefs = [];
+
+  function kpiBandPill(band) {
+    if (!band) return '<span class="badge" style="background:#f3f4f6;color:#666;">—</span>';
+    const cmap = {
+      green: 'background:#d1fae5;color:#065f46;',
+      amber: 'background:#fef3c7;color:#92400e;',
+      red:   'background:#fee2e2;color:#991b1b;',
+      insufficient_data: 'background:#f3f4f6;color:#666;',
+    };
+    const label = band === 'insufficient_data' ? 'N/A' : band.toUpperCase();
+    return `<span class="badge" style="${cmap[band] || cmap.insufficient_data}font-weight:700;">${label}</span>`;
+  }
+
+  function kpiSetSubtab(name, btn) {
+    kpiSubtab = name;
+    document.querySelectorAll('#panel-kpi .filter-btn').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    ['dashboard','flags','scorecard','thresholds','flash'].forEach(s => {
+      const el = document.getElementById('kpiSubpanel-' + s);
+      if (el) el.style.display = (s === name ? '' : 'none');
+    });
+    kpiLoadCurrentSubtab();
+  }
+
+  function kpiLoadCurrentSubtab() {
+    if (kpiSubtab === 'dashboard')  kpiLoadDashboard();
+    else if (kpiSubtab === 'flags') kpiLoadFlagQueue();
+    else if (kpiSubtab === 'scorecard') kpiLoadScorecardPicker();
+    else if (kpiSubtab === 'thresholds') kpiLoadThresholds();
+    else if (kpiSubtab === 'flash') { /* idle — generated on click */ }
+  }
+
+  async function refreshKpiFlagBadge() {
+    if (!can('kpi:flag_view')) return;
+    try {
+      const s = await api('GET', '/api/admin/kpi/flags/summary');
+      const total = (s.counts && Object.values(s.counts).reduce((a,b)=>a+b,0)) || 0;
+      const badge = document.getElementById('kpiFlagBadge');
+      if (total > 0) { badge.textContent = total; badge.style.display = ''; }
+      else { badge.style.display = 'none'; }
+    } catch {}
+  }
+
+  async function kpiInitPanel() {
+    if (kpiAllPeriods.length === 0) {
+      try {
+        const r = await api('GET', '/api/admin/kpi/periods?limit=12');
+        kpiAllPeriods = r.periods || [];
+        const sel = document.getElementById('kpiPeriodSelect');
+        sel.innerHTML = kpiAllPeriods.map(p =>
+          `<option value="${p.period_key}">${p.period_key}${p.status === 'closed' ? ' (closed)' : ''}</option>`
+        ).join('');
+        kpiCurrentPeriod = kpiAllPeriods[0]?.period_key || null;
+      } catch {}
+    }
+    if (can('kpi:recompute')) document.getElementById('kpiRecomputeBtn').style.display = '';
+    if (can('kpi:edit_thresholds')) document.getElementById('kpiSubThresholds').style.display = '';
+  }
+
+  function kpiOnPeriodChange() {
+    kpiCurrentPeriod = document.getElementById('kpiPeriodSelect').value;
+    kpiLoadCurrentSubtab();
+  }
+
+  // ── Dashboard ─────────────────────────────────────────────────────────────
+  async function kpiLoadDashboard() {
+    if (!kpiCurrentPeriod) await kpiInitPanel();
+    if (!kpiCurrentPeriod) return;
+    try {
+      const s = await api('GET', '/api/admin/kpi/flags/summary');
+      const c = s.counts || {};
+      document.getElementById('kpiTileCS').textContent = c.coaching_suggested || 0;
+      document.getElementById('kpiTileCR').textContent = c.coaching_required || 0;
+      document.getElementById('kpiTileWW').textContent = c.written_warning_recommended || 0;
+      document.getElementById('kpiTileIE').textContent = c.immediate_escalation || 0;
+      document.getElementById('kpiSafetyBanner').style.display =
+        (c.immediate_escalation && c.immediate_escalation > 0) ? '' : 'none';
+    } catch {}
+    kpiLoadScoreboard();
+  }
+
+  async function kpiLoadScoreboard() {
+    try {
+      const tier = document.getElementById('kpiTierFilter').value;
+      const q = new URLSearchParams({period_key: kpiCurrentPeriod});
+      if (tier) q.set('tier', tier);
+      const r = await api('GET', '/api/admin/kpi/team-scoreboard?' + q.toString());
+      kpiScoreboardRows = r.rows || [];
+      kpiRenderScoreboard();
+    } catch {
+      document.getElementById('kpiScoreboardBody').innerHTML =
+        '<tr><td colspan="12" style="padding:20px;text-align:center;color:#c00;">Failed to load scoreboard.</td></tr>';
+    }
+  }
+
+  function kpiRenderScoreboard() {
+    const tbody = document.getElementById('kpiScoreboardBody');
+    const filt = (document.getElementById('kpiTechFilter').value || '').toLowerCase();
+    const rows = kpiScoreboardRows.filter(r => !filt || (r.name||'').toLowerCase().includes(filt));
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="12" style="padding:20px;text-align:center;color:#888;">No techs with sufficient data for this period.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map(r => {
+      const pct = r.composite_pct == null ? '—' : r.composite_pct + '%';
+      const kpis = r.kpis || {};
+      const cell = k => kpiBandPill(kpis[k]?.band);
+      return `<tr class="pc-row-clickable" tabindex="0" onclick="kpiOpenScorecard(${r.tech_id})">
+        <td><strong>${esc(r.name || '')}</strong></td>
+        <td>${esc(r.role || '')}</td>
+        <td>${esc(r.tier || '')}</td>
+        <td>${kpiBandPill(r.composite_band)}</td>
+        <td>${pct}</td>
+        <td>${cell('callback_rate')}</td>
+        <td>${cell('documentation_quality')}</td>
+        <td>${cell('pm_completion')}</td>
+        <td>${cell('utilization')}</td>
+        <td>${cell('sla_adherence')}</td>
+        <td>${cell('safety_compliance')}</td>
+        <td><span class="badge" style="background:#eff6ff;color:#1e40af;" title="Open flags">view</span></td>
+      </tr>`;
+    }).join('');
+  }
+
+  async function kpiRecomputeAll() {
+    if (!confirm('Recompute KPIs for all techs across open periods?')) return;
+    try {
+      await api('POST', '/api/admin/kpi/recompute', {});
+      toast('Recompute triggered.');
+      kpiLoadCurrentSubtab();
+      refreshKpiFlagBadge();
+    } catch (e) { toast('Recompute failed: ' + e.message, 'error'); }
+  }
+
+  // ── Flag Queue ────────────────────────────────────────────────────────────
+  function kpiFilterFlags(filters) {
+    if (filters.severity) document.getElementById('kpiFlagSevFilter').value = filters.severity;
+    if (filters.status)   document.getElementById('kpiFlagStatusFilter').value = filters.status;
+    kpiLoadFlagQueue();
+  }
+
+  async function kpiLoadFlagQueue() {
+    const status = document.getElementById('kpiFlagStatusFilter').value;
+    const severity = document.getElementById('kpiFlagSevFilter').value;
+    const df = document.getElementById('kpiFlagDateFrom').value;
+    const dt = document.getElementById('kpiFlagDateTo').value;
+    const q = new URLSearchParams();
+    if (status) q.set('status', status);
+    if (severity) q.set('severity', severity);
+    if (df) q.set('date_from', df);
+    if (dt) q.set('date_to', dt);
+    q.set('limit', '200');
+    try {
+      const r = await api('GET', '/api/admin/kpi/flags?' + q.toString());
+      kpiFlagsCache = r.flags || [];
+      kpiRenderFlagQueue();
+    } catch (e) {
+      document.getElementById('kpiFlagQueueBody').innerHTML =
+        '<div style="padding:20px;color:#c00;">Failed to load flags: ' + esc(e.message) + '</div>';
+    }
+  }
+
+  function kpiFlagCard(f) {
+    const created = (f.created_at || '').slice(0,16).replace('T',' ');
+    let daysOpen = '';
+    try {
+      const d = new Date(f.created_at);
+      daysOpen = Math.floor((Date.now() - d.getTime()) / 86400000) + 'd';
+    } catch {}
+    const sevColor = KPI_SEV_COLORS[f.severity] || '#666';
+    const isOverridden = f.status === 'overridden';
+    const isResolved   = f.status === 'resolved';
+    const terminal = isOverridden || isResolved;
+    const actions = terminal ? '' : `
+      <button class="btn btn-ghost btn-sm" onclick="kpiActionAcknowledge(${f.id})">Acknowledge</button>
+      <button class="btn btn-edit btn-sm" onclick="kpiActionStart(${f.id})">Start Coaching</button>
+      <button class="btn btn-primary btn-sm" onclick="kpiActionResolve(${f.id})">Resolve</button>
+      ${can('kpi:flag_override') ? `<button class="btn btn-danger btn-sm" onclick="kpiActionOverride(${f.id})">Override</button>` : ''}
+    `;
+    return `<div class="kpi-flag-card" style="padding:14px;border-radius:8px;border-left:5px solid ${sevColor};background:#fff;box-shadow:0 1px 3px rgba(0,0,0,0.05);margin-bottom:10px;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+        <div style="flex:1;">
+          <div style="font-weight:700;color:${sevColor};font-size:13px;text-transform:uppercase;letter-spacing:.3px;">${KPI_SEV_LABELS[f.severity] || f.severity}</div>
+          <div style="margin-top:4px;font-size:15px;"><strong>${esc(f.tech_name || ('tech #' + f.tech_id))}</strong> <span style="color:#666;">— ${esc(KPI_KEY_LABELS[f.kpi_key] || f.kpi_key || '')}</span></div>
+          <div style="margin-top:4px;color:#555;font-size:13px;">${esc(f.reason || '')}</div>
+          <div style="margin-top:8px;font-size:12px;color:#888;">Period: ${esc(f.period_key)} · Created ${created} · ${daysOpen} open · Status: <strong>${esc(f.status)}</strong></div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;max-width:340px;">
+          ${actions}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function kpiRenderFlagQueue() {
+    const body = document.getElementById('kpiFlagQueueBody');
+    if (!kpiFlagsCache.length) {
+      body.innerHTML = '<div style="padding:20px;color:#888;">No flags match the current filters.</div>';
+      return;
+    }
+    // Group by severity (immediate first)
+    const order = ['immediate_escalation','written_warning_recommended','coaching_required','coaching_suggested'];
+    const buckets = {};
+    kpiFlagsCache.forEach(f => { (buckets[f.severity] = buckets[f.severity] || []).push(f); });
+    body.innerHTML = order.filter(s => (buckets[s] || []).length).map(s => `
+      <h3 style="margin:14px 0 8px 0;color:${KPI_SEV_COLORS[s]};">${KPI_SEV_LABELS[s]} <span style="color:#888;font-weight:400;font-size:13px;">(${buckets[s].length})</span></h3>
+      ${buckets[s].map(kpiFlagCard).join('')}
+    `).join('');
+  }
+
+  function kpiPromptNotes(title, label) {
+    return prompt(title + '\n\n' + label + ':');
+  }
+
+  async function kpiActionAcknowledge(flagId) {
+    if (!confirm('Acknowledge this flag?')) return;
+    try {
+      await api('POST', '/api/admin/kpi/flags/' + flagId + '/acknowledge', {});
+      toast('Acknowledged.');
+      kpiLoadFlagQueue(); refreshKpiFlagBadge();
+    } catch (e) { toast('Failed: ' + e.message, 'error'); }
+  }
+  async function kpiActionStart(flagId) {
+    const notes = kpiPromptNotes('Start coaching', 'Coaching notes (required)');
+    if (!notes || !notes.trim()) return;
+    try {
+      await api('POST', '/api/admin/kpi/flags/' + flagId + '/start', {notes: notes.trim()});
+      toast('Coaching started.');
+      kpiLoadFlagQueue();
+    } catch (e) { toast('Failed: ' + e.message, 'error'); }
+  }
+  async function kpiActionResolve(flagId) {
+    const rn = kpiPromptNotes('Resolve flag', 'Resolution notes (required)');
+    if (!rn || !rn.trim()) return;
+    try {
+      await api('POST', '/api/admin/kpi/flags/' + flagId + '/resolve', {resolution_notes: rn.trim()});
+      toast('Resolved.');
+      kpiLoadFlagQueue(); refreshKpiFlagBadge();
+    } catch (e) { toast('Failed: ' + e.message, 'error'); }
+  }
+  async function kpiActionOverride(flagId) {
+    const reason = kpiPromptNotes('Override flag', 'Override reason (REQUIRED, ≤1000 chars). The original flag is preserved; only the status changes.');
+    if (!reason || !reason.trim()) { toast('Override requires a reason.', 'error'); return; }
+    try {
+      await api('POST', '/api/admin/kpi/flags/' + flagId + '/override', {override_reason: reason.trim()});
+      toast('Overridden (audit logged).');
+      kpiLoadFlagQueue(); refreshKpiFlagBadge();
+    } catch (e) { toast('Failed: ' + e.message, 'error'); }
+  }
+
+  // ── Scorecard ────────────────────────────────────────────────────────────
+  async function kpiLoadScorecardPicker() {
+    if (!kpiAllTechs.length) {
+      try { kpiAllTechs = await api('GET', '/api/admin/techs'); } catch { kpiAllTechs = []; }
+      const dl = document.getElementById('kpiTechList');
+      dl.innerHTML = kpiAllTechs.map(t => `<option value="${esc(t.name)}">`).join('');
+    }
+  }
+  function kpiOnScorecardPick() {
+    const v = document.getElementById('kpiScorecardPicker').value;
+    const t = kpiAllTechs.find(x => x.name === v);
+    if (t) kpiOpenScorecard(t.id);
+  }
+
+  async function kpiOpenScorecard(techId) {
+    document.getElementById('kpiSubScorecard').click();
+    const body = document.getElementById('kpiScorecardBody');
+    body.innerHTML = '<div style="padding:20px;color:#888;">Loading…</div>';
+    try {
+      const url = '/api/admin/kpi/technician/' + techId + '/scorecard' +
+                  (kpiCurrentPeriod ? '?period_key=' + encodeURIComponent(kpiCurrentPeriod) : '');
+      const sc = await api('GET', url);
+      const flagsResp = await api('GET', '/api/admin/kpi/flags?tech_id=' + techId + '&limit=50');
+      kpiRenderScorecard(body, sc, flagsResp.flags || []);
+    } catch (e) {
+      body.innerHTML = '<div style="padding:20px;color:#c00;">Failed: ' + esc(e.message) + '</div>';
+    }
+  }
+
+  function kpiCompositeGauge(pct, band) {
+    const value = pct == null ? 0 : Math.max(0, Math.min(100, pct));
+    const stroke = band === 'green' ? '#10b981' : band === 'amber' ? '#f59e0b' : band === 'red' ? '#ef4444' : '#9ca3af';
+    const R = 52, C = 2 * Math.PI * R;
+    const dash = (value/100) * C;
+    return `<svg viewBox="0 0 120 120" width="140" height="140">
+      <circle cx="60" cy="60" r="${R}" stroke="#e5e7eb" stroke-width="10" fill="none"/>
+      <circle cx="60" cy="60" r="${R}" stroke="${stroke}" stroke-width="10" fill="none"
+              stroke-dasharray="${dash} ${C}" stroke-linecap="round"
+              transform="rotate(-90 60 60)"/>
+      <text x="60" y="58" text-anchor="middle" font-size="22" font-weight="700" fill="#111">${pct == null ? '—' : pct + '%'}</text>
+      <text x="60" y="78" text-anchor="middle" font-size="11" fill="#666" text-transform="uppercase">${(band||'').toUpperCase()}</text>
+    </svg>`;
+  }
+
+  function kpiRenderScorecard(container, sc, flags) {
+    const t = sc.tech || {};
+    const comp = (sc.current && sc.current.composite) || {};
+    const kpis = (sc.current && sc.current.kpis) || {};
+    const trend = sc.trend || [];
+    const overrides = (flags || []).filter(f => f.status === 'overridden');
+    const openFlags = (flags || []).filter(f => ['open','acknowledged','in_progress'].includes(f.status));
+    const trendStrip = trend.slice().reverse().map(t => {
+      const b = t.band || 'insufficient_data';
+      const c = b === 'green' ? '#10b981' : b === 'amber' ? '#f59e0b' : b === 'red' ? '#ef4444' : '#9ca3af';
+      return `<div title="${esc(t.period_key)} ${t.composite_pct ?? '-'}%"
+        style="flex:1;height:34px;border-radius:6px;background:${c};display:flex;align-items:center;justify-content:center;color:white;font-size:11px;font-weight:600;">
+        ${t.composite_pct == null ? '—' : t.composite_pct + '%'}
+      </div>`;
+    }).join('');
+
+    const kpiCards = KPI_KEYS_ORDER.map(k => {
+      const r = kpis[k] || {};
+      const flagsForKpi = (flags || []).filter(f => f.kpi_key === k);
+      return `<div style="border:1px solid #e5e7eb;border-radius:8px;padding:12px;background:#fff;">
+        <div style="font-weight:600;color:#111;">${KPI_KEY_LABELS[k] || k}</div>
+        <div style="margin-top:6px;display:flex;gap:8px;align-items:center;">
+          ${kpiBandPill(r.band)}
+          <span style="color:#666;font-size:13px;">raw: ${r.raw_value == null ? '—' : r.raw_value}</span>
+          <span style="color:#888;font-size:12px;">(n=${r.sample_size ?? '—'})</span>
+        </div>
+        ${flagsForKpi.length ? `<details style="margin-top:8px;font-size:12px;">
+          <summary style="cursor:pointer;color:#1e40af;">Coaching log (${flagsForKpi.length})</summary>
+          ${flagsForKpi.map(f => `<div style="margin:6px 0;padding:6px;background:#f9fafb;border-radius:4px;">
+            <strong>${KPI_SEV_LABELS[f.severity]}</strong> · ${esc(f.status)} · ${(f.created_at||'').slice(0,10)}
+          </div>`).join('')}
+        </details>` : ''}
+      </div>`;
+    }).join('');
+
+    container.innerHTML = `
+      <div style="display:flex;gap:24px;align-items:center;border-bottom:1px solid #e5e7eb;padding-bottom:18px;margin-bottom:18px;">
+        <div>${kpiCompositeGauge(comp.composite_pct, comp.band)}</div>
+        <div style="flex:1;">
+          <h3 style="margin:0;">${esc(t.name || sc.tech_id)}</h3>
+          <div style="color:#666;">${esc(t.role || '')} · ${esc(comp.tier_at_computation || '')}</div>
+          <div style="margin-top:10px;color:#444;">Period: <strong>${esc(sc.period_key || '')}</strong>${comp.forced_red_reason ? ' · <span style="color:#991b1b;">Forced RED: ' + esc(comp.forced_red_reason) + '</span>' : ''}</div>
+          <div style="margin-top:14px;">
+            <div style="font-size:11px;color:#888;text-transform:uppercase;margin-bottom:6px;">Recent trend</div>
+            <div style="display:flex;gap:6px;">${trendStrip || '<span style="color:#888;">No trend data.</span>'}</div>
+          </div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-bottom:18px;">
+        ${kpiCards}
+      </div>
+      ${openFlags.length ? `
+        <h4 style="margin:18px 0 8px 0;">Open Flags (${openFlags.length})</h4>
+        ${openFlags.map(kpiFlagCard).join('')}
+      ` : ''}
+      <div style="margin-top:18px;padding:10px;background:#f9fafb;border-radius:6px;font-size:12px;color:#666;">
+        Recent overrides on file: <strong>${overrides.length}</strong>
+        ${overrides.length ? ' — text redacted (PII).' : ''}
+      </div>
+    `;
+  }
+
+  // ── Thresholds editor ────────────────────────────────────────────────────
+  async function kpiLoadThresholds() {
+    try {
+      const r = await api('GET', '/api/admin/kpi/definitions');
+      kpiThresholdDefs = r.definitions || r || [];
+      const tiers = ['level_1','level_2','level_3'];
+      const grid = document.getElementById('kpiThresholdsGrid');
+      grid.innerHTML = `<div class="table-wrap"><table>
+        <thead><tr><th>KPI</th>${tiers.map(t => `<th>${t}</th>`).join('')}</tr></thead>
+        <tbody>${kpiThresholdDefs.map(d => `
+          <tr>
+            <td><strong>${esc(d.display_name || d.kpi_key)}</strong><div style="color:#888;font-size:11px;">${esc(d.direction || '')}</div></td>
+            ${tiers.map(t => {
+              const thr = (d.thresholds || {})[t] || {};
+              const g = thr.green_threshold ?? '—';
+              const a = thr.amber_threshold ?? '—';
+              const rd = thr.red_threshold ?? '—';
+              return `<td style="cursor:pointer;" onclick="kpiEditThreshold('${d.kpi_key}','${t}',${JSON.stringify(thr).replace(/"/g,'&quot;')})">
+                <div style="font-size:12px;">G ${g} · A ${a} · R ${rd}</div>
+              </td>`;
+            }).join('')}
+          </tr>`).join('')}
+        </tbody></table></div>`;
+    } catch (e) {
+      document.getElementById('kpiThresholdsGrid').innerHTML =
+        '<div style="color:#c00;">Failed: ' + esc(e.message) + '</div>';
+    }
+  }
+
+  async function kpiEditThreshold(kpiKey, tier, current) {
+    if (!can('kpi:edit_thresholds')) { toast('Read-only', 'error'); return; }
+    const g = prompt('Green threshold for ' + kpiKey + '/' + tier + ':', current.green_threshold ?? '');
+    if (g === null) return;
+    const a = prompt('Amber band:', current.amber_threshold ?? '');
+    if (a === null) return;
+    const rd = prompt('Red floor:', current.red_threshold ?? '');
+    if (rd === null) return;
+    const eff = prompt('Effective from (YYYY-MM-DD):', new Date().toISOString().slice(0,10));
+    if (!eff) return;
+    try {
+      await api('POST', '/api/admin/kpi/thresholds', {
+        kpi_key: kpiKey, tier: tier,
+        green: parseFloat(g), amber_band: parseFloat(a),
+        red_floor: parseFloat(rd), effective_from: eff,
+      });
+      toast('Threshold updated.');
+      kpiLoadThresholds();
+    } catch (e) { toast('Failed: ' + e.message, 'error'); }
+  }
+
+  function kpiThresholdResetConfirm() {
+    toast('Defaults reset is a manual ops task — contact the DBA.', 'info');
+  }
+
+  // ── Weekly Flash Report ──────────────────────────────────────────────────
+  async function kpiGenerateFlashReport() {
+    const body = document.getElementById('kpiFlashReportBody');
+    body.innerHTML = '<div style="padding:20px;color:#888;">Generating…</div>';
+    try {
+      if (!kpiCurrentPeriod) await kpiInitPanel();
+      const cur = await api('GET', '/api/admin/kpi/team-scoreboard?period_key=' + encodeURIComponent(kpiCurrentPeriod));
+      const priorPk = (kpiAllPeriods.find((_,i) => i === 1) || {}).period_key;
+      let prior = { rows: [] };
+      if (priorPk) {
+        try { prior = await api('GET', '/api/admin/kpi/team-scoreboard?period_key=' + encodeURIComponent(priorPk)); } catch {}
+      }
+      const flags = (await api('GET', '/api/admin/kpi/flags?period_key=' + encodeURIComponent(kpiCurrentPeriod) + '&limit=500')).flags || [];
+      const priorByTech = {};
+      (prior.rows || []).forEach(r => { priorByTech[r.tech_id] = r; });
+      const reds = (cur.rows || []).filter(r => r.composite_band === 'red');
+      const ambers = (cur.rows || []).filter(r => r.composite_band === 'amber');
+      const newWW = flags.filter(f => f.severity === 'written_warning_recommended');
+
+      const employeeBlocks = (cur.rows || []).map(r => {
+        const p = priorByTech[r.tech_id] || {};
+        const arrow = (p.composite_pct == null || r.composite_pct == null) ? '→'
+          : r.composite_pct > p.composite_pct ? '↑'
+          : r.composite_pct < p.composite_pct ? '↓' : '→';
+        const myFlags = flags.filter(f => f.tech_id === r.tech_id);
+        return `<div class="kpi-flash-emp" style="page-break-inside:avoid;border:1px solid #e5e7eb;border-radius:8px;padding:14px;margin-bottom:12px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div>
+              <h3 style="margin:0;">${esc(r.name)}</h3>
+              <div style="color:#666;font-size:12px;">${esc(r.role || '')} · ${esc(r.tier || '')}</div>
+            </div>
+            <div style="text-align:right;">
+              ${kpiBandPill(r.composite_band)}
+              <div style="font-size:20px;font-weight:700;margin-top:4px;">${r.composite_pct ?? '—'}% ${arrow}</div>
+              <div style="font-size:11px;color:#888;">prior: ${p.composite_pct ?? '—'}%</div>
+            </div>
+          </div>
+          <table style="width:100%;margin-top:10px;font-size:12px;">
+            <thead><tr><th style="text-align:left;">KPI</th><th>Current</th><th>Prior</th></tr></thead>
+            <tbody>${KPI_KEYS_ORDER.map(k => {
+              const cb = (r.kpis || {})[k] || {};
+              const pb = (p.kpis || {})[k] || {};
+              return `<tr><td>${KPI_KEY_LABELS[k] || k}</td>
+                <td>${kpiBandPill(cb.band)} ${cb.raw_value ?? ''}</td>
+                <td>${kpiBandPill(pb.band)} ${pb.raw_value ?? ''}</td></tr>`;
+            }).join('')}</tbody>
+          </table>
+          ${myFlags.length ? `<div style="margin-top:8px;font-size:12px;color:#444;">
+            Recent flags: ${myFlags.map(f => `<span class="badge" style="background:#fee2e2;color:#991b1b;margin-right:4px;">${KPI_SEV_LABELS[f.severity]}</span>`).join('')}
+          </div>` : ''}
+        </div>`;
+      }).join('');
+
+      body.innerHTML = `
+        <h2 style="margin:0 0 6px 0;">Weekly Flash Report — ${esc(kpiCurrentPeriod)}</h2>
+        <div style="color:#666;margin-bottom:16px;font-size:13px;">Generated ${new Date().toLocaleString()}</div>
+        ${employeeBlocks || '<div style="color:#888;">No employees with sufficient data.</div>'}
+        <hr style="margin:18px 0;">
+        <h3>Team Rollup</h3>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;">
+          <div style="padding:10px;background:#fee2e2;border-radius:6px;">
+            <div style="font-weight:700;color:#991b1b;">RED (${reds.length})</div>
+            <div style="font-size:12px;">${reds.map(r => esc(r.name)).join(', ') || '—'}</div>
+          </div>
+          <div style="padding:10px;background:#fef3c7;border-radius:6px;">
+            <div style="font-weight:700;color:#92400e;">AMBER (${ambers.length})</div>
+            <div style="font-size:12px;">${ambers.map(r => esc(r.name)).join(', ') || '—'}</div>
+          </div>
+          <div style="padding:10px;background:#fef2f2;border-radius:6px;">
+            <div style="font-weight:700;color:#7f1d1d;">New written-warning flags (${newWW.length})</div>
+            <div style="font-size:12px;">${newWW.map(f => esc(f.tech_name || '')).join(', ') || '—'}</div>
+          </div>
+        </div>
+      `;
+      document.getElementById('kpiFlashPrintBtn').style.display = '';
+      if (can('kpi:flag_override')) document.getElementById('kpiFlashEmailBtn').style.display = '';
+    } catch (e) {
+      body.innerHTML = '<div style="color:#c00;">Failed to generate: ' + esc(e.message) + '</div>';
+    }
+  }
+
+  async function kpiEmailFlashReport() {
+    if (!confirm('Email the weekly flash report to the Ops team?')) return;
+    try {
+      const r = await api('POST', '/api/admin/kpi/flash-report/email',
+                            {period_key: kpiCurrentPeriod});
+      if (r.skipped) toast('Email not configured; report rendered to screen only.', 'info');
+      else toast('Flash report emailed.');
+    } catch (e) { toast('Failed: ' + e.message, 'error'); }
+  }
+
+  // Hook into showPanel — lazy init when KPI tab is opened.
+  (function patchKpiShowPanel() {
+    const orig = window.showPanel;
+    window.showPanel = function(name) {
+      orig.apply(this, arguments);
+      if (name === 'kpi') { kpiInitPanel().then(() => kpiLoadCurrentSubtab()); }
+    };
+  })();
 </script>
 </body>
 </html>
