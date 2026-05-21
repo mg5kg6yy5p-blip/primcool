@@ -407,15 +407,122 @@ TIER_LABELS = {
     "unsure":      "Not sure — need an assessment",
 }
 
-JWT_SECRET    = os.environ.get("JWT_SECRET")
-if not JWT_SECRET or len(JWT_SECRET) < 32:
-    raise RuntimeError(
-        "JWT_SECRET environment variable must be set to a random string of at "
-        "least 32 characters. Refusing to start with a default/weak secret — a "
-        "fallback secret in code lets anyone with repo access forge tokens."
-    )
 JWT_ALGORITHM = "HS256"
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").lower() == "true"  # set to true in prod (HTTPS)
+PROD_MODE     = os.environ.get("PROD_MODE", "false").lower() == "true"
+
+# Placeholder/known-weak secrets — refuse to boot with any of these as JWT_SECRET.
+# Keep this list small and explicit; a second reader should be able to confirm
+# it covers the obvious bad values without surprises.
+_JWT_PLACEHOLDER_SECRETS = {
+    "change-me", "changeme", "change-me-in-production",
+    "change-me-in-production-set-jwt_secret-env-var",  # legacy default
+    "secret", "default", "test", "development", "dev",
+    "insecure_please_change", "please_change_me",
+    "your-secret-here", "your-256-bit-secret",
+    "jwt_secret", "primecool", "primecool-secret",
+}
+
+
+def _preflight_check_jwt_secret(env_value):
+    """Returns (ok, detail). Refuses missing, short, placeholder, or low-entropy secrets."""
+    if not env_value:
+        return False, "JWT_SECRET is not set"
+    if len(env_value) < 32:
+        return False, f"JWT_SECRET length {len(env_value)} < 32"
+    if env_value.lower() in _JWT_PLACEHOLDER_SECRETS:
+        return False, "JWT_SECRET matches a known placeholder/default — replace it"
+    # Cheap entropy heuristic: a 32-char secret with <8 distinct characters is
+    # almost certainly a typed-out placeholder ("aaaaaaaa...", "abc-abc-abc-").
+    if len(set(env_value)) < 8:
+        return False, f"JWT_SECRET has only {len(set(env_value))} distinct chars — too predictable"
+    return True, f"len={len(env_value)} distinct={len(set(env_value))}"
+
+
+def _preflight_check_cookie_secure():
+    """In PROD_MODE, refuse if cookies aren't marked Secure (would send over plain HTTP)."""
+    if PROD_MODE and not COOKIE_SECURE:
+        return False, "PROD_MODE=true but COOKIE_SECURE=false — cookies would leak over HTTP"
+    return True, f"PROD_MODE={PROD_MODE} COOKIE_SECURE={COOKIE_SECURE}"
+
+
+def _preflight_check_datastore_encryption():
+    """We can't reliably detect FDE from inside the app, so we make the operator
+    declare it explicitly via DATASTORE_ENCRYPTION_CONFIRMED=yes. An escape
+    hatch (DATASTORE_ENCRYPTION_OVERRIDE=yes) is allowed but logged loudly in
+    the manifest so a deploy under override is forensically visible."""
+    if not PROD_MODE:
+        return True, "non-prod: skipped"
+    confirmed = os.environ.get("DATASTORE_ENCRYPTION_CONFIRMED", "").lower() == "yes"
+    override  = os.environ.get("DATASTORE_ENCRYPTION_OVERRIDE",  "").lower() == "yes"
+    if confirmed:
+        return True, "DATASTORE_ENCRYPTION_CONFIRMED=yes"
+    if override:
+        return True, "OVERRIDE — datastore encryption NOT confirmed; running anyway (operator override)"
+    return False, ("PROD_MODE=true but DATASTORE_ENCRYPTION_CONFIRMED is not 'yes'. "
+                   "Set it after verifying the datastore volume is encrypted at rest. "
+                   "If you must boot without confirmation, set "
+                   "DATASTORE_ENCRYPTION_OVERRIDE=yes (this is recorded in the boot manifest).")
+
+
+def _preflight_check_field_encryption_key():
+    """The app-layer field encryption key (used in Phase 2). Even before Phase 2
+    columns exist, we surface this check so misconfiguration is caught at boot."""
+    val = os.environ.get("FIELD_ENCRYPTION_KEY", "")
+    if not val:
+        # Soft-warning until Phase 2 lands — once Phase 2 is in, change to hard fail.
+        return True, "FIELD_ENCRYPTION_KEY not yet required (Phase 2 not deployed)"
+    if len(val) < 32:
+        return False, f"FIELD_ENCRYPTION_KEY length {len(val)} < 32"
+    return True, f"FIELD_ENCRYPTION_KEY present (len={len(val)})"
+
+
+def _preflight_run():
+    """Runs every pre-flight gate, writes a manifest, refuses to boot on any
+    hard failure. Returns the manifest dict on success."""
+    import json as _json, sys as _sys, hashlib as _h
+    checks = [
+        ("jwt_secret",          _preflight_check_jwt_secret(os.environ.get("JWT_SECRET"))),
+        ("cookie_secure",       _preflight_check_cookie_secure()),
+        ("datastore_encryption", _preflight_check_datastore_encryption()),
+        ("field_encryption_key", _preflight_check_field_encryption_key()),
+    ]
+    failures = [(name, detail) for name, (ok, detail) in checks if not ok]
+    if failures:
+        msg = "Pre-flight checks failed — refusing to start:\n" + "\n".join(
+            f"  ✗ {name}: {detail}" for name, detail in failures
+        )
+        # Print twice — stderr for the deploy logs, raise so the process dies.
+        print(msg, file=_sys.stderr, flush=True)
+        raise RuntimeError(msg)
+    # Manifest captures who/what/when of the boot — values themselves never
+    # logged, only metadata (length, presence, distinct-count for JWT_SECRET).
+    secret_val = os.environ.get("JWT_SECRET", "")
+    manifest = {
+        "boot_time_utc":     datetime.now(timezone.utc).isoformat(),
+        "prod_mode":         PROD_MODE,
+        "python_version":    _sys.version,
+        "checks":            {name: {"ok": ok, "detail": detail} for name, (ok, detail) in checks},
+        "cookie_secure":     COOKIE_SECURE,
+        "jwt_secret_sha256_prefix": _h.sha256(secret_val.encode()).hexdigest()[:16],
+        "datastore_override_used": os.environ.get("DATASTORE_ENCRYPTION_OVERRIDE", "").lower() == "yes",
+    }
+    try:
+        from pathlib import Path as _P
+        manifest_dir = _P(os.environ.get("BOOT_MANIFEST_DIR", "boot_manifests"))
+        manifest_dir.mkdir(parents=True, exist_ok=True)
+        path = manifest_dir / f"boot-{manifest['boot_time_utc'].replace(':','-')}.json"
+        path.write_text(_json.dumps(manifest, indent=2, default=str))
+        print(f"✓ Pre-flight passed; manifest written to {path}", flush=True)
+    except Exception as e:
+        # Manifest write failure is logged but non-fatal — the gate already passed.
+        print(f"⚠ Pre-flight passed but manifest write failed: {e}", flush=True)
+    return manifest
+
+
+# Run the gate now — before JWT_SECRET, before the app object exists.
+_PREFLIGHT = _preflight_run()
+JWT_SECRET = os.environ.get("JWT_SECRET")
 
 COOKIE_ADMIN    = "pc_admin_session"
 COOKIE_TECH     = "pc_tech_session"
