@@ -16,7 +16,7 @@ import secrets as _secrets
 import time
 import uuid
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form, Response
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form, Response, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
@@ -123,6 +123,13 @@ from database import (
     # FIXME unblocks
     set_visit_callback_link, get_visit_callback_chain,
     create_exception_photo, list_exception_photos,
+    # PrimeCool Invoicing Module
+    search_parts_catalog, get_active_fx_rate, set_fx_rate_manual,
+    list_fx_rate_history, compute_fx_display,
+    get_invoice_metrics, list_invoices, export_invoices_csv,
+    get_invoice_full, record_invoice_payment_v2,
+    transition_invoice_status, create_invoice_with_lines,
+    update_invoice_with_lines,
 )
 import imghdr as _imghdr
 import mimetypes as _mimetypes
@@ -3813,6 +3820,116 @@ def admin_export_invoices(request: Request,
     return _csv_response(rows, cols, f"invoices-{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv")
 
 
+# PrimeCool Invoicing Module — specific routes declared BEFORE the
+# generic {invoice_id} route so FastAPI's prefix-matching doesn't try to
+# coerce 'metrics', 'list', 'export.csv' into an int.
+@app.get("/api/admin/invoices/metrics")
+def admin_invoice_metrics_pre(request: Request):
+    _require_super_admin(request)
+    return get_invoice_metrics()
+
+
+@app.get("/api/admin/invoices/list")
+def admin_invoice_list_v2_pre(request: Request,
+                                status: Optional[str] = None,
+                                from_: Optional[str] = Query(None, alias="from"),
+                                to: Optional[str] = None,
+                                page: int = 1,
+                                limit: int = 20):
+    _require_super_admin(request)
+    return list_invoices(
+        {"status": status, "from": from_, "to": to},
+        page=page, limit=limit,
+    )
+
+
+@app.get("/api/admin/invoices/export.csv")
+def admin_invoice_export_csv_pre(request: Request,
+                                   status: Optional[str] = None,
+                                   from_: Optional[str] = Query(None, alias="from"),
+                                   to: Optional[str] = None):
+    admin = _require_super_admin(request)
+    rows = export_invoices_csv({"status": status, "from": from_, "to": to})
+    import io, csv as _csv
+    buf = io.StringIO()
+    cols = ["invoice_number", "customer_name", "company", "issue_date",
+            "due_date", "total_jmd", "amount_paid_jmd", "outstanding_jmd",
+            "status", "days_overdue", "display_currency"]
+    w = _csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
+    w.writeheader()
+    for r in rows:
+        w.writerow(r)
+    _audit_from(admin, "invoice.csv_export", request,
+                target_type="invoice",
+                target_label=f"exported {len(rows)} rows",
+                after={"status": status, "from": from_, "to": to,
+                       "count": len(rows)})
+    fname = f"invoices-{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@app.get("/api/admin/parts/search")
+def admin_parts_search_pre(request: Request,
+                            q: Optional[str] = None,
+                            limit: int = 20):
+    """Searchable inventory lookup. Inventory NOT deducted here —
+    see visit parts-used flow (canonical deduction point)."""
+    _require_super_admin(request)
+    return search_parts_catalog(q, limit=limit)
+
+
+@app.get("/api/admin/fx-rates")
+def admin_fx_rate_get_pre(request: Request,
+                            currency: str,
+                            effective_date: Optional[str] = None):
+    _require_super_admin(request)
+    cu = (currency or "").upper()
+    if cu not in ("USD", "GBP"):
+        raise HTTPException(400, "Invalid currency")
+    rate = get_active_fx_rate(cu, effective_date)
+    return rate or {}
+
+
+@app.post("/api/admin/fx-rates")
+async def admin_fx_rate_set_pre(request: Request):
+    admin = _require_super_admin(request)
+    body = await request.json()
+    fc = (body.get("from_currency") or "").upper()
+    if fc not in ("USD", "GBP"):
+        raise HTTPException(400, "Invalid from_currency")
+    try:
+        buy_rate = float(body.get("buy_rate"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "buy_rate required")
+    if buy_rate <= 0 or buy_rate > 1_000_000:
+        raise HTTPException(400, "buy_rate out of range")
+    eff_date = body.get("effective_date") or datetime.now(timezone.utc).date().isoformat()
+    notes    = (body.get("notes") or "")[:500] or None
+    rid = set_fx_rate_manual(fc, buy_rate, eff_date, admin["id"], notes=notes)
+    _audit_from(admin, "invoice.fx_rate_overridden", request,
+                target_type="fx_rate", target_id=rid,
+                target_label=f"{fc}→JMD",
+                after={"from_currency": fc, "buy_rate": buy_rate,
+                       "effective_date": eff_date, "source": "manual"})
+    return {"id": rid, "from_currency": fc, "buy_rate": buy_rate,
+            "effective_date": eff_date, "source": "manual"}
+
+
+@app.get("/api/admin/fx-rates/history")
+def admin_fx_rate_history_pre(request: Request,
+                                currency: str,
+                                limit: int = 30):
+    _require_super_admin(request)
+    cu = (currency or "").upper()
+    if cu not in ("USD", "GBP"):
+        raise HTTPException(400, "Invalid currency")
+    return list_fx_rate_history(cu, limit=limit)
+
+
 @app.get("/api/admin/invoices/{invoice_id}")
 def admin_get_invoice(request: Request, invoice_id: int):
     _require_perm(request, "invoice:view")
@@ -3910,6 +4027,242 @@ def admin_record_payment(request: Request, invoice_id: int, body: InvoicePayment
                 after={"amount": body.amount, "method": body.method,
                        "new_balance": round(after["total"] - after["amount_paid"], 2)})
     return {"id": payment_id, "amount_paid": after["amount_paid"], "status": after["status"]}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PrimeCool Invoicing Module — locked business defaults
+# ═══════════════════════════════════════════════════════════════════════════
+# GCT default — hard-coded at 15%, configurable per-invoice via tax_rate column
+DEFAULT_GCT_RATE_PCT = 15.0
+# FX processing fee default — flat 2%, configurable per-invoice via fx_fee_pct
+DEFAULT_FX_FEE_PCT = 2.0
+# Supported foreign display currencies. Base currency is ALWAYS JMD.
+_INVOICE_CURRENCIES = ("JMD", "USD", "GBP")
+_PAYMENT_METHODS    = ("cash", "bank_transfer", "cheque", "card", "other")
+
+
+def _redact_pii_for_audit_safe(payload):
+    """Wrapper that uses the existing _redact_pii_for_audit helper if it
+    exists, else falls back to identity. Keeps invoicing audit calls aligned
+    with the established admin/customer/visit audit patterns."""
+    try:
+        return _redact_pii_for_audit(payload)  # noqa: F821 — defined elsewhere
+    except Exception:
+        return payload
+
+
+# ── Full detail (super_admin Edit View loader) ─────────────────────────────
+@app.get("/api/admin/invoices/{invoice_id}/full")
+def admin_invoice_full(request: Request, invoice_id: int):
+    """Full invoice payload for the Edit View: header + lines + payments +
+    customer + visit ref + active fx rate."""
+    _require_super_admin(request)
+    inv = get_invoice_full(invoice_id)
+    if not inv:
+        raise HTTPException(404, "Invoice not found")
+    return inv
+
+
+# ── Invoice create / update / send / cancel (v2 — supports new columns) ────
+@app.post("/api/admin/invoices/v2")
+async def admin_invoice_create_v2(request: Request):
+    """Spec §5 invoice.created. Honours display_currency, fx_fee_pct, fx_rate.
+    Lines support labor (tech_id/hours/hourly_rate), part (part_id/part_sku),
+    and other."""
+    admin = _require_super_admin(request)
+    body = await request.json()
+    # Server-side validation
+    if not body.get("customer_id"):
+        raise HTTPException(400, "customer_id required")
+    dc = (body.get("display_currency") or "JMD").upper()
+    if dc not in _INVOICE_CURRENCIES:
+        raise HTTPException(400, "Invalid display_currency")
+    tax_rate = float(body.get("tax_rate")
+                     if body.get("tax_rate") is not None
+                     else DEFAULT_GCT_RATE_PCT)
+    if tax_rate < 0 or tax_rate > 100:
+        raise HTTPException(400, "tax_rate must be 0–100")
+    fx_fee = float(body.get("fx_fee_pct")
+                   if body.get("fx_fee_pct") is not None
+                   else DEFAULT_FX_FEE_PCT)
+    if fx_fee < 0 or fx_fee > 50:
+        raise HTTPException(400, "fx_fee_pct must be 0–50")
+    body["tax_rate"]   = tax_rate
+    body["fx_fee_pct"] = fx_fee
+    body["display_currency"] = dc
+    invoice_id = create_invoice_with_lines(body, created_by=admin["id"])
+    inv = get_invoice_by_id(invoice_id, with_lines=False)
+    _audit_from(admin, "invoice.created", request,
+                target_type="invoice", target_id=invoice_id,
+                target_label=inv["invoice_number"],
+                after={"customer_id": body.get("customer_id"),
+                       "total":          inv["total"],
+                       "display_currency": dc})
+    return {"id": invoice_id, "invoice_number": inv["invoice_number"]}
+
+
+@app.patch("/api/admin/invoices/{invoice_id}")
+async def admin_invoice_patch(request: Request, invoice_id: int):
+    """Atomic header + line replacement for the new column set."""
+    admin = _require_super_admin(request)
+    before = get_invoice_by_id(invoice_id, with_lines=False)
+    if not before:
+        raise HTTPException(404, "Invoice not found")
+    if before["status"] not in ("draft", "sent"):
+        raise HTTPException(400, f"Cannot edit a {before['status']} invoice")
+    body = await request.json()
+    dc = (body.get("display_currency") or before.get("display_currency") or "JMD").upper()
+    if dc not in _INVOICE_CURRENCIES:
+        raise HTTPException(400, "Invalid display_currency")
+    body["display_currency"] = dc
+    if "tax_rate" in body:
+        tr = float(body["tax_rate"])
+        if tr < 0 or tr > 100:
+            raise HTTPException(400, "tax_rate must be 0–100")
+    if "fx_fee_pct" in body:
+        ff = float(body["fx_fee_pct"])
+        if ff < 0 or ff > 50:
+            raise HTTPException(400, "fx_fee_pct must be 0–50")
+    update_invoice_with_lines(invoice_id, body)
+    after = get_invoice_by_id(invoice_id, with_lines=False)
+    _audit_from(admin, "invoice.updated", request,
+                target_type="invoice", target_id=invoice_id,
+                target_label=before["invoice_number"],
+                before={"total": before["total"],
+                        "display_currency": before.get("display_currency")},
+                after={"total": after["total"],
+                       "display_currency": after.get("display_currency")})
+    return {"ok": True}
+
+
+@app.post("/api/admin/invoices/{invoice_id}/send")
+def admin_invoice_send(request: Request, invoice_id: int):
+    """draft → sent transition with sent_at stamp."""
+    admin = _require_super_admin(request)
+    inv = get_invoice_by_id(invoice_id, with_lines=False)
+    if not inv:
+        raise HTTPException(404, "Invoice not found")
+    try:
+        transition_invoice_status(invoice_id, "sent", actor_id=admin["id"])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    _audit_from(admin, "invoice.sent", request,
+                target_type="invoice", target_id=invoice_id,
+                target_label=inv["invoice_number"],
+                before={"status": inv["status"]},
+                after={"status": "sent"})
+    return {"ok": True, "status": "sent"}
+
+
+@app.post("/api/admin/invoices/{invoice_id}/cancel")
+async def admin_invoice_cancel(request: Request, invoice_id: int):
+    """Cancel an invoice. Reason is required and encrypted at rest."""
+    admin = _require_super_admin(request)
+    body = await request.json()
+    reason = (body.get("reason") or "").strip()
+    if not reason:
+        raise HTTPException(400, "reason required")
+    inv = get_invoice_by_id(invoice_id, with_lines=False)
+    if not inv:
+        raise HTTPException(404, "Invoice not found")
+    try:
+        transition_invoice_status(invoice_id, "cancelled",
+                                   actor_id=admin["id"], reason=reason)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    _audit_from(admin, "invoice.canceled", request,
+                target_type="invoice", target_id=invoice_id,
+                target_label=inv["invoice_number"],
+                before={"status": inv["status"]},
+                after={"status": "cancelled", "reason": reason[:120]})
+    return {"ok": True, "status": "cancelled"}
+
+
+@app.post("/api/admin/invoices/{invoice_id}/payments/v2")
+async def admin_invoice_payment_v2(request: Request, invoice_id: int):
+    """Append-only, chain-hashed payment row. Body matches the modal:
+       amount, payment_currency, payment_method, payment_date, notes,
+       fx_rate_used (if foreign), fx_fee_pct_used (if foreign)."""
+    admin = _require_super_admin(request)
+    inv = get_invoice_by_id(invoice_id, with_lines=False)
+    if not inv:
+        raise HTTPException(404, "Invoice not found")
+    body = await request.json()
+    amount = float(body.get("amount") or 0)
+    if amount <= 0:
+        raise HTTPException(400, "Payment amount must be positive")
+    method = (body.get("payment_method") or "other").lower()
+    if method not in _PAYMENT_METHODS:
+        raise HTTPException(400, "Invalid payment_method")
+    pay_cur = (body.get("payment_currency") or "JMD").upper()
+    if pay_cur not in _INVOICE_CURRENCIES:
+        raise HTTPException(400, "Invalid payment_currency")
+
+    foreign_amount = foreign_currency = None
+    fx_rate_used = fx_fee_pct_used = effective_rate = None
+    amount_jmd = amount
+    if pay_cur != "JMD":
+        fx_rate_used   = float(body.get("fx_rate_used") or 0)
+        fx_fee_pct_used = float(body.get("fx_fee_pct_used")
+                                if body.get("fx_fee_pct_used") is not None
+                                else DEFAULT_FX_FEE_PCT)
+        if fx_rate_used <= 0:
+            raise HTTPException(400, "fx_rate_used required for foreign payment")
+        if fx_fee_pct_used < 0 or fx_fee_pct_used > 50:
+            raise HTTPException(400, "fx_fee_pct_used must be 0–50")
+        effective_rate = fx_rate_used * (1 + fx_fee_pct_used / 100.0)
+        foreign_amount   = amount
+        foreign_currency = pay_cur
+        amount_jmd       = round(amount * effective_rate, 2)
+
+    payload = {
+        "amount_jmd":           amount_jmd,
+        "payment_method":       method,
+        "payment_date":         body.get("payment_date") or datetime.now(timezone.utc).date().isoformat(),
+        "notes":                (body.get("notes") or "")[:1000],
+        "foreign_amount":       foreign_amount,
+        "foreign_currency":     foreign_currency,
+        "fx_rate_used":         fx_rate_used,
+        "fx_fee_pct_used":      fx_fee_pct_used,
+        "effective_rate_used":  effective_rate,
+    }
+    result = record_invoice_payment_v2(
+        invoice_id, payload,
+        recorded_by=admin["id"],
+        recorded_by_label=admin.get("name"),
+        recorded_by_prid=admin.get("prid"),
+    )
+    after = get_invoice_by_id(invoice_id, with_lines=False)
+    if result.get("duplicate"):
+        _audit_from(admin, "invoice.payment_recorded.duplicate_blocked",
+                    request, target_type="invoice", target_id=invoice_id,
+                    target_label=inv["invoice_number"],
+                    after={"amount_jmd": amount_jmd, "method": method})
+    else:
+        _audit_from(admin, "invoice.payment_recorded", request,
+                    target_type="invoice", target_id=invoice_id,
+                    target_label=inv["invoice_number"],
+                    after={"amount_jmd": amount_jmd,
+                           "payment_currency": pay_cur,
+                           "method": method,
+                           "fx_rate_used": fx_rate_used,
+                           "new_balance": round(
+                               after["total"] - after["amount_paid"], 2)})
+    return {
+        "id":           result["id"],
+        "duplicate":    result.get("duplicate", False),
+        "amount_paid":  after["amount_paid"],
+        "status":       after["status"],
+    }
+
+
+@app.get("/api/admin/invoices/{invoice_id}/payments")
+def admin_invoice_payments_list(request: Request, invoice_id: int):
+    _require_super_admin(request)
+    inv = get_invoice_full(invoice_id)
+    if not inv:
+        raise HTTPException(404, "Invoice not found")
+    return inv.get("payments", [])
 
 
 # Customer-side invoice access

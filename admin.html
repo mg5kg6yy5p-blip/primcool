@@ -7379,6 +7379,621 @@
     } catch (e) { toast(e.message,'error'); }
   }
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // PrimeCool Invoicing Module — Edit View, Payment Modal, FX, Parts Search
+  // Spec doctrine:
+  //   • GCT default 15% (per-invoice override)
+  //   • FX processing fee default 2% (per-invoice override)
+  //   • Base currency JMD; display currency JMD/USD/GBP
+  //   • Inventory deduction lives at visit parts-used flow, not here.
+  // ═══════════════════════════════════════════════════════════════════════
+  const INV_DEFAULT_GCT     = 15.0;
+  const INV_DEFAULT_FX_FEE  = 2.0;
+  const INV_CURRENCY_SYMBOLS = {JMD:'J$', USD:'US$', GBP:'£'};
+  let _invEditState = null;   // {id, data, lines}
+  let _invFxCache   = {USD:null, GBP:null};
+
+  function _invFmt(amount, currency) {
+    const sym = INV_CURRENCY_SYMBOLS[currency || 'JMD'] || 'J$';
+    return sym + Number(amount || 0).toLocaleString(undefined,
+      {minimumFractionDigits:2, maximumFractionDigits:2});
+  }
+
+  // ── Metric tiles (server-computed via /metrics) ───────────────────────
+  async function loadInvoiceMetricsTiles() {
+    try {
+      const m = await api('GET', '/api/admin/invoices/metrics');
+      const host = document.getElementById('inv-totals');
+      if (!host) return;
+      host.innerHTML = `
+        ${summaryCard('Outstanding',         _invFmt(m.outstanding,'JMD'),         m.outstanding>0?'#b45309':'#94a3b8')}
+        ${summaryCard('Overdue',             _invFmt(m.overdue,'JMD'),             m.overdue>0?'#dc2626':'#94a3b8')}
+        ${summaryCard('Invoiced This Month', _invFmt(m.invoiced_this_month,'JMD'), '#0B2545')}
+        ${summaryCard('Collected This Month',_invFmt(m.collected_this_month,'JMD'),'#059669')}`;
+    } catch(e) { /* fallback to client-side computation in renderInvoices */ }
+  }
+
+  // ── Hash-routed Edit View ─────────────────────────────────────────────
+  function _invHashRouter() {
+    const h = (location.hash || '').replace(/^#/, '');
+    const m = h.match(/^invoice\/(new|(\d+)\/edit)/);
+    if (!m) {
+      // hide any open edit view
+      const ev = document.getElementById('inv-edit-view');
+      if (ev) ev.remove();
+      return;
+    }
+    const id = m[2] ? parseInt(m[2], 10) : null;
+    openInvoiceEditView(id);
+  }
+  window.addEventListener('hashchange', _invHashRouter);
+
+  async function openInvoiceEditView(invoiceId) {
+    if (!isSuperAdmin()) {
+      toast('Invoice editing requires super_admin', 'error');
+      location.hash = '';
+      return;
+    }
+    showPanel('invoices');
+    let data = {
+      customer_id: null, visit_id: null,
+      issue_date: new Date().toISOString().slice(0,10),
+      due_date: new Date(Date.now()+30*86400000).toISOString().slice(0,10),
+      tax_rate: INV_DEFAULT_GCT, fx_fee_pct: INV_DEFAULT_FX_FEE,
+      display_currency: 'JMD', fx_rate_used: null, fx_rate_source: null,
+      fx_rate_fetched_at: null, status: 'draft', line_items: [],
+      total: 0, subtotal: 0, amount_paid: 0,
+    };
+    if (invoiceId) {
+      try {
+        data = await api('GET', `/api/admin/invoices/${invoiceId}/full`);
+        data.line_items = data.line_items || [];
+      } catch(e) {
+        toast('Failed to load invoice: ' + e.message, 'error');
+        location.hash = '';
+        return;
+      }
+    }
+    _invEditState = {id: invoiceId, data};
+    _invRenderEditView();
+  }
+
+  function isSuperAdmin() {
+    try { return !!(currentAdmin && currentAdmin.role === 'super_admin'); }
+    catch(e) { return false; }
+  }
+
+  function _invRenderEditView() {
+    const panel = document.getElementById('panel-invoices');
+    if (!panel) return;
+    let host = document.getElementById('inv-edit-view');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'inv-edit-view';
+      host.style.cssText = 'background:white;border:1px solid var(--border);border-radius:10px;padding:18px;margin-top:14px;';
+      panel.appendChild(host);
+    }
+    const d   = _invEditState.data;
+    const dc  = (d.display_currency || 'JMD').toUpperCase();
+    const sym = INV_CURRENCY_SYMBOLS[dc] || 'J$';
+    const subtotal = (d.line_items || []).reduce(
+      (s,li)=>s + (parseFloat(li.quantity||0)*parseFloat(li.unit_price||0)), 0);
+    const taxRate = parseFloat(d.tax_rate || 0);
+    const tax  = subtotal * taxRate / 100;
+    const totalJmd = subtotal + tax;
+    const feePct = parseFloat(d.fx_fee_pct || 0);
+    const rate   = parseFloat(d.fx_rate_used || 0);
+    const effRate = rate * (1 + feePct/100);
+    const foreignTotal = (effRate > 0 && dc !== 'JMD') ? (totalJmd / effRate) : 0;
+    const jmdFee = totalJmd * feePct/100;
+
+    host.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+        <h2 style="margin:0;color:var(--navy);">${_invEditState.id ? ('Edit Invoice ' + escHtml(d.invoice_number||'')) : 'New Invoice'}</h2>
+        <button class="btn btn-ghost" onclick="location.hash=''">← Back to Invoices</button>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:12px;">
+        <div>
+          <label for="inv-customer" style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">Customer</label>
+          <input id="inv-customer-search" type="search" placeholder="Search customer…" value="${escHtml(d.customer_name||'')}" oninput="_invCustomerSearch(this.value)" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+          <div id="inv-customer-results" style="position:relative;"></div>
+          <input id="inv-customer-id" type="hidden" value="${d.customer_id||''}">
+        </div>
+        <div>
+          <label for="inv-visit" style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">Related Visit (optional)</label>
+          <input id="inv-visit" type="number" placeholder="Visit ID" value="${d.visit_id||''}" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+        </div>
+        <div>
+          <label for="inv-issue" style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">Issue Date</label>
+          <input id="inv-issue" type="date" value="${escHtml(d.issue_date||'')}" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+        </div>
+        <div>
+          <label for="inv-due" style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">Due Date</label>
+          <input id="inv-due" type="date" value="${escHtml(d.due_date||'')}" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+        </div>
+        <div>
+          <label for="inv-gct" style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">GCT Rate (%)</label>
+          <input id="inv-gct" type="number" min="0" max="100" step="0.01" value="${d.tax_rate}" onchange="_invSetField('tax_rate',this.value)" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+        </div>
+        <div>
+          <label for="inv-currency" style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">Display Currency</label>
+          <select id="inv-currency" onchange="_invSetCurrency(this.value)" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+            <option value="JMD" ${dc==='JMD'?'selected':''}>JMD (base)</option>
+            <option value="USD" ${dc==='USD'?'selected':''}>USD</option>
+            <option value="GBP" ${dc==='GBP'?'selected':''}>GBP</option>
+          </select>
+        </div>
+      </div>
+
+      ${dc !== 'JMD' ? `
+        <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:10px;margin-bottom:14px;display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:10px;align-items:end;">
+          <div>
+            <label style="display:block;font-size:11px;font-weight:600;color:var(--navy);margin-bottom:4px;">FX Buy Rate (JMD per 1 ${dc})</label>
+            <input id="inv-fxrate" type="number" step="0.0001" value="${d.fx_rate_used||''}" onchange="_invSetField('fx_rate_used',this.value)" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;">
+          </div>
+          <div>
+            <label style="display:block;font-size:11px;font-weight:600;color:var(--navy);margin-bottom:4px;">FX Fee (%)</label>
+            <input id="inv-fxfee" type="number" step="0.01" min="0" max="50" value="${d.fx_fee_pct}" onchange="_invSetField('fx_fee_pct',this.value)" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;">
+          </div>
+          <div style="font-size:12px;color:var(--muted);">
+            <div>Source: <strong>${escHtml(d.fx_rate_source||'—')}</strong></div>
+            <div>Fetched: <strong>${escHtml((d.fx_rate_fetched_at||'').slice(0,16))||'—'}</strong></div>
+          </div>
+          <button class="btn btn-ghost" onclick="openFxRateModal('${dc}')">✎ Edit FX</button>
+        </div>` : ''}
+
+      <h3 style="color:var(--navy);margin:14px 0 8px;">Line Items</h3>
+      <p style="font-size:11px;color:var(--muted);margin:0 0 8px;">Stock is tracked at visit parts-used. Adding a part line here does not deduct inventory.</p>
+      <div id="inv-lines"></div>
+
+      <div style="margin-top:8px;display:flex;gap:8px;">
+        <button class="btn btn-ghost" onclick="_invAddLine('labor')">+ Add Labor</button>
+        <button class="btn btn-ghost" onclick="_invAddLine('part')">+ Add Part</button>
+        <button class="btn btn-ghost" onclick="_invAddLine('other')">+ Add Other</button>
+      </div>
+
+      <div style="margin-top:18px;background:#f8fafc;border:1px solid var(--border);border-radius:10px;padding:14px;max-width:420px;margin-left:auto;">
+        <div style="display:flex;justify-content:space-between;font-size:14px;"><span>Subtotal</span><strong>${_invFmt(subtotal,'JMD')}</strong></div>
+        <div style="display:flex;justify-content:space-between;font-size:14px;"><span>GCT (${taxRate}%)</span><strong>${_invFmt(tax,'JMD')}</strong></div>
+        <div style="display:flex;justify-content:space-between;font-size:16px;border-top:1px solid var(--border);padding-top:6px;margin-top:6px;"><span>Total Due (JMD)</span><strong>${_invFmt(totalJmd,'JMD')}</strong></div>
+        ${dc !== 'JMD' && rate > 0 ? `
+          <hr>
+          <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);"><span>Effective Rate (w/ FX fee)</span><strong>${effRate.toFixed(4)} JMD/${dc}</strong></div>
+          <div style="display:flex;justify-content:space-between;font-size:14px;"><span>Total Due (${dc})</span><strong>${_invFmt(foreignTotal,dc)}</strong></div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;color:#059669;"><span>FX Fee earned (JMD)</span><strong>${_invFmt(jmdFee,'JMD')}</strong></div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px;">Foreign payment converts to ${_invFmt(totalJmd,'JMD')} at bank rate ${rate} JMD/${dc}</div>
+        ` : ''}
+      </div>
+
+      <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-primary" onclick="_invSave('draft')" style="background:#0B2545;color:white;">Save Draft</button>
+        <button class="btn btn-primary" onclick="_invSave('sent')"  style="background:#22A08A;color:white;">Save &amp; Send</button>
+        ${_invEditState.id && d.status !== 'draft' && d.status !== 'cancelled' ? `
+          <button class="btn btn-danger" onclick="_invCancel()" style="background:#dc2626;color:white;">Cancel Invoice</button>
+        ` : ''}
+        ${_invEditState.id ? `
+          <button class="btn btn-ghost" onclick="openPaymentModal(${_invEditState.id})">Record Payment</button>
+        ` : ''}
+      </div>
+    `;
+    _invRenderLines();
+  }
+
+  function _invSetField(k, v) {
+    if (!_invEditState) return;
+    _invEditState.data[k] = (k === 'tax_rate' || k === 'fx_fee_pct' || k === 'fx_rate_used') ? parseFloat(v) : v;
+    _invRenderEditView();
+  }
+
+  async function _invSetCurrency(cur) {
+    if (!_invEditState) return;
+    _invEditState.data.display_currency = cur;
+    if (cur !== 'JMD') {
+      try {
+        const r = await api('GET', `/api/admin/fx-rates?currency=${cur}`);
+        if (r && r.buy_rate) {
+          _invEditState.data.fx_rate_used        = r.buy_rate;
+          _invEditState.data.fx_rate_source      = r.source;
+          _invEditState.data.fx_rate_fetched_at  = r.fetched_at;
+        }
+      } catch(e) {}
+    }
+    _invRenderEditView();
+  }
+
+  function _invRenderLines() {
+    const host = document.getElementById('inv-lines');
+    if (!host || !_invEditState) return;
+    const lines = _invEditState.data.line_items || [];
+    if (!lines.length) {
+      host.innerHTML = '<div style="color:var(--muted);padding:14px;text-align:center;border:1px dashed var(--border);border-radius:8px;">No line items yet. Use the buttons below to add labor, parts, or other charges.</div>';
+      return;
+    }
+    const dc = (_invEditState.data.display_currency || 'JMD');
+    const sym = 'J$'; // unit prices are stored in JMD
+    host.innerHTML = lines.map((li, idx) => {
+      const total = (parseFloat(li.quantity||0) * parseFloat(li.unit_price||0)).toFixed(2);
+      const typeBadge = `<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:#e0e7ff;color:#3730a3;text-transform:uppercase;font-weight:700;">${li.line_type}</span>`;
+      if (li.line_type === 'part') {
+        return `
+          <div style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;display:grid;grid-template-columns:1fr 100px 140px 100px auto;gap:8px;align-items:end;">
+            <div>
+              <label style="display:block;font-size:11px;font-weight:600;color:var(--navy);margin-bottom:2px;">${typeBadge} Description</label>
+              <input type="text" placeholder="Search part by SKU or name…" value="${escHtml(li.description||'')}" oninput="_invPartsSearch(${idx}, this.value)" onchange="_invLineSet(${idx},'description',this.value)" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;">
+              <div id="inv-parts-results-${idx}" style="position:relative;"></div>
+              ${li.part_sku ? `<div style="font-size:10px;color:var(--muted);margin-top:2px;">SKU: ${escHtml(li.part_sku)}</div>` : ''}
+            </div>
+            <div>
+              <label style="display:block;font-size:11px;font-weight:600;color:var(--navy);margin-bottom:2px;">Quantity</label>
+              <input type="number" step="0.01" value="${li.quantity||1}" onchange="_invLineSet(${idx},'quantity',this.value)" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;">
+            </div>
+            <div>
+              <label style="display:block;font-size:11px;font-weight:600;color:var(--navy);margin-bottom:2px;">Unit Price (${sym})</label>
+              <div style="position:relative;"><span style="position:absolute;left:8px;top:50%;transform:translateY(-50%);font-size:12px;color:var(--muted);">${sym}</span>
+                <input type="number" step="0.01" value="${li.unit_price||0}" onchange="_invLineSet(${idx},'unit_price',this.value)" style="width:100%;padding:6px 6px 6px 28px;border:1px solid var(--border);border-radius:6px;">
+              </div>
+            </div>
+            <div style="font-weight:700;color:var(--navy);text-align:right;padding-bottom:6px;">${_invFmt(total,'JMD')}</div>
+            <button class="btn btn-ghost" onclick="_invRemoveLine(${idx})" title="Remove">✕</button>
+          </div>`;
+      }
+      if (li.line_type === 'labor') {
+        return `
+          <div style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;display:grid;grid-template-columns:1fr 100px 140px 100px auto;gap:8px;align-items:end;">
+            <div>
+              <label style="display:block;font-size:11px;font-weight:600;color:var(--navy);margin-bottom:2px;">${typeBadge} Description</label>
+              <input type="text" value="${escHtml(li.description||'Labor')}" onchange="_invLineSet(${idx},'description',this.value)" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;">
+            </div>
+            <div>
+              <label style="display:block;font-size:11px;font-weight:600;color:var(--navy);margin-bottom:2px;">Hours</label>
+              <input type="number" step="0.25" value="${li.hours||li.quantity||1}" onchange="_invLineSet(${idx},'hours',this.value);_invLineSet(${idx},'quantity',this.value)" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;">
+            </div>
+            <div>
+              <label style="display:block;font-size:11px;font-weight:600;color:var(--navy);margin-bottom:2px;">Hourly Rate (${sym})</label>
+              <div style="position:relative;"><span style="position:absolute;left:8px;top:50%;transform:translateY(-50%);font-size:12px;color:var(--muted);">${sym}</span>
+                <input type="number" step="0.01" value="${li.hourly_rate||li.unit_price||0}" onchange="_invLineSet(${idx},'hourly_rate',this.value);_invLineSet(${idx},'unit_price',this.value)" style="width:100%;padding:6px 6px 6px 28px;border:1px solid var(--border);border-radius:6px;">
+              </div>
+            </div>
+            <div style="font-weight:700;color:var(--navy);text-align:right;padding-bottom:6px;">${_invFmt(total,'JMD')}</div>
+            <button class="btn btn-ghost" onclick="_invRemoveLine(${idx})">✕</button>
+          </div>`;
+      }
+      return `
+        <div style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;display:grid;grid-template-columns:1fr 100px 140px 100px auto;gap:8px;align-items:end;">
+          <div>
+            <label style="display:block;font-size:11px;font-weight:600;color:var(--navy);margin-bottom:2px;">${typeBadge} Description</label>
+            <input type="text" value="${escHtml(li.description||'')}" onchange="_invLineSet(${idx},'description',this.value)" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;">
+          </div>
+          <div>
+            <label style="display:block;font-size:11px;font-weight:600;color:var(--navy);margin-bottom:2px;">Quantity</label>
+            <input type="number" step="0.01" value="${li.quantity||1}" onchange="_invLineSet(${idx},'quantity',this.value)" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;">
+          </div>
+          <div>
+            <label style="display:block;font-size:11px;font-weight:600;color:var(--navy);margin-bottom:2px;">Unit Price (${sym})</label>
+            <div style="position:relative;"><span style="position:absolute;left:8px;top:50%;transform:translateY(-50%);font-size:12px;color:var(--muted);">${sym}</span>
+              <input type="number" step="0.01" value="${li.unit_price||0}" onchange="_invLineSet(${idx},'unit_price',this.value)" style="width:100%;padding:6px 6px 6px 28px;border:1px solid var(--border);border-radius:6px;">
+            </div>
+          </div>
+          <div style="font-weight:700;color:var(--navy);text-align:right;padding-bottom:6px;">${_invFmt(total,'JMD')}</div>
+          <button class="btn btn-ghost" onclick="_invRemoveLine(${idx})">✕</button>
+        </div>`;
+    }).join('');
+  }
+
+  function _invAddLine(t) {
+    if (!_invEditState) return;
+    _invEditState.data.line_items = _invEditState.data.line_items || [];
+    _invEditState.data.line_items.push({
+      line_type: t, description: '', quantity: 1, unit_price: 0,
+      hours: (t==='labor'?1:null), hourly_rate: (t==='labor'?0:null),
+      part_id: null, part_sku: null,
+    });
+    _invRenderEditView();
+  }
+  function _invRemoveLine(idx) {
+    _invEditState.data.line_items.splice(idx,1);
+    _invRenderEditView();
+  }
+  function _invLineSet(idx, k, v) {
+    const li = _invEditState.data.line_items[idx];
+    li[k] = (k==='quantity'||k==='unit_price'||k==='hours'||k==='hourly_rate') ? parseFloat(v||0) : v;
+    _invRenderEditView();
+  }
+
+  // ── Parts search typeahead ────────────────────────────────────────────
+  let _invPartsSearchTimer = null;
+  async function _invPartsSearch(idx, q) {
+    clearTimeout(_invPartsSearchTimer);
+    _invPartsSearchTimer = setTimeout(async () => {
+      const host = document.getElementById('inv-parts-results-'+idx);
+      if (!host) return;
+      try {
+        const rows = await api('GET', '/api/admin/parts/search?q='+encodeURIComponent(q||'')+'&limit=20');
+        if (!rows.length) { host.innerHTML=''; return; }
+        host.innerHTML = `<div role="listbox" style="position:absolute;top:0;left:0;right:0;z-index:50;background:white;border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,0.1);max-height:240px;overflow:auto;">
+          ${rows.map(r=>`<div role="option" tabindex="0" onclick="_invSelectPart(${idx}, ${JSON.stringify(r).replace(/"/g,'&quot;')})" style="padding:8px;border-bottom:1px solid var(--border);cursor:pointer;font-size:13px;">
+            <div style="font-weight:600;color:var(--navy);">${escHtml(r.name)} <span style="font-size:11px;color:var(--muted);">${escHtml(r.sku)}</span></div>
+            <div style="font-size:11px;color:var(--muted);">J$${r.unit_price.toFixed(2)} · on hand: ${r.on_hand_qty}</div>
+          </div>`).join('')}
+        </div>`;
+      } catch(e) {}
+    }, 200);
+  }
+  function _invSelectPart(idx, row) {
+    const li = _invEditState.data.line_items[idx];
+    li.part_id = row.id;
+    li.part_sku = row.sku;
+    li.description = row.name + (row.description? ' — '+row.description:'');
+    li.unit_price = row.unit_price;
+    const host = document.getElementById('inv-parts-results-'+idx);
+    if (host) host.innerHTML = '';
+    _invRenderEditView();
+  }
+
+  // ── Customer typeahead (reuses /api/admin/customers list) ─────────────
+  let _invCustSearchTimer = null;
+  async function _invCustomerSearch(q) {
+    clearTimeout(_invCustSearchTimer);
+    _invCustSearchTimer = setTimeout(async () => {
+      const host = document.getElementById('inv-customer-results');
+      if (!host) return;
+      try {
+        const rows = await api('GET', '/api/admin/customers');
+        const ql = (q||'').toLowerCase();
+        const matches = rows.filter(r =>
+          (r.name||'').toLowerCase().includes(ql) ||
+          (r.company||'').toLowerCase().includes(ql) ||
+          (r.customer_code||'').toLowerCase().includes(ql)
+        ).slice(0,10);
+        if (!matches.length) { host.innerHTML=''; return; }
+        host.innerHTML = `<div role="listbox" style="position:absolute;top:0;left:0;right:0;z-index:50;background:white;border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,0.1);max-height:240px;overflow:auto;">
+          ${matches.map(r=>`<div role="option" onclick="_invSelectCustomer(${r.id}, ${JSON.stringify((r.name||'')+' — '+(r.company||r.customer_code||'')).replace(/"/g,'&quot;')})" style="padding:8px;border-bottom:1px solid var(--border);cursor:pointer;font-size:13px;">
+            <div style="font-weight:600;color:var(--navy);">${escHtml(r.name||'')}</div>
+            <div style="font-size:11px;color:var(--muted);">${escHtml(r.company||'')} · ${escHtml(r.customer_code||'')}</div>
+          </div>`).join('')}
+        </div>`;
+      } catch(e) {}
+    }, 250);
+  }
+  function _invSelectCustomer(id, label) {
+    _invEditState.data.customer_id = id;
+    _invEditState.data.customer_name = label;
+    const inp = document.getElementById('inv-customer-search'); if (inp) inp.value = label;
+    const hid = document.getElementById('inv-customer-id');     if (hid) hid.value = id;
+    const host = document.getElementById('inv-customer-results'); if (host) host.innerHTML = '';
+  }
+
+  // ── Save / Send / Cancel ──────────────────────────────────────────────
+  function _invCollectFromUI() {
+    const d = _invEditState.data;
+    d.customer_id = parseInt(document.getElementById('inv-customer-id').value || d.customer_id || 0, 10) || null;
+    const v = document.getElementById('inv-visit').value;
+    d.visit_id   = v ? parseInt(v,10) : null;
+    d.issue_date = document.getElementById('inv-issue').value;
+    d.due_date   = document.getElementById('inv-due').value;
+    d.tax_rate   = parseFloat(document.getElementById('inv-gct').value || 0);
+    d.display_currency = document.getElementById('inv-currency').value;
+    const fxr = document.getElementById('inv-fxrate');
+    const fxf = document.getElementById('inv-fxfee');
+    if (fxr) d.fx_rate_used = parseFloat(fxr.value||0);
+    if (fxf) d.fx_fee_pct   = parseFloat(fxf.value||INV_DEFAULT_FX_FEE);
+    return d;
+  }
+
+  async function _invSave(targetStatus) {
+    const d = _invCollectFromUI();
+    if (!d.customer_id) { toast('Customer is required','error'); return; }
+    if (!d.line_items || !d.line_items.length) { toast('At least one line item is required','error'); return; }
+    try {
+      let invoiceId = _invEditState.id;
+      if (invoiceId) {
+        await api('PATCH', `/api/admin/invoices/${invoiceId}`, d);
+      } else {
+        const created = await api('POST', '/api/admin/invoices/v2', d);
+        invoiceId = created.id;
+      }
+      if (targetStatus === 'sent') {
+        await api('POST', `/api/admin/invoices/${invoiceId}/send`, {});
+      }
+      toast('Invoice saved','success');
+      location.hash = '';
+      loadInvoices();
+    } catch(e) {
+      toast('Save failed: ' + e.message, 'error');
+    }
+  }
+
+  async function _invCancel() {
+    if (!_invEditState.id) return;
+    const reason = prompt('Cancellation reason (required):');
+    if (!reason || !reason.trim()) return;
+    try {
+      await api('POST', `/api/admin/invoices/${_invEditState.id}/cancel`, {reason: reason.trim()});
+      toast('Invoice cancelled','success');
+      location.hash = '';
+      loadInvoices();
+    } catch(e) { toast('Cancel failed: ' + e.message, 'error'); }
+  }
+
+  // ── Payment Modal ─────────────────────────────────────────────────────
+  async function openPaymentModal(invoiceId) {
+    if (!isSuperAdmin()) { toast('Payment recording requires super_admin','error'); return; }
+    let inv;
+    try { inv = await api('GET', `/api/admin/invoices/${invoiceId}/full`); }
+    catch(e) { toast('Failed to load invoice: '+e.message,'error'); return; }
+    const balance = (inv.total||0) - (inv.amount_paid||0);
+    const dc = inv.display_currency || 'JMD';
+    let host = document.getElementById('inv-payment-modal');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'inv-payment-modal';
+      host.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;';
+      document.body.appendChild(host);
+    }
+    host.innerHTML = `
+      <div style="background:white;border-radius:10px;padding:20px;max-width:480px;width:100%;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <h3 style="margin:0;color:var(--navy);">Record Payment — ${escHtml(inv.invoice_number||'')}</h3>
+          <button class="btn btn-ghost" onclick="document.getElementById('inv-payment-modal').remove()">✕</button>
+        </div>
+        <div style="font-size:13px;color:var(--muted);margin-bottom:12px;">Outstanding balance: <strong>${_invFmt(balance,'JMD')}</strong></div>
+        <div style="display:grid;gap:10px;">
+          <div>
+            <label for="pay-currency" style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">Payment Currency</label>
+            <select id="pay-currency" onchange="_payRecalc()" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+              <option value="JMD" ${dc==='JMD'?'selected':''}>JMD</option>
+              <option value="USD" ${dc==='USD'?'selected':''}>USD</option>
+              <option value="GBP" ${dc==='GBP'?'selected':''}>GBP</option>
+            </select>
+          </div>
+          <div>
+            <label for="pay-amount" style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">Amount Paid</label>
+            <input id="pay-amount" type="number" step="0.01" min="0.01" oninput="_payRecalc()" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+          </div>
+          <div id="pay-fx-row" style="display:${dc!=='JMD'?'grid':'none'};grid-template-columns:1fr 1fr;gap:8px;">
+            <div><label style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">FX Rate (JMD per 1)</label>
+              <input id="pay-fxrate" type="number" step="0.0001" value="${inv.fx_rate_used||''}" oninput="_payRecalc()" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;"></div>
+            <div><label style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">FX Fee (%)</label>
+              <input id="pay-fxfee" type="number" step="0.01" min="0" max="50" value="${inv.fx_fee_pct||INV_DEFAULT_FX_FEE}" oninput="_payRecalc()" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;"></div>
+          </div>
+          <div id="pay-jmd-equiv" style="font-size:13px;color:#059669;font-weight:600;"></div>
+          <div>
+            <label for="pay-method" style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">Payment Method</label>
+            <select id="pay-method" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+              <option value="cash">Cash</option>
+              <option value="bank_transfer">Bank Transfer</option>
+              <option value="cheque">Cheque</option>
+              <option value="card">Card</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+          <div>
+            <label for="pay-date" style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">Payment Date</label>
+            <input id="pay-date" type="date" value="${new Date().toISOString().slice(0,10)}" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+          </div>
+          <div>
+            <label for="pay-notes" style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">Notes (optional)</label>
+            <textarea id="pay-notes" maxlength="1000" rows="2" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;"></textarea>
+          </div>
+        </div>
+        <div style="margin-top:14px;display:flex;justify-content:flex-end;gap:8px;">
+          <button class="btn btn-ghost" onclick="document.getElementById('inv-payment-modal').remove()">Cancel</button>
+          <button class="btn btn-primary" onclick="_paySubmit(${invoiceId})" style="background:#22A08A;color:white;">Record Payment</button>
+        </div>
+      </div>`;
+    _payRecalc();
+  }
+
+  function _payRecalc() {
+    const cur = document.getElementById('pay-currency').value;
+    const fxRow = document.getElementById('pay-fx-row');
+    fxRow.style.display = (cur === 'JMD') ? 'none' : 'grid';
+    const equiv = document.getElementById('pay-jmd-equiv');
+    const amt = parseFloat((document.getElementById('pay-amount')||{}).value || 0);
+    if (cur === 'JMD') { equiv.textContent = ''; return; }
+    const r = parseFloat((document.getElementById('pay-fxrate')||{}).value || 0);
+    const f = parseFloat((document.getElementById('pay-fxfee')||{}).value || 0);
+    const eff = r * (1 + f/100);
+    const jmd = amt * eff;
+    equiv.textContent = `JMD equivalent: ${_invFmt(jmd,'JMD')} (effective ${eff.toFixed(4)} JMD/${cur})`;
+  }
+
+  async function _paySubmit(invoiceId) {
+    const body = {
+      amount: parseFloat(document.getElementById('pay-amount').value || 0),
+      payment_currency: document.getElementById('pay-currency').value,
+      payment_method:   document.getElementById('pay-method').value,
+      payment_date:     document.getElementById('pay-date').value,
+      notes:            document.getElementById('pay-notes').value,
+    };
+    if (body.payment_currency !== 'JMD') {
+      body.fx_rate_used    = parseFloat(document.getElementById('pay-fxrate').value || 0);
+      body.fx_fee_pct_used = parseFloat(document.getElementById('pay-fxfee').value || INV_DEFAULT_FX_FEE);
+    }
+    if (!body.amount || body.amount <= 0) { toast('Amount must be > 0','error'); return; }
+    try {
+      const r = await api('POST', `/api/admin/invoices/${invoiceId}/payments/v2`, body);
+      toast(r.duplicate ? 'Duplicate suppressed' : 'Payment recorded', 'success');
+      document.getElementById('inv-payment-modal').remove();
+      loadInvoices();
+      if (_invEditState && _invEditState.id === invoiceId) openInvoiceEditView(invoiceId);
+    } catch(e) { toast('Payment failed: '+e.message,'error'); }
+  }
+
+  // ── FX Rate Modal ─────────────────────────────────────────────────────
+  async function openFxRateModal(currency) {
+    if (!isSuperAdmin()) { toast('FX overrides require super_admin','error'); return; }
+    let host = document.getElementById('inv-fx-modal');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'inv-fx-modal';
+      host.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;';
+      document.body.appendChild(host);
+    }
+    host.innerHTML = `
+      <div style="background:white;border-radius:10px;padding:20px;max-width:420px;width:100%;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <h3 style="margin:0;color:var(--navy);">Manual FX Rate — ${currency} → JMD</h3>
+          <button class="btn btn-ghost" onclick="document.getElementById('inv-fx-modal').remove()">✕</button>
+        </div>
+        <div style="display:grid;gap:10px;">
+          <div>
+            <label for="fx-rate" style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">Buy Rate (JMD per 1 ${currency})</label>
+            <input id="fx-rate" type="number" step="0.0001" min="0" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+          </div>
+          <div>
+            <label for="fx-date" style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">Effective Date</label>
+            <input id="fx-date" type="date" value="${new Date().toISOString().slice(0,10)}" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+          </div>
+          <div>
+            <label for="fx-notes" style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">Notes (optional)</label>
+            <textarea id="fx-notes" maxlength="500" rows="2" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;"></textarea>
+          </div>
+        </div>
+        <div style="margin-top:14px;display:flex;justify-content:flex-end;gap:8px;">
+          <button class="btn btn-ghost" onclick="document.getElementById('inv-fx-modal').remove()">Cancel</button>
+          <button class="btn btn-primary" onclick="_fxSubmit('${currency}')" style="background:#0B2545;color:white;">Save Rate</button>
+        </div>
+      </div>`;
+  }
+  async function _fxSubmit(currency) {
+    const rate = parseFloat(document.getElementById('fx-rate').value||0);
+    const date = document.getElementById('fx-date').value;
+    const notes= document.getElementById('fx-notes').value;
+    if (!rate || rate <= 0) { toast('Rate must be > 0','error'); return; }
+    try {
+      const r = await api('POST', '/api/admin/fx-rates',
+                {from_currency: currency, buy_rate: rate, effective_date: date, notes});
+      toast('FX rate saved','success');
+      document.getElementById('inv-fx-modal').remove();
+      if (_invEditState) {
+        _invEditState.data.fx_rate_used = rate;
+        _invEditState.data.fx_rate_source = 'manual';
+        _invEditState.data.fx_rate_fetched_at = new Date().toISOString();
+        _invRenderEditView();
+      }
+    } catch(e) { toast('Save failed: '+e.message,'error'); }
+  }
+
+  // Hook into existing tab open
+  const _origLoadInvoices = loadInvoices;
+  loadInvoices = async function() {
+    await _origLoadInvoices.apply(this, arguments);
+    loadInvoiceMetricsTiles();
+    if (location.hash.startsWith('#invoice/')) _invHashRouter();
+  };
+
+  // wire up the existing "+ New Invoice" button if super_admin
+  document.addEventListener('DOMContentLoaded', function() {
+    const btn = document.getElementById('addInvoiceBtn');
+    if (btn) btn.setAttribute('onclick', "location.hash='invoice/new'");
+  });
+  // Also run on first hash load (in case page loads at #invoice/123/edit)
+  if (location.hash.startsWith('#invoice/')) {
+    setTimeout(_invHashRouter, 500);
+  }
+
   init();
 </script>
 </body>

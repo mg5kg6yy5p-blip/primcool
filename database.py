@@ -160,6 +160,10 @@ _PII_RAND = {
     "technician_reviews":       ["summary", "action_items"],
     "technician_kpi_overrides": ["reason"],
     "technician_5s_overrides":  ["reason"],
+    # PrimeCool Invoicing Module — sensitive free-text on payments/fx + invoice cancellation rationale.
+    "invoice_payments":         ["notes"],
+    "fx_rates":                 ["notes"],
+    "invoices":                 ["canceled_reason"],
 }
 # Columns that need equality lookup → deterministic encryption + blind index.
 _PII_DET = {
@@ -525,6 +529,72 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_invoices_status   ON invoices(status, due_date)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_invoice_lines     ON invoice_line_items(invoice_id, sort_order)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_invoice_payments  ON invoice_payments(invoice_id, payment_date)")
+
+    # ── PrimeCool Invoicing Module additions ───────────────────────────────
+    # Idempotent column additions on the existing invoices header.
+    inv_cols = {row[1] for row in con.execute("PRAGMA table_info(invoices)")}
+    for col, sql in (
+        ("fx_fee_pct",          "ALTER TABLE invoices ADD COLUMN fx_fee_pct REAL DEFAULT 2.0"),
+        ("fx_rate_used",        "ALTER TABLE invoices ADD COLUMN fx_rate_used REAL"),
+        ("fx_rate_source",      "ALTER TABLE invoices ADD COLUMN fx_rate_source TEXT"),
+        ("fx_rate_fetched_at",  "ALTER TABLE invoices ADD COLUMN fx_rate_fetched_at TEXT"),
+        ("display_currency",    "ALTER TABLE invoices ADD COLUMN display_currency TEXT DEFAULT 'JMD'"),
+        ("canceled_at",         "ALTER TABLE invoices ADD COLUMN canceled_at TEXT"),
+        ("canceled_by",         "ALTER TABLE invoices ADD COLUMN canceled_by INTEGER"),
+        ("canceled_reason",     "ALTER TABLE invoices ADD COLUMN canceled_reason TEXT"),
+        ("gct_amount",          "ALTER TABLE invoices ADD COLUMN gct_amount REAL DEFAULT 0"),
+    ):
+        if col not in inv_cols:
+            try: con.execute(sql)
+            except sqlite3.OperationalError: pass
+
+    # Idempotent additions to invoice_line_items to support labor + part metadata.
+    ili_cols = {row[1] for row in con.execute("PRAGMA table_info(invoice_line_items)")}
+    for col, sql in (
+        ("part_sku",     "ALTER TABLE invoice_line_items ADD COLUMN part_sku TEXT"),
+        ("tech_id",      "ALTER TABLE invoice_line_items ADD COLUMN tech_id INTEGER"),
+        ("hours",        "ALTER TABLE invoice_line_items ADD COLUMN hours REAL"),
+        ("hourly_rate",  "ALTER TABLE invoice_line_items ADD COLUMN hourly_rate REAL"),
+        ("created_at",   "ALTER TABLE invoice_line_items ADD COLUMN created_at TEXT"),
+        ("updated_at",   "ALTER TABLE invoice_line_items ADD COLUMN updated_at TEXT"),
+    ):
+        if col not in ili_cols:
+            try: con.execute(sql)
+            except sqlite3.OperationalError: pass
+
+    # Idempotent additions to invoice_payments (FX + chain-hash + append-only).
+    ip_cols = {row[1] for row in con.execute("PRAGMA table_info(invoice_payments)")}
+    for col, sql in (
+        ("foreign_amount",       "ALTER TABLE invoice_payments ADD COLUMN foreign_amount REAL"),
+        ("foreign_currency",     "ALTER TABLE invoice_payments ADD COLUMN foreign_currency TEXT"),
+        ("fx_rate_used",         "ALTER TABLE invoice_payments ADD COLUMN fx_rate_used REAL"),
+        ("fx_fee_pct_used",      "ALTER TABLE invoice_payments ADD COLUMN fx_fee_pct_used REAL"),
+        ("effective_rate_used",  "ALTER TABLE invoice_payments ADD COLUMN effective_rate_used REAL"),
+        ("hub_id",               "ALTER TABLE invoice_payments ADD COLUMN hub_id INTEGER NOT NULL DEFAULT 1"),
+        ("prior_chain_hash",     "ALTER TABLE invoice_payments ADD COLUMN prior_chain_hash TEXT"),
+        ("chain_hash",           "ALTER TABLE invoice_payments ADD COLUMN chain_hash TEXT"),
+        ("voided_at",            "ALTER TABLE invoice_payments ADD COLUMN voided_at TEXT"),
+    ):
+        if col not in ip_cols:
+            try: con.execute(sql)
+            except sqlite3.OperationalError: pass
+
+    # FX rates cache + manual-override history.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS fx_rates (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            from_currency   TEXT NOT NULL,
+            to_currency     TEXT NOT NULL DEFAULT 'JMD',
+            buy_rate        REAL NOT NULL,
+            source          TEXT NOT NULL CHECK (source IN ('manual','api')),
+            fetched_at      TEXT NOT NULL,
+            effective_date  TEXT NOT NULL,
+            entered_by      INTEGER,
+            notes           TEXT,
+            active          INTEGER NOT NULL DEFAULT 1
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_fx_rates_active ON fx_rates(from_currency, effective_date, active)")
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS documents (
@@ -7330,3 +7400,524 @@ def list_exception_photos(exception_id: int) -> list:
     ).fetchall()
     con.close()
     return _dec_rows("fs_exception_photos", rows)
+
+
+# ── PrimeCool Invoicing Module ─────────────────────────────────────────────
+# Spec doctrine:
+#   * GCT default 15% (configurable per-invoice)
+#   * FX processing fee default 2% (configurable per-invoice)
+#   * Inventory is deducted at visit parts-used flow, NEVER on invoice line creation
+#   * Base currency = JMD; foreign currency is display-only
+#   * Payments are append-only and chain-hashed
+
+def search_parts_catalog(q: str, limit: int = 20) -> list:
+    """Searchable inventory lookup for the Parts line type in the invoice
+    edit view. Reads SKU / name / description from the existing parts table.
+    Returns minimal, non-sensitive fields for typeahead (no markup/cost-percent
+    leakage beyond the unit_cost which is already exposed in the parts panel)."""
+    con = _con()
+    try:
+        q_clean = (q or "").strip()
+        if not q_clean:
+            rows = con.execute(
+                "SELECT id, sku, name, description, unit, unit_cost, quantity "
+                "FROM parts WHERE active = 1 "
+                "ORDER BY name ASC LIMIT ?",
+                (int(limit or 20),),
+            ).fetchall()
+        else:
+            like = f"%{q_clean}%"
+            rows = con.execute(
+                "SELECT id, sku, name, description, unit, unit_cost, quantity "
+                "FROM parts "
+                "WHERE active = 1 "
+                "  AND (sku LIKE ? OR name LIKE ? OR COALESCE(description,'') LIKE ?) "
+                "ORDER BY (sku = ?) DESC, name ASC LIMIT ?",
+                (like, like, like, q_clean, int(limit or 20)),
+            ).fetchall()
+    except sqlite3.OperationalError:
+        # FIXME: parts table missing — inventory module not installed
+        con.close()
+        return []
+    con.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        out.append({
+            "id":          d["id"],
+            "sku":         d["sku"],
+            "name":        d["name"],
+            "description": d.get("description") or "",
+            "unit":        d.get("unit") or "each",
+            "unit_price":  float(d.get("unit_cost") or 0),
+            "on_hand_qty": float(d.get("quantity") or 0),
+        })
+    return out
+
+
+# ── FX rates ───────────────────────────────────────────────────────────────
+def get_active_fx_rate(from_currency: str, effective_date: str = None) -> dict:
+    """Returns the most recent active fx_rates row for from_currency on or
+    before effective_date (default today UTC). None if no rate exists."""
+    if effective_date is None:
+        effective_date = datetime.now(timezone.utc).date().isoformat()
+    con = _con()
+    row = con.execute(
+        "SELECT * FROM fx_rates "
+        "WHERE from_currency = ? AND active = 1 AND effective_date <= ? "
+        "ORDER BY effective_date DESC, id DESC LIMIT 1",
+        (from_currency, effective_date),
+    ).fetchone()
+    con.close()
+    if not row:
+        return None
+    return _dec_row("fx_rates", row)
+
+
+def set_fx_rate_manual(from_currency: str, buy_rate: float,
+                       effective_date: str, entered_by: int,
+                       notes: str = None) -> int:
+    """Manual rate override by super_admin. Deactivates any prior active row
+    for the same (from_currency, effective_date) tuple, then inserts a new
+    active row with source='manual'. Returns inserted id."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    con.execute(
+        "UPDATE fx_rates SET active = 0 "
+        "WHERE from_currency = ? AND effective_date = ? AND active = 1",
+        (from_currency, effective_date),
+    )
+    payload = _enc_dict("fx_rates", {"notes": notes}) if notes else {"notes": None}
+    cur = con.execute(
+        "INSERT INTO fx_rates (from_currency, to_currency, buy_rate, source, "
+        "fetched_at, effective_date, entered_by, notes, active) "
+        "VALUES (?, 'JMD', ?, 'manual', ?, ?, ?, ?, 1)",
+        (from_currency, float(buy_rate), now, effective_date, entered_by,
+         payload.get("notes")),
+    )
+    con.commit()
+    rid = cur.lastrowid
+    con.close()
+    return rid
+
+
+def set_fx_rate_from_api(from_currency: str, buy_rate: float,
+                         fetched_at: str = None) -> int:
+    """Helper for a future scheduled fetcher. Only inserts source='api' rows.
+    No scheduler is registered in v1 — call this only from inside an
+    env-gated background job. Caller is responsible for env checks."""
+    now = fetched_at or datetime.now(timezone.utc).isoformat()
+    effective_date = now[:10]
+    con = _con()
+    con.execute(
+        "UPDATE fx_rates SET active = 0 "
+        "WHERE from_currency = ? AND effective_date = ? AND active = 1",
+        (from_currency, effective_date),
+    )
+    cur = con.execute(
+        "INSERT INTO fx_rates (from_currency, to_currency, buy_rate, source, "
+        "fetched_at, effective_date, entered_by, notes, active) "
+        "VALUES (?, 'JMD', ?, 'api', ?, ?, NULL, NULL, 1)",
+        (from_currency, float(buy_rate), now, effective_date),
+    )
+    con.commit()
+    rid = cur.lastrowid
+    con.close()
+    return rid
+
+
+def list_fx_rate_history(from_currency: str, limit: int = 30) -> list:
+    """Recent rate history for the currency, newest first."""
+    con = _con()
+    rows = con.execute(
+        "SELECT * FROM fx_rates WHERE from_currency = ? "
+        "ORDER BY effective_date DESC, id DESC LIMIT ?",
+        (from_currency, int(limit or 30)),
+    ).fetchall()
+    con.close()
+    return _dec_rows("fx_rates", rows)
+
+
+def compute_fx_display(jmd_total: float, foreign_currency: str,
+                       buy_rate: float, fee_pct: float) -> dict:
+    """Locked math from spec §3.3:
+        effective_rate = buy_rate × (1 + fee_pct/100)
+        foreign_total  = jmd_total / effective_rate
+        jmd_fee_earned = jmd_total × (fee_pct/100)
+    """
+    br = float(buy_rate or 0)
+    fp = float(fee_pct or 0)
+    eff = br * (1.0 + fp / 100.0) if br > 0 else 0.0
+    foreign_total = (float(jmd_total) / eff) if eff > 0 else 0.0
+    jmd_fee_earned = float(jmd_total) * (fp / 100.0)
+    return {
+        "effective_rate":  round(eff, 6),
+        "foreign_total":   round(foreign_total, 2),
+        "jmd_fee_earned":  round(jmd_fee_earned, 2),
+        "foreign_currency": foreign_currency,
+        "buy_rate":        round(br, 6),
+        "fee_pct":         round(fp, 4),
+    }
+
+
+# ── Metrics + listing + CSV export ─────────────────────────────────────────
+def get_invoice_metrics(today: str = None) -> dict:
+    """Returns top-of-tab tile data: outstanding, overdue, invoiced_mtd,
+    collected_mtd. All amounts in JMD (the base currency)."""
+    if today is None:
+        today = datetime.now(timezone.utc).date().isoformat()
+    month_prefix = today[:7]  # YYYY-MM
+    con = _con()
+    row = con.execute(
+        "SELECT COALESCE(SUM(total - amount_paid),0) AS outstanding "
+        "FROM invoices WHERE status='sent' AND (total - amount_paid) > 0.01"
+    ).fetchone()
+    outstanding = float(row["outstanding"] or 0)
+
+    row = con.execute(
+        "SELECT COALESCE(SUM(total - amount_paid),0) AS overdue "
+        "FROM invoices WHERE status='sent' AND due_date < ? "
+        "AND (total - amount_paid) > 0.01",
+        (today,),
+    ).fetchone()
+    overdue = float(row["overdue"] or 0)
+
+    row = con.execute(
+        "SELECT COALESCE(SUM(total),0) AS inv_mtd "
+        "FROM invoices WHERE substr(issue_date,1,7) = ? "
+        "AND status NOT IN ('draft','cancelled','canceled')",
+        (month_prefix,),
+    ).fetchone()
+    invoiced_mtd = float(row["inv_mtd"] or 0)
+
+    row = con.execute(
+        "SELECT COALESCE(SUM(amount),0) AS collected_mtd "
+        "FROM invoice_payments WHERE substr(COALESCE(created_at,payment_date),1,7) = ? "
+        "AND COALESCE(voided_at,'') = ''",
+        (month_prefix,),
+    ).fetchone()
+    collected_mtd = float(row["collected_mtd"] or 0)
+    con.close()
+    return {
+        "outstanding":          round(outstanding, 2),
+        "overdue":              round(overdue, 2),
+        "invoiced_this_month":  round(invoiced_mtd, 2),
+        "collected_this_month": round(collected_mtd, 2),
+        "as_of":                today,
+    }
+
+
+def list_invoices(filters: dict, page: int = 1, limit: int = 20) -> dict:
+    """Paginated list with optional filters: status, from, to, customer_id.
+    Returns {rows, total, page, limit}."""
+    page  = max(1, int(page or 1))
+    limit = min(100, max(1, int(limit or 20)))
+    where, args = [], []
+    if filters.get("status"):
+        st = filters["status"]
+        if st == "overdue":
+            today = datetime.now(timezone.utc).date().isoformat()
+            where.append("i.status='sent' AND i.due_date < ? AND (i.total - i.amount_paid) > 0.01")
+            args.append(today)
+        else:
+            where.append("i.status = ?"); args.append(st)
+    if filters.get("from"):
+        where.append("i.issue_date >= ?"); args.append(filters["from"])
+    if filters.get("to"):
+        where.append("i.issue_date <= ?"); args.append(filters["to"])
+    if filters.get("customer_id") is not None:
+        where.append("i.customer_id = ?"); args.append(int(filters["customer_id"]))
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    con = _con()
+    total = con.execute(
+        f"SELECT COUNT(*) AS n FROM invoices i {where_sql}", args
+    ).fetchone()["n"]
+    rows = con.execute(
+        f"SELECT i.*, c.name AS customer_name, c.company AS customer_company, "
+        f"       c.customer_code "
+        f"FROM invoices i JOIN customers c ON i.customer_id = c.id "
+        f"{where_sql} ORDER BY i.issue_date DESC, i.id DESC "
+        f"LIMIT ? OFFSET ?",
+        args + [limit, (page - 1) * limit],
+    ).fetchall()
+    con.close()
+    return {
+        "rows":  [dict(r) for r in rows],
+        "total": int(total),
+        "page":  page,
+        "limit": limit,
+    }
+
+
+def export_invoices_csv(filters: dict):
+    """Returns an iterable of dicts ready for csv.DictWriter. Columns match
+    the invoices-tab table the user sees."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    page  = list_invoices(filters, page=1, limit=10000)
+    out = []
+    for r in page["rows"]:
+        try:
+            from datetime import date as _d
+            due = _d.fromisoformat(r["due_date"]) if r.get("due_date") else None
+            tod = _d.fromisoformat(today)
+            days_overdue = max(0, (tod - due).days) if due else 0
+        except Exception:
+            days_overdue = 0
+        total = float(r.get("total") or 0)
+        paid  = float(r.get("amount_paid") or 0)
+        out.append({
+            "invoice_number":   r.get("invoice_number"),
+            "customer_name":    r.get("customer_name") or "",
+            "company":          r.get("customer_company") or "",
+            "issue_date":       r.get("issue_date") or "",
+            "due_date":         r.get("due_date") or "",
+            "total_jmd":        round(total, 2),
+            "amount_paid_jmd":  round(paid, 2),
+            "outstanding_jmd":  round(total - paid, 2),
+            "status":           r.get("status") or "",
+            "days_overdue":     days_overdue,
+            "display_currency": r.get("display_currency") or "JMD",
+        })
+    return out
+
+
+def get_invoice_full(invoice_id: int) -> dict:
+    """Header + lines + payments + customer + visit ref + active fx_rate.
+    Decrypts canceled_reason; payments and fx fields decrypted via helpers."""
+    base = get_invoice_by_id(invoice_id, with_lines=True)
+    if not base:
+        return None
+    base = _dec_row("invoices", base)
+    # decrypt payments notes
+    if base.get("payments"):
+        base["payments"] = [_dec_row("invoice_payments", p) for p in base["payments"]]
+    # attach active fx for display_currency if foreign
+    dc = (base.get("display_currency") or "JMD").upper()
+    if dc != "JMD":
+        rate = get_active_fx_rate(dc, base.get("issue_date"))
+        base["active_fx_rate"] = rate
+    return base
+
+
+# ── Payments (chain-hashed, append-only) ───────────────────────────────────
+def _chain_hash_payment(prior_hash: str, row: dict) -> str:
+    import hashlib, json as _j
+    keys = ("invoice_id", "amount", "payment_date", "method",
+            "foreign_amount", "foreign_currency", "fx_rate_used",
+            "recorded_by", "created_at")
+    payload = {k: row.get(k) for k in keys}
+    body = (prior_hash or "") + _j.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def record_invoice_payment_v2(invoice_id: int, data: dict,
+                              recorded_by: int = None,
+                              recorded_by_label: str = None,
+                              recorded_by_prid: str = None) -> dict:
+    """Append-only invoice-side payment record. Stores JMD amount in `amount`
+    (legacy column); foreign breakdown in fx fields. Idempotency: if an
+    identical (invoice_id, amount, payment_date, method, recorded_by) row
+    exists within 30s, return the existing id and a duplicate flag."""
+    now = datetime.now(timezone.utc).isoformat()
+    amount_jmd = float(data.get("amount_jmd") if "amount_jmd" in data else data.get("amount"))
+    method     = (data.get("payment_method") or data.get("method") or "other").lower()
+    payment_date = data["payment_date"]
+    foreign_amount   = data.get("foreign_amount")
+    foreign_currency = data.get("foreign_currency")
+    fx_rate_used     = data.get("fx_rate_used")
+    fx_fee_pct_used  = data.get("fx_fee_pct_used")
+    effective_rate   = data.get("effective_rate_used")
+    notes_plain      = data.get("notes") or ""
+
+    con = _con()
+    # Idempotency window — last 30 seconds
+    dup = con.execute(
+        "SELECT id FROM invoice_payments WHERE invoice_id = ? AND amount = ? "
+        "AND payment_date = ? AND COALESCE(method,'') = ? AND COALESCE(recorded_by,0) = ? "
+        "AND created_at >= datetime('now','-30 seconds') "
+        "ORDER BY id DESC LIMIT 1",
+        (invoice_id, amount_jmd, payment_date, method, recorded_by or 0),
+    ).fetchone()
+    if dup:
+        con.close()
+        return {"id": dup["id"], "duplicate": True}
+
+    prior = con.execute(
+        "SELECT chain_hash FROM invoice_payments "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    prior_hash = (prior["chain_hash"] if prior else "") or ""
+
+    enc = _enc_dict("invoice_payments", {"notes": notes_plain})
+    row_for_hash = {
+        "invoice_id": invoice_id, "amount": amount_jmd,
+        "payment_date": payment_date, "method": method,
+        "foreign_amount": foreign_amount, "foreign_currency": foreign_currency,
+        "fx_rate_used": fx_rate_used, "recorded_by": recorded_by,
+        "created_at": now,
+    }
+    chash = _chain_hash_payment(prior_hash, row_for_hash)
+
+    cur = con.execute(
+        "INSERT INTO invoice_payments "
+        "(invoice_id, payment_date, amount, method, reference, notes, "
+        " recorded_by, recorded_by_label, recorded_by_prid, created_at, "
+        " foreign_amount, foreign_currency, fx_rate_used, fx_fee_pct_used, "
+        " effective_rate_used, hub_id, prior_chain_hash, chain_hash) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+        (invoice_id, payment_date, amount_jmd, method,
+         data.get("reference", ""), enc.get("notes"),
+         recorded_by, recorded_by_label, recorded_by_prid, now,
+         foreign_amount, foreign_currency, fx_rate_used, fx_fee_pct_used,
+         effective_rate, prior_hash, chash),
+    )
+    payment_id = cur.lastrowid
+    _recompute_invoice_totals(con, invoice_id)
+    # Auto-flip to paid if covered
+    inv = con.execute(
+        "SELECT total, amount_paid FROM invoices WHERE id = ?", (invoice_id,)
+    ).fetchone()
+    if inv and float(inv["amount_paid"]) >= float(inv["total"]) - 0.005 \
+            and float(inv["total"]) > 0:
+        con.execute(
+            "UPDATE invoices SET status='paid', "
+            "paid_at = COALESCE(paid_at, ?), updated_at=? WHERE id=?",
+            (now, now, invoice_id),
+        )
+    con.commit()
+    con.close()
+    return {"id": payment_id, "duplicate": False, "chain_hash": chash}
+
+
+# ── Status transition helper ───────────────────────────────────────────────
+_LEGAL_TRANSITIONS = {
+    "draft":     {"sent", "cancelled", "canceled"},
+    "sent":      {"paid", "cancelled", "canceled"},
+    "paid":      {"cancelled", "canceled"},
+    "cancelled": set(),
+    "canceled":  set(),
+}
+
+
+def transition_invoice_status(invoice_id: int, new_status: str,
+                              actor_id: int = None,
+                              reason: str = None) -> bool:
+    """Enforces legal state transitions. Returns True on success.
+    Raises ValueError for invalid transitions. Encrypts canceled_reason."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    row = con.execute(
+        "SELECT status FROM invoices WHERE id = ?", (invoice_id,)
+    ).fetchone()
+    if not row:
+        con.close()
+        raise ValueError("Invoice not found")
+    cur_status = row["status"]
+    allowed = _LEGAL_TRANSITIONS.get(cur_status, set())
+    if new_status not in allowed and new_status != cur_status:
+        con.close()
+        raise ValueError(f"Illegal transition: {cur_status} → {new_status}")
+    if new_status in ("cancelled", "canceled"):
+        enc = _enc_dict("invoices", {"canceled_reason": (reason or "")})
+        con.execute(
+            "UPDATE invoices SET status = ?, canceled_at = ?, canceled_by = ?, "
+            "canceled_reason = ?, updated_at = ? WHERE id = ?",
+            (new_status, now, actor_id, enc.get("canceled_reason"), now,
+             invoice_id),
+        )
+    elif new_status == "sent":
+        con.execute(
+            "UPDATE invoices SET status='sent', sent_at = COALESCE(sent_at, ?), "
+            "updated_at = ? WHERE id = ?",
+            (now, now, invoice_id),
+        )
+    elif new_status == "paid":
+        con.execute(
+            "UPDATE invoices SET status='paid', paid_at = COALESCE(paid_at, ?), "
+            "updated_at = ? WHERE id = ?",
+            (now, now, invoice_id),
+        )
+    else:
+        con.execute(
+            "UPDATE invoices SET status = ?, updated_at = ? WHERE id = ?",
+            (new_status, now, invoice_id),
+        )
+    con.commit()
+    con.close()
+    return True
+
+
+# ── Header + lines atomic write supporting new column set ──────────────────
+def create_invoice_with_lines(data: dict, created_by: int = None) -> int:
+    """Wrapper around create_invoice that also persists the new columns:
+    display_currency, fx_fee_pct, fx_rate_used + source + fetched_at,
+    plus extended line metadata (tech_id, hours, hourly_rate, part_sku)."""
+    invoice_id = create_invoice(data, created_by=created_by)
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    con.execute(
+        "UPDATE invoices SET display_currency = ?, fx_fee_pct = ?, "
+        "fx_rate_used = ?, fx_rate_source = ?, fx_rate_fetched_at = ?, "
+        "updated_at = ? WHERE id = ?",
+        (
+            (data.get("display_currency") or "JMD").upper(),
+            float(data.get("fx_fee_pct") if data.get("fx_fee_pct") is not None else 2.0),
+            data.get("fx_rate_used"),
+            data.get("fx_rate_source"),
+            data.get("fx_rate_fetched_at"),
+            now, invoice_id,
+        ),
+    )
+    # Backfill extended line metadata for any rows we just inserted.
+    lines = data.get("line_items") or []
+    rows = con.execute(
+        "SELECT id, sort_order FROM invoice_line_items "
+        "WHERE invoice_id = ? ORDER BY sort_order, id",
+        (invoice_id,),
+    ).fetchall()
+    for r, li in zip(rows, lines):
+        con.execute(
+            "UPDATE invoice_line_items SET part_sku = ?, tech_id = ?, "
+            "hours = ?, hourly_rate = ?, created_at = COALESCE(created_at, ?), "
+            "updated_at = ? WHERE id = ?",
+            (li.get("part_sku"), li.get("tech_id"), li.get("hours"),
+             li.get("hourly_rate"), now, now, r["id"]),
+        )
+    con.commit()
+    con.close()
+    return invoice_id
+
+
+def update_invoice_with_lines(invoice_id: int, data: dict):
+    """Atomic header + replace-lines update including the new columns."""
+    update_invoice(invoice_id, data)
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    con.execute(
+        "UPDATE invoices SET display_currency = ?, fx_fee_pct = ?, "
+        "fx_rate_used = ?, fx_rate_source = ?, fx_rate_fetched_at = ?, "
+        "updated_at = ? WHERE id = ?",
+        (
+            (data.get("display_currency") or "JMD").upper(),
+            float(data.get("fx_fee_pct") if data.get("fx_fee_pct") is not None else 2.0),
+            data.get("fx_rate_used"),
+            data.get("fx_rate_source"),
+            data.get("fx_rate_fetched_at"),
+            now, invoice_id,
+        ),
+    )
+    lines = data.get("line_items") or []
+    rows = con.execute(
+        "SELECT id, sort_order FROM invoice_line_items "
+        "WHERE invoice_id = ? ORDER BY sort_order, id",
+        (invoice_id,),
+    ).fetchall()
+    for r, li in zip(rows, lines):
+        con.execute(
+            "UPDATE invoice_line_items SET part_sku = ?, tech_id = ?, "
+            "hours = ?, hourly_rate = ?, updated_at = ? WHERE id = ?",
+            (li.get("part_sku"), li.get("tech_id"), li.get("hours"),
+             li.get("hourly_rate"), now, r["id"]),
+        )
+    con.commit()
+    con.close()
