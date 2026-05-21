@@ -466,12 +466,13 @@ def _preflight_check_datastore_encryption():
 
 
 def _preflight_check_field_encryption_key():
-    """The app-layer field encryption key (used in Phase 2). Even before Phase 2
-    columns exist, we surface this check so misconfiguration is caught at boot."""
+    """The app-layer field encryption key (Phase 2). HARD requirement now —
+    Phase 2 columns hold ciphertext that cannot be decrypted without it."""
     val = os.environ.get("FIELD_ENCRYPTION_KEY", "")
     if not val:
-        # Soft-warning until Phase 2 lands — once Phase 2 is in, change to hard fail.
-        return True, "FIELD_ENCRYPTION_KEY not yet required (Phase 2 not deployed)"
+        return False, ("FIELD_ENCRYPTION_KEY is not set. Phase 2 encrypted columns "
+                       "cannot be read without it. Generate with: "
+                       "python -c \"import secrets; print(secrets.token_urlsafe(48))\"")
     if len(val) < 32:
         return False, f"FIELD_ENCRYPTION_KEY length {len(val)} < 32"
     return True, f"FIELD_ENCRYPTION_KEY present (len={len(val)})"

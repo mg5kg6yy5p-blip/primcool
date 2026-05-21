@@ -122,6 +122,72 @@ def generate_prid(name: str, hire_date: str = None) -> str:
     return chosen
 
 
+# ── Field-level encryption (Phase 2) ─────────────────────────────────────────
+# Columns that hold PII or secrets get encrypted at the application layer so a
+# logical DB breach (stolen file, leaked backup, SQL injection) yields
+# ciphertext. Names + financial totals are intentionally NOT encrypted (see
+# Phase 2 inventory in the report) — they're needed for sort/SUM operations
+# and disk-FDE is the at-rest mitigation for those.
+from crypto import encrypt as _enc, decrypt as _dec, \
+                   det_encrypt as _det_enc, det_decrypt as _det_dec, \
+                   email_hash as _email_hash
+
+# Map: table → list of column names that get randomized AES-GCM encryption.
+_PII_RAND = {
+    "customers":            ["phone", "address", "notes", "mfa_secret",
+                              "contact_person_phone"],
+    "technicians":          ["phone"],
+    "admin_users":          ["phone", "mfa_secret"],
+    "equipment":            ["serial_number", "location", "notes"],
+    "maintenance_visits":   ["work_done", "notes", "parts_replaced",
+                              "hazards", "access_codes",
+                              "contact_person_phone"],
+    "visit_signatures":     ["signature_b64"],
+}
+# Columns that need equality lookup → deterministic encryption + blind index.
+_PII_DET = {
+    "customers":            ["email"],
+    "technicians":          ["email"],
+    "admin_users":          ["email"],
+}
+
+
+def _enc_dict(table: str, data: dict) -> dict:
+    """Returns a copy of data with sensitive fields encrypted. Adds matching
+    *_email_hash for any deterministic email column. Caller's dict is left
+    untouched so the original plaintext stays available if needed for audit."""
+    out = dict(data)
+    for col in _PII_RAND.get(table, []):
+        if col in out and out[col] is not None:
+            out[col] = _enc(out[col])
+    for col in _PII_DET.get(table, []):
+        if col in out and out[col] is not None:
+            plain = out[col]
+            out[col] = _det_enc(plain)
+            out[col + "_hash"] = _email_hash(plain)
+    return out
+
+
+def _dec_row(table: str, row) -> dict:
+    """Decrypts encrypted columns in a row dict before returning to callers."""
+    if row is None:
+        return None
+    d = dict(row)
+    for col in _PII_RAND.get(table, []):
+        if col in d and d[col] is not None:
+            try: d[col] = _dec(d[col])
+            except Exception: pass   # pre-migration plaintext or already plain
+    for col in _PII_DET.get(table, []):
+        if col in d and d[col] is not None:
+            try: d[col] = _det_dec(d[col])
+            except Exception: pass
+    return d
+
+
+def _dec_rows(table: str, rows):
+    return [_dec_row(table, r) for r in rows]
+
+
 def _con():
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
@@ -178,6 +244,8 @@ def init_db():
         ("active",         "ALTER TABLE customers ADD COLUMN active INTEGER NOT NULL DEFAULT 1"),
         ("terminated_at",  "ALTER TABLE customers ADD COLUMN terminated_at TEXT"),
         ("last_login_at",  "ALTER TABLE customers ADD COLUMN last_login_at TEXT"),
+        # Phase 2 — blind index for equality lookup on encrypted email.
+        ("email_hash",     "ALTER TABLE customers ADD COLUMN email_hash TEXT"),
     ):
         if col not in cust_cols:
             try: con.execute(sql)
@@ -249,6 +317,7 @@ def init_db():
         # last_login_at drives dormant-account detection.
         ("terminated_at", "ALTER TABLE technicians ADD COLUMN terminated_at TEXT"),
         ("last_login_at", "ALTER TABLE technicians ADD COLUMN last_login_at TEXT"),
+        ("email_hash",    "ALTER TABLE technicians ADD COLUMN email_hash TEXT"),
     ):
         if name not in tech_cols:
             try: con.execute(sql)
@@ -283,6 +352,7 @@ def init_db():
         ("supervisor_id", "ALTER TABLE admin_users ADD COLUMN supervisor_id INTEGER REFERENCES admin_users(id)"),
         ("terminated_at", "ALTER TABLE admin_users ADD COLUMN terminated_at TEXT"),
         ("last_login_at", "ALTER TABLE admin_users ADD COLUMN last_login_at TEXT"),
+        ("email_hash",    "ALTER TABLE admin_users ADD COLUMN email_hash TEXT"),
     ):
         if col not in admin_cols:
             try: con.execute(sql)
@@ -763,7 +833,90 @@ def init_db():
     con.commit()
     con.close()
     _backfill_prids()
+    _backfill_field_encryption()
     _backfill_audit_chain()
+
+
+def _backfill_field_encryption():
+    """Idempotent migration. Walks each PII-bearing table and encrypts any
+    value that isn't already in our ciphertext envelope. Populates the
+    email_hash blind-index columns. Safe to run on every boot — rows that
+    are already ciphertext (start with v1:r:/v1:d:) are skipped. Skips
+    silently if FIELD_ENCRYPTION_KEY isn't configured yet so Phase 1's
+    soft check still allows boot before the operator sets the key."""
+    if not os.environ.get("FIELD_ENCRYPTION_KEY"):
+        return
+    from crypto import is_ciphertext as _is_ct
+    con = _con()
+    # customers.email + phone + address + notes + email_hash + mfa_secret + contact_person_phone
+    for row in con.execute("SELECT id, email, phone, address, notes, mfa_secret FROM customers").fetchall():
+        d = dict(row); updates = []; vals = []
+        if d.get("email") is not None and not _is_ct(d["email"]):
+            updates.append("email = ?, email_hash = ?")
+            vals.extend([_det_enc(d["email"]), _email_hash(d["email"])])
+        for col in ("phone", "address", "notes", "mfa_secret"):
+            v = d.get(col)
+            if v is not None and v != "" and not _is_ct(v):
+                updates.append(f"{col} = ?")
+                vals.append(_enc(v))
+        if updates:
+            vals.append(d["id"])
+            con.execute(f"UPDATE customers SET {', '.join(updates)} WHERE id = ?", vals)
+    # technicians
+    for row in con.execute("SELECT id, email, phone FROM technicians").fetchall():
+        d = dict(row); updates = []; vals = []
+        if d.get("email") is not None and not _is_ct(d["email"]):
+            updates.append("email = ?, email_hash = ?")
+            vals.extend([_det_enc(d["email"]), _email_hash(d["email"])])
+        if d.get("phone") is not None and d["phone"] != "" and not _is_ct(d["phone"]):
+            updates.append("phone = ?"); vals.append(_enc(d["phone"]))
+        if updates:
+            vals.append(d["id"])
+            con.execute(f"UPDATE technicians SET {', '.join(updates)} WHERE id = ?", vals)
+    # admin_users
+    for row in con.execute("SELECT id, email, phone, mfa_secret FROM admin_users").fetchall():
+        d = dict(row); updates = []; vals = []
+        if d.get("email") is not None and not _is_ct(d["email"]):
+            updates.append("email = ?, email_hash = ?")
+            vals.extend([_det_enc(d["email"]), _email_hash(d["email"])])
+        for col in ("phone", "mfa_secret"):
+            v = d.get(col)
+            if v is not None and v != "" and not _is_ct(v):
+                updates.append(f"{col} = ?"); vals.append(_enc(v))
+        if updates:
+            vals.append(d["id"])
+            con.execute(f"UPDATE admin_users SET {', '.join(updates)} WHERE id = ?", vals)
+    # equipment
+    for row in con.execute("SELECT id, serial_number, location, notes FROM equipment").fetchall():
+        d = dict(row); updates = []; vals = []
+        for col in ("serial_number", "location", "notes"):
+            v = d.get(col)
+            if v is not None and v != "" and not _is_ct(v):
+                updates.append(f"{col} = ?"); vals.append(_enc(v))
+        if updates:
+            vals.append(d["id"])
+            con.execute(f"UPDATE equipment SET {', '.join(updates)} WHERE id = ?", vals)
+    # maintenance_visits
+    for row in con.execute(
+        "SELECT id, work_done, parts_replaced, notes, contact_person_phone, hazards, access_codes "
+        "FROM maintenance_visits").fetchall():
+        d = dict(row); updates = []; vals = []
+        for col in ("work_done", "parts_replaced", "notes",
+                    "contact_person_phone", "hazards", "access_codes"):
+            v = d.get(col)
+            if v is not None and v != "" and not _is_ct(v):
+                updates.append(f"{col} = ?"); vals.append(_enc(v))
+        if updates:
+            vals.append(d["id"])
+            con.execute(f"UPDATE maintenance_visits SET {', '.join(updates)} WHERE id = ?", vals)
+    # visit_signatures
+    for row in con.execute("SELECT id, signature_b64 FROM visit_signatures").fetchall():
+        d = dict(row)
+        if d.get("signature_b64") and not _is_ct(d["signature_b64"]):
+            con.execute("UPDATE visit_signatures SET signature_b64 = ? WHERE id = ?",
+                        (_enc(d["signature_b64"]), d["id"]))
+    con.commit()
+    con.close()
 
 
 def _backfill_prids():
@@ -812,24 +965,25 @@ def get_customer_by_code(code: str):
         "SELECT * FROM customers WHERE customer_code = ?", (code.strip().upper(),)
     ).fetchone()
     con.close()
-    return dict(row) if row else None
+    return _dec_row("customers", row)
 
 
 def get_customer_by_id(customer_id: int):
     con = _con()
     row = con.execute("SELECT * FROM customers WHERE id = ?", (customer_id,)).fetchone()
     con.close()
-    return dict(row) if row else None
+    return _dec_row("customers", row)
 
 
 def get_all_customers():
     con = _con()
     rows = con.execute(
         "SELECT id, customer_code, name, company, email, phone, address, notes, "
+        "customer_type, active, "
         "(pin_hash IS NOT NULL) AS has_pin, created_at FROM customers ORDER BY name"
     ).fetchall()
     con.close()
-    return [dict(r) for r in rows]
+    return _dec_rows("customers", rows)
 
 
 def create_customer(data: dict) -> int:
@@ -838,20 +992,28 @@ def create_customer(data: dict) -> int:
     ctype = data.get("customer_type", "residential")
     if ctype not in ("residential", "commercial"):
         ctype = "residential"
+    # Encrypt PII columns BEFORE insertion.
+    enc = _enc_dict("customers", {
+        "email":   data.get("email", ""),
+        "phone":   data.get("phone", ""),
+        "address": data.get("address", ""),
+        "notes":   data.get("notes", ""),
+    })
     con = _con()
     cur = con.execute(
         """
-        INSERT INTO customers (customer_code, name, company, email, phone, address, notes, pin_hash, customer_type, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO customers (customer_code, name, company, email, email_hash, phone, address, notes, pin_hash, customer_type, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             data["customer_code"].strip().upper(),
             data["name"],
             data.get("company", ""),
-            data.get("email", ""),
-            data.get("phone", ""),
-            data.get("address", ""),
-            data.get("notes", ""),
+            enc.get("email", ""),
+            enc.get("email_hash"),
+            enc.get("phone", ""),
+            enc.get("address", ""),
+            enc.get("notes", ""),
             pin_hash,
             ctype,
             datetime.now(timezone.utc).isoformat(),
@@ -882,13 +1044,16 @@ def set_customer_pin(customer_id: int, pin: str):
 
 
 def get_customer_by_code_and_email(code: str, email: str):
+    """Equality lookup on encrypted email uses the email_hash blind index —
+    fast, doesn't decrypt every row, doesn't expose patterns."""
+    h = _email_hash(email)
     con = _con()
     row = con.execute(
-        "SELECT * FROM customers WHERE customer_code = ? AND LOWER(email) = LOWER(?)",
-        (code.strip().upper(), email.strip()),
+        "SELECT * FROM customers WHERE customer_code = ? AND email_hash = ?",
+        (code.strip().upper(), h),
     ).fetchone()
     con.close()
-    return dict(row) if row else None
+    return _dec_row("customers", row)
 
 
 def create_customer_pin_reset(customer_id: int) -> str:
@@ -932,16 +1097,17 @@ def update_customer(customer_id: int, data: dict):
     con.execute(
         """
         UPDATE customers SET
-            name = ?, company = ?, email = ?, phone = ?, address = ?, notes = ?
+            name = ?, company = ?, email = ?, email_hash = ?, phone = ?, address = ?, notes = ?
         WHERE id = ?
         """,
         (
             data["name"].strip(),
             data.get("company", "").strip(),
-            data.get("email", "").strip(),
-            data.get("phone", "").strip(),
-            data.get("address", "").strip(),
-            data.get("notes", "").strip(),
+            _det_enc(data.get("email", "").strip()),
+            _email_hash(data.get("email", "").strip()),
+            _enc(data.get("phone", "").strip()),
+            _enc(data.get("address", "").strip()),
+            _enc(data.get("notes", "").strip()),
             customer_id,
         ),
     )
@@ -964,7 +1130,7 @@ def get_equipment_by_id(equipment_id: int):
     con = _con()
     row = con.execute("SELECT * FROM equipment WHERE id = ?", (equipment_id,)).fetchone()
     con.close()
-    return dict(row) if row else None
+    return _dec_row("equipment", row)
 
 
 def get_customer_equipment(customer_id: int):
@@ -973,7 +1139,7 @@ def get_customer_equipment(customer_id: int):
         "SELECT * FROM equipment WHERE customer_id = ? ORDER BY name", (customer_id,)
     ).fetchall()
     con.close()
-    return [dict(r) for r in rows]
+    return _dec_rows("equipment", rows)
 
 
 def create_equipment(data: dict) -> int:
@@ -988,9 +1154,9 @@ def create_equipment(data: dict) -> int:
             data["name"],
             data.get("type", ""),
             data.get("model", ""),
-            data.get("serial_number", ""),
-            data.get("location", ""),
-            data.get("notes", ""),
+            _enc(data.get("serial_number", "")),
+            _enc(data.get("location", "")),
+            _enc(data.get("notes", "")),
             datetime.now(timezone.utc).isoformat(),
         ),
     )
@@ -1023,7 +1189,7 @@ def get_customer_visits(customer_id: int):
         (customer_id,),
     ).fetchall()
     con.close()
-    return [dict(r) for r in rows]
+    return _dec_rows("maintenance_visits", rows)
 
 
 def get_all_visits():
@@ -1038,7 +1204,7 @@ def get_all_visits():
         """,
     ).fetchall()
     con.close()
-    return [dict(r) for r in rows]
+    return _dec_rows("maintenance_visits", rows)
 
 
 def create_visit(data: dict) -> int:
@@ -1062,9 +1228,9 @@ def create_visit(data: dict) -> int:
             data.get("scheduled_time") or None,
             data.get("completed_date") or None,
             data.get("technician", ""),
-            data.get("work_done", ""),
-            data.get("parts_replaced", ""),
-            data.get("notes", ""),
+            _enc(data.get("work_done", "")),
+            _enc(data.get("parts_replaced", "")),
+            _enc(data.get("notes", "")),
             data.get("assigned_tech_id") or None,
             data.get("start_time") or None,
             data.get("end_time") or None,
@@ -1072,9 +1238,9 @@ def create_visit(data: dict) -> int:
             data.get("scope_of_work", ""),
             data.get("estimated_duration_min") or None,
             data.get("contact_person_name", ""),
-            data.get("contact_person_phone", ""),
-            data.get("hazards", ""),
-            data.get("access_codes", ""),
+            _enc(data.get("contact_person_phone", "")),
+            _enc(data.get("hazards", "")),
+            _enc(data.get("access_codes", "")),
         ),
     )
     visit_id = cur.lastrowid
@@ -1115,16 +1281,16 @@ def update_visit(visit_id: int, data: dict):
             data.get("scheduled_time") or None,
             data.get("completed_date") or None,
             data.get("technician", ""),
-            data.get("work_done", ""),
-            data.get("parts_replaced", ""),
-            data.get("notes", ""),
+            _enc(data.get("work_done", "")),
+            _enc(data.get("parts_replaced", "")),
+            _enc(data.get("notes", "")),
             data.get("assigned_tech_id") or None,
             data.get("scope_of_work", ""),
             data.get("estimated_duration_min") or None,
             data.get("contact_person_name", ""),
-            data.get("contact_person_phone", ""),
-            data.get("hazards", ""),
-            data.get("access_codes", ""),
+            _enc(data.get("contact_person_phone", "")),
+            _enc(data.get("hazards", "")),
+            _enc(data.get("access_codes", "")),
             visit_id,
         ),
     )
@@ -1152,10 +1318,23 @@ def get_visit_by_id(visit_id: int, with_parts: bool = False):
     con.close()
     if not row:
         return None
-    out = dict(row)
+    # Decrypt joined customer + equipment + visit fields. The JOIN aliases
+    # (customer_phone, customer_address, equipment_location) hold encrypted
+    # ciphertext from the source tables — wrap them with the right table
+    # decrypt mapping.
+    d = dict(row)
+    for k in ("work_done", "parts_replaced", "notes",
+              "contact_person_phone", "hazards", "access_codes"):
+        if d.get(k):
+            try: d[k] = _dec(d[k])
+            except Exception: pass
+    for k in ("customer_phone", "customer_address", "equipment_location"):
+        if d.get(k):
+            try: d[k] = _dec(d[k])
+            except Exception: pass
     if with_parts:
-        out["parts_used"] = get_visit_parts(visit_id)
-    return out
+        d["parts_used"] = get_visit_parts(visit_id)
+    return d
 
 
 def update_visit_time(visit_id: int, field: str, value: str):
@@ -1187,7 +1366,8 @@ def tech_complete_visit(visit_id: int, work_done: str, parts: str, notes: str,
             submitted_at   = COALESCE(submitted_at, ?)
         WHERE id = ?
         """,
-        (work_done, parts, notes, end_time, completed_date, next_pm_due, end_time, visit_id),
+        (_enc(work_done), _enc(parts), _enc(notes),
+         end_time, completed_date, next_pm_due, end_time, visit_id),
     )
     con.commit()
     con.close()
@@ -1219,7 +1399,17 @@ def get_tech_jobs(tech_id: int):
         (tech_id,),
     ).fetchall()
     con.close()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        for k in ("work_done", "parts_replaced", "notes",
+                  "contact_person_phone", "hazards", "access_codes",
+                  "customer_address"):
+            if d.get(k):
+                try: d[k] = _dec(d[k])
+                except Exception: pass
+        out.append(d)
+    return out
 
 
 def delete_visit(visit_id: int):
@@ -1340,14 +1530,14 @@ def get_tech_by_code(code: str):
         (code.strip().upper(),),
     ).fetchone()
     con.close()
-    return dict(row) if row else None
+    return _dec_row("technicians", row)
 
 
 def get_tech_by_id(tech_id: int):
     con = _con()
     row = con.execute("SELECT * FROM technicians WHERE id = ?", (tech_id,)).fetchone()
     con.close()
-    return dict(row) if row else None
+    return _dec_row("technicians", row)
 
 
 def verify_tech(code: str, pin: str):
@@ -1372,7 +1562,7 @@ def get_all_techs():
         """
     ).fetchall()
     con.close()
-    return [dict(r) for r in rows]
+    return _dec_rows("technicians", rows)
 
 
 def create_tech(data: dict) -> tuple:
@@ -1385,15 +1575,16 @@ def create_tech(data: dict) -> tuple:
     cur = con.execute(
         """
         INSERT INTO technicians
-            (tech_code, pin_hash, name, phone, email, role, prid, hire_date, hourly_rate, active, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+            (tech_code, pin_hash, name, phone, email, email_hash, role, prid, hire_date, hourly_rate, active, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
         """,
         (
             tech_code,
             _hash_pin(data["pin"]),
             data["name"],
-            data.get("phone", ""),
-            data.get("email", ""),
+            _enc(data.get("phone", "")),
+            _det_enc(data.get("email", "")),
+            _email_hash(data.get("email", "")),
             data.get("role", "tech"),
             prid,
             hire_date,
@@ -1417,11 +1608,12 @@ def set_tech_pin(tech_id: int, pin: str):
 def update_tech(tech_id: int, data: dict):
     con = _con()
     con.execute(
-        "UPDATE technicians SET name = ?, phone = ?, email = ?, role = ?, hourly_rate = ?, active = ? WHERE id = ?",
+        "UPDATE technicians SET name = ?, phone = ?, email = ?, email_hash = ?, role = ?, hourly_rate = ?, active = ? WHERE id = ?",
         (
             data.get("name", ""),
-            data.get("phone", ""),
-            data.get("email", ""),
+            _enc(data.get("phone", "")),
+            _det_enc(data.get("email", "")),
+            _email_hash(data.get("email", "")),
             data.get("role", "tech"),
             float(data.get("hourly_rate") or 0),
             1 if data.get("active", True) else 0,
@@ -1435,11 +1627,11 @@ def update_tech(tech_id: int, data: dict):
 def get_tech_by_code_and_email(code: str, email: str):
     con = _con()
     row = con.execute(
-        "SELECT * FROM technicians WHERE tech_code = ? AND LOWER(email) = LOWER(?) AND active = 1",
-        (code.strip().upper(), email.strip()),
+        "SELECT * FROM technicians WHERE tech_code = ? AND email_hash = ? AND active = 1",
+        (code.strip().upper(), _email_hash(email)),
     ).fetchone()
     con.close()
-    return dict(row) if row else None
+    return _dec_row("technicians", row)
 
 
 def create_pin_reset_token(tech_id: int) -> str:
@@ -1545,14 +1737,14 @@ def get_admin_user_by_username(username: str):
         (username.strip(),),
     ).fetchone()
     con.close()
-    return dict(row) if row else None
+    return _dec_row("admin_users", row)
 
 
 def get_admin_user_by_id(admin_id: int):
     con = _con()
     row = con.execute("SELECT * FROM admin_users WHERE id = ?", (admin_id,)).fetchone()
     con.close()
-    return dict(row) if row else None
+    return _dec_row("admin_users", row)
 
 
 def verify_admin_user(username: str, password: str):
@@ -1585,7 +1777,7 @@ def get_all_admin_users():
         "FROM admin_users ORDER BY active DESC, name"
     ).fetchall()
     con.close()
-    return [dict(r) for r in rows]
+    return _dec_rows("admin_users", rows)
 
 
 def create_admin_user(data: dict, created_by: int = None) -> tuple:
@@ -1598,15 +1790,16 @@ def create_admin_user(data: dict, created_by: int = None) -> tuple:
     cur = con.execute(
         """
         INSERT INTO admin_users
-            (username, password_hash, name, email, phone, role, prid, hire_date, active, created_by, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            (username, password_hash, name, email, email_hash, phone, role, prid, hire_date, active, created_by, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
         """,
         (
             username,
             _hash_password(data["password"]),
             data["name"].strip(),
-            data["email"].strip().lower(),
-            data.get("phone", "").strip(),
+            _det_enc(data["email"].strip().lower()),
+            _email_hash(data["email"].strip().lower()),
+            _enc(data.get("phone", "").strip()),
             data["role"],
             prid,
             hire_date,
@@ -1623,11 +1816,12 @@ def create_admin_user(data: dict, created_by: int = None) -> tuple:
 def update_admin_user(admin_id: int, data: dict):
     con = _con()
     con.execute(
-        "UPDATE admin_users SET name = ?, email = ?, phone = ? WHERE id = ?",
+        "UPDATE admin_users SET name = ?, email = ?, email_hash = ?, phone = ? WHERE id = ?",
         (
             data["name"].strip(),
-            data["email"].strip().lower(),
-            data.get("phone", "").strip(),
+            _det_enc(data["email"].strip().lower()),
+            _email_hash(data["email"].strip().lower()),
+            _enc(data.get("phone", "").strip()),
             admin_id,
         ),
     )
@@ -1662,11 +1856,11 @@ def set_admin_password(admin_id: int, password: str):
 # ── Admin MFA ────────────────────────────────────────────────────────────────
 
 def set_admin_mfa_pending(admin_id: int, secret: str):
-    """Stores the candidate secret. mfa_enabled stays 0 until activated."""
+    """Stores the candidate secret (AES-GCM encrypted). mfa_enabled stays 0 until activated."""
     con = _con()
     con.execute(
         "UPDATE admin_users SET mfa_secret = ?, mfa_enabled = 0 WHERE id = ?",
-        (secret, admin_id),
+        (_enc(secret), admin_id),
     )
     con.commit()
     con.close()
@@ -1752,11 +1946,11 @@ def get_admin_backup_codes_status(admin_id: int):
 def get_admin_by_email(email: str):
     con = _con()
     row = con.execute(
-        "SELECT * FROM admin_users WHERE LOWER(email) = LOWER(?) AND active = 1",
-        (email.strip(),),
+        "SELECT * FROM admin_users WHERE email_hash = ? AND active = 1",
+        (_email_hash(email),),
     ).fetchone()
     con.close()
-    return dict(row) if row else None
+    return _dec_row("admin_users", row)
 
 
 def create_admin_password_reset(admin_id: int) -> str:
@@ -3427,8 +3621,9 @@ def get_visit_readings(visit_id: int):
 def set_visit_signature(visit_id: int, signer_name: str,
                          signature_b64: str, captured_by: int) -> int:
     """Insert-only — UNIQUE constraint on visit_id prevents overwrite even
-    if the endpoint is called twice. Stores SHA-256 of the PNG bytes so
-    tampering is detectable."""
+    if the endpoint is called twice. SHA-256 of the PLAINTEXT PNG dataURL is
+    stored alongside the ENCRYPTED blob; the hash binds to the original
+    content so tamper-detection survives the encryption layer."""
     import hashlib as _h
     digest = _h.sha256(signature_b64.encode("utf-8")).hexdigest()
     con = _con()
@@ -3437,7 +3632,7 @@ def set_visit_signature(visit_id: int, signer_name: str,
             (visit_id, signer_name, signature_b64, signature_sha256,
              captured_by, captured_at)
            VALUES (?, ?, ?, ?, ?, ?)""",
-        (visit_id, signer_name.strip(), signature_b64, digest,
+        (visit_id, signer_name.strip(), _enc(signature_b64), digest,
          captured_by, datetime.now(timezone.utc).isoformat()),
     )
     sid = cur.lastrowid
@@ -3452,7 +3647,7 @@ def get_visit_signature(visit_id: int):
         "SELECT * FROM visit_signatures WHERE visit_id = ?", (visit_id,),
     ).fetchone()
     con.close()
-    return dict(row) if row else None
+    return _dec_row("visit_signatures", row)
 
 
 # ── Visit checklists (pre-visit) ─────────────────────────────────────────────
@@ -3821,7 +4016,7 @@ def set_customer_mfa(customer_id: int, secret: str, enabled: bool,
         """UPDATE customers SET
               mfa_secret = ?, mfa_enabled = ?, backup_codes = ?
             WHERE id = ?""",
-        (secret, 1 if enabled else 0,
+        (_enc(secret) if secret else None, 1 if enabled else 0,
          _json.dumps(backup_codes_hashed) if backup_codes_hashed else None,
          customer_id),
     )
