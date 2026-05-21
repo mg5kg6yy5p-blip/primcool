@@ -573,6 +573,17 @@
     await loadJobs();
     fsRefreshBadge();
     fsFlushQueue();
+    // ── Pattern A: re-render once the PC access-bundle resolves so PC.gateRow /
+    //    PC.gateLinkHtml gating reflects the actual session-scoped permissions.
+    if (typeof PC !== 'undefined' && PC.access) {
+      PC.access().then(function () {
+        try { if (typeof renderList === 'function') renderList(); } catch(_) {}
+        try { if (currentJob && typeof renderDetail === 'function') renderDetail(); } catch(_) {}
+        try { if (currentTab === 'kpi' && typeof renderMyKpi === 'function') renderMyKpi(); } catch(_) {}
+        try { if (currentTab === 'payslips' && typeof renderMyPayslips === 'function') renderMyPayslips(); } catch(_) {}
+        try { if (fsState && fsState.mode === 'home' && typeof fsShowHome === 'function' && document.getElementById('fsView') && document.getElementById('fsView').style.display === 'block') fsShowHome(); } catch(_) {}
+      }).catch(function (e) { try { console.warn('access-bundle load failed:', e); } catch(_) {} });
+    }
   }
 
   // ── API helper ──────────────────────────────────────────────────────────
@@ -663,8 +674,9 @@
         </div>`;
       return;
     }
+    const _gate = (typeof PC !== 'undefined' && PC.gateLinkHtml);
     wrap.innerHTML = rows.map(j => `
-      <div class="job-card ${j.status}" onclick="openJob(${j.id})">
+      <div class="job-card ${j.status}" data-pc-row-visit="${j.id}">
         <div class="job-top">
           <span class="job-type ${j.visit_type === 'PM' ? 'pm-pill' : 'cm-pill'}">${j.visit_type}</span>
           <span class="job-status status-${j.status}">${j.status.replace('_',' ')}</span>
@@ -674,7 +686,7 @@
           ${j.customer_company ? `<div>${esc(j.customer_company)}</div>` : ''}
           ${j.equipment_name ? `<div class="row">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-            ${esc(j.equipment_name)}</div>` : ''}
+            ${(j.equipment_id && _gate) ? PC.gateLinkHtml('equipment', j.equipment_id, j.equipment_name, {}) : esc(j.equipment_name)}</div>` : ''}
           ${j.customer_address ? `<div class="row">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
             ${esc(j.customer_address)}</div>` : ''}
@@ -683,6 +695,21 @@
             ${fmtDate(j.scheduled_date)}${j.scheduled_time ? ' · ' + fmtTime12(j.scheduled_time) : ''}</div>` : ''}
         </div>
       </div>`).join('');
+    // Decorate each job card with PC.gateRow so click-through honors access bundle.
+    if (typeof PC !== 'undefined' && PC.gateRow) {
+      wrap.querySelectorAll('[data-pc-row-visit]').forEach(function (card) {
+        const vid = Number(card.getAttribute('data-pc-row-visit'));
+        PC.gateRow(card, 'visit', vid, {
+          onClick: function () { openJob(vid); },
+          ariaLabel: 'Open job #' + vid,
+        });
+      });
+    } else {
+      wrap.querySelectorAll('[data-pc-row-visit]').forEach(function (card) {
+        const vid = Number(card.getAttribute('data-pc-row-visit'));
+        card.addEventListener('click', function () { openJob(vid); });
+      });
+    }
     document.getElementById('listView').style.display   = 'block';
     document.getElementById('detailView').style.display = 'none';
     document.getElementById('backBar').style.display    = 'none';
@@ -694,7 +721,13 @@
     try {
       currentJob = await api('GET', `/api/tech/jobs/${id}`);
       renderDetail();
-    } catch (e) { toast('Could not load job: ' + e.message, 'error'); }
+    } catch (e) {
+      // Standardized access-denied path (stale token / scope drift).
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && e && e.body) {
+        if (PC.handleAccessDenied(e)) return;
+      }
+      toast('Could not load job: ' + e.message, 'error');
+    }
   }
 
   function showList() {
@@ -781,7 +814,7 @@
         ${j.equipment_name ? `
         <div class="detail-card">
           <h3>Equipment</h3>
-          <div class="detail-row"><span class="l">Unit</span><span class="v">${esc(j.equipment_name)}</span></div>
+          <div class="detail-row"><span class="l">Unit</span><span class="v">${(j.equipment_id && typeof PC !== 'undefined' && PC.gateLinkHtml) ? PC.gateLinkHtml('equipment', j.equipment_id, j.equipment_name, {}) : esc(j.equipment_name)}</span></div>
           ${j.equipment_type ? `<div class="detail-row"><span class="l">Type</span><span class="v">${esc(j.equipment_type)}</span></div>` : ''}
           ${j.equipment_model ? `<div class="detail-row"><span class="l">Model</span><span class="v">${esc(j.equipment_model)}</span></div>` : ''}
           ${j.equipment_location ? `<div class="detail-row"><span class="l">Location</span><span class="v">${esc(j.equipment_location)}</span></div>` : ''}
@@ -1481,14 +1514,16 @@
           <td style="padding:8px;text-align:right;color:#555;">${r.raw_value == null ? '—' : r.raw_value}</td>
         </tr>`;
       }).join('');
+      const _g = (typeof PC !== 'undefined' && PC.gateLinkHtml);
       const flagItems = (fl.flags || []).map(f => {
         const respondable = !['resolved','overridden'].includes(f.status);
+        const scoreRef = (f.score_id && _g) ? PC.gateLinkHtml('kpi_score', f.score_id, esc(f.period_key), {}) : esc(f.period_key);
         return `
-        <div style="padding:10px;border-radius:8px;border:1px solid #e5e7eb;margin-bottom:8px;background:#fff;">
+        <div data-pc-row-flag="${f.id}" style="padding:10px;border-radius:8px;border:1px solid #e5e7eb;margin-bottom:8px;background:#fff;">
           <div style="font-weight:600;color:#991b1b;">${esc(f.severity)}${f.has_override ? ' <span style="font-size:11px;color:#666;font-weight:400;">(' + esc(f.override_note || 'Override on file') + ')</span>' : ''}</div>
           <div style="margin-top:4px;font-size:13px;color:#444;">${esc(f.reason || '')}</div>
-          <div style="margin-top:4px;font-size:11px;color:#888;">${esc(f.period_key)} · ${esc(f.status)}</div>
-          ${respondable ? `<button class="btn btn-ghost" style="margin-top:8px;font-size:12px;" onclick="techRespondToFlag(${f.id})">Add Your Response</button>` : ''}
+          <div style="margin-top:4px;font-size:11px;color:#888;">${scoreRef} · ${esc(f.status)}</div>
+          ${respondable ? `<button class="btn btn-ghost pc-stop-prop" style="margin-top:8px;font-size:12px;" onclick="event.stopPropagation();techRespondToFlag(${f.id})">Add Your Response</button>` : ''}
         </div>`;
       }).join('');
       wrap.innerHTML = `
@@ -1523,12 +1558,20 @@
             ${flagItems}
           ` : ''}
           <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap;">
-            <button class="btn btn-ghost" onclick="techViewNotes()">View notes about me</button>
-            <button class="btn btn-ghost" onclick="techViewGoals()">My Goals &amp; PIPs</button>
+            <button class="btn btn-ghost pc-stop-prop" onclick="techViewNotes()">View notes about me</button>
+            <button class="btn btn-ghost pc-stop-prop" onclick="techViewGoals()">My Goals &amp; PIPs</button>
           </div>
         </div>
       `;
+      // Decorate flag rows post-render (kpi_flag is in tech self-scope).
+      if (typeof PC !== 'undefined' && PC.gateRow) {
+        wrap.querySelectorAll('[data-pc-row-flag]').forEach(function (row) {
+          const fid = Number(row.getAttribute('data-pc-row-flag'));
+          PC.gateRow(row, 'kpi_flag', fid, { ariaLabel: 'Open flag #' + fid });
+        });
+      }
     } catch (e) {
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && e && e.body && PC.handleAccessDenied(e)) return;
       wrap.innerHTML = `<div class="empty"><div>Could not load: ${esc(e.message)}</div></div>`;
     }
   }
@@ -1547,16 +1590,34 @@
       }
       wrap.innerHTML = rows.map(p => {
         const cur = p.currency || 'JMD';
-        return `<div class="job-card" onclick="openMyPayslip(${p.id})">
+        // net_pay is sensitive — only render the figure when canRead('payslip').
+        const canSeeNet = (typeof PC === 'undefined' || !PC.canRead) ? true : PC.canRead('payslip', p.id);
+        const netCell = canSeeNet ? _fmtMoneyTech(p.net_pay, cur) : '<span class="pc-text-only">—</span>';
+        return `<div class="job-card" data-pc-row-payslip="${p.id}">
           <div class="job-customer">${esc(p.period_label)}</div>
           <div class="job-meta">${esc(p.period_start)} → ${esc(p.period_end)}</div>
           <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;">
             <span style="font-size:12px;color:var(--muted);">Net pay</span>
-            <strong style="color:var(--navy);">${_fmtMoneyTech(p.net_pay, cur)}</strong>
+            <strong style="color:var(--navy);">${netCell}</strong>
           </div>
         </div>`;
       }).join('');
+      if (typeof PC !== 'undefined' && PC.gateRow) {
+        wrap.querySelectorAll('[data-pc-row-payslip]').forEach(function (card) {
+          const pid = Number(card.getAttribute('data-pc-row-payslip'));
+          PC.gateRow(card, 'payslip', pid, {
+            onClick: function () { openMyPayslip(pid); },
+            ariaLabel: 'Open payslip #' + pid,
+          });
+        });
+      } else {
+        wrap.querySelectorAll('[data-pc-row-payslip]').forEach(function (card) {
+          const pid = Number(card.getAttribute('data-pc-row-payslip'));
+          card.addEventListener('click', function () { openMyPayslip(pid); });
+        });
+      }
     } catch (e) {
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && e && e.body && PC.handleAccessDenied(e)) return;
       wrap.innerHTML = `<div class="empty"><div>Could not load payslips: ${esc(e.message)}</div></div>`;
     }
   }
@@ -1798,7 +1859,9 @@
       if (!excs.length) html += '<div style="color:var(--muted);font-size:13px;">None — keep it up.</div>';
       else for (const e of excs) {
         const sev = e.severity === 'safety_loto' ? '<span style="background:#dc2626;color:#fff;border-radius:8px;padding:2px 8px;font-size:11px;margin-right:6px;">SAFETY</span>' : '';
-        html += `<div style="border-top:1px solid var(--border);padding:8px 0;font-size:13px;">${sev}<strong>${esc(e.category)}</strong> · ${esc(e.status)}<div style="color:var(--muted);font-size:12px;">${esc(e.opened_at).slice(0,16).replace('T',' ')}</div></div>`;
+        const _g = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+        const auditRef = (e.audit_id && _g) ? ' · ' + PC.gateLinkHtml('fs_audit', e.audit_id, 'audit #' + e.audit_id, {}) : '';
+        html += `<div data-pc-row-exc="${e.id}" style="border-top:1px solid var(--border);padding:8px 0;font-size:13px;">${sev}<strong>${esc(e.category)}</strong> · ${esc(e.status)}${auditRef}<div style="color:var(--muted);font-size:12px;">${esc(e.opened_at).slice(0,16).replace('T',' ')}</div></div>`;
       }
       html += '</div>';
       const pendingPhotos = fsPendingPhotoCount();
@@ -1809,7 +1872,15 @@
         </div>`;
       }
       v.innerHTML = html;
+      // PC.gateRow decoration for 5S exception rows (own-scope read for tech).
+      if (typeof PC !== 'undefined' && PC.gateRow) {
+        v.querySelectorAll('[data-pc-row-exc]').forEach(function (row) {
+          const xid = Number(row.getAttribute('data-pc-row-exc'));
+          PC.gateRow(row, 'fs_exception', xid, { ariaLabel: 'Open exception #' + xid });
+        });
+      }
     } catch (e) {
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && e && e.body && PC.handleAccessDenied(e)) return;
       v.innerHTML = `<div style="background:#fff;padding:24px;border-radius:10px;text-align:center;color:var(--red);">Could not load 5S: ${esc(String(e.message || e))}</div>`;
     }
   }
