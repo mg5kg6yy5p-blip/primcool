@@ -6002,22 +6002,29 @@
         </div>`;
       }).join('');
       const top5 = (a.by_customer || []).slice(0, 5);
-      // Top Customers — names are clickable, navigate to that customer's
-      // detail view (which lists their invoices). Use PC.gateLinkHtml so
-      // non-super-admin viewers still see the name as plain text if their
-      // role lacks customer:view.
+      // Top Customers — only the NAME is wrapped in the clickable link.
+      // The customer code follows OUTSIDE the link as a plain styled span,
+      // so it doesn't appear as part of the underlined link text. Matches
+      // the pattern at line 5179 (visit-customer cell) and 3211 (customers
+      // tab name cell). Non-super-admin viewers without customer:view see
+      // the name as plain text — PC.gateLinkHtml falls through to a span.
       const _customerNameCell = function (c) {
-        const label = escHtml(c.customer_name) +
-          ' <span style="color:var(--muted);font-size:11px;">' +
-          escHtml(c.customer_code) + '</span>';
+        const codeBadge = ' <span style="color:var(--muted);font-size:11px;">'
+          + escHtml(c.customer_code) + '</span>';
         if (typeof PC !== 'undefined' && PC.gateLinkHtml) {
-          return PC.gateLinkHtml('customer', c.customer_id, label, {
-            onClick: 'openCustomerDetailFull(' + c.customer_id + ')'
-          });
+          // onClick must be a FUNCTION EXPRESSION string (not a call) —
+          // the helper wraps it as (expr)(event) at render time. Passing
+          // a call expression like 'openCustomerDetailFull(63)' would
+          // execute at HTML-parse time and fail. Match the IIFE form
+          // used by every other gateLinkHtml callsite in this file.
+          return PC.gateLinkHtml('customer', c.customer_id, c.customer_name || '', {
+            onClick: 'function(){ openCustomerDetailFull(' + c.customer_id + '); }'
+          }) + codeBadge;
         }
         return '<a class="pc-link" href="#customer/' + c.customer_id +
                '" onclick="event.preventDefault();event.stopPropagation();' +
-               'openCustomerDetailFull(' + c.customer_id + ');">' + label + '</a>';
+               'openCustomerDetailFull(' + c.customer_id + ');">' +
+               escHtml(c.customer_name || '') + '</a>' + codeBadge;
       };
       host.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;">
