@@ -1,10 +1,12 @@
-"""list_security_alerts must return OPEN-FIRST, then created_at DESC.
+"""list_security_alerts must return OPEN-FIRST (FIFO), then non-open (FIFO).
 
 The admin UX depends on this sort:
   - super_admin opens the Security Alerts panel
-  - works the top of the list (always the next-up open alert)
-  - resolves one — the resolved row drops to its chronological position
-    among the resolved alerts, the next open alert rises to the top
+  - works the top of the list — the OLDEST unresolved alert (the one
+    that has been waiting longest is the most overdue)
+  - resolves one — the resolved row drops back into its original
+    chronological queue position among the resolved alerts; the next
+    longest-unresolved open alert rises to the top
   - admin keeps working from the top of the list without scrolling
 
 If this contract breaks, super_admin will have to scroll past resolved
@@ -91,8 +93,10 @@ def test_open_alerts_always_come_before_non_open(alert_table_isolated):
                for r in rows[1:])
 
 
-def test_within_open_group_sort_by_created_at_desc(alert_table_isolated):
-    """Among open alerts, most-recently-created comes first."""
+def test_within_open_group_sort_by_created_at_asc(alert_table_isolated):
+    """Among open alerts, OLDEST-created comes first — FIFO queue. The
+    longest-unresolved alert is the next to action (operator philosophy:
+    oldest open is the most overdue)."""
     con = alert_table_isolated
     old_id  = _insert(con, status="open", when_iso=_iso(-7200),
                       summary="old open")
@@ -102,18 +106,16 @@ def test_within_open_group_sort_by_created_at_desc(alert_table_isolated):
                       summary="middle open")
     rows = database.list_security_alerts(limit=10)
     ids = [r["id"] for r in rows]
-    assert ids == [new_id, mid_id, old_id], (
-        f"Within-open ordering broken: expected newest-first "
-        f"[{new_id}, {mid_id}, {old_id}], got {ids}"
+    assert ids == [old_id, mid_id, new_id], (
+        f"Within-open ordering broken: expected oldest-first (FIFO) "
+        f"[{old_id}, {mid_id}, {new_id}], got {ids}"
     )
 
 
-def test_within_non_open_group_sort_by_created_at_desc(alert_table_isolated):
-    """Among resolved/dismissed, most-recently-created comes first.
-    A resolved alert that was OLD when it was created stays in its
-    chronological slot among other non-open alerts when it's resolved.
-    This is what the user described as 'returns to its normal position
-    based on alarm operation time'."""
+def test_within_non_open_group_sort_by_created_at_asc(alert_table_isolated):
+    """Among resolved/dismissed, OLDEST-created comes first — same FIFO
+    rule. When a resolved alert returns to its 'original place in the
+    queue' it slots back into chronological position by created_at."""
     con = alert_table_isolated
     old_resolved = _insert(con, status="resolved", when_iso=_iso(-7200),
                            summary="old resolved")
@@ -123,20 +125,21 @@ def test_within_non_open_group_sort_by_created_at_desc(alert_table_isolated):
                            summary="middle resolved")
     rows = database.list_security_alerts(limit=10)
     ids = [r["id"] for r in rows]
-    assert ids == [new_dismissed, mid_resolved, old_resolved], (
-        f"Within-non-open ordering broken: expected newest-first "
-        f"[{new_dismissed}, {mid_resolved}, {old_resolved}], got {ids}"
+    assert ids == [old_resolved, mid_resolved, new_dismissed], (
+        f"Within-non-open ordering broken: expected oldest-first (FIFO) "
+        f"[{old_resolved}, {mid_resolved}, {new_dismissed}], got {ids}"
     )
 
 
 def test_full_mixed_sort_matches_admin_ux_contract(alert_table_isolated):
     """The end-to-end shape the admin panel relies on:
-        [open newest] [open older] ... [resolved newest] [resolved older] ...
+        [open oldest] [open older] ... [open newest]
+        [resolved oldest] [resolved older] ... [resolved newest]
 
     Simulates a realistic backlog: 3 open + 3 resolved interleaved in
     time. Verifies the rotation behavior the user requested — opens
-    always at the top, resolveds dropping into chronological position
-    below the opens.
+    always at the top in FIFO order (oldest first = longest unresolved),
+    and resolveds drop into chronological queue position below the opens.
     """
     con = alert_table_isolated
     # Created in the order: open-old, resolved-newest, open-newest,
@@ -150,12 +153,13 @@ def test_full_mixed_sort_matches_admin_ux_contract(alert_table_isolated):
 
     rows = database.list_security_alerts(limit=10)
     ids = [r["id"] for r in rows]
-    # Opens: newest → middle → oldest
-    # Then non-opens: newest → middle → oldest
-    expected = [o_new, o_mid, o_old, r_new, d_mid, r_old]
+    # Opens: oldest → middle → newest (FIFO; oldest open is most overdue)
+    # Then non-opens: oldest → middle → newest (FIFO chronological queue)
+    expected = [o_old, o_mid, o_new, r_old, d_mid, r_new]
     assert ids == expected, (
         f"Mixed-status sort broken.\n"
-        f"  expected (open-first newest-to-old, then non-open newest-to-old):\n"
+        f"  expected (open-first oldest-to-newest, then non-open "
+        f"oldest-to-newest):\n"
         f"    {expected}\n"
         f"  got: {ids}\n"
         f"  status sequence: {[r['status'] for r in rows]}"

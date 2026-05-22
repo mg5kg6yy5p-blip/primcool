@@ -4874,24 +4874,25 @@ def recent_alert_exists(kind: str, actor_id: int, within_minutes: int = 30) -> b
 
 
 def list_security_alerts(status: str = None, limit: int = 100):
-    """Return security alerts sorted OPEN-FIRST, then by creation time.
+    """Return security alerts as a chronological QUEUE with all open
+    items promoted to the top.
 
     Sort contract (the admin UX depends on this):
       1. status='open' rows come before resolved/dismissed
-      2. within each group, most recent created_at first
-    After an admin resolves an alert, it falls back into its
-    chronological position AMONG the non-open alerts. The next open
-    alert rises to the top of the list so the admin can continue
-    working without scrolling.
+      2. within each group, OLDEST created_at first
+         (FIFO — the longest-unresolved alert is the next to action;
+          a resolved alert returns to its original chronological slot
+          among the other resolved/dismissed alerts, "back into its
+          normal position based on alarm operation time")
 
     If `status` is passed, the WHERE clause filters to just that group
-    and the OPEN-FIRST tier is moot — created_at DESC within filter.
+    and the OPEN-FIRST tier is moot — created_at ASC within filter.
     """
     sql = "SELECT * FROM security_alerts"
     args = []
     if status:
         sql += " WHERE status = ?"; args.append(status)
-    sql += " ORDER BY (status != 'open') ASC, created_at DESC LIMIT ?"
+    sql += " ORDER BY (status != 'open') ASC, created_at ASC LIMIT ?"
     args.append(int(limit))
     con = _con()
     rows = con.execute(sql, args).fetchall()
