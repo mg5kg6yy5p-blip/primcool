@@ -6002,30 +6002,6 @@
         </div>`;
       }).join('');
       const top5 = (a.by_customer || []).slice(0, 5);
-      // Top Customers — only the NAME is wrapped in the clickable link.
-      // The customer code follows OUTSIDE the link as a plain styled span,
-      // so it doesn't appear as part of the underlined link text. Matches
-      // the pattern at line 5179 (visit-customer cell) and 3211 (customers
-      // tab name cell). Non-super-admin viewers without customer:view see
-      // the name as plain text — PC.gateLinkHtml falls through to a span.
-      const _customerNameCell = function (c) {
-        const codeBadge = ' <span style="color:var(--muted);font-size:11px;">'
-          + escHtml(c.customer_code) + '</span>';
-        if (typeof PC !== 'undefined' && PC.gateLinkHtml) {
-          // onClick must be a FUNCTION EXPRESSION string (not a call) —
-          // the helper wraps it as (expr)(event) at render time. Passing
-          // a call expression like 'openCustomerDetailFull(63)' would
-          // execute at HTML-parse time and fail. Match the IIFE form
-          // used by every other gateLinkHtml callsite in this file.
-          return PC.gateLinkHtml('customer', c.customer_id, c.customer_name || '', {
-            onClick: 'function(){ openCustomerDetailFull(' + c.customer_id + '); }'
-          }) + codeBadge;
-        }
-        return '<a class="pc-link" href="#customer/' + c.customer_id +
-               '" onclick="event.preventDefault();event.stopPropagation();' +
-               'openCustomerDetailFull(' + c.customer_id + ');">' +
-               escHtml(c.customer_name || '') + '</a>' + codeBadge;
-      };
       host.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;">
           <h3 style="margin:0;color:var(--navy);">Accounts Receivable Aging</h3>
@@ -6036,15 +6012,37 @@
           <div style="margin-top:14px;font-size:11px;text-transform:uppercase;letter-spacing:0.6px;color:var(--muted);font-weight:700;">Top customers by outstanding</div>
           <table style="width:100%;font-size:13px;margin-top:6px;">
             <thead><tr style="text-align:left;color:var(--muted);"><th style="padding:4px;">Customer</th><th style="padding:4px;text-align:right;">Outstanding</th><th style="padding:4px;text-align:right;">Invoices</th><th style="padding:4px;text-align:right;">Oldest (days)</th></tr></thead>
-            <tbody>${top5.map(c => `
-              <tr style="border-top:1px solid var(--border);">
-                <td style="padding:6px 4px;">${_customerNameCell(c)}</td>
+            <tbody id="ar-top-customers-body">${top5.map(c => `
+              <tr data-customer-id="${c.customer_id}" style="border-top:1px solid var(--border);">
+                <td style="padding:6px 4px;">${escHtml(c.customer_name || '')}</td>
                 <td style="padding:6px 4px;text-align:right;font-weight:600;">${fmt(c.total_outstanding)}</td>
                 <td style="padding:6px 4px;text-align:right;">${c.invoice_count}</td>
                 <td style="padding:6px 4px;text-align:right;color:${c.oldest_days_overdue>90?'#991b1b':c.oldest_days_overdue>60?'#9a3412':c.oldest_days_overdue>30?'#92400e':'var(--muted)'};font-weight:600;">${c.oldest_days_overdue}</td>
               </tr>`).join('')}</tbody>
           </table>
         ` : ''}`;
+      // Top Customers — entire ROW is clickable, navigates to that
+      // customer's detail view. No inline link styling on the name; the
+      // row hover + cursor signal interactivity. Customer code is dropped
+      // from the cell entirely (was a leftover from the previous attempt
+      // that confused the user). PC.gateRow handles role-gating: if the
+      // viewer can't read customer, the row stays non-clickable.
+      top5.forEach(function (c) {
+        const tr = host.querySelector('#ar-top-customers-body tr[data-customer-id="' + c.customer_id + '"]');
+        if (!tr) return;
+        if (typeof PC !== 'undefined' && PC.gateRow) {
+          PC.gateRow(tr, 'customer', c.customer_id, {
+            onClick: function () { openCustomerDetailFull(c.customer_id); },
+            ariaLabel: 'Open customer ' + (c.customer_name || c.customer_code || '')
+          });
+        } else {
+          // Fallback when pc_shared.js hasn't loaded yet
+          tr.style.cursor = 'pointer';
+          tr.setAttribute('role', 'button');
+          tr.setAttribute('tabindex', '0');
+          tr.addEventListener('click', function () { openCustomerDetailFull(c.customer_id); });
+        }
+      });
       // The bucket tiles already have onclick + tabindex + role="button" +
       // onkeydown wired inline. We do NOT call PC.gateBadge here — that
       // helper overwrites textContent, wiping the rich tile content
