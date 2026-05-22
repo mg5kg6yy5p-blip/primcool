@@ -8118,16 +8118,165 @@ async def _fs_escalation_loop():
         await _asyncio.sleep(15 * 60)
 
 
+def _build_fs_notify_payload(exception_id: int, recipient_role: str):
+    """Decrypts the exception + asset + hub context for an escalation email.
+    Returns (subject, html, plain_to_or_none). recipient_role is 'manager' or
+    'director' — used for subject framing only. Returns None on missing exc."""
+    try:
+        exc = fs_get_exception(exception_id)
+    except Exception:
+        exc = None
+    if not exc:
+        return None
+    try:
+        asset = fs_get_asset_by_id(exc.get("asset_id")) or {}
+    except Exception:
+        asset = {}
+    try:
+        hub = get_hub_by_id(exc.get("hub_id") or 1) or {}
+    except Exception:
+        hub = {}
+    # Age in hours since opened
+    age_hours = None
+    try:
+        opened = datetime.fromisoformat(exc.get("opened_at",
+                                                "").replace("Z", "+00:00"))
+        age_hours = round((datetime.now(timezone.utc) -
+                          opened).total_seconds() / 3600.0, 1)
+    except Exception:
+        pass
+    severity = (exc.get("severity") or "normal").upper()
+    asset_code = asset.get("asset_code") or f"asset:{exc.get('asset_id')}"
+    asset_label = asset.get("label") or asset_code
+    hub_name = hub.get("name") or f"hub:{exc.get('hub_id')}"
+    role_label = "Manager" if recipient_role == "manager" else "Director"
+    safety_tag = "🚨 SAFETY/LOTO" if severity == "SAFETY_LOTO" else "Escalation"
+    subject = (f"[5S {safety_tag}] {asset_code} — exception #{exception_id} "
+               f"({role_label} action required)")
+    desc = (exc.get("description") or "").strip() or "(no description)"
+    # HTML-escape user-controllable strings before interpolating
+    def _esc(s: str) -> str:
+        return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+                       .replace(">", "&gt;").replace('"', "&quot;"))
+    html = f"""
+    <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;">
+      <div style="background:#0B2545;padding:20px;color:white;">
+        <h2 style="margin:0;color:#22A08A;">5S {_esc(safety_tag)}</h2>
+        <p style="margin:4px 0 0;color:#cbd5e0;font-size:13px;">
+          {_esc(role_label)} action required · {_esc(hub_name)}
+        </p>
+      </div>
+      <div style="padding:20px;border:1px solid #e8ecf0;">
+        <table style="width:100%;border-collapse:collapse;font-size:14px;">
+          <tr><td style="padding:6px 0;color:#5A6472;width:160px;">Exception ID</td>
+              <td style="padding:6px 0;"><strong>#{exception_id}</strong></td></tr>
+          <tr><td style="padding:6px 0;color:#5A6472;">Severity</td>
+              <td style="padding:6px 0;"><strong style="color:{'#dc2626' if severity=='SAFETY_LOTO' else '#f59e0b'};">{_esc(severity)}</strong></td></tr>
+          <tr><td style="padding:6px 0;color:#5A6472;">Category</td>
+              <td style="padding:6px 0;">{_esc(exc.get('category') or '—')}</td></tr>
+          <tr><td style="padding:6px 0;color:#5A6472;">Asset</td>
+              <td style="padding:6px 0;">{_esc(asset_label)} ({_esc(asset_code)})</td></tr>
+          <tr><td style="padding:6px 0;color:#5A6472;">Hub</td>
+              <td style="padding:6px 0;">{_esc(hub_name)}</td></tr>
+          <tr><td style="padding:6px 0;color:#5A6472;">Opened by</td>
+              <td style="padding:6px 0;">{_esc(exc.get('opened_by_kind') or '—')}:{exc.get('opened_by_id') or '—'}</td></tr>
+          <tr><td style="padding:6px 0;color:#5A6472;">Opened at</td>
+              <td style="padding:6px 0;">{_esc(exc.get('opened_at') or '—')}</td></tr>
+          <tr><td style="padding:6px 0;color:#5A6472;">Age</td>
+              <td style="padding:6px 0;">{age_hours if age_hours is not None else '—'} hours</td></tr>
+          <tr><td style="padding:6px 0;color:#5A6472;">Current status</td>
+              <td style="padding:6px 0;">{_esc(exc.get('status') or '—')}</td></tr>
+        </table>
+        <div style="margin-top:16px;padding:14px;background:#f5f7f9;
+                    border-left:3px solid #22A08A;">
+          <p style="margin:0 0 6px;color:#5A6472;font-size:12px;
+                    text-transform:uppercase;letter-spacing:1px;">Description</p>
+          <p style="margin:0;font-size:14px;white-space:pre-wrap;">{_esc(desc)}</p>
+        </div>
+      </div>
+      <div style="padding:14px 20px;background:#f5f7f9;font-size:12px;
+                  color:#5A6472;">
+        Automated 5S escalation — PrimeCool Services.
+        Resolve, escalate, or override via the 5S dashboard.
+      </div>
+    </div>
+    """
+    return subject, html
+
+
+def _send_fs_notification(exception_id: int, recipient_role: str):
+    """Send a 5S escalation email via Resend if configured; otherwise write
+    only the existing audit row. Failures never raise — they're recorded as
+    `fs.notify.<role>_failed` audit rows so the escalation loop keeps moving.
+
+    recipient_role: 'manager' | 'director'.
+    """
+    action_ok = f"fs.notify.{recipient_role}"
+    action_skip = f"fs.notify.{recipient_role}_skipped"
+    action_fail = f"fs.notify.{recipient_role}_failed"
+
+    api_key = os.environ.get("RESEND_API_KEY")
+    notify_email = os.environ.get("NOTIFY_EMAIL", "juggarr@gmail.com")
+
+    if not api_key:
+        # Email not configured — keep the legacy audit-log-only behavior so
+        # nothing breaks in dev, but record that no email was sent.
+        try:
+            log_audit(actor_type="system", action=action_skip,
+                      target_type="fs_exception", target_id=exception_id,
+                      target_label="RESEND_API_KEY not set")
+        except Exception:
+            pass
+        log_audit(actor_type="system", action=action_ok,
+                  target_type="fs_exception", target_id=exception_id)
+        return
+
+    payload = _build_fs_notify_payload(exception_id, recipient_role)
+    if not payload:
+        try:
+            log_audit(actor_type="system", action=action_fail,
+                      target_type="fs_exception", target_id=exception_id,
+                      target_label="exception_not_found")
+        except Exception:
+            pass
+        return
+    subject, html = payload
+
+    try:
+        resend_lib.api_key = api_key
+        resend_lib.Emails.send({
+            "from":    "PrimeCool Services <onboarding@resend.dev>",
+            "to":      notify_email,
+            "subject": subject,
+            "html":    html,
+        })
+        log_audit(actor_type="system", action=action_ok,
+                  target_type="fs_exception", target_id=exception_id,
+                  target_label=notify_email)
+    except Exception as e:
+        # Never swallow silently — write a failure audit + a logger.warning
+        # with the error class only (not the full traceback, which can leak).
+        err_class = type(e).__name__
+        logger.warning(f"5S notify ({recipient_role}) email send failed: "
+                       f"{err_class} on exception {exception_id}")
+        try:
+            log_audit(actor_type="system", action=action_fail,
+                      target_type="fs_exception", target_id=exception_id,
+                      target_label=f"send_failed: {err_class}")
+        except Exception:
+            pass
+
+
 def _notify_manager(exception_id: int):
-    """Phase 4 push-integration point. For now, logs to audit_log."""
-    log_audit(actor_type="system", action="fs.notify.manager",
-              target_type="fs_exception", target_id=exception_id)
+    """Send a 5S escalation email to the manager. Falls back to audit-only
+    when RESEND_API_KEY is unset. Errors are recorded as `fs.notify.manager_failed`."""
+    _send_fs_notification(exception_id, "manager")
 
 
 def _notify_director(exception_id: int):
-    """Phase 4 push-integration point. For now, logs to audit_log."""
-    log_audit(actor_type="system", action="fs.notify.director",
-              target_type="fs_exception", target_id=exception_id)
+    """Send a 5S escalation email to the director (48h cascade). Same
+    fallback + audit-on-failure pattern as `_notify_manager`."""
+    _send_fs_notification(exception_id, "director")
 
 
 @app.on_event("startup")
