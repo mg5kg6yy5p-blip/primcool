@@ -450,10 +450,22 @@ _rate_lock = Lock()
 
 
 def _client_ip(request: Request) -> str:
-    # Honor X-Forwarded-For when behind a proxy (Railway sets this)
-    fwd = request.headers.get("x-forwarded-for", "")
-    if fwd:
-        return fwd.split(",")[0].strip()
+    """Return the connecting client's IP.
+
+    Pre-PC-003 fix this function read X-Forwarded-For directly, which
+    let any internet client forge their own source IP — defeating the
+    rate-limit per-IP bucket and polluting the audit ip_address column.
+
+    Now we trust ONLY request.client.host. The proxy-header resolution
+    is handled UPSTREAM by uvicorn's --proxy-headers flag (configured
+    in railway.toml with --forwarded-allow-ips restricted to the
+    Railway edge). If you deploy this app outside Railway and behind a
+    different reverse proxy, you MUST also pass --proxy-headers with a
+    matching --forwarded-allow-ips — otherwise client.host will be the
+    proxy IP rather than the real client.
+
+    See: docs/SECURITY.md, finding PC-003.
+    """
     return request.client.host if request.client else "?"
 
 
@@ -1901,7 +1913,23 @@ def health():
 
 
 @app.post("/api/consult")
-async def submit_consult(req: ConsultRequest):
+async def submit_consult(req: ConsultRequest, request: Request):
+    # PC-004 fix: rate limit a public endpoint that BOTH writes to disk AND
+    # triggers an outbound Resend email per submission. Pre-fix this was
+    # uncapped — a flood would (a) fill submissions.db, (b) burn Resend
+    # quota, (c) compound with PC-002 to pollute plaintext PII rows. Two
+    # layers: per-(IP+email) and a global circuit breaker.
+    # Depends on PC-003 fix (railway.toml --proxy-headers) so the IP key
+    # is the actual client, not a forged X-Forwarded-For value.
+    _enforce_rate(request, bucket="consult",
+                  identity=(req.email or "").strip().lower()[:120],
+                  max_attempts=3, window_seconds=3600,
+                  message="Too many submissions from this address. "
+                          "Please try again later.")
+    _enforce_rate(request, bucket="consult_global", identity="",
+                  max_attempts=100, window_seconds=600,
+                  message="Form is temporarily unavailable. "
+                          "Please try again in a few minutes.")
     save_submission(req.model_dump())
 
     api_key      = os.environ.get("RESEND_API_KEY")

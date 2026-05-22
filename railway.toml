@@ -2,6 +2,16 @@
 builder = "nixpacks"
 
 [deploy]
-startCommand   = "uvicorn main:app --host 0.0.0.0 --port $PORT"
+# --proxy-headers + --forwarded-allow-ips="*" is the PC-003 fix.
+# Railway's edge is the SOLE trusted upstream for this app — every request
+# arrives via the edge proxy, no direct public IP exposure. uvicorn rewrites
+# request.client.host to the X-Forwarded-For first hop ONLY when the
+# connecting peer is in forwarded-allow-ips. We trust * here because Railway
+# is the only thing that can connect to the container.
+#
+# If you ever deploy this app outside Railway (bare host, behind a different
+# reverse proxy, etc.), tighten forwarded-allow-ips to the proxy's CIDR. NEVER
+# carry "*" outside a single-trusted-edge environment.
+startCommand   = "uvicorn main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips=*"
 healthcheckPath = "/health"
 restartPolicyType = "on_failure"
