@@ -61,11 +61,34 @@ def app(dev_env):
     return _app
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def client(app):
-    import httpx
-    transport = httpx.ASGITransport(app=app)
-    with httpx.Client(transport=transport, base_url="http://test") as c:
+    """Per-test sync HTTP client bound to the ASGI app.
+
+    Was: session-scoped httpx.Client(transport=httpx.ASGITransport(...)).
+    Broke under httpx 0.28.x because ASGITransport became async-only.
+
+    Replaced with FastAPI's TestClient (Starlette-based, sync,
+    version-stable). The response API is the same shape — .status_code,
+    .json(), .text, .cookies — so existing tests don't need rewriting.
+
+    Now FUNCTION-scoped (was session-scoped) so each test gets a fresh
+    cookie jar. A session-scoped client accumulated auth cookies from
+    earlier tests' admin_token / supervisor_token / tech_token fixture
+    setup, which silently authenticated tests that were supposed to be
+    unauthenticated — masking real bugs and producing flaky failures
+    depending on test order.
+
+    Origin header is set to match the TestClient's default base_url
+    (http://testserver). main.py's csrf_origin_check middleware rejects
+    mutating cookie-authenticated requests whose Origin/Referer host
+    doesn't match the request Host. The TestClient's Host header is
+    "testserver" by default; sending Origin=http://testserver makes the
+    check pass cleanly. CSRF still applies to genuinely cross-origin
+    probes (different host in Origin).
+    """
+    from fastapi.testclient import TestClient
+    with TestClient(app, headers={"Origin": "http://testserver"}) as c:
         yield c
 
 
@@ -86,7 +109,7 @@ def _extract_session_cookie(resp, cookie_name: str):
     return None
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def admin_token(client):
     """Director (bootstrap super_admin) JWT cookie value."""
     r = client.post(
@@ -107,7 +130,7 @@ def admin_token(client):
     return tok
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def supervisor_token(client):
     """A non-super supervisor admin if one exists. Otherwise skip."""
     conn = sqlite3.connect(str(_PROJECT_ROOT / "submissions.db"))
@@ -139,7 +162,7 @@ def supervisor_token(client):
     pytest.skip(f"could not log in supervisor_admin '{username}' with known dev passwords")
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def tech_token(client):
     """First active tech with PIN 123456 (or other dev PIN). Skip if no auth works."""
     conn = sqlite3.connect(str(_PROJECT_ROOT / "submissions.db"))

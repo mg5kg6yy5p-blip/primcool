@@ -16,23 +16,14 @@ but not exercised at full volume.
 import os
 import pytest
 
-# conftest.py loads .dev.env, but its `client` fixture is broken under
-# httpx 0.28.x (ASGITransport became async-only). Use FastAPI's
-# TestClient directly — Starlette's sync ASGI test harness — which is
-# version-stable.
+# conftest.py provides a fresh `client` fixture per test (TestClient,
+# Origin header pre-set, function-scoped after the migration that
+# unblocked the 18 acceptance tests). We only need the rate-bucket
+# state reset between tests so order doesn't matter.
 try:
-    from main import app, _rate_buckets, _rate_lock
-    from fastapi.testclient import TestClient
+    from main import _rate_buckets, _rate_lock
 except Exception as e:
     pytest.skip(f"main.py import failed: {e}", allow_module_level=True)
-
-
-@pytest.fixture
-def client():
-    """Sync TestClient bound to the app. Local override of the
-    conftest's session-scoped (and currently broken) httpx-based
-    client — needed because we want fresh rate-limit state per test."""
-    return TestClient(app)
 
 
 @pytest.fixture(autouse=True)

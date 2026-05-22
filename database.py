@@ -220,8 +220,26 @@ def _dec_rows(table: str, rows):
 
 
 def _con():
+    """Open a SQLite connection with the pre-deploy hardening pragmas.
+
+    - journal_mode=WAL: writer + many concurrent readers, crash-safe page
+      writes. Persistent in the DB header; setting it on every connection
+      is a no-op after the first. Closes C1 (mid-write corruption risk).
+    - synchronous=FULL: fsync after every commit — slower but the audit
+      chain + chain_hash invariants demand it; partial writes during crash
+      would break the chain. Pre-fix this was NORMAL.
+    - foreign_keys=ON: per-connection setting that must be re-applied on
+      every connect. Closes O1 (orphan rows possible despite FK
+      declarations).
+    """
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
+    # Pragmas. WAL is sticky in the DB header, the other two are
+    # per-connection. We apply all three on every open so a freshly-created
+    # DB also picks up WAL on its first real connection.
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA synchronous=FULL")
+    con.execute("PRAGMA foreign_keys=ON")
     return con
 
 
