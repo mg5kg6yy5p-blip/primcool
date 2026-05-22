@@ -7349,8 +7349,14 @@
     if (note === null) return;
     try {
       await api('POST', `/api/admin/security/alerts/${id}/resolve`, { note, status });
-      loadAudit();
+      await loadAudit();
       refreshSecurityBanner();
+      // Backend now sorts open-alerts-first. Scroll the user back to the top
+      // so the next-up open alert is visible without manual scroll. Smooth
+      // so the rotation feels intentional rather than jarring.
+      try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch (_) {
+        window.scrollTo(0, 0);
+      }
     } catch (e) { alert(e.message); }
   }
 
