@@ -174,6 +174,9 @@ _PII_RAND = {
     # KPI Goals + PIPs (phase 6) — encrypted title/description/action items/outcome.
     "kpi_goals":                    ["title", "description", "action_items_json", "outcome_summary"],
     "kpi_goal_checkins":            ["notes"],
+    # Customer account credit ledger — operator notes may name people or
+    # describe disputes; encrypt to match the rest of the customer PII surface.
+    "customer_credit_movements":    ["note"],
 }
 # Columns that need equality lookup → deterministic encryption + blind index.
 _PII_DET = {
@@ -306,6 +309,12 @@ def init_db():
         # Optimistic concurrency token for If-Match. Backfilled from created_at
         # for existing rows below.
         ("updated_at",     "ALTER TABLE customers ADD COLUMN updated_at TEXT"),
+        # Running account credit balance. Increments on overpayment (excess
+        # of a payment over an invoice's outstanding balance), decrements on
+        # refunds or when applied to a future invoice. NEVER mutate this
+        # column directly — go through record_customer_credit() so the
+        # append-only ledger stays the source of truth.
+        ("credit_balance", "ALTER TABLE customers ADD COLUMN credit_balance REAL NOT NULL DEFAULT 0"),
     ):
         if col not in cust_cols:
             try: con.execute(sql)
@@ -316,6 +325,40 @@ def init_db():
                     "WHERE updated_at IS NULL OR updated_at = ''")
     except sqlite3.OperationalError:
         pass
+
+    # ── Customer account credit ledger ──────────────────────────────────────
+    # Append-only history of every credit movement. customers.credit_balance
+    # is the running sum, maintained transactionally with each insert here.
+    # Kinds:
+    #   overpayment        — customer paid more than invoice outstanding;
+    #                        excess is credited (positive amount)
+    #   refund_owed        — operator chose to refund the overpayment instead
+    #                        of crediting; negative amount, ops processes the
+    #                        actual refund outside the app
+    #   refund_issued      — refund processed (negates an earlier refund_owed
+    #                        when the cash is actually returned)
+    #   applied_to_invoice — credit consumed against a future invoice (future
+    #                        feature; helper accepts the kind now for shape)
+    #   manual_adjustment  — admin-entered correction; reason required
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS customer_credit_movements (
+            id                 INTEGER PRIMARY KEY,
+            customer_id        INTEGER NOT NULL,
+            amount             REAL NOT NULL,
+            kind               TEXT NOT NULL CHECK (kind IN (
+                                   'overpayment','refund_owed','refund_issued',
+                                   'applied_to_invoice','manual_adjustment')),
+            source_invoice_id  INTEGER,
+            source_payment_id  INTEGER,
+            note               TEXT,
+            created_by         INTEGER,
+            created_at         TEXT NOT NULL,
+            prior_chain_hash   TEXT,
+            chain_hash         TEXT NOT NULL
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_credit_mov_customer "
+                "ON customer_credit_movements(customer_id, created_at)")
 
     # Hubs table — single source of truth for branch/region. Seeded with one
     # row (Kingston) so existing FKs from hub_id=1 are valid from boot.
@@ -8359,8 +8402,10 @@ def record_invoice_payment_v2(invoice_id: int, data: dict,
     _recompute_invoice_totals(con, invoice_id)
     # Auto-flip to paid if covered
     inv = con.execute(
-        "SELECT total, amount_paid FROM invoices WHERE id = ?", (invoice_id,)
+        "SELECT total, amount_paid, customer_id FROM invoices WHERE id = ?",
+        (invoice_id,)
     ).fetchone()
+    overpayment_excess = 0.0
     if inv and float(inv["amount_paid"]) >= float(inv["total"]) - 0.005 \
             and float(inv["total"]) > 0:
         con.execute(
@@ -8368,9 +8413,155 @@ def record_invoice_payment_v2(invoice_id: int, data: dict,
             "paid_at = COALESCE(paid_at, ?), updated_at=? WHERE id=?",
             (now, now, invoice_id),
         )
+        # Detect overpayment — any excess above the total goes to either
+        # customer credit or refund_owed depending on operator's choice.
+        overpayment_excess = round(float(inv["amount_paid"]) - float(inv["total"]), 2)
+
+    credit_movement_id = None
+    if overpayment_excess > 0.005:
+        # `overpay_action` is set by the v2 endpoint when amount > outstanding.
+        # Default to 'credit' if the caller didn't specify — preserves the
+        # money on the customer's account rather than dropping it on the
+        # floor. The endpoint should always force the choice, but defaulting
+        # to credit here is the safer fail-mode if the field is omitted.
+        action = (data.get("overpay_action") or "credit").lower()
+        if action not in ("credit", "refund"):
+            action = "credit"
+        kind = "overpayment" if action == "credit" else "refund_owed"
+        ledger_amount = overpayment_excess if action == "credit" else -overpayment_excess
+        customer_id = int(inv["customer_id"])
+        credit_movement_id = _record_customer_credit_inline(
+            con, customer_id=customer_id, amount=ledger_amount, kind=kind,
+            source_invoice_id=invoice_id, source_payment_id=payment_id,
+            note=f"Auto: payment of J${amount_jmd:.2f} exceeded invoice "
+                 f"outstanding by J${overpayment_excess:.2f}",
+            created_by=recorded_by, now_iso=now,
+        )
+
     con.commit()
     con.close()
-    return {"id": payment_id, "duplicate": False, "chain_hash": chash}
+    return {
+        "id": payment_id,
+        "duplicate": False,
+        "chain_hash": chash,
+        "overpayment_excess": overpayment_excess,
+        "credit_movement_id": credit_movement_id,
+    }
+
+
+# ── Customer account credit ledger ────────────────────────────────────────
+def _chain_hash_customer_credit(prior_hash: str, row: dict) -> str:
+    """SHA-256 of (prior || canonical_json(row)) for the credit ledger.
+    Mirrors the chain pattern in fs_exceptions / invoice_payments."""
+    import hashlib, json as _j
+    keys = ("customer_id", "amount", "kind", "source_invoice_id",
+            "source_payment_id", "created_by", "created_at")
+    payload = {k: row.get(k) for k in keys}
+    body = (prior_hash or "") + _j.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _record_customer_credit_inline(con, *, customer_id: int, amount: float,
+                                   kind: str, source_invoice_id: int = None,
+                                   source_payment_id: int = None,
+                                   note: str = "", created_by: int = None,
+                                   now_iso: str = None) -> int:
+    """Append a customer_credit_movements row AND update customers.credit_balance
+    atomically within an EXISTING transaction (caller owns the connection).
+    Returns the new movement id.
+
+    Why inline-on-an-existing-connection: this is invoked from within
+    record_invoice_payment_v2 which already holds an open transaction.
+    Opening a second _con() here would deadlock under WAL with another
+    pending writer and break the atomic guarantee that payment+credit
+    move together.
+    """
+    if now_iso is None:
+        now_iso = datetime.now(timezone.utc).isoformat()
+    if kind not in ("overpayment", "refund_owed", "refund_issued",
+                    "applied_to_invoice", "manual_adjustment"):
+        raise ValueError(f"invalid credit movement kind: {kind!r}")
+    # Encrypt the note via the registry path so the same _PII_RAND
+    # discipline applies as everywhere else.
+    note_enc = _enc_dict("customer_credit_movements", {"note": note})["note"]
+    # Chain hash anchored to the most recent movement (any customer).
+    prior = con.execute(
+        "SELECT chain_hash FROM customer_credit_movements "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    prior_hash = prior["chain_hash"] if prior else ""
+    row = {
+        "customer_id":       customer_id,
+        "amount":            float(amount),
+        "kind":              kind,
+        "source_invoice_id": source_invoice_id,
+        "source_payment_id": source_payment_id,
+        "created_by":        created_by,
+        "created_at":        now_iso,
+    }
+    chash = _chain_hash_customer_credit(prior_hash, row)
+    cur = con.execute(
+        "INSERT INTO customer_credit_movements "
+        "(customer_id, amount, kind, source_invoice_id, source_payment_id, "
+        " note, created_by, created_at, prior_chain_hash, chain_hash) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (customer_id, float(amount), kind, source_invoice_id, source_payment_id,
+         note_enc, created_by, now_iso, prior_hash, chash),
+    )
+    movement_id = cur.lastrowid
+    # Maintain the running balance on the customer row.
+    con.execute(
+        "UPDATE customers SET credit_balance = "
+        "COALESCE(credit_balance, 0) + ? WHERE id = ?",
+        (float(amount), customer_id),
+    )
+    return movement_id
+
+
+def record_customer_credit(*, customer_id: int, amount: float, kind: str,
+                           source_invoice_id: int = None,
+                           source_payment_id: int = None,
+                           note: str = "", created_by: int = None) -> int:
+    """Standalone version of the credit recorder for callers that aren't
+    already inside a payment transaction (e.g. manual adjustments,
+    refund_issued events). Opens its own connection.
+    """
+    now_iso = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    try:
+        mid = _record_customer_credit_inline(
+            con, customer_id=customer_id, amount=amount, kind=kind,
+            source_invoice_id=source_invoice_id,
+            source_payment_id=source_payment_id, note=note,
+            created_by=created_by, now_iso=now_iso,
+        )
+        con.commit()
+        return mid
+    finally:
+        con.close()
+
+
+def list_customer_credit_movements(customer_id: int, limit: int = 100) -> list:
+    """Decrypted, most-recent-first ledger for a single customer."""
+    con = _con()
+    rows = con.execute(
+        "SELECT * FROM customer_credit_movements "
+        "WHERE customer_id = ? ORDER BY id DESC LIMIT ?",
+        (customer_id, int(limit)),
+    ).fetchall()
+    con.close()
+    return [_dec_row("customer_credit_movements", r) for r in rows]
+
+
+def get_customer_credit_balance(customer_id: int) -> float:
+    """Convenience read of customers.credit_balance."""
+    con = _con()
+    r = con.execute(
+        "SELECT COALESCE(credit_balance, 0) AS b FROM customers WHERE id = ?",
+        (customer_id,)
+    ).fetchone()
+    con.close()
+    return float(r["b"]) if r else 0.0
 
 
 # ── Status transition helper ───────────────────────────────────────────────

@@ -255,6 +255,17 @@
     if (!d) return '—';
     return new Date(d + 'T00:00:00').toLocaleDateString('en-JM', { day: 'numeric', month: 'long', year: 'numeric' });
   }
+  // paid_at is a full ISO datetime (e.g. 2026-05-22T23:11:46.888+00:00),
+  // not the YYYY-MM-DD shape fmtDate expects. Render it cleanly without
+  // misinterpreting it as a naive date.
+  function fmtPaidAt(iso) {
+    if (!iso) return '—';
+    try {
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return iso;
+      return d.toLocaleDateString('en-JM', { day: 'numeric', month: 'long', year: 'numeric' });
+    } catch (_) { return iso; }
+  }
   function fmtMoney(n, currency) {
     n = Number(n) || 0;
     const sym = currency === 'JMD' ? 'J$' : (currency === 'USD' ? '$' : (currency === 'TTD' ? 'TT$' : ''));
@@ -345,6 +356,18 @@
           <span>${balance <= 0.005 ? 'Paid in Full' : 'Balance Due'}</span>
           <span>${fmtMoney(Math.max(0, balance), inv.currency)}</span>
         </div>
+        ${balance <= 0.005 && inv.paid_at
+          ? `<div class="row subtle" style="font-size:12px;color:#059669;">
+               <span>Paid on</span>
+               <span>${fmtPaidAt(inv.paid_at)}</span>
+             </div>`
+          : ''}
+        ${(inv.amount_paid || 0) > (inv.total || 0) + 0.005
+          ? `<div class="row subtle" style="font-size:12px;color:#0369a1;">
+               <span>Overpayment credited to account</span>
+               <span>${fmtMoney((inv.amount_paid || 0) - (inv.total || 0), inv.currency)}</span>
+             </div>`
+          : ''}
       </div>
 
       ${(inv.payments || []).length > 0 ? `

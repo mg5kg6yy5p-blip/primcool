@@ -9088,12 +9088,18 @@
   }
 
   // ── Payment Modal ─────────────────────────────────────────────────────
+  // _invPayOutstandingJmd is the JMD-equivalent outstanding balance at the
+  // moment the modal opens. _paySubmit reads it to detect overpayment
+  // BEFORE posting, so the operator gets a credit-vs-refund prompt rather
+  // than a server 400.
+  let _invPayOutstandingJmd = null;
   async function openPaymentModal(invoiceId) {
     if (!isSuperAdmin()) { toast('Payment recording requires super_admin','error'); return; }
     let inv;
     try { inv = await api('GET', `/api/admin/invoices/${invoiceId}/full`); }
     catch(e) { toast('Failed to load invoice: '+e.message,'error'); return; }
     const balance = (inv.total||0) - (inv.amount_paid||0);
+    _invPayOutstandingJmd = balance;
     const dc = inv.display_currency || 'JMD';
     let host = document.getElementById('inv-payment-modal');
     if (!host) {
@@ -9188,9 +9194,43 @@
       body.fx_fee_pct_used = parseFloat(document.getElementById('inv-pay-fxfee').value || INV_DEFAULT_FX_FEE);
     }
     if (!body.amount || body.amount <= 0) { toast('Amount must be > 0','error'); return; }
+    // ── Overpayment detection ────────────────────────────────────────────
+    // _invPayOutstandingJmd is stashed by openPaymentModal so we can compare
+    // the entered amount against the live outstanding without re-fetching.
+    // If we don't know the outstanding (defensive null), skip the check and
+    // let the server's overpay-action gate enforce the policy.
+    const outstandingJmd = (typeof _invPayOutstandingJmd === 'number') ? _invPayOutstandingJmd : null;
+    let amountJmd = body.amount;
+    if (body.payment_currency !== 'JMD' && body.fx_rate_used > 0) {
+      const eff = body.fx_rate_used * (1 + (body.fx_fee_pct_used || 0) / 100);
+      amountJmd = body.amount * eff;
+    }
+    if (outstandingJmd !== null && amountJmd > outstandingJmd + 0.005) {
+      const excess = (amountJmd - outstandingJmd).toFixed(2);
+      const choice = window.prompt(
+        'This payment exceeds the outstanding balance by J$' + excess + '.\n\n' +
+        'Type "credit" to apply the excess as account credit (default), or ' +
+        '"refund" to record the excess as money owed back to the customer.',
+        'credit'
+      );
+      if (choice === null) return;  // cancelled
+      const action = String(choice).trim().toLowerCase();
+      if (action !== 'credit' && action !== 'refund') {
+        toast('Overpayment action must be "credit" or "refund".', 'warning');
+        return;
+      }
+      body.overpay_action = action;
+    }
     try {
       const r = await api('POST', `/api/admin/invoices/${invoiceId}/payments/v2`, body);
-      toast(r.duplicate ? 'Duplicate suppressed' : 'Payment recorded', 'success');
+      let msg = r.duplicate ? 'Duplicate suppressed' : 'Payment recorded';
+      const excess = Number(r.overpayment_excess || 0);
+      if (excess > 0.005) {
+        msg += (r.overpay_action === 'refund')
+          ? ' · J$' + excess.toFixed(2) + ' refund owed to customer'
+          : ' · J$' + excess.toFixed(2) + ' credited to account';
+      }
+      toast(msg, 'success');
       document.getElementById('inv-payment-modal').remove();
       loadInvoices();
       if (_invEditState && _invEditState.id === invoiceId) openInvoiceEditView(invoiceId);

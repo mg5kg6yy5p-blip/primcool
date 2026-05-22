@@ -4580,6 +4580,18 @@ async def admin_invoice_payment_v2(request: Request, invoice_id: int):
     pay_cur = (body.get("payment_currency") or "JMD").upper()
     if pay_cur not in _INVOICE_CURRENCIES:
         raise HTTPException(400, "Invalid payment_currency")
+    # Overpayment policy — the operator must choose what to do with any
+    # excess. The frontend sends 'overpay_action' when it detects the
+    # amount exceeds outstanding. Two valid actions:
+    #   'credit'  — excess goes to customers.credit_balance as a positive
+    #               account credit (kind=overpayment in the ledger)
+    #   'refund'  — excess is logged as money owed back to the customer
+    #               (kind=refund_owed, negative ledger entry). Operator
+    #               processes the actual refund outside the app.
+    # When amount <= outstanding the field is ignored.
+    overpay_action = (body.get("overpay_action") or "").lower() or None
+    if overpay_action and overpay_action not in ("credit", "refund"):
+        raise HTTPException(400, "overpay_action must be 'credit' or 'refund'")
 
     foreign_amount = foreign_currency = None
     fx_rate_used = fx_fee_pct_used = effective_rate = None
@@ -4598,6 +4610,20 @@ async def admin_invoice_payment_v2(request: Request, invoice_id: int):
         foreign_currency = pay_cur
         amount_jmd       = round(amount * effective_rate, 2)
 
+    # Server-side overpay-action gate: if the amount JMD exceeds the
+    # invoice's current outstanding by more than a rounding penny, the
+    # caller MUST have specified overpay_action. This stops a stray UI
+    # bug (or scripted client) from silently dumping money into the
+    # account without the operator choosing the disposition.
+    outstanding_now = round(float(inv["total"]) - float(inv["amount_paid"]), 2)
+    if amount_jmd > outstanding_now + 0.005 and not overpay_action:
+        raise HTTPException(
+            400,
+            f"Payment exceeds outstanding (J${outstanding_now:.2f}) by "
+            f"J${(amount_jmd - outstanding_now):.2f}. Specify "
+            f"overpay_action='credit' or 'refund'.",
+        )
+
     payload = {
         "amount_jmd":           amount_jmd,
         "payment_method":       method,
@@ -4608,6 +4634,7 @@ async def admin_invoice_payment_v2(request: Request, invoice_id: int):
         "fx_rate_used":         fx_rate_used,
         "fx_fee_pct_used":      fx_fee_pct_used,
         "effective_rate_used":  effective_rate,
+        "overpay_action":       overpay_action,
     }
     result = record_invoice_payment_v2(
         invoice_id, payload,
@@ -4616,6 +4643,7 @@ async def admin_invoice_payment_v2(request: Request, invoice_id: int):
         recorded_by_prid=admin.get("prid"),
     )
     after = get_invoice_by_id(invoice_id, with_lines=False)
+    excess = float(result.get("overpayment_excess") or 0)
     if result.get("duplicate"):
         _audit_from(admin, "invoice.payment_recorded.duplicate_blocked",
                     request, target_type="invoice", target_id=invoice_id,
@@ -4630,12 +4658,30 @@ async def admin_invoice_payment_v2(request: Request, invoice_id: int):
                            "method": method,
                            "fx_rate_used": fx_rate_used,
                            "new_balance": round(
-                               after["total"] - after["amount_paid"], 2)})
+                               after["total"] - after["amount_paid"], 2),
+                           "overpayment_excess": excess,
+                           "overpay_action": overpay_action})
+        if excess > 0.005:
+            # Audit the overpayment disposition as its own event so the
+            # operator can search the audit log for credit_applied vs
+            # refund_owed events independent of payment_recorded.
+            disposition = "customer.credit_applied" if (overpay_action or "credit") == "credit" \
+                else "customer.refund_owed"
+            _audit_from(admin, disposition, request,
+                        target_type="customer", target_id=inv["customer_id"],
+                        target_label=inv["invoice_number"],
+                        after={"excess_jmd": excess,
+                               "source_invoice_id": invoice_id,
+                               "source_payment_id": result["id"]})
     return {
-        "id":           result["id"],
-        "duplicate":    result.get("duplicate", False),
-        "amount_paid":  after["amount_paid"],
-        "status":       after["status"],
+        "id":                 result["id"],
+        "duplicate":          result.get("duplicate", False),
+        "amount_paid":        after["amount_paid"],
+        "status":             after["status"],
+        "paid_at":            after.get("paid_at"),
+        "overpayment_excess": excess,
+        "overpay_action":     overpay_action,
+        "credit_movement_id": result.get("credit_movement_id"),
     }
 
 
