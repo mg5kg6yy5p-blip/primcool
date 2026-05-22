@@ -9111,27 +9111,32 @@
         <div style="font-size:13px;color:var(--muted);margin-bottom:12px;">Outstanding balance: <strong>${_invFmt(balance,'JMD')}</strong></div>
         <div style="display:grid;gap:10px;">
           <div>
-            <label for="pay-currency" style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">Payment Currency</label>
-            <select id="pay-currency" onchange="_payRecalc()" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+            <label for="inv-pay-currency" style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">Payment Currency</label>
+            <select id="inv-pay-currency" onchange="_payRecalc()" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
               <option value="JMD" ${dc==='JMD'?'selected':''}>JMD</option>
               <option value="USD" ${dc==='USD'?'selected':''}>USD</option>
               <option value="GBP" ${dc==='GBP'?'selected':''}>GBP</option>
             </select>
           </div>
           <div>
-            <label for="pay-amount" style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">Amount Paid</label>
-            <input id="pay-amount" type="number" step="0.01" min="0.01" oninput="_payRecalc()" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+            <!-- IDs prefixed inv-pay-* to avoid collision with the v1 modal
+                 at line ~1511 which also uses pay-amount / pay-method etc.
+                 Pre-fix: document.getElementById('pay-amount') returned the
+                 v1 hidden field, not v2's visible one — every payment
+                 submission failed with "Amount must be > 0". -->
+            <label for="inv-pay-amount" style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">Amount Paid</label>
+            <input id="inv-pay-amount" type="number" step="0.01" min="0.01" oninput="_payRecalc()" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
           </div>
-          <div id="pay-fx-row" style="display:${dc!=='JMD'?'grid':'none'};grid-template-columns:1fr 1fr;gap:8px;">
+          <div id="inv-pay-fx-row" style="display:${dc!=='JMD'?'grid':'none'};grid-template-columns:1fr 1fr;gap:8px;">
             <div><label style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">FX Rate (JMD per 1)</label>
-              <input id="pay-fxrate" type="number" step="0.0001" value="${inv.fx_rate_used||''}" oninput="_payRecalc()" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;"></div>
+              <input id="inv-pay-fxrate" type="number" step="0.0001" value="${inv.fx_rate_used||''}" oninput="_payRecalc()" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;"></div>
             <div><label style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">FX Fee (%)</label>
-              <input id="pay-fxfee" type="number" step="0.01" min="0" max="50" value="${inv.fx_fee_pct||INV_DEFAULT_FX_FEE}" oninput="_payRecalc()" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;"></div>
+              <input id="inv-pay-fxfee" type="number" step="0.01" min="0" max="50" value="${inv.fx_fee_pct||INV_DEFAULT_FX_FEE}" oninput="_payRecalc()" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;"></div>
           </div>
-          <div id="pay-jmd-equiv" style="font-size:13px;color:#059669;font-weight:600;"></div>
+          <div id="inv-pay-jmd-equiv" style="font-size:13px;color:#059669;font-weight:600;"></div>
           <div>
-            <label for="pay-method" style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">Payment Method</label>
-            <select id="pay-method" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+            <label for="inv-pay-method" style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">Payment Method</label>
+            <select id="inv-pay-method" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
               <option value="cash">Cash</option>
               <option value="bank_transfer">Bank Transfer</option>
               <option value="cheque">Cheque</option>
@@ -9140,12 +9145,12 @@
             </select>
           </div>
           <div>
-            <label for="pay-date" style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">Payment Date</label>
-            <input id="pay-date" type="date" value="${new Date().toISOString().slice(0,10)}" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+            <label for="inv-pay-date" style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">Payment Date</label>
+            <input id="inv-pay-date" type="date" value="${new Date().toISOString().slice(0,10)}" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
           </div>
           <div>
-            <label for="pay-notes" style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">Notes (optional)</label>
-            <textarea id="pay-notes" maxlength="1000" rows="2" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;"></textarea>
+            <label for="inv-pay-notes" style="display:block;font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">Notes (optional)</label>
+            <textarea id="inv-pay-notes" maxlength="1000" rows="2" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;"></textarea>
           </div>
         </div>
         <div style="margin-top:14px;display:flex;justify-content:flex-end;gap:8px;">
@@ -9157,14 +9162,14 @@
   }
 
   function _payRecalc() {
-    const cur = document.getElementById('pay-currency').value;
-    const fxRow = document.getElementById('pay-fx-row');
+    const cur = document.getElementById('inv-pay-currency').value;
+    const fxRow = document.getElementById('inv-pay-fx-row');
     fxRow.style.display = (cur === 'JMD') ? 'none' : 'grid';
-    const equiv = document.getElementById('pay-jmd-equiv');
-    const amt = parseFloat((document.getElementById('pay-amount')||{}).value || 0);
+    const equiv = document.getElementById('inv-pay-jmd-equiv');
+    const amt = parseFloat((document.getElementById('inv-pay-amount')||{}).value || 0);
     if (cur === 'JMD') { equiv.textContent = ''; return; }
-    const r = parseFloat((document.getElementById('pay-fxrate')||{}).value || 0);
-    const f = parseFloat((document.getElementById('pay-fxfee')||{}).value || 0);
+    const r = parseFloat((document.getElementById('inv-pay-fxrate')||{}).value || 0);
+    const f = parseFloat((document.getElementById('inv-pay-fxfee')||{}).value || 0);
     const eff = r * (1 + f/100);
     const jmd = amt * eff;
     equiv.textContent = `JMD equivalent: ${_invFmt(jmd,'JMD')} (effective ${eff.toFixed(4)} JMD/${cur})`;
@@ -9172,15 +9177,15 @@
 
   async function _paySubmit(invoiceId) {
     const body = {
-      amount: parseFloat(document.getElementById('pay-amount').value || 0),
-      payment_currency: document.getElementById('pay-currency').value,
-      payment_method:   document.getElementById('pay-method').value,
-      payment_date:     document.getElementById('pay-date').value,
-      notes:            document.getElementById('pay-notes').value,
+      amount: parseFloat(document.getElementById('inv-pay-amount').value || 0),
+      payment_currency: document.getElementById('inv-pay-currency').value,
+      payment_method:   document.getElementById('inv-pay-method').value,
+      payment_date:     document.getElementById('inv-pay-date').value,
+      notes:            document.getElementById('inv-pay-notes').value,
     };
     if (body.payment_currency !== 'JMD') {
-      body.fx_rate_used    = parseFloat(document.getElementById('pay-fxrate').value || 0);
-      body.fx_fee_pct_used = parseFloat(document.getElementById('pay-fxfee').value || INV_DEFAULT_FX_FEE);
+      body.fx_rate_used    = parseFloat(document.getElementById('inv-pay-fxrate').value || 0);
+      body.fx_fee_pct_used = parseFloat(document.getElementById('inv-pay-fxfee').value || INV_DEFAULT_FX_FEE);
     }
     if (!body.amount || body.amount <= 0) { toast('Amount must be > 0','error'); return; }
     try {
