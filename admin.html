@@ -53,12 +53,34 @@
     .login-card p  { color: var(--muted); font-size: 13px; margin-bottom: 28px; }
 
     /* ── Layout ── */
-    .layout { display: flex; min-height: calc(100vh - 56px); }
+    .layout { display: flex; min-height: calc(100vh - 56px); align-items: flex-start; }
     .sidebar {
       width: 220px; flex-shrink: 0;
       background: var(--white); border-right: 1px solid var(--border);
       padding: 20px 12px;
+      /* Sticky so it stays in view while the main content scrolls. The
+         header is 56px tall, so we offset top by that amount and cap the
+         sidebar height to the remaining viewport — internal overflow
+         scrolls within the sidebar if its own items don't fit. */
+      position: sticky;
+      top: 56px;
+      max-height: calc(100vh - 56px);
+      overflow-y: auto;
     }
+    /* ── Drag-to-reorder affordances ────────────────────────────────── */
+    .sidebar .nav-item { cursor: grab; }
+    .sidebar .nav-item:active { cursor: grabbing; }
+    .sidebar .nav-item.pc-dragging { opacity: 0.4; }
+    .sidebar .nav-item.pc-drag-over-top    { box-shadow: inset 0 2px 0 0 var(--teal); }
+    .sidebar .nav-item.pc-drag-over-bottom { box-shadow: inset 0 -2px 0 0 var(--teal); }
+    .sidebar-reset {
+      font-size: 11px; color: var(--muted);
+      padding: 8px 14px 4px;
+      cursor: pointer; user-select: none;
+      border-top: 1px dashed var(--border);
+      margin-top: 8px;
+    }
+    .sidebar-reset:hover { color: var(--navy); }
     .nav-item {
       display: flex; align-items: center; gap: 10px;
       padding: 10px 14px; border-radius: 8px;
@@ -482,6 +504,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
         Performance KPI
         <span id="kpiFlagBadge" style="margin-left:auto;background:var(--danger);color:white;font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px;display:none;"></span>
+      </div>
+      <div class="sidebar-reset" id="sidebarResetOrder" title="Restore the default sidebar order"
+           onclick="resetSidebarOrder()" style="display:none;">
+        ↺ Reset order
       </div>
     </nav>
 
@@ -2669,6 +2695,7 @@
       const me = await api('GET', '/api/admin/me');
       currentAdmin = me;
       applyRoleVisibility();
+      _initSidebarReorder();
     } catch {}
     loadCustomers();
     loadAllVisits();
@@ -2774,6 +2801,121 @@
       tag.textContent = currentAdmin.role.replace(/_/g,' ');
       tag.title = `${currentAdmin.name} (${currentAdmin.prid || ''})`;
     }
+  }
+
+  // ── Sidebar drag-to-reorder with per-admin localStorage persistence ───────
+  //
+  // Each admin can drag the sidebar nav items into their preferred order.
+  // The order is keyed by currentAdmin.id so two admins on the same browser
+  // do not overwrite each other. Hidden items (role-gated display:none) are
+  // included in the saved order — when their role flips visible, they appear
+  // in the right slot.
+  //
+  // Drag-and-drop is HTML5 native. No library, no dependency.
+  function _sidebarStorageKey() {
+    const id = (currentAdmin && currentAdmin.id) ? currentAdmin.id : 'anon';
+    return `pc.sidebar.order.v1.${id}`;
+  }
+
+  function _initSidebarReorder() {
+    const nav = document.querySelector('nav.sidebar');
+    if (!nav) return;
+    // Apply saved order BEFORE attaching handlers so the DOM is in the
+    // final shape the user expects to drag from.
+    _applySidebarOrder();
+    // Show the reset link once an order has been saved (any saved order
+    // means the user has customized; offer to undo).
+    const reset = document.getElementById('sidebarResetOrder');
+    if (reset) {
+      const has = !!localStorage.getItem(_sidebarStorageKey());
+      reset.style.display = has ? 'block' : 'none';
+    }
+    // Attach drag handlers to every .nav-item once.
+    nav.querySelectorAll('.nav-item').forEach(_attachDragHandlers);
+  }
+
+  function _attachDragHandlers(el) {
+    if (el.dataset.pcDragWired === '1') return;
+    el.dataset.pcDragWired = '1';
+    el.setAttribute('draggable', 'true');
+    el.addEventListener('dragstart', (e) => {
+      el.classList.add('pc-dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      // Some browsers require data to be set or drag is cancelled.
+      try { e.dataTransfer.setData('text/plain', el.id); } catch(_) {}
+    });
+    el.addEventListener('dragend', () => {
+      el.classList.remove('pc-dragging');
+      document.querySelectorAll('.pc-drag-over-top, .pc-drag-over-bottom')
+        .forEach(x => x.classList.remove('pc-drag-over-top', 'pc-drag-over-bottom'));
+    });
+    el.addEventListener('dragover', (e) => {
+      e.preventDefault();   // allow drop
+      e.dataTransfer.dropEffect = 'move';
+      const rect = el.getBoundingClientRect();
+      const before = (e.clientY - rect.top) < rect.height / 2;
+      el.classList.toggle('pc-drag-over-top', before);
+      el.classList.toggle('pc-drag-over-bottom', !before);
+    });
+    el.addEventListener('dragleave', () => {
+      el.classList.remove('pc-drag-over-top', 'pc-drag-over-bottom');
+    });
+    el.addEventListener('drop', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const draggedId = e.dataTransfer.getData('text/plain');
+      const dragged = draggedId && document.getElementById(draggedId);
+      if (!dragged || dragged === el) return;
+      const rect = el.getBoundingClientRect();
+      const before = (e.clientY - rect.top) < rect.height / 2;
+      const nav = el.parentNode;
+      if (before) nav.insertBefore(dragged, el);
+      else        nav.insertBefore(dragged, el.nextSibling);
+      el.classList.remove('pc-drag-over-top', 'pc-drag-over-bottom');
+      _saveSidebarOrder();
+      const reset = document.getElementById('sidebarResetOrder');
+      if (reset) reset.style.display = 'block';
+    });
+  }
+
+  function _saveSidebarOrder() {
+    const nav = document.querySelector('nav.sidebar');
+    if (!nav) return;
+    const ids = Array.from(nav.querySelectorAll('.nav-item'))
+      .map(el => el.id).filter(Boolean);
+    try { localStorage.setItem(_sidebarStorageKey(), JSON.stringify(ids)); }
+    catch (_) { /* localStorage may be unavailable in private mode */ }
+  }
+
+  function _applySidebarOrder() {
+    const nav = document.querySelector('nav.sidebar');
+    if (!nav) return;
+    let saved;
+    try { saved = JSON.parse(localStorage.getItem(_sidebarStorageKey()) || 'null'); }
+    catch (_) { saved = null; }
+    if (!Array.isArray(saved) || !saved.length) return;
+    // Reorder per saved list. Items not in `saved` (newly-added since the
+    // user last customized) keep their default position by being appended
+    // at the end after the saved order is applied.
+    const present = new Map();
+    nav.querySelectorAll('.nav-item').forEach(el => present.set(el.id, el));
+    // Pull saved-order items to the top in order.
+    saved.forEach(id => {
+      const el = present.get(id);
+      if (el) {
+        nav.insertBefore(el, document.getElementById('sidebarResetOrder') || null);
+        present.delete(id);
+      }
+    });
+    // present now contains items that weren't in the saved list — they
+    // stay where they currently are (already after the moved ones).
+  }
+
+  function resetSidebarOrder() {
+    try { localStorage.removeItem(_sidebarStorageKey()); } catch (_) {}
+    // Hard reload so the original DOM order (the HTML source order) is
+    // restored without trying to invert a custom permutation in JS.
+    location.reload();
   }
 
   // ── Account security / MFA ────────────────────────────────────────────────
