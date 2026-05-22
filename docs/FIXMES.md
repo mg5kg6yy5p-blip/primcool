@@ -25,6 +25,42 @@ Severity legend: **Security** (auth/PII/audit gap) · **Functional**
 | `database.py:7547`         | Functional | 5S exception-photo helpers were added as an unblock for `tech.html`'s queue; consolidate with the main photo helpers once the 5S module is GA. |
 | `database.py:7659`         | Functional | Parts catalog search swallows `OperationalError` when the `parts` table is absent — inventory module not installed. Remove the swallow once the module is required. |
 
+## Pre-Launch Locks (do NOT change until the pre-launch cleanup)
+
+These are deliberate dev-only values that the operator has frozen until
+the formal pre-launch credential rotation. They MUST hold across every
+re-seed, every fresh DB init, every demo refresh. Changing any of them
+silently breaks operator muscle memory and the in-flight test harness.
+
+| Lock | Value | Where enforced |
+|---|---|---|
+| All admin passwords | `PrimeCool!Dev2026` | `scripts/seed_full_demo.py` (admin seed loop) |
+| All tech PINs | `123456` | `scripts/seed_full_demo.py` (tech seed loop) |
+| Customer PIN formula | `1000 + customer.id` (4 digits) | `scripts/seed_full_demo.py` (customer seed loop) |
+| Bootstrap super_admin | `director` / `PrimeCool!Dev2026` | `.env.example` defaults + first-boot bootstrap in `main.py` |
+
+**Pre-launch cleanup checklist (the unlock point for the rows above):**
+
+1. Rotate `JWT_SECRET`, `FIELD_ENCRYPTION_KEY`, `PHOTO_URL_SECRET` to
+   fresh prod values; document the rotation procedure for
+   `FIELD_ENCRYPTION_KEY` (which cannot rotate without re-encrypting
+   every row — see Phase 2 of the security hardening plan).
+2. Force every admin and tech to set a strong password/PIN on first
+   prod login (one-shot flag column). Drop the seeded defaults.
+3. Resolve `GAP-PIN-STRENGTH` — customer PINs at 4 digits give only
+   10⁴ entropy. Decide: raise to 6-digit, OR require MFA for
+   commercial customers, OR enforce a per-customer PIN-set-by-user
+   step at first portal login.
+4. Wipe the dev `submissions.db` and re-seed ONLY real prospect data;
+   delete the seeded demo customers + visits + invoices.
+5. Tighten CORS `allow_origins` from `*` to the production domain
+   (GAP-CORS) and audit the X-Forwarded-For trust scope (PC-003).
+6. Confirm GPG is installed on the production host and the encrypted
+   backup script (`scripts/backup.sh`) runs end-to-end before the
+   first real customer record is written.
+
+Until all six are checked, the dev locks above stay in place.
+
 ## Conventions
 
 - Sort by severity (Security → Functional → Cosmetic) within a section.
