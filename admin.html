@@ -6002,6 +6002,23 @@
         </div>`;
       }).join('');
       const top5 = (a.by_customer || []).slice(0, 5);
+      // Top Customers — names are clickable, navigate to that customer's
+      // detail view (which lists their invoices). Use PC.gateLinkHtml so
+      // non-super-admin viewers still see the name as plain text if their
+      // role lacks customer:view.
+      const _customerNameCell = function (c) {
+        const label = escHtml(c.customer_name) +
+          ' <span style="color:var(--muted);font-size:11px;">' +
+          escHtml(c.customer_code) + '</span>';
+        if (typeof PC !== 'undefined' && PC.gateLinkHtml) {
+          return PC.gateLinkHtml('customer', c.customer_id, label, {
+            onClick: 'openCustomerDetailFull(' + c.customer_id + ')'
+          });
+        }
+        return '<a class="pc-link" href="#customer/' + c.customer_id +
+               '" onclick="event.preventDefault();event.stopPropagation();' +
+               'openCustomerDetailFull(' + c.customer_id + ');">' + label + '</a>';
+      };
       host.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;">
           <h3 style="margin:0;color:var(--navy);">Accounts Receivable Aging</h3>
@@ -6014,20 +6031,20 @@
             <thead><tr style="text-align:left;color:var(--muted);"><th style="padding:4px;">Customer</th><th style="padding:4px;text-align:right;">Outstanding</th><th style="padding:4px;text-align:right;">Invoices</th><th style="padding:4px;text-align:right;">Oldest (days)</th></tr></thead>
             <tbody>${top5.map(c => `
               <tr style="border-top:1px solid var(--border);">
-                <td style="padding:6px 4px;">${escHtml(c.customer_name)} <span style="color:var(--muted);font-size:11px;">${escHtml(c.customer_code)}</span></td>
+                <td style="padding:6px 4px;">${_customerNameCell(c)}</td>
                 <td style="padding:6px 4px;text-align:right;font-weight:600;">${fmt(c.total_outstanding)}</td>
                 <td style="padding:6px 4px;text-align:right;">${c.invoice_count}</td>
                 <td style="padding:6px 4px;text-align:right;color:${c.oldest_days_overdue>90?'#991b1b':c.oldest_days_overdue>60?'#9a3412':c.oldest_days_overdue>30?'#92400e':'var(--muted)'};font-weight:600;">${c.oldest_days_overdue}</td>
               </tr>`).join('')}</tbody>
           </table>
         ` : ''}`;
-      // Wire each aging bucket as a PC.gateBadge for keyboard / click + access gating.
-      if (typeof PC !== 'undefined' && PC.gateBadge) {
-        order.forEach(function (k) {
-          const el = host.querySelector('.pc-aging-bucket-clickable[data-bucket="' + k + '"]');
-          if (el) PC.gateBadge(el, '', 'invoice', function () { setInvoiceAgingFilter(k); });
-        });
-      }
+      // The bucket tiles already have onclick + tabindex + role="button" +
+      // onkeydown wired inline. We do NOT call PC.gateBadge here — that
+      // helper overwrites textContent, wiping the rich tile content
+      // (label / amount / count) and leaving blank tiles. Confirmed bug
+      // from commit ef13116. The inline click/keyboard handlers carry
+      // the a11y; PC.canRead can be added later as a render-time gate if
+      // some roles need bucket-level filtering disabled.
     } catch (e) {
       host.innerHTML = `<div style="color:var(--muted);font-size:13px;">AR aging unavailable: ${escHtml(e.message)}</div>`;
     }
