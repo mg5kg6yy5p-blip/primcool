@@ -1839,6 +1839,22 @@ def init_db():
         )
     """)
     con.execute("""
+        CREATE TABLE IF NOT EXISTS tech_cv_edit_requests (
+            id INTEGER PRIMARY KEY,
+            tech_id INTEGER NOT NULL,
+            entry_id INTEGER NOT NULL,
+            requested_at TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN
+                ('pending','approved','denied','consumed')) DEFAULT 'pending',
+            responded_at TEXT,
+            responded_by_admin_id INTEGER,
+            grant_until TEXT,
+            note TEXT
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_cv_edit_req_pending "
+                "ON tech_cv_edit_requests(status, tech_id, entry_id)")
+    con.execute("""
         CREATE TABLE IF NOT EXISTS kpi_periods_released_to_tech (
             id INTEGER PRIMARY KEY,
             tech_id INTEGER NOT NULL,
@@ -12160,6 +12176,163 @@ def update_tech_cv_entry(entry_id: int, tech_id: int, fields: dict) -> str:
     con.commit()
     con.close()
     return "ok"
+
+
+def consume_cv_edit_grant(entry_id: int, tech_id: int) -> bool:
+    """Called after the tech finishes editing — expires the grant window
+    so the entry re-locks immediately. Per spec: "as soon as they
+    finish editing, it reverts back to Request Edit." Also marks the
+    matching approved request as 'consumed' for the admin audit trail."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    # Confirm ownership before scrubbing the grant.
+    owner = con.execute(
+        "SELECT 1 FROM tech_cv_entries WHERE id = ? AND tech_id = ?",
+        (entry_id, tech_id),
+    ).fetchone()
+    if not owner:
+        con.close()
+        return False
+    con.execute(
+        "UPDATE tech_cv_entries SET edit_grant_until = ?, updated_at = ? "
+        "WHERE id = ?",
+        (now_iso, now_iso, entry_id),
+    )
+    con.execute(
+        "UPDATE tech_cv_edit_requests SET status = 'consumed', "
+        "responded_at = COALESCE(responded_at, ?) "
+        "WHERE entry_id = ? AND tech_id = ? AND status = 'approved'",
+        (now_iso, entry_id, tech_id),
+    )
+    con.commit()
+    con.close()
+    return True
+
+
+# ── CV edit-request workflow ──────────────────────────────
+def request_cv_edit(tech_id: int, entry_id: int,
+                    note: str = None):
+    """Tech opens an edit request on a locked CV entry. Returns the new
+    request id, or None if a pending request already exists for this
+    entry (one-at-a-time). Returns -1 if entry doesn't belong to tech
+    or isn't locked."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    row = con.execute(
+        "SELECT status FROM tech_cv_entries WHERE id = ? AND tech_id = ?",
+        (entry_id, tech_id),
+    ).fetchone()
+    if not row:
+        con.close()
+        return -1
+    if row["status"] != "locked":
+        con.close()
+        return -1  # drafts are already editable; nothing to request
+    existing = con.execute(
+        "SELECT id FROM tech_cv_edit_requests WHERE tech_id = ? "
+        "AND entry_id = ? AND status = 'pending'",
+        (tech_id, entry_id),
+    ).fetchone()
+    if existing:
+        con.close()
+        return None
+    cur = con.execute(
+        "INSERT INTO tech_cv_edit_requests (tech_id, entry_id, requested_at, "
+        "status, note) VALUES (?, ?, ?, 'pending', ?)",
+        (tech_id, entry_id, now, note),
+    )
+    rid = cur.lastrowid
+    con.commit()
+    con.close()
+    return rid
+
+
+def get_pending_cv_edit_request(tech_id: int, entry_id: int):
+    con = _con()
+    row = con.execute(
+        "SELECT * FROM tech_cv_edit_requests WHERE tech_id = ? "
+        "AND entry_id = ? AND status = 'pending' "
+        "ORDER BY id DESC LIMIT 1",
+        (tech_id, entry_id),
+    ).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
+def list_pending_cv_edit_requests(tech_id: int = None) -> list:
+    """Admin queue. tech_id=None → all techs."""
+    con = _con()
+    if tech_id is not None:
+        rows = con.execute(
+            "SELECT r.*, t.name AS tech_name, t.tech_code "
+            "FROM tech_cv_edit_requests r "
+            "JOIN technicians t ON t.id = r.tech_id "
+            "WHERE r.status = 'pending' AND r.tech_id = ? "
+            "ORDER BY r.requested_at ASC",
+            (tech_id,),
+        ).fetchall()
+    else:
+        rows = con.execute(
+            "SELECT r.*, t.name AS tech_name, t.tech_code "
+            "FROM tech_cv_edit_requests r "
+            "JOIN technicians t ON t.id = r.tech_id "
+            "WHERE r.status = 'pending' "
+            "ORDER BY r.requested_at ASC",
+        ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def approve_cv_edit_request(request_id: int, admin_id: int,
+                            grant_minutes: int = 60):
+    """Approve → flip request to approved AND grant the edit window on
+    the entry. Returns {entry_id, tech_id, grant_until} on success or
+    None if request doesn't exist / isn't pending."""
+    now = datetime.now(timezone.utc).isoformat()
+    until = (datetime.now(timezone.utc) +
+             timedelta(minutes=int(grant_minutes))).isoformat()
+    con = _con()
+    row = con.execute(
+        "SELECT tech_id, entry_id FROM tech_cv_edit_requests "
+        "WHERE id = ? AND status = 'pending'",
+        (request_id,),
+    ).fetchone()
+    if not row:
+        con.close()
+        return None
+    con.execute(
+        "UPDATE tech_cv_edit_requests SET status = 'approved', "
+        "responded_at = ?, responded_by_admin_id = ?, grant_until = ? "
+        "WHERE id = ?",
+        (now, admin_id, until, request_id),
+    )
+    con.execute(
+        "UPDATE tech_cv_entries SET edit_grant_by_admin_id = ?, "
+        "edit_grant_at = ?, edit_grant_until = ?, updated_at = ? "
+        "WHERE id = ?",
+        (admin_id, now, until, now, row["entry_id"]),
+    )
+    con.commit()
+    con.close()
+    return {"entry_id": row["entry_id"], "tech_id": row["tech_id"],
+            "grant_until": until}
+
+
+def deny_cv_edit_request(request_id: int, admin_id: int,
+                         note: str = None) -> bool:
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    cur = con.execute(
+        "UPDATE tech_cv_edit_requests SET status = 'denied', "
+        "responded_at = ?, responded_by_admin_id = ?, "
+        "note = COALESCE(?, note) "
+        "WHERE id = ? AND status = 'pending'",
+        (now, admin_id, note, request_id),
+    )
+    con.commit()
+    n = cur.rowcount
+    con.close()
+    return n > 0
 
 
 # ── KPI period release ────────────────────────────────────

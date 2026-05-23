@@ -159,16 +159,92 @@
     <!-- ── My Profile tab ────────────────────────────────────────── -->
     <section id="paneProfile" style="display:none;">
       <div class="card">
-        <h2>My Profile</h2>
+        <h2>Profile</h2>
         <div id="profileBody"><div class="empty">Loading…</div></div>
       </div>
+
       <div class="card">
-        <div class="muted" style="font-size:13px;">
-          Full profile page with CV, certifications, KPI history, and pay
-          schedule is coming in the next release (TP-4).
+        <h2>My Schedule</h2>
+        <div id="scheduleBody"><div class="empty">Loading…</div></div>
+        <div class="muted" style="font-size:12px;margin-top:8px;">
+          To change your schedule or on-call rotation, contact your
+          supervisor or payroll admin.
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Pay</h2>
+        <div id="payBody"><div class="empty">Loading…</div></div>
+      </div>
+
+      <div class="card">
+        <h2>Performance (KPI)</h2>
+        <div id="kpiBody"><div class="empty">Loading…</div></div>
+        <div class="muted" style="font-size:12px;margin-top:8px;">
+          You see periods after your supervisor releases them.
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Certifications</h2>
+        <div id="certsBody"><div class="empty">Loading…</div></div>
+        <div class="muted" style="font-size:12px;margin-top:8px;">
+          Certifications are added by your supervisor. If a certification
+          is missing, ask them to add it.
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>CV / Work history</h2>
+        <div id="cvBody"><div class="empty">Loading…</div></div>
+        <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn-ghost" style="padding:8px 14px;border-radius:8px;font-size:13px;font-weight:600;border:1px solid var(--border);background:#f3f4f6;color:var(--navy);width:auto;cursor:pointer;"
+                  onclick="cvOpenNew()">+ Add entry</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Account</h2>
+        <div id="acctBody">
+          <div class="schedule-line">
+            <span>Sign out everywhere</span>
+            <button class="btn-ghost" style="padding:6px 12px;border-radius:6px;font-size:12px;font-weight:600;border:1px solid var(--border);background:#fff;color:var(--navy);width:auto;cursor:pointer;"
+                    onclick="doLogout()">Sign out</button>
+          </div>
+          <div class="muted" style="font-size:12px;margin-top:10px;">
+            To change your PIN or enable 2FA on this account, contact your
+            supervisor.
+          </div>
         </div>
       </div>
     </section>
+
+    <!-- CV entry modal — used for "Add" and "Edit" -->
+    <div id="cvModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:100;align-items:center;justify-content:center;padding:14px;">
+      <div style="background:#fff;border-radius:12px;padding:20px;max-width:480px;width:100%;max-height:90vh;overflow:auto;">
+        <h3 id="cvModalTitle" style="margin:0 0 14px;color:var(--navy);">CV entry</h3>
+        <label style="display:block;font-size:13px;font-weight:600;color:#374151;margin-bottom:4px;">Company / employer</label>
+        <input id="cvCompany" type="text" style="width:100%;padding:9px;border:1px solid var(--border);border-radius:8px;font-size:14px;margin-bottom:10px;">
+        <label style="display:block;font-size:13px;font-weight:600;color:#374151;margin-bottom:4px;">Title / role</label>
+        <input id="cvTitle" type="text" style="width:100%;padding:9px;border:1px solid var(--border);border-radius:8px;font-size:14px;margin-bottom:10px;">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+          <div>
+            <label style="display:block;font-size:13px;font-weight:600;color:#374151;margin-bottom:4px;">Start (YYYY-MM)</label>
+            <input id="cvStart" type="text" placeholder="2022-01" style="width:100%;padding:9px;border:1px solid var(--border);border-radius:8px;font-size:14px;margin-bottom:10px;">
+          </div>
+          <div>
+            <label style="display:block;font-size:13px;font-weight:600;color:#374151;margin-bottom:4px;">End</label>
+            <input id="cvEnd" type="text" placeholder="present" style="width:100%;padding:9px;border:1px solid var(--border);border-radius:8px;font-size:14px;margin-bottom:10px;">
+          </div>
+        </div>
+        <label style="display:block;font-size:13px;font-weight:600;color:#374151;margin-bottom:4px;">Description / responsibilities</label>
+        <textarea id="cvDesc" class="modal-input" style="min-height:90px;"></textarea>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">
+          <button class="btn-ghost" style="padding:9px 14px;border-radius:8px;font-size:13px;font-weight:600;border:1px solid var(--border);background:#f3f4f6;color:var(--navy);width:auto;cursor:pointer;" onclick="cvCloseModal()">Cancel</button>
+          <button class="btn-primary" style="padding:9px 14px;border-radius:8px;font-size:13px;font-weight:600;border:none;background:var(--teal);color:#fff;width:auto;cursor:pointer;" onclick="cvSaveModal()">Save</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script src="/static/pc_shared.js"></script>
@@ -258,7 +334,7 @@
       document.getElementById('tabProfile').classList.toggle('active', t === 'profile');
       document.getElementById('paneSignin').style.display  = (t === 'signin')  ? '' : 'none';
       document.getElementById('paneProfile').style.display = (t === 'profile') ? '' : 'none';
-      if (t === 'profile' && !profile) loadProfile();
+      if (t === 'profile') loadProfileTab();
     }
 
     // ── Live clock ────────────────────────────────────────────────────
@@ -490,7 +566,26 @@
         </div>`;
     }
 
-    // ── Profile tab ───────────────────────────────────────────────────
+    // ── My Profile tab (TP-4) ─────────────────────────────────────────
+    // Profile is split across 7 cards: header info, weekly schedule,
+    // pay, KPI, certifications, CV, account. Each one is loaded by its
+    // own function and rendered into a stable container. Failures are
+    // contained (one card's error doesn't break the others).
+
+    function _fmtRow(l, v) {
+      return `<div class="schedule-line">
+        <span>${esc(l)}</span>
+        <strong>${v ? esc(v) : '<span style="color:var(--muted);font-weight:400;">—</span>'}</strong>
+      </div>`;
+    }
+    function _fmtMoney(n) {
+      if (n == null) return '—';
+      const num = Number(n);
+      if (!isFinite(num)) return String(n);
+      return 'J$ ' + num.toLocaleString('en-TT',
+        { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
     async function loadProfile() {
       try {
         if (!profile) profile = await api('GET', '/api/tech/me/profile');
@@ -506,13 +601,276 @@
         ['Role',         p.role],
         ['Phone',        p.phone],
         ['Email',        p.email],
+        ['Hire date',    p.hire_date],
+        // Per spec: hourly rate is visible to the tech themselves.
+        ['Hourly rate',  p.hourly_rate != null ? _fmtMoney(p.hourly_rate) : null],
+        ['Status',       p.employment_status],
       ];
       document.getElementById('profileBody').innerHTML =
-        rows.map(([l, v]) =>
+        rows.map(([l, v]) => _fmtRow(l, v)).join('');
+    }
+
+    // ── Weekly schedule ──────────────────────────────────────────────
+    const DOW = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+    async function loadSchedule() {
+      const el = document.getElementById('scheduleBody');
+      let sched, overrides;
+      try {
+        [sched, overrides] = await Promise.all([
+          api('GET', '/api/tech/me/schedule'),
+          api('GET', '/api/tech/me/on-call-overrides'),
+        ]);
+      } catch (e) {
+        el.innerHTML = `<div class="empty">Could not load schedule: ${esc(e.message)}</div>`;
+        return;
+      }
+      const rows = (sched || []).map((d, i) => {
+        let label;
+        if (!d.active) {
+          label = '<span style="color:var(--orange);">Off</span>';
+        } else if (d.start_time && d.end_time) {
+          label = `${esc(fmt12(d.start_time))} – ${esc(fmt12(d.end_time))}`;
+        } else {
+          label = '<span style="color:var(--muted);">Not set</span>';
+        }
+        if (d.on_call) {
+          label += ' <span class="pill pill-success" style="margin-left:6px;">On call</span>';
+        }
+        return `<div class="schedule-line">
+          <span>${DOW[i]}</span><strong>${label}</strong></div>`;
+      }).join('');
+      let overridesHtml = '';
+      if (overrides && overrides.length) {
+        overridesHtml = '<div class="muted" style="font-size:12px;margin-top:10px;font-weight:600;">Upcoming on-call dates</div>' +
+          overrides.map(o =>
+            `<div class="schedule-line">
+              <span>${esc(o.work_date)}</span>
+              <strong>${o.on_call ? '<span class="pill pill-success">On call</span>' : '<span class="pill">Off-call (override)</span>'}</strong>
+            </div>`
+          ).join('');
+      }
+      el.innerHTML = rows + overridesHtml;
+    }
+
+    // ── Pay ───────────────────────────────────────────────────────────
+    async function loadPay() {
+      const el = document.getElementById('payBody');
+      try {
+        const list = await api('GET', '/api/tech/me/payslips');
+        if (!list || !list.length) {
+          el.innerHTML = '<div class="empty">No payslips yet. They appear here once the Director approves the pay period.</div>';
+          return;
+        }
+        el.innerHTML = list.slice(0, 6).map(p =>
           `<div class="schedule-line">
-             <span>${esc(l)}</span>
-             <strong>${v ? esc(v) : '<span style="color:var(--muted);font-weight:400;">—</span>'}</strong>
-           </div>`).join('');
+            <span>${esc(p.period_label || p.period_key || '—')}</span>
+            <strong>${_fmtMoney(p.net_amount != null ? p.net_amount : p.gross_amount)}</strong>
+          </div>`
+        ).join('');
+      } catch (e) {
+        // Endpoint may not exist on every deployment; absorb 404 quietly.
+        el.innerHTML = '<div class="empty">No pay records available right now.</div>';
+      }
+    }
+
+    // ── KPI / Performance ────────────────────────────────────────────
+    async function loadKpi() {
+      const el = document.getElementById('kpiBody');
+      try {
+        const hist = await api('GET', '/api/tech/me/kpi/history');
+        if (!hist || !hist.length) {
+          el.innerHTML = '<div class="empty">No released KPI periods yet.</div>';
+          return;
+        }
+        el.innerHTML = hist.slice(0, 6).map(h =>
+          `<div class="schedule-line">
+            <span>${esc(h.period_key || h.period_label || '—')}</span>
+            <strong>${h.composite_score != null ? Number(h.composite_score).toFixed(1) : '—'}</strong>
+          </div>`
+        ).join('');
+      } catch (e) {
+        el.innerHTML = '<div class="empty">No KPI data available right now.</div>';
+      }
+    }
+
+    // ── Certifications ───────────────────────────────────────────────
+    async function loadCerts() {
+      const el = document.getElementById('certsBody');
+      try {
+        const list = await api('GET', '/api/tech/me/certifications');
+        if (!list || !list.length) {
+          el.innerHTML = '<div class="empty">No certifications on file.</div>';
+          return;
+        }
+        el.innerHTML = list.map(c => {
+          const exp = c.expiry_date;
+          let warn = '';
+          if (exp) {
+            const days = Math.floor((new Date(exp) - Date.now()) / 86400000);
+            if (days < 0) warn = `<span class="pill pill-danger" style="margin-left:6px;">Expired</span>`;
+            else if (days < 60) warn = `<span class="pill pill-warn" style="margin-left:6px;">${days}d to expiry</span>`;
+          }
+          return `<div class="schedule-line">
+            <span>${esc(c.name || '—')}<div class="muted" style="font-size:12px;">${esc(c.issuer || '')}</div></span>
+            <strong>${exp ? esc(exp) : '—'}${warn}</strong>
+          </div>`;
+        }).join('');
+      } catch (e) {
+        el.innerHTML = '<div class="empty">No certifications endpoint available.</div>';
+      }
+    }
+
+    // ── CV / Work history (with Request Edit / Edit toggle) ──────────
+    let cvCache = [];
+    let cvEditTarget = null; // entry being edited (or null = new entry)
+
+    async function loadCv() {
+      const el = document.getElementById('cvBody');
+      try {
+        cvCache = await api('GET', '/api/tech/me/cv');
+        if (!cvCache.length) {
+          el.innerHTML = '<div class="empty">No CV entries yet. Tap "+ Add entry" to add your first.</div>';
+          return;
+        }
+        el.innerHTML = cvCache.map(e => {
+          // Button label per spec state machine:
+          //   draft         → "Edit"  (always editable)
+          //   locked + grant → "Edit" (active grant)
+          //   locked + pending → "Request pending…"
+          //   locked         → "Request Edit"
+          let btnLabel, btnAction, btnDisabled = false;
+          if (e.editable) {
+            btnLabel  = 'Edit';
+            btnAction = `cvOpenEdit(${e.id})`;
+          } else if (e.pending_edit_request) {
+            btnLabel  = 'Request pending…';
+            btnAction = 'void 0';
+            btnDisabled = true;
+          } else {
+            btnLabel  = 'Request Edit';
+            btnAction = `cvRequestEdit(${e.id})`;
+          }
+          const lockBadge = (e.status === 'locked')
+            ? `<span class="pill" style="margin-left:6px;">Locked</span>`
+            : `<span class="pill pill-warn" style="margin-left:6px;">Draft</span>`;
+          const lockBtn = (e.status === 'draft')
+            ? `<button class="btn-ghost" style="padding:6px 10px;border-radius:6px;font-size:12px;font-weight:600;border:1px solid var(--border);background:#fff;color:var(--navy);width:auto;cursor:pointer;margin-left:6px;" onclick="cvLockEntry(${e.id})">Lock</button>`
+            : '';
+          return `
+            <div style="padding:10px 12px;background:#f8fafc;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;">
+              <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+                <div style="min-width:0;flex:1;">
+                  <div style="font-weight:600;color:var(--navy);">${esc(e.title || '—')}</div>
+                  <div class="muted" style="font-size:13px;">${esc(e.company || '')}</div>
+                  <div class="muted" style="font-size:12px;margin-top:4px;">
+                    ${esc(e.start_date || '')}${e.start_date || e.end_date ? ' – ' : ''}${esc(e.end_date || 'present')}
+                    ${lockBadge}
+                  </div>
+                  ${e.description ? `<div style="font-size:13px;margin-top:6px;white-space:pre-wrap;">${esc(e.description)}</div>` : ''}
+                </div>
+                <div style="text-align:right;white-space:nowrap;">
+                  <button class="btn-ghost" style="padding:6px 12px;border-radius:6px;font-size:12px;font-weight:600;border:1px solid var(--border);background:#fff;color:var(--navy);width:auto;cursor:${btnDisabled?'not-allowed':'pointer'};opacity:${btnDisabled?0.6:1};" ${btnDisabled?'disabled':''} onclick="${btnAction}">${btnLabel}</button>
+                  ${lockBtn}
+                </div>
+              </div>
+            </div>`;
+        }).join('');
+      } catch (e) {
+        el.innerHTML = `<div class="empty">Could not load CV: ${esc(e.message)}</div>`;
+      }
+    }
+
+    async function cvRequestEdit(entryId) {
+      if (!confirm('Send an edit request for this CV entry? Your supervisor will be notified.')) return;
+      try {
+        await api('POST', `/api/tech/me/cv/${entryId}/request-edit`);
+        PC.toast('Request sent. You\'ll be able to edit once approved.', 'success');
+        await loadCv();
+      } catch (e) {
+        if (e.status === 409) {
+          PC.toast('A request is already pending for this entry.', 'warning');
+        } else {
+          PC.toast(e.message || 'Could not send request.', 'error');
+        }
+      }
+    }
+
+    async function cvLockEntry(entryId) {
+      if (!confirm('Lock this entry? Future edits will require admin approval.')) return;
+      try {
+        await api('POST', `/api/tech/me/cv/${entryId}/lock`);
+        PC.toast('Entry locked.', 'success');
+        await loadCv();
+      } catch (e) {
+        PC.toast(e.message || 'Could not lock entry.', 'error');
+      }
+    }
+
+    function cvOpenNew() {
+      cvEditTarget = null;
+      document.getElementById('cvModalTitle').textContent = 'Add CV entry';
+      document.getElementById('cvCompany').value = '';
+      document.getElementById('cvTitle').value = '';
+      document.getElementById('cvStart').value = '';
+      document.getElementById('cvEnd').value = '';
+      document.getElementById('cvDesc').value = '';
+      document.getElementById('cvModal').style.display = 'flex';
+    }
+    function cvOpenEdit(entryId) {
+      const e = cvCache.find(x => x.id === entryId);
+      if (!e) return;
+      cvEditTarget = entryId;
+      document.getElementById('cvModalTitle').textContent = 'Edit CV entry';
+      document.getElementById('cvCompany').value = e.company || '';
+      document.getElementById('cvTitle').value   = e.title || '';
+      document.getElementById('cvStart').value   = e.start_date || '';
+      document.getElementById('cvEnd').value     = e.end_date || '';
+      document.getElementById('cvDesc').value    = e.description || '';
+      document.getElementById('cvModal').style.display = 'flex';
+    }
+    function cvCloseModal() {
+      document.getElementById('cvModal').style.display = 'none';
+    }
+    async function cvSaveModal() {
+      const body = {
+        company: document.getElementById('cvCompany').value.trim(),
+        title:   document.getElementById('cvTitle').value.trim(),
+        start_date: document.getElementById('cvStart').value.trim() || null,
+        end_date:   document.getElementById('cvEnd').value.trim() || null,
+        description: document.getElementById('cvDesc').value,
+      };
+      if (!body.company || !body.title) {
+        PC.toast('Company and title are required.', 'warning');
+        return;
+      }
+      try {
+        if (cvEditTarget) {
+          await api('PATCH', `/api/tech/me/cv/${cvEditTarget}`, body);
+          PC.toast('Saved. Entry has re-locked.', 'success');
+        } else {
+          await api('POST', '/api/tech/me/cv', body);
+          PC.toast('Entry added.', 'success');
+        }
+        cvCloseModal();
+        await loadCv();
+      } catch (e) {
+        PC.toast(e.message || 'Save failed.', 'error');
+      }
+    }
+
+    // ── Load orchestrator for the My Profile tab ─────────────────────
+    let profileLoaded = false;
+    async function loadProfileTab() {
+      if (profileLoaded) return;
+      profileLoaded = true;
+      await loadProfile();
+      // Fire the rest in parallel — they're independent and each one
+      // catches its own errors.
+      loadSchedule();
+      loadPay();
+      loadKpi();
+      loadCerts();
+      loadCv();
     }
 
     // ── Message board ─────────────────────────────────────────────────

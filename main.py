@@ -180,6 +180,9 @@ from database import (
     list_certs_expiring_within,
     list_tech_cv_entries, append_tech_cv_entry, lock_tech_cv_entry,
     grant_cv_edit, cv_entry_is_editable, update_tech_cv_entry,
+    consume_cv_edit_grant, request_cv_edit, get_pending_cv_edit_request,
+    list_pending_cv_edit_requests, approve_cv_edit_request,
+    deny_cv_edit_request,
     list_released_periods_for_tech, release_kpi_period_to_tech,
     create_company_message, list_active_company_messages,
     list_all_company_messages, hide_company_message,
@@ -3167,6 +3170,12 @@ def tp1_tech_cv_list(request: Request):
     entries = list_tech_cv_entries(tech_id)
     for e in entries:
         e["editable"] = cv_entry_is_editable(e)
+        # UI button state machine: if editable → "Edit"; else if there's
+        # an open request → "Request pending…"; else → "Request Edit".
+        e["pending_edit_request"] = bool(
+            get_pending_cv_edit_request(tech_id, e["id"])
+            if e.get("status") == "locked" and not e["editable"] else None
+        )
     return entries
 
 
@@ -3203,15 +3212,75 @@ def tp1_tech_cv_update(request: Request, entry_id: int,
                        body: TechCVUpdateBody):
     tech_id = _require_tech(request)
     fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    # Snapshot whether the entry was locked-but-granted before we mutate
+    # it — that's the case where we need to expire the grant on success.
+    was_locked_with_grant = False
+    try:
+        existing = next((e for e in list_tech_cv_entries(tech_id)
+                         if e["id"] == entry_id), None)
+        if existing and existing.get("status") == "locked":
+            was_locked_with_grant = cv_entry_is_editable(existing)
+    except Exception:
+        pass
     res = update_tech_cv_entry(entry_id, tech_id, fields)
     if res == "not_owner":
         raise HTTPException(404, "not_found")
     if res == "locked":
         raise HTTPException(409, "locked_no_grant")
+    # Per spec: as soon as the tech finishes editing, the entry re-locks
+    # and the button reverts to "Request Edit". Only consume the grant
+    # if this update actually consumed one — drafts don't have grants
+    # and we don't want a no-op PATCH to revoke a fresh approval.
+    if was_locked_with_grant:
+        consume_cv_edit_grant(entry_id, tech_id)
     _tp1_tech_audit(tech_id, "tech.cv_updated", request,
                     target_type="technician", target_id=tech_id,
-                    after={"entry_id": entry_id})
-    return {"ok": True}
+                    after={"entry_id": entry_id,
+                           "grant_consumed": was_locked_with_grant})
+    return {"ok": True, "grant_consumed": was_locked_with_grant}
+
+
+@app.post("/api/tech/me/cv/{entry_id}/request-edit")
+def tp1_tech_cv_request_edit(request: Request, entry_id: int):
+    """Tech opens an edit-request on a locked CV entry. Per the UX spec:
+    a "Request Edit" button creates one of these; once an admin approves,
+    the next page-load shows "Edit" on that entry; on PATCH success the
+    grant is consumed and the button reverts to "Request Edit"."""
+    tech_id = _require_tech(request)
+    rid = request_cv_edit(tech_id, entry_id)
+    if rid == -1:
+        raise HTTPException(404, "not_found_or_not_locked")
+    if rid is None:
+        raise HTTPException(409, "request_already_pending")
+    _tp1_raise_security_alert(
+        kind="cv_edit_request", severity="low",
+        actor_type="tech", actor_id=tech_id,
+        summary=f"Tech #{tech_id} requested CV edit on entry #{entry_id}",
+        details={"entry_id": entry_id, "request_id": rid},
+    )
+    _tp1_tech_audit(tech_id, "tech.cv_edit_requested", request,
+                    target_type="technician", target_id=tech_id,
+                    after={"entry_id": entry_id, "request_id": rid})
+    return {"ok": True, "request_id": rid}
+
+
+# ── Tech-side read-only schedule view ──────────────────────────────
+@app.get("/api/tech/me/schedule")
+def tp1_tech_my_schedule(request: Request):
+    """Read-only Mon–Sun schedule for the signed-in tech, used by My
+    Profile to show their weekly hours and on-call flags."""
+    tech_id = _require_tech(request)
+    return get_tech_schedule(tech_id)
+
+
+@app.get("/api/tech/me/on-call-overrides")
+def tp1_tech_my_on_call_overrides(request: Request,
+                                  since: Optional[str] = None):
+    """Read-only list of upcoming one-off on-call assignments."""
+    tech_id = _require_tech(request)
+    if since is None:
+        since = datetime.now(timezone.utc).date().isoformat()
+    return list_tech_on_call_overrides(tech_id, since_date=since)
 
 
 @app.get("/api/tech/me/certifications")
@@ -3333,6 +3402,53 @@ def tp1_admin_grant_cv_edit(request: Request, tech_id: int, entry_id: int,
     _audit_from(admin, "tech.cv_edit_granted", request,
                 target_type="technician", target_id=tech_id,
                 after={"entry_id": entry_id, "grant_until": body.grant_until})
+    return {"ok": True}
+
+
+# ── CV edit-request approval queue ────────────────────────────────
+@app.get("/api/admin/cv-edit-requests")
+def tp1_admin_list_cv_edit_requests(request: Request,
+                                    tech_id: Optional[int] = None):
+    """List pending CV-edit requests across all techs (admin queue).
+    Used by the tech-profile admin page to approve/deny."""
+    _require_perm(request, "tech:grant_cv_edit")
+    return list_pending_cv_edit_requests(tech_id=tech_id)
+
+
+class CVEditApproveBody(BaseModel):
+    grant_minutes: int = 60
+
+
+@app.post("/api/admin/cv-edit-requests/{request_id}/approve")
+def tp1_admin_approve_cv_edit_request(request: Request, request_id: int,
+                                      body: CVEditApproveBody):
+    admin = _require_perm(request, "tech:grant_cv_edit")
+    out = approve_cv_edit_request(request_id, admin["id"],
+                                  grant_minutes=body.grant_minutes)
+    if not out:
+        raise HTTPException(404, "not_found_or_not_pending")
+    _audit_from(admin, "tech.cv_edit_request_approved", request,
+                target_type="technician", target_id=out["tech_id"],
+                after={"entry_id": out["entry_id"],
+                       "grant_until": out["grant_until"],
+                       "request_id": request_id})
+    return {"ok": True, **out}
+
+
+class CVEditDenyBody(BaseModel):
+    note: Optional[str] = None
+
+
+@app.post("/api/admin/cv-edit-requests/{request_id}/deny")
+def tp1_admin_deny_cv_edit_request(request: Request, request_id: int,
+                                   body: CVEditDenyBody):
+    admin = _require_perm(request, "tech:grant_cv_edit")
+    ok = deny_cv_edit_request(request_id, admin["id"], body.note)
+    if not ok:
+        raise HTTPException(404, "not_found_or_not_pending")
+    _audit_from(admin, "tech.cv_edit_request_denied", request,
+                target_type="cv_edit_request", target_id=request_id,
+                after={"note": body.note})
     return {"ok": True}
 
 
