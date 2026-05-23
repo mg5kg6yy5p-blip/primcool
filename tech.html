@@ -553,6 +553,12 @@
       showApp();
       if (_view === '5s') { setTimeout(() => { try { fsShowHome(); } catch(_){} }, 100); }
     }
+  } else {
+    // No tech session. Funnel to the unified PrimeCool staff portal at
+    // /staff, which handles admin + tech + warehouse sign-in and the
+    // MFA enrolment / verify flow. The legacy #loginScreen DOM stays
+    // as a defensive fallback for offline-cached PWAs.
+    try { window.location.replace('/staff'); } catch (_) {}
   }
 
   // ── Auth ────────────────────────────────────────────────────────────────

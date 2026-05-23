@@ -316,8 +316,10 @@
   <script src="/static/pc_shared.js"></script>
   <script>
     // ── Auth bootstrap ────────────────────────────────────────────────
+    // No tech session → unified PrimeCool staff portal at /staff
+    // (handles admin + tech + warehouse sign-in + MFA flows).
     const token = localStorage.getItem('pc_tech_token');
-    if (!token) { window.location.replace('/tech'); }
+    if (!token) { window.location.replace('/staff'); }
 
     // ── State ─────────────────────────────────────────────────────────
     let overview = null;     // GET /api/tech/me/today-overview cache

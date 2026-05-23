@@ -2498,6 +2498,118 @@ def public_reviews(limit: Optional[int] = None):
     return out
 
 
+# ── Unified staff portal — single entry for admin / tech / warehouse ─────────
+# Customers keep their separate portal at /portal (customer = consumer of
+# the service, not staff). "Welcome to PrimeCool — where you are everything"
+# is the welcome line for staff. This façade is a stepping-stone toward the
+# β migration to a single `staff` table; for now it tries admin first then
+# tech, and returns enough info for the unified portal to route the user.
+
+class StaffLoginRequest(BaseModel):
+    identifier: str   # admin username OR tech_code
+    secret:     str   # admin password OR tech PIN
+    mfa_code:   Optional[str] = None  # currently unused at this layer;
+                                       # MFA verify uses the kind-specific
+                                       # /api/admin/mfa/verify or
+                                       # /api/tech/login/mfa endpoints
+
+
+@app.post("/api/staff/login")
+def staff_login(req: StaffLoginRequest, request: Request, response: Response):
+    """Unified staff login. Tries the admin identity space first, then
+    the tech space. Returns one of:
+
+      {"kind": "admin", "token": "...", "redirect_to": "/admin",
+       "name": "...", ...}                   — issued session
+
+      {"kind": "admin", "requires_mfa": True,
+       "mfa_token": "...", "redirect_to": "/admin", ...}
+       (caller submits TOTP to /api/admin/mfa/verify)
+
+      {"kind": "admin", "requires_mfa_setup": True,
+       "mfa_enrol_token": "...", "redirect_to": "/admin", ...}
+       (caller submits to /api/admin/mfa/setup + /activate)
+
+      Same shapes for "tech" with redirect_to="/tech/home" and
+      MFA endpoints /api/tech/mfa/* + /api/tech/login/mfa.
+
+    On a credential miss in BOTH spaces, returns 401. The error
+    message is intentionally generic so an attacker can't enumerate
+    which identifier space exists.
+
+    The actual session cookie / response shape mirrors the underlying
+    kind-specific login endpoint so the existing admin / tech UIs
+    can use whatever path the unified portal forwards them to."""
+    identifier = (req.identifier or "").strip()
+    secret     = req.secret or ""
+    if not identifier or not secret:
+        raise HTTPException(400, "identifier and secret are required")
+    _enforce_login_rate(request, f"staff:{identifier}")
+
+    # Try admin first — admins use username + password, generally
+    # alphanumeric. verify_admin_user is constant-time on miss.
+    admin = verify_admin_user(identifier, secret)
+    if admin and admin.get("active"):
+        # Mirror admin_login's response shape; same gates.
+        if not admin.get("mfa_enabled"):
+            enrol_token = _make_token(
+                {"sub": str(admin["id"]), "type": "admin_mfa_enrol"},
+                MFA_TOKEN_TTL,
+            )
+            _audit_from(admin, "admin.login.password_ok_mfa_enrol_required",
+                        request)
+            return {"kind": "admin", "name": admin["name"],
+                    "redirect_to": "/admin",
+                    "requires_mfa_setup": True,
+                    "mfa_enrol_token": enrol_token}
+        # Already enrolled — pre-MFA verify step.
+        mfa_token = _make_token(
+            {"sub": str(admin["id"]), "type": "admin_pre_mfa"},
+            MFA_TOKEN_TTL,
+        )
+        _audit_from(admin, "admin.login.password_ok", request)
+        return {"kind": "admin", "name": admin["name"],
+                "redirect_to": "/admin",
+                "requires_mfa": True,
+                "mfa_token": mfa_token}
+
+    # Try tech — uses tech_code (case-folded) + numeric PIN.
+    tech = verify_tech(identifier, secret)
+    if tech and tech.get("active"):
+        if not tech.get("mfa_enabled"):
+            enrol_token = _make_token(
+                {"sub": str(tech["id"]), "type": "tech_mfa_enrol"},
+                MFA_TOKEN_TTL,
+            )
+            return {"kind": "tech", "name": tech["name"],
+                    "tech_code": tech["tech_code"],
+                    "redirect_to": "/tech/home",
+                    "requires_mfa_setup": True,
+                    "mfa_enrol_token": enrol_token}
+        mfa_token = _make_token(
+            {"sub": str(tech["id"]), "type": "tech_pre_mfa"},
+            MFA_TOKEN_TTL,
+        )
+        return {"kind": "tech", "name": tech["name"],
+                "tech_code": tech["tech_code"],
+                "redirect_to": "/tech/home",
+                "requires_mfa": True,
+                "mfa_token": mfa_token}
+
+    # Neither space matched — generic error.
+    _audit_anon("auth.login_failed", request,
+                attempted_identity=identifier,
+                actor_type="staff_unified",
+                target_label="invalid identifier or secret")
+    raise HTTPException(401, "Invalid credentials")
+
+
+@app.get("/staff")
+def staff_portal_page():
+    """Serves the unified PrimeCool staff portal."""
+    return FileResponse("staff_portal.html")
+
+
 # ── Tech routes ───────────────────────────────────────────────────────────────
 
 @app.post("/api/tech/login")

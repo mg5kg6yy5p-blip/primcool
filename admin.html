@@ -2658,7 +2658,14 @@
 
   // ── Auth ───────────────────────────────────────────────────────────────────
   function init() {
-    if (adminToken) showApp();
+    if (adminToken) {
+      showApp();
+      return;
+    }
+    // No session — send the user to the unified PrimeCool staff
+    // portal at /staff. Legacy #loginScreen DOM stays as a defensive
+    // fallback if /staff is unreachable.
+    try { window.location.replace('/staff'); return; } catch (_) {}
   }
 
   let pendingMfaToken = null;
@@ -2774,6 +2781,11 @@
     adminToken = null;
     currentAdmin = null;
     document.getElementById('app').style.display = 'none';
+    // All staff sign-in (admin + tech + warehouse) is unified at
+    // /staff. Redirect there instead of the legacy inline login
+    // form. The form below stays in the DOM as a defensive fallback
+    // for environments where /staff is unreachable.
+    try { window.location.replace('/staff'); return; } catch (_) {}
     document.getElementById('loginScreen').style.display = 'flex';
     document.getElementById('adminPw').value = '';
   }
