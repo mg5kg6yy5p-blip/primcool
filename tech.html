@@ -1908,29 +1908,47 @@
           if (a.asset_type === 'storage') continue;
           const t = todayByAsset[a.id] || {};
           const startDone = !!t.start_shift_done, endDone = !!t.end_shift_done;
-          // Once a start_shift or end_shift audit is submitted for a
-          // given asset today, that button is fully disabled (not just
-          // tinted). A tech can't re-submit an audit through the same
-          // link — the immutable chain has the entry. The other phase's
-          // button stays active until its own audit lands.
-          const startBtnHtml = startDone
-            ? `<button disabled title="Start-of-shift audit already submitted today"
-                       style="flex:1;padding:10px;border-radius:8px;border:none;background:#e5f6f1;color:var(--teal-deep);font-weight:700;font-size:13px;cursor:not-allowed;opacity:0.85;">
-                 ✓ Start-of-shift done
-               </button>`
-            : `<button onclick="fsStart(${a.id},'start_shift')"
-                       style="flex:1;padding:10px;border-radius:8px;border:none;background:var(--teal);color:#fff;font-weight:700;font-size:13px;cursor:pointer;">
-                 Start-of-shift
+          // Per-phase applicability follows the tech's clock-in state:
+          //   * Clocked in  → start is already satisfied for this
+          //                   cycle (the sign-in gate proved it).
+          //                   Only end-of-shift is actionable.
+          //   * Not clocked → no open cycle to end.
+          //                   Only start-of-shift is actionable.
+          // The inapplicable button stays in the layout so the asset
+          // card keeps a consistent width, but it's permanently
+          // disabled with helper copy explaining why.
+          const startApplicable = (t.start_applicable !== false);
+          const endApplicable   = (t.end_applicable   !== false);
+          function _btn({applicable, done, phase, activeBg, doneLabel, idleLabel, naLabel, naTitle}) {
+            if (!applicable) {
+              return `<button disabled title="${naTitle}"
+                       style="flex:1;padding:10px;border-radius:8px;border:none;background:#f3f4f6;color:#9ca3af;font-weight:700;font-size:13px;cursor:not-allowed;">
+                 ${naLabel}
                </button>`;
-          const endBtnHtml = endDone
-            ? `<button disabled title="End-of-shift audit already submitted today"
+            }
+            if (done) {
+              return `<button disabled title="${phase} audit already submitted this cycle"
                        style="flex:1;padding:10px;border-radius:8px;border:none;background:#e5f6f1;color:var(--teal-deep);font-weight:700;font-size:13px;cursor:not-allowed;opacity:0.85;">
-                 ✓ End-of-shift done
-               </button>`
-            : `<button onclick="fsStart(${a.id},'end_shift')"
-                       style="flex:1;padding:10px;border-radius:8px;border:none;background:var(--navy);color:#fff;font-weight:700;font-size:13px;cursor:pointer;">
-                 End-of-shift
+                 ✓ ${doneLabel}
                </button>`;
+            }
+            return `<button onclick="fsStart(${a.id},'${phase}')"
+                       style="flex:1;padding:10px;border-radius:8px;border:none;background:${activeBg};color:#fff;font-weight:700;font-size:13px;cursor:pointer;">
+                 ${idleLabel}
+               </button>`;
+          }
+          const startBtnHtml = _btn({
+            applicable: startApplicable, done: startDone, phase: 'start_shift',
+            activeBg: 'var(--teal)', doneLabel: 'Start-of-shift done',
+            idleLabel: 'Start-of-shift',
+            naLabel: 'Start — done', naTitle: 'You are already signed in for this shift',
+          });
+          const endBtnHtml = _btn({
+            applicable: endApplicable, done: endDone, phase: 'end_shift',
+            activeBg: 'var(--navy)', doneLabel: 'End-of-shift done',
+            idleLabel: 'End-of-shift',
+            naLabel: 'End — sign in first', naTitle: 'You are not signed in for this shift',
+          });
           html += `
             <div style="background:#fff;border-radius:12px;padding:14px;margin-bottom:12px;box-shadow:0 2px 6px rgba(11,37,69,0.06);">
               <div style="font-weight:700;color:var(--navy);">${esc(a.label)}</div>

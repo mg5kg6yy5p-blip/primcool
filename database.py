@@ -7493,36 +7493,77 @@ def audit_cycle_threshold(tech_id: int, today_iso: str = None) -> str:
 
 def fs_today_status_for_tech(tech_id: int) -> dict:
     """Per-asset start/end audit state SCOPED TO THE CURRENT SHIFT CYCLE.
-    Audits older than the most recent clock event today are treated as
-    'not done' so the 5S home page re-enables the buttons for the new
-    cycle. See audit_cycle_threshold for the semantics."""
+
+    The semantics depend on whether the tech is currently clocked in:
+
+      * Clocked in → start_shift is axiomatically satisfied for the
+        current cycle (you can't be clocked in without having passed
+        the sign-in gate). start_shift_done is forced to True so the
+        UI hides those buttons; end_shift_done is checked against the
+        open clock-in's event_at as the threshold.
+      * Not clocked in → the next action would be a sign-in. The
+        start_shift check uses the most-recent-clock-event threshold
+        (or today 00:00 if no events ever). end_shift is not
+        applicable; reported as False with phase_applicable=False so
+        the UI can render the end buttons as disabled "sign in first"
+        rather than active.
+
+    The previous version compared every audit against
+    audit_cycle_threshold() universally. That broke on the sign-out
+    path because the start audits a tech submitted to PASS the
+    sign-in gate are timestamped fractionally BEFORE the resulting
+    clock_in — so their audit_ts > threshold check evaluated False
+    once threshold = clock_in.event_at, re-enabling Start buttons
+    while the tech was mid-cycle. Field-reported in May 2026."""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     threshold = audit_cycle_threshold(tech_id, today)
+    open_in = get_open_clock_in_today(tech_id)
+    clocked_in = bool(open_in)
+    # Cycle start = the open clock-in's event_at when clocked in;
+    # otherwise it's the same threshold used for the start gate.
+    cycle_start = (open_in["event_at"] if open_in else threshold)
     assets = list_assets(tech_id=tech_id, active_only=True)
-    out = {"date": today, "cycle_threshold": threshold, "assets": []}
+    out = {
+        "date":             today,
+        "cycle_threshold":  threshold,
+        "clocked_in":       clocked_in,
+        "cycle_started_at": (open_in["event_at"] if open_in else None),
+        "assets":           [],
+    }
     con = _con()
     for a in assets:
         if a["asset_type"] not in ("vehicle", "toolkit"):
             continue
-        start_done = bool(con.execute(
-            "SELECT 1 FROM fs_audits WHERE asset_id=? AND auditor_id=? "
-            "AND auditor_kind='tech' AND phase='start_shift' "
-            "AND audit_ts > ?",
-            (a["id"], tech_id, threshold),
-        ).fetchone())
-        end_done = bool(con.execute(
-            "SELECT 1 FROM fs_audits WHERE asset_id=? AND auditor_id=? "
-            "AND auditor_kind='tech' AND phase='end_shift' "
-            "AND audit_ts > ?",
-            (a["id"], tech_id, threshold),
-        ).fetchone())
+        if clocked_in:
+            # Already past the sign-in gate; treat start as done.
+            start_done = True
+            end_done = bool(con.execute(
+                "SELECT 1 FROM fs_audits WHERE asset_id=? AND auditor_id=? "
+                "AND auditor_kind='tech' AND phase='end_shift' "
+                "AND audit_ts > ?",
+                (a["id"], tech_id, cycle_start),
+            ).fetchone())
+            end_applicable = True
+            start_applicable = False
+        else:
+            start_done = bool(con.execute(
+                "SELECT 1 FROM fs_audits WHERE asset_id=? AND auditor_id=? "
+                "AND auditor_kind='tech' AND phase='start_shift' "
+                "AND audit_ts > ?",
+                (a["id"], tech_id, threshold),
+            ).fetchone())
+            end_done = False  # not applicable until clocked in
+            end_applicable = False
+            start_applicable = True
         out["assets"].append({
-            "asset_id":   a["id"],
-            "asset_code": a["asset_code"],
-            "label":      a["label"],
-            "asset_type": a["asset_type"],
+            "asset_id":         a["id"],
+            "asset_code":       a["asset_code"],
+            "label":            a["label"],
+            "asset_type":       a["asset_type"],
             "start_shift_done": start_done,
             "end_shift_done":   end_done,
+            "start_applicable": start_applicable,
+            "end_applicable":   end_applicable,
         })
     con.close()
     return out
@@ -11887,29 +11928,32 @@ def _last_clock_event_chain(con) -> str:
 
 
 def get_open_clock_in_today(tech_id: int, today=None):
-    """Return the open clock_in row for today (no matching clock_out or
-    auto_clock_out on the same work_date), or None."""
-    from datetime import date
-    if today is None:
-        today = datetime.now(timezone.utc).date().isoformat()
-    elif hasattr(today, "isoformat"):
-        today = today.isoformat()
+    """Return the tech's currently-open clock-in row, or None.
+
+    The name is historical — the semantics are "open clock-in cycle
+    regardless of which UTC calendar day it started on." Previously
+    this filtered by work_date = today, which silently treated a
+    clock-in created at 11 PM UTC (6 PM Jamaica) as closed once the
+    UTC clock rolled past midnight, breaking the sign-out flow for
+    any evening service call that straddled 7 PM local. The fix is
+    to look at the absolute most-recent clock event for the tech: if
+    it's a clock_in (or auto_clock_in, if that's ever added) with no
+    subsequent clock_out, the cycle is still open. The `today`
+    parameter is preserved for source compatibility and used only as
+    the no-events-ever fallback context."""
     con = _con()
-    cin = con.execute(
-        "SELECT * FROM tech_clock_events WHERE tech_id = ? AND work_date = ? "
-        "AND kind = 'clock_in' ORDER BY id DESC LIMIT 1",
-        (tech_id, today),
-    ).fetchone()
-    if not cin:
-        con.close()
-        return None
-    cout = con.execute(
-        "SELECT 1 FROM tech_clock_events WHERE tech_id = ? AND work_date = ? "
-        "AND kind IN ('clock_out','auto_clock_out') AND id > ? LIMIT 1",
-        (tech_id, today, cin["id"]),
+    most_recent = con.execute(
+        "SELECT * FROM tech_clock_events WHERE tech_id = ? "
+        "ORDER BY event_at DESC LIMIT 1",
+        (tech_id,),
     ).fetchone()
     con.close()
-    return dict(cin) if not cout else None
+    if not most_recent:
+        return None
+    if most_recent["kind"] == "clock_in":
+        return dict(most_recent)
+    # Most recent event is a clock_out / auto_clock_out → cycle closed.
+    return None
 
 
 def record_clock_in(tech_id: int, source: str = "manual",
