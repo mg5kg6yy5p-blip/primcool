@@ -1182,6 +1182,15 @@ def _audit_from(admin: dict, action: str, request: Request,
     )
 
 
+# Background-loop starters register themselves into this list at module
+# import time; lifespan() awaits each one after the synchronous startup
+# work is done. Replaces the four @app.on_event("startup") decorators
+# (deprecated by FastAPI in favor of lifespan) without forcing each
+# loop's definition to move next to the lifespan handler. Audit L4,
+# 2026-05-23.
+_LIFESPAN_STARTERS: list = []
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
@@ -1262,6 +1271,15 @@ async def lifespan(app: FastAPI):
             logger.info(f"audit_log retention: nothing to purge")
     except Exception as e:
         logger.warning(f"audit_log purge skipped: {e}")
+
+    # Background loops — see _LIFESPAN_STARTERS doc above. Each starter
+    # is fire-and-forget (it creates an asyncio.Task and returns); a
+    # failure in one shouldn't stop the others.
+    for _starter in _LIFESPAN_STARTERS:
+        try:
+            await _starter()
+        except Exception as e:
+            logger.warning(f"lifespan starter {_starter.__name__} failed: {e}")
     yield
 
 
@@ -7873,9 +7891,9 @@ async def _kpi_weekly_recompute_loop():
         await _kpi_asyncio.sleep(24 * 60 * 60)
 
 
-@app.on_event("startup")
 async def _start_kpi_weekly_recompute_loop():
     _kpi_asyncio.create_task(_kpi_weekly_recompute_loop())
+_LIFESPAN_STARTERS.append(_start_kpi_weekly_recompute_loop)
 
 
 @app.post("/api/admin/technicians/{tech_id}/5s-override")
@@ -9139,9 +9157,9 @@ def _notify_director(exception_id: int):
     _send_fs_notification(exception_id, "director")
 
 
-@app.on_event("startup")
 async def _start_fs_escalation_loop():
     _asyncio.create_task(_fs_escalation_loop())
+_LIFESPAN_STARTERS.append(_start_fs_escalation_loop)
 
 
 @app.get("/tech/home")
@@ -9483,9 +9501,9 @@ async def _delegation_expiry_loop():
         await _asyncio.sleep(6 * 60 * 60)
 
 
-@app.on_event("startup")
 async def _start_delegation_expiry_loop():
     _asyncio.create_task(_delegation_expiry_loop())
+_LIFESPAN_STARTERS.append(_start_delegation_expiry_loop)
 
 
 # ── TP-1b: per-tech EOD enforcement cron ─────────────────────────────────
@@ -9624,9 +9642,9 @@ async def _tech_eod_loop():
             logger.warning(f"tech EOD loop tick error: {e}")
 
 
-@app.on_event("startup")
 async def _start_tech_eod_loop():
     _asyncio.create_task(_tech_eod_loop())
+_LIFESPAN_STARTERS.append(_start_tech_eod_loop)
 
 
 @app.get("/")
