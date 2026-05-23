@@ -84,6 +84,10 @@ from database import (
     create_admin_password_reset, consume_admin_password_reset,
     set_admin_mfa_pending, activate_admin_mfa, disable_admin_mfa,
     replace_admin_backup_codes, consume_admin_backup_code,
+    # Tech MFA mirror — May 2026, parity with admin + customer.
+    set_tech_mfa_pending, activate_tech_mfa, disable_tech_mfa,
+    replace_tech_backup_codes, consume_tech_backup_code,
+    get_tech_backup_codes_status,
     get_admin_backup_codes_status, _hash_pin,
     create_document, get_document_by_id, query_documents,
     touch_document_accessed, soft_delete_document, hard_delete_document,
@@ -2142,9 +2146,12 @@ def portal_login(req: PortalLoginRequest, request: Request, response: Response):
     if existing:
         reset_pin_failures(existing["id"])
 
-    # Commercial accounts MUST have MFA enrolled per spec. Block login
-    # until they enrol (returning a one-shot enrolment token).
-    if customer.get("customer_type") == "commercial" and not customer.get("mfa_enabled"):
+    # EVERY customer must have MFA enrolled (was: only commercial). Block
+    # login until they enrol — returning a one-shot enrolment token that
+    # the portal_dashboard's enrol-mode handler upgrades to a full
+    # session once MFA is confirmed. Pre-launch security review,
+    # 2026-05-23.
+    if not customer.get("mfa_enabled"):
         enrol_token = _make_token(
             {"sub": str(customer["id"]), "type": "customer_mfa_enrol"},
             MFA_TOKEN_TTL,
@@ -2495,6 +2502,23 @@ def public_reviews(limit: Optional[int] = None):
 
 @app.post("/api/tech/login")
 def tech_login(req: TechLogin, request: Request, response: Response):
+    """Tech portal login.
+
+    Three response shapes:
+
+    1. Forced MFA enrolment (must_enrol_mfa=1, mfa_enabled=0):
+       {requires_mfa_setup: true, mfa_enrol_token: "<jwt>", name}
+       No session cookie. Client takes the enrol_token to
+       /api/tech/mfa/setup → /api/tech/mfa/activate. activate_tech_mfa
+       clears must_enrol_mfa so the next login proceeds.
+
+    2. MFA verification (mfa_enabled=1, no mfa_code in body):
+       {requires_mfa: true, mfa_token: "<jwt>", name}
+       No session. Client POSTs the mfa_token + the user's TOTP code
+       to /api/tech/login/mfa to complete the login.
+
+    3. Issued session: original shape with the 7d session token,
+       must_change_credentials flag (forced PIN reset, item #2)."""
     _enforce_login_rate(request, req.tech_code)
     tech = verify_tech(req.tech_code, req.pin)
     if not tech:
@@ -2503,19 +2527,243 @@ def tech_login(req: TechLogin, request: Request, response: Response):
                     actor_type="tech",
                     target_label="invalid PRID or PIN")
         raise HTTPException(401, "Invalid tech code or PIN")
+
+    # Gate 1 — MFA enrolment HARD-REQUIRED (May 2026 operator
+    # directive: everyone who logs in needs MFA). must_enrol_mfa is
+    # kept as ops-tracking signal but no longer gates the check.
+    if not tech.get("mfa_enabled"):
+        enrol_token = _make_token(
+            {"sub": str(tech["id"]), "type": "tech_mfa_enrol"},
+            MFA_TOKEN_TTL,
+        )
+        return {"requires_mfa_setup": True,
+                "mfa_enrol_token": enrol_token,
+                "name": tech["name"]}
+
+    # Gate 2 — already enrolled, need TOTP step.
+    if tech.get("mfa_enabled"):
+        mfa_token = _make_token(
+            {"sub": str(tech["id"]), "type": "tech_pre_mfa"},
+            MFA_TOKEN_TTL,
+        )
+        return {"requires_mfa": True,
+                "mfa_token": mfa_token,
+                "name": tech["name"]}
+
+    # No MFA required — issue session as before.
     token, _ = _issue_session("tech", tech["id"], timedelta(days=7), request)
     _set_session_cookie(response, COOKIE_TECH, token, 7 * 24 * 3600)
     bump_last_login("tech", tech["id"])
-    # Pre-launch checklist item #2 — first-prod PIN reset. set_tech_pin
-    # clears must_change_credentials on a successful change. The tech
-    # portal reads must_change_credentials and forces the change-PIN
-    # flow before letting the tech reach the landing or jobs queue.
     return {
         "token":     token,
         "name":      tech["name"],
         "tech_code": tech["tech_code"],
         "must_change_credentials": bool(tech.get("must_change_credentials")),
     }
+
+
+@app.post("/api/tech/login/mfa")
+def tech_login_mfa(body: dict, request: Request, response: Response):
+    """Step 2 of two-step tech login. Verifies the TOTP (or backup
+    code) and issues the session cookie. Body: {mfa_token, code}."""
+    mfa_token = (body or {}).get("mfa_token") or ""
+    code      = ((body or {}).get("code") or "").strip()
+    if not mfa_token or not code:
+        raise HTTPException(400, "mfa_token and code required")
+    try:
+        data = jwt.decode(mfa_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(401, "MFA window expired — please sign in again")
+    except jwt.InvalidTokenError:
+        raise HTTPException(401, "Invalid MFA token")
+    if data.get("type") != "tech_pre_mfa":
+        raise HTTPException(403, "Forbidden")
+    _enforce_login_rate(request, f"techmfa:{data.get('sub','')}")
+    tech_id = int(data["sub"])
+    tech = get_tech_by_id(tech_id)
+    if not tech or not tech.get("active") or not tech.get("mfa_enabled"):
+        raise HTTPException(401, "MFA not configured")
+    if not _verify_tech_totp_or_backup(tech, code):
+        _audit_anon("auth.mfa_failed", request,
+                    attempted_identity=tech.get("tech_code", str(tech_id)),
+                    actor_type="tech")
+        raise HTTPException(401, "Incorrect code")
+    token, _ = _issue_session("tech", tech["id"], timedelta(days=7), request)
+    _set_session_cookie(response, COOKIE_TECH, token, 7 * 24 * 3600)
+    bump_last_login("tech", tech["id"])
+    return {
+        "token":     token,
+        "name":      tech["name"],
+        "tech_code": tech["tech_code"],
+        "must_change_credentials": bool(tech.get("must_change_credentials")),
+    }
+
+
+def _verify_tech_totp_or_backup(tech: dict, code: str) -> bool:
+    """True if `code` is a valid current TOTP for the tech's secret OR
+    matches an unused backup code (which is then marked used).
+    Mirrors _verify_admin_totp_or_backup."""
+    if not tech.get("mfa_secret"):
+        return False
+    code = (code or "").strip()
+    if pyotp.TOTP(tech["mfa_secret"]).verify(code, valid_window=1):
+        return True
+    if consume_tech_backup_code(tech["id"], code):
+        return True
+    return False
+
+
+def _resolve_tech_enrolment_actor(request: Request) -> dict:
+    """The MFA enrol endpoints accept either a full tech session token
+    OR the short-lived tech_mfa_enrol token from tech_login(). Returns
+    the technician row. Raises HTTPException on bad/expired token."""
+    raw = _read_token(request, COOKIE_TECH) or ""
+    if not raw:
+        # Bearer
+        h = request.headers.get("authorization", "")
+        if h.lower().startswith("bearer "):
+            raw = h.split(" ", 1)[1].strip()
+    if not raw:
+        raise HTTPException(401, "Authentication required")
+    try:
+        data = jwt.decode(raw, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(401, "Enrolment token expired — sign in again")
+    except jwt.InvalidTokenError:
+        raise HTTPException(401, "Invalid token")
+    if data.get("type") not in ("tech", "tech_mfa_enrol"):
+        raise HTTPException(403, "Forbidden")
+    tech_id = int(data.get("sub", 0))
+    tech = get_tech_by_id(tech_id) if tech_id else None
+    if not tech or not tech.get("active"):
+        raise HTTPException(403, "Account inactive")
+    return tech
+
+
+@app.get("/api/tech/mfa/status")
+def tech_mfa_status(request: Request):
+    """Read-only MFA state for the signed-in tech."""
+    tech = _resolve_tech_enrolment_actor(request)
+    return {
+        "enabled":      bool(tech.get("mfa_enabled")),
+        "must_enrol":   bool(tech.get("must_enrol_mfa")),
+        "backup_codes": get_tech_backup_codes_status(tech["id"]),
+    }
+
+
+@app.post("/api/tech/mfa/setup")
+def tech_mfa_setup(request: Request):
+    """Generate a candidate TOTP secret + provisioning URI for the tech
+    to scan in their authenticator app. Doesn't enable MFA until the
+    matching /activate call confirms a working code."""
+    tech = _resolve_tech_enrolment_actor(request)
+    if tech.get("mfa_enabled"):
+        raise HTTPException(400, "MFA already enabled. Disable it first to re-enrol.")
+    secret = pyotp.random_base32()
+    set_tech_mfa_pending(tech["id"], secret)
+    totp = pyotp.TOTP(secret)
+    label_email = tech.get("email") or tech.get("tech_code") or f"tech#{tech['id']}"
+    uri = totp.provisioning_uri(name=label_email, issuer_name=MFA_ISSUER)
+    img = qrcode.make(uri)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    qr_data_uri = f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode()}"
+    return {
+        "secret":           secret,
+        "provisioning_uri": uri,
+        "qr_data_uri":      qr_data_uri,
+        "issuer":           MFA_ISSUER,
+        "account":          label_email,
+    }
+
+
+@app.post("/api/tech/mfa/activate")
+def tech_mfa_activate(request: Request, body: MfaActivate):
+    """Confirm a code from the candidate secret, flip mfa_enabled=1,
+    issue one-time backup codes, clear must_enrol_mfa."""
+    tech = _resolve_tech_enrolment_actor(request)
+    if tech.get("mfa_enabled"):
+        raise HTTPException(400, "MFA is already enabled")
+    if not tech.get("mfa_secret"):
+        raise HTTPException(400, "No setup in progress — call /mfa/setup first")
+    totp = pyotp.TOTP(tech["mfa_secret"])
+    if not totp.verify((body.code or "").strip(), valid_window=1):
+        raise HTTPException(401, "Incorrect code — check your authenticator and try again")
+    plain, hashed = _generate_backup_codes(10)
+    activate_tech_mfa(tech["id"], hashed)
+    _tp1_tech_audit(tech["id"], "tech.mfa.activated", request,
+                    target_type="technician", target_id=tech["id"])
+    return {"ok": True, "backup_codes": plain}
+
+
+@app.post("/api/tech/mfa/regenerate-backup-codes")
+def tech_mfa_regenerate(request: Request, body: MfaVerify):
+    """Issue a fresh set of 10 backup codes. Requires a current TOTP
+    or an unused backup code so an unattended terminal can't silently
+    rotate them."""
+    tech = _resolve_tech_enrolment_actor(request)
+    if not tech.get("mfa_enabled"):
+        raise HTTPException(400, "MFA is not enabled")
+    if not _verify_tech_totp_or_backup(tech, body.code):
+        raise HTTPException(401, "Incorrect code")
+    plain, hashed = _generate_backup_codes(10)
+    replace_tech_backup_codes(tech["id"], hashed)
+    _tp1_tech_audit(tech["id"], "tech.mfa.backup_regenerated", request,
+                    target_type="technician", target_id=tech["id"])
+    return {"ok": True, "backup_codes": plain}
+
+
+class TechMfaDisable(BaseModel):
+    pin: str
+    code: str
+
+
+@app.post("/api/tech/mfa/disable")
+def tech_mfa_disable(request: Request, body: TechMfaDisable):
+    """Requires both the current PIN AND a current TOTP/backup code.
+    Use case: tech lost their authenticator and an admin reset
+    isn't available — they verify with PIN + a stored backup code."""
+    tech = _resolve_tech_enrolment_actor(request)
+    if not tech.get("mfa_enabled"):
+        raise HTTPException(400, "MFA is not enabled")
+    if not verify_tech(tech["tech_code"], body.pin):
+        raise HTTPException(401, "Incorrect PIN")
+    if not _verify_tech_totp_or_backup(tech, body.code):
+        raise HTTPException(401, "Incorrect code")
+    disable_tech_mfa(tech["id"])
+    _tp1_tech_audit(tech["id"], "tech.mfa.disabled", request,
+                    target_type="technician", target_id=tech["id"])
+    return {"ok": True}
+
+
+@app.post("/api/admin/technicians/{tech_id}/mfa/reset")
+def admin_reset_tech_mfa(request: Request, tech_id: int):
+    """Admin path to disable a tech's MFA (lost authenticator, no
+    backup codes left). Flips must_enrol_mfa back on so the next
+    login forces re-enrolment."""
+    admin = _require_perm(request, "tech:reset_pin")
+    tech = get_tech_by_id(tech_id)
+    if not tech:
+        raise HTTPException(404, "Technician not found")
+    disable_tech_mfa(tech_id)
+    # Also flip must_enrol_mfa on so they're forced to re-enrol next
+    # login. Done via direct UPDATE since disable_tech_mfa intentionally
+    # leaves the flag untouched (so an admin can choose to "MFA off
+    # for now" if a tech is offline temporarily).
+    from database import _con as _dbcon
+    con = _dbcon()
+    try:
+        con.execute(
+            "UPDATE technicians SET must_enrol_mfa = 1 WHERE id = ?",
+            (tech_id,),
+        )
+        con.commit()
+    finally:
+        con.close()
+    _audit_from(admin, "tech.mfa.reset_by_admin", request,
+                target_type="technician", target_id=tech_id,
+                target_label=tech.get("tech_code"))
+    return {"ok": True}
 
 
 @app.post("/api/tech/logout")
@@ -3648,7 +3896,23 @@ def admin_login(req: AdminLoginRequest, request: Request, response: Response):
                     target_label="account deactivated")
         raise HTTPException(403, "Account is deactivated")
 
-    # MFA gate
+    # MFA-enrolment gate (HARD-REQUIRED, May 2026 operator directive):
+    # EVERY admin without MFA is intercepted on login. The
+    # must_enrol_mfa column is retained as explicit ops tracking
+    # ("the bootstrap pass flagged this account") but the runtime
+    # check no longer consults it — if mfa_enabled is False the
+    # admin is funnelled into enrolment, full stop.
+    if not admin.get("mfa_enabled"):
+        enrol_token = _make_token(
+            {"sub": str(admin["id"]), "type": "admin_mfa_enrol"},
+            MFA_TOKEN_TTL,
+        )
+        _audit_from(admin, "admin.login.password_ok_mfa_enrol_required", request)
+        return {"requires_mfa_setup": True,
+                "mfa_enrol_token": enrol_token,
+                "name": admin["name"]}
+
+    # MFA verification gate (already enrolled — verify code next)
     if admin.get("mfa_enabled"):
         # Step 1 of two-step login — return a short-lived MFA token,
         # NO session cookie set yet.

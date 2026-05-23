@@ -136,7 +136,7 @@ from crypto import encrypt as _enc, decrypt as _dec, \
 _PII_RAND = {
     "customers":            ["phone", "address", "notes", "mfa_secret",
                               "contact_person_phone"],
-    "technicians":          ["phone"],
+    "technicians":          ["phone", "mfa_secret"],
     "admin_users":          ["phone", "mfa_secret"],
     "equipment":            ["serial_number", "location", "notes"],
     "maintenance_visits":   ["work_done", "notes", "parts_replaced",
@@ -470,6 +470,24 @@ def init_db():
         ("must_change_credentials",
             "ALTER TABLE technicians ADD COLUMN must_change_credentials "
             "INTEGER NOT NULL DEFAULT 0"),
+        # MFA for techs (May 2026, parity with admins + customers).
+        # The tech portal login flow consults these:
+        #   mfa_enabled         — set by /api/tech/mfa/confirm
+        #   mfa_secret          — TOTP shared secret (Base32)
+        #   mfa_backup_codes    — JSON list of {hash, used_at}
+        #   must_enrol_mfa      — when 1 + mfa_enabled=0, the login
+        #                         endpoint returns requires_mfa_setup
+        #                         instead of issuing a session
+        ("mfa_enabled",
+            "ALTER TABLE technicians ADD COLUMN mfa_enabled "
+            "INTEGER NOT NULL DEFAULT 0"),
+        ("mfa_secret",
+            "ALTER TABLE technicians ADD COLUMN mfa_secret TEXT"),
+        ("mfa_backup_codes",
+            "ALTER TABLE technicians ADD COLUMN mfa_backup_codes TEXT"),
+        ("must_enrol_mfa",
+            "ALTER TABLE technicians ADD COLUMN must_enrol_mfa "
+            "INTEGER NOT NULL DEFAULT 0"),
     ):
         if name not in tech_cols:
             try: con.execute(sql)
@@ -524,6 +542,13 @@ def init_db():
         # endpoints clear it on success.
         ("must_change_credentials",
             "ALTER TABLE admin_users ADD COLUMN must_change_credentials "
+            "INTEGER NOT NULL DEFAULT 0"),
+        # Pre-launch security review (May 2026): MFA is mandatory for
+        # every admin. bootstrap_super_admin sets this = 1; the
+        # /api/admin/mfa/confirm endpoint clears it; the login handler
+        # refuses to issue a session while it's true.
+        ("must_enrol_mfa",
+            "ALTER TABLE admin_users ADD COLUMN must_enrol_mfa "
             "INTEGER NOT NULL DEFAULT 0"),
     ):
         if col not in admin_cols:
@@ -3836,11 +3861,13 @@ def set_admin_mfa_pending(admin_id: int, secret: str):
 
 
 def activate_admin_mfa(admin_id: int, backup_code_hashes: list):
-    """Flips mfa_enabled to 1 and stores hashed backup codes (JSON list)."""
+    """Flips mfa_enabled to 1, stores hashed backup codes (JSON list),
+    and clears must_enrol_mfa so the login interceptor stops firing."""
     import json as _json
     con = _con()
     con.execute(
-        "UPDATE admin_users SET mfa_enabled = 1, backup_codes = ? WHERE id = ?",
+        "UPDATE admin_users SET mfa_enabled = 1, backup_codes = ?, "
+        "must_enrol_mfa = 0 WHERE id = ?",
         (_json.dumps([{"hash": h, "used_at": None} for h in backup_code_hashes]), admin_id),
     )
     con.commit()
@@ -3906,6 +3933,105 @@ def get_admin_backup_codes_status(admin_id: int):
         return {"total": 0, "unused": 0, "used": 0}
     try:
         codes = _json.loads(admin["backup_codes"])
+    except Exception:
+        return {"total": 0, "unused": 0, "used": 0}
+    used = sum(1 for c in codes if c.get("used_at"))
+    return {"total": len(codes), "unused": len(codes) - used, "used": used}
+
+
+# ── Tech MFA (May 2026, mirrors admin pattern) ───────────────────────────────
+# Stored on the technicians row alongside the existing pin_hash + email_hash.
+# The candidate secret is encrypted at rest; backup codes are hashed.
+
+def set_tech_mfa_pending(tech_id: int, secret: str):
+    """Store a candidate TOTP secret. mfa_enabled stays 0 until activated."""
+    con = _con()
+    con.execute(
+        "UPDATE technicians SET mfa_secret = ?, mfa_enabled = 0 WHERE id = ?",
+        (_enc(secret), tech_id),
+    )
+    con.commit()
+    con.close()
+
+
+def activate_tech_mfa(tech_id: int, backup_code_hashes: list):
+    """Flip mfa_enabled to 1, persist hashed backup codes, clear
+    must_enrol_mfa so the login interceptor stops firing for this tech."""
+    import json as _json
+    con = _con()
+    con.execute(
+        "UPDATE technicians SET mfa_enabled = 1, mfa_backup_codes = ?, "
+        "must_enrol_mfa = 0 WHERE id = ?",
+        (_json.dumps([{"hash": h, "used_at": None} for h in backup_code_hashes]),
+         tech_id),
+    )
+    con.commit()
+    con.close()
+
+
+def disable_tech_mfa(tech_id: int):
+    """Wipe MFA state. Used by admin reset path when a tech loses their
+    authenticator and a fresh enrolment is required."""
+    con = _con()
+    con.execute(
+        "UPDATE technicians SET mfa_secret = NULL, mfa_enabled = 0, "
+        "mfa_backup_codes = NULL WHERE id = ?",
+        (tech_id,),
+    )
+    con.commit()
+    con.close()
+
+
+def replace_tech_backup_codes(tech_id: int, backup_code_hashes: list):
+    import json as _json
+    con = _con()
+    con.execute(
+        "UPDATE technicians SET mfa_backup_codes = ? WHERE id = ?",
+        (_json.dumps([{"hash": h, "used_at": None} for h in backup_code_hashes]),
+         tech_id),
+    )
+    con.commit()
+    con.close()
+
+
+def consume_tech_backup_code(tech_id: int, code: str) -> bool:
+    """Returns True iff code matches an unused stored backup; marks it used."""
+    import json as _json
+    tech = get_tech_by_id(tech_id)
+    if not tech or not tech.get("mfa_backup_codes"):
+        return False
+    try:
+        codes = _json.loads(tech["mfa_backup_codes"])
+    except Exception:
+        return False
+    matched_idx = None
+    for i, entry in enumerate(codes):
+        if entry.get("used_at"):
+            continue
+        if _verify_pin(code, entry.get("hash", "")):
+            matched_idx = i
+            break
+    if matched_idx is None:
+        return False
+    codes[matched_idx]["used_at"] = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    con.execute(
+        "UPDATE technicians SET mfa_backup_codes = ? WHERE id = ?",
+        (_json.dumps(codes), tech_id),
+    )
+    con.commit()
+    con.close()
+    return True
+
+
+def get_tech_backup_codes_status(tech_id: int):
+    """Returns {total, unused, used} counts (codes themselves NOT returned)."""
+    import json as _json
+    tech = get_tech_by_id(tech_id)
+    if not tech or not tech.get("mfa_backup_codes"):
+        return {"total": 0, "unused": 0, "used": 0}
+    try:
+        codes = _json.loads(tech["mfa_backup_codes"])
     except Exception:
         return {"total": 0, "unused": 0, "used": 0}
     used = sum(1 for c in codes if c.get("used_at"))
@@ -5765,9 +5891,14 @@ def bootstrap_super_admin(username: str, password: str, name: str, email: str):
         new_id, _ = out
         con = _con()
         try:
+            # must_change_credentials forces the password swap.
+            # must_enrol_mfa forces MFA enrolment before the session
+            # can reach anything else. Both flags clear on the
+            # corresponding success path (set_admin_password,
+            # admin_mfa_confirm).
             con.execute(
-                "UPDATE admin_users SET must_change_credentials = 1 "
-                "WHERE id = ?",
+                "UPDATE admin_users SET must_change_credentials = 1, "
+                "must_enrol_mfa = 1 WHERE id = ?",
                 (new_id,),
             )
             con.commit()

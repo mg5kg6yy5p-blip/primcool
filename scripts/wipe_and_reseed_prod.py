@@ -234,17 +234,27 @@ def main() -> int:
             )
         except sqlite3.OperationalError:
             pass
-        # Flag every remaining admin + tech for forced reset
+        # Flag every remaining admin + tech for forced PIN/password reset
+        # AND for MFA enrolment tracking. The MFA gates in main.py no
+        # longer consult must_enrol_mfa (every login without MFA is
+        # intercepted regardless) but the flag remains the explicit
+        # ops record that "this account was put through the pre-launch
+        # mandatory-MFA pass."
         try:
-            con.execute("UPDATE admin_users SET must_change_credentials = 1 "
-                        "WHERE active = 1")
+            con.execute("UPDATE admin_users SET must_change_credentials = 1, "
+                        "must_enrol_mfa = 1 WHERE active = 1")
         except sqlite3.OperationalError:
             pass
         try:
-            con.execute("UPDATE technicians SET must_change_credentials = 1 "
-                        "WHERE active = 1")
+            con.execute("UPDATE technicians SET must_change_credentials = 1, "
+                        "must_enrol_mfa = 1 WHERE active = 1")
         except sqlite3.OperationalError:
             pass
+        # Customers: no must_change_credentials column (they choose
+        # their own PIN at first portal login), but the MFA gate in
+        # /api/portal/login now intercepts every customer without
+        # mfa_enabled, so no flag flip is needed to enforce. Recorded
+        # in the audit log so it's visible.
         con.commit()
     except Exception as e:
         con.rollback()
