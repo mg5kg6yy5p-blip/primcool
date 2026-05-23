@@ -3274,17 +3274,30 @@ def get_all_techs():
 
 
 def create_tech(data: dict) -> tuple:
-    """Returns (tech_id, prid). If `tech_code` not provided, PRID is used as the tech_code."""
+    """Returns (tech_id, prid). If `tech_code` not provided, PRID is used
+    as the tech_code.
+
+    Auto-provisions the same operational shape T01 has so every new
+    tech can sign in immediately without a separate admin setup pass:
+      * One active vehicle asset (VAN-<hub>-NN) assigned to the tech.
+      * One active toolkit asset (TKIT-<hub>-NN) assigned to the tech.
+      * A default Mon–Fri 08:00–17:00 active schedule (weekends off,
+        no on-call). Admin can edit afterwards from the tech profile.
+    The hub_id defaults to 1 (Kingston) for now; once multi-hub is
+    real the caller will pass it through data['hub_id']."""
     hire_date = (data.get("hire_date") or "").strip() or None
     prid      = generate_prid(name=data["name"], hire_date=hire_date)
     raw_code  = (data.get("tech_code") or "").strip().upper()
     tech_code = raw_code if raw_code else prid
+    hub_id    = int(data.get("hub_id") or 1)
+    now_iso   = datetime.now(timezone.utc).isoformat()
     con = _con()
     cur = con.execute(
         """
         INSERT INTO technicians
-            (tech_code, pin_hash, name, phone, email, email_hash, role, prid, hire_date, hourly_rate, active, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+            (tech_code, pin_hash, name, phone, email, email_hash, role,
+             prid, hire_date, hourly_rate, active, created_at, hub_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
         """,
         (
             tech_code,
@@ -3297,10 +3310,56 @@ def create_tech(data: dict) -> tuple:
             prid,
             hire_date,
             float(data.get("hourly_rate") or 0),
-            datetime.now(timezone.utc).isoformat(),
+            now_iso,
+            hub_id,
         ),
     )
     tech_id = cur.lastrowid
+
+    # Auto-provision: pick the next free per-hub asset code so codes
+    # stay readable (VAN-KIN-01, VAN-KIN-02, …) regardless of any
+    # earlier deletions.
+    hub_prefix = {1: "KIN"}.get(hub_id, f"HUB{hub_id}")
+
+    def _next_asset_code(prefix: str) -> str:
+        n = 1
+        while True:
+            candidate = f"{prefix}-{hub_prefix}-{n:02d}"
+            exists = con.execute(
+                "SELECT 1 FROM fs_assets WHERE asset_code = ?",
+                (candidate,),
+            ).fetchone()
+            if not exists:
+                return candidate
+            n += 1
+
+    van_code = _next_asset_code("VAN")
+    con.execute(
+        "INSERT INTO fs_assets (asset_code, asset_type, label, hub_id, "
+        "assigned_tech_id, static_location, active, created_at, notes) "
+        "VALUES (?, 'vehicle', ?, ?, ?, NULL, 1, ?, NULL)",
+        (van_code, f"{hub_prefix} Service Van {van_code.rsplit('-', 1)[-1]}",
+         hub_id, tech_id, now_iso),
+    )
+    tkit_code = _next_asset_code("TKIT")
+    con.execute(
+        "INSERT INTO fs_assets (asset_code, asset_type, label, hub_id, "
+        "assigned_tech_id, static_location, active, created_at, notes) "
+        "VALUES (?, 'toolkit', ?, ?, ?, NULL, 1, ?, NULL)",
+        (tkit_code, f"{hub_prefix} Toolkit {tkit_code.rsplit('-', 1)[-1]}",
+         hub_id, tech_id, now_iso),
+    )
+
+    # Default Mon–Fri 08:00–17:00 active. Days 5/6 = Sat/Sun → no row
+    # (treated as off-day by get_tech_schedule's fill-in).
+    for dow in (0, 1, 2, 3, 4):
+        con.execute(
+            "INSERT INTO tech_schedules (tech_id, day_of_week, start_time, "
+            "end_time, active, on_call, updated_at, updated_by_admin_id) "
+            "VALUES (?, ?, '08:00', '17:00', 1, 0, ?, NULL)",
+            (tech_id, dow, now_iso),
+        )
+
     con.commit()
     con.close()
     return tech_id, prid
@@ -3379,10 +3438,63 @@ def consume_pin_reset_token(token: str):
 
 
 def delete_tech(tech_id: int):
+    """Cascade-clean a tech account.
+
+    Owned operational config is hard-deleted (fs_assets, schedule,
+    on-call, certs, CV, KPI per-tech rows, overtime approvals, clock
+    events, reset tokens, reviews). Historical / financial rows are
+    preserved with a soft NULL of the tech reference:
+      * maintenance_visits.assigned_tech_id → NULL
+      * invoice_line_items.tech_id          → NULL
+    fs_audits is left alone — append-only chain; the auditor_id
+    becomes a soft reference once the tech row is gone, but the
+    chain hash continues to validate.
+
+    Without this cascade the orphan asset rows kept showing as
+    "assigned to a non-existent tech" in the 5S admin views — field
+    technicians ran into this when an admin deactivated and re-added
+    a tech via a different code."""
     con = _con()
-    con.execute("UPDATE maintenance_visits SET assigned_tech_id = NULL WHERE assigned_tech_id = ?", (tech_id,))
+    # Owned operational tables — hard delete.
+    owned_tables = [
+        ("fs_assets",                    "assigned_tech_id"),
+        ("tech_schedules",               "tech_id"),
+        ("tech_on_call_overrides",       "tech_id"),
+        ("tech_certifications",          "tech_id"),
+        ("tech_cv_edit_requests",        "tech_id"),
+        ("tech_cv_entries",              "tech_id"),
+        ("tech_overtime_approvals",      "tech_id"),
+        ("tech_clock_events",            "tech_id"),
+        ("tech_pin_resets",              "tech_id"),
+        ("technician_5s_overrides",      "tech_id"),
+        ("technician_kpi_overrides",     "tech_id"),
+        ("technician_reviews",           "tech_id"),
+        ("kpi_periods_released_to_tech", "tech_id"),
+        ("kpi_scores",                   "tech_id"),
+        ("kpi_composite_scores",         "tech_id"),
+        ("kpi_flags",                    "tech_id"),
+        ("kpi_notes",                    "tech_id"),
+        ("kpi_goals",                    "tech_id"),
+        ("kpi_recompute_log",            "tech_id"),
+        ("fs_coaching_log",              "tech_id"),
+    ]
+    for table, col in owned_tables:
+        try:
+            con.execute(f"DELETE FROM {table} WHERE {col} = ?", (tech_id,))
+        except sqlite3.OperationalError:
+            # Table may not exist on older deployments; skip quietly.
+            pass
+    # Soft handle history.
+    con.execute("UPDATE maintenance_visits SET assigned_tech_id = NULL "
+                "WHERE assigned_tech_id = ?", (tech_id,))
+    try:
+        con.execute("UPDATE invoice_line_items SET tech_id = NULL "
+                    "WHERE tech_id = ?", (tech_id,))
+    except sqlite3.OperationalError:
+        pass
     con.execute("DELETE FROM technicians WHERE id = ?", (tech_id,))
     con.commit()
+    con.close()
     con.close()
 
 
