@@ -461,6 +461,15 @@ def init_db():
         # endpoint/helper layer for existing DBs. New DBs get the CHECK in
         # the CREATE block.
         ("employment_status", "ALTER TABLE technicians ADD COLUMN employment_status TEXT NOT NULL DEFAULT 'active'"),
+        # Pre-launch checklist item #2: forced PIN reset on the first
+        # prod login. set_tech_pin clears this on success; new techs
+        # created via create_tech start at 0 (admin enters a known PIN
+        # which the tech is told to change, but it's not strictly
+        # mandated for the create flow today — only on first BOOT after
+        # the bootstrap flag is set externally).
+        ("must_change_credentials",
+            "ALTER TABLE technicians ADD COLUMN must_change_credentials "
+            "INTEGER NOT NULL DEFAULT 0"),
     ):
         if name not in tech_cols:
             try: con.execute(sql)
@@ -509,6 +518,13 @@ def init_db():
         ("terminated_at", "ALTER TABLE admin_users ADD COLUMN terminated_at TEXT"),
         ("last_login_at", "ALTER TABLE admin_users ADD COLUMN last_login_at TEXT"),
         ("email_hash",    "ALTER TABLE admin_users ADD COLUMN email_hash TEXT"),
+        # Pre-launch checklist item #2: forced password reset on the
+        # first prod login. Bootstrap super_admin creation flips this
+        # to 1 (see bootstrap_super_admin) and the password-change
+        # endpoints clear it on success.
+        ("must_change_credentials",
+            "ALTER TABLE admin_users ADD COLUMN must_change_credentials "
+            "INTEGER NOT NULL DEFAULT 0"),
     ):
         if col not in admin_cols:
             try: con.execute(sql)
@@ -3399,8 +3415,16 @@ def create_tech(data: dict) -> tuple:
 
 
 def set_tech_pin(tech_id: int, pin: str):
+    """Set a new PIN. Also clears must_change_credentials so a tech
+    flagged for first-login reset stops being intercepted once they
+    successfully change their PIN."""
     con = _con()
-    con.execute("UPDATE technicians SET pin_hash = ? WHERE id = ?", (_hash_pin(pin), tech_id))
+    con.execute(
+        "UPDATE technicians SET pin_hash = ?, "
+        "must_change_credentials = 0 "
+        "WHERE id = ?",
+        (_hash_pin(pin), tech_id),
+    )
     con.commit()
     con.close()
 
@@ -3730,9 +3754,15 @@ def set_admin_active(admin_id: int, active: bool):
 
 
 def set_admin_password(admin_id: int, password: str):
+    """Set a new password. Also clears must_change_credentials so the
+    first-prod-login forced-reset interception (see bootstrap_super_admin
+    and the /api/admin/login response) doesn't keep firing after the
+    admin successfully changes their own password."""
     con = _con()
     con.execute(
-        "UPDATE admin_users SET password_hash = ? WHERE id = ?",
+        "UPDATE admin_users SET password_hash = ?, "
+        "must_change_credentials = 0 "
+        "WHERE id = ?",
         (_hash_password(password), admin_id),
     )
     con.commit()
@@ -5656,13 +5686,19 @@ def hard_delete_document(doc_id: int):
 # ── Bootstrap first super admin ──────────────────────────────────────────────
 
 def bootstrap_super_admin(username: str, password: str, name: str, email: str):
-    """Creates the first super_admin if no admin_users exist. Returns (id, prid) or None."""
+    """Creates the first super_admin if no admin_users exist. Returns (id, prid) or None.
+
+    Sets must_change_credentials=1 on the new row so the first
+    production login is intercepted and the operator is forced to
+    swap the bootstrap password for something not in the .env file.
+    Idempotent — re-running with an existing admin_users population
+    returns None without altering anything."""
     con = _con()
     n = con.execute("SELECT COUNT(*) AS n FROM admin_users").fetchone()["n"]
     con.close()
     if n > 0:
         return None
-    return create_admin_user(
+    out = create_admin_user(
         {
             "username": username,
             "password": password,
@@ -5672,6 +5708,19 @@ def bootstrap_super_admin(username: str, password: str, name: str, email: str):
         },
         created_by=None,
     )
+    if out:
+        new_id, _ = out
+        con = _con()
+        try:
+            con.execute(
+                "UPDATE admin_users SET must_change_credentials = 1 "
+                "WHERE id = ?",
+                (new_id,),
+            )
+            con.commit()
+        finally:
+            con.close()
+    return out
 
 
 # ── Visit readings (structured HVAC measurements) ────────────────────────────

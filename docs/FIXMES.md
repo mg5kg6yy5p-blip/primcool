@@ -41,23 +41,57 @@ silently breaks operator muscle memory and the in-flight test harness.
 
 **Pre-launch cleanup checklist (the unlock point for the rows above):**
 
-1. Rotate `JWT_SECRET`, `FIELD_ENCRYPTION_KEY`, `PHOTO_URL_SECRET` to
-   fresh prod values; document the rotation procedure for
-   `FIELD_ENCRYPTION_KEY` (which cannot rotate without re-encrypting
-   every row — see Phase 2 of the security hardening plan).
-2. Force every admin and tech to set a strong password/PIN on first
-   prod login (one-shot flag column). Drop the seeded defaults.
+1. **[scaffolded]** Rotate `JWT_SECRET`, `FIELD_ENCRYPTION_KEY`,
+   `PHOTO_URL_SECRET` to fresh prod values. Use
+   `python3 scripts/rotate_secrets.py > .env.prod` to generate
+   never-before-used values, then load into the prod secret store.
+   **Operator step**: do this BEFORE the first real customer record
+   is written, because `FIELD_ENCRYPTION_KEY` can't rotate after
+   data exists without a re-encrypt migration (Phase 2 hardening).
+2. **[backend done; UI hook pending]** Force every admin and tech
+   to set a strong password/PIN on first prod login. Schema:
+   `admin_users.must_change_credentials` + `technicians.must_change_credentials`
+   (additive ALTER, default 0). `bootstrap_super_admin` sets the
+   flag = 1 on the seeded super_admin; `set_admin_password` /
+   `set_tech_pin` clear it. Login responses surface
+   `must_change_credentials: bool` so the UI can intercept and route
+   the user into the change-credential flow before letting them
+   reach any other surface. UI side: admin.html + portal.html +
+   tech.html need a one-time redirect to a "set new password / PIN"
+   modal when the field is true (follow-up).
 3. Resolve `GAP-PIN-STRENGTH` — customer PINs at 4 digits give only
-   10⁴ entropy. Decide: raise to 6-digit, OR require MFA for
-   commercial customers, OR enforce a per-customer PIN-set-by-user
-   step at first portal login.
-4. Wipe the dev `submissions.db` and re-seed ONLY real prospect data;
-   delete the seeded demo customers + visits + invoices.
-5. Tighten CORS `allow_origins` from `*` to the production domain
-   (GAP-CORS) and audit the X-Forwarded-For trust scope (PC-003).
-6. Confirm GPG is installed on the production host and the encrypted
-   backup script (`scripts/backup.sh`) runs end-to-end before the
-   first real customer record is written.
+   10⁴ entropy. **Needs operator decision**, options:
+   * (a) raise customer PIN to 6 digits (10⁶, ~100x stronger; UI
+     prompt change only)
+   * (b) require MFA for commercial customers (already done — the
+     MFA enrol flow at first commercial login is live)
+   * (c) per-customer PIN-set-by-user at first portal login (the
+     formula `1000 + customer.id` for seeded data goes away; the
+     admin generates a one-shot setup token, customer sets their
+     own PIN on first login)
+   Recommendation: (b) is shipped; for residential PINs adopt (c)
+   so no customer keeps a derivable default.
+4. **[scripted]** Wipe the dev `submissions.db` and re-seed only
+   real prospect data. Use
+   `python3 scripts/wipe_and_reseed_prod.py --apply`
+   (dry-run by default; refuses to apply without a recent backup).
+   Preserves admin/tech logins but flags every active row with
+   `must_change_credentials = 1`. Preserves the 7-year financial
+   `audit_log` rows; deletes operational ones.
+5. **[done]** Tighten CORS `allow_origins` from `*` to the
+   production domain (GAP-CORS) and audit the X-Forwarded-For trust
+   scope (PC-003). Both shipped:
+   * CORS: commit `21db926` — `PROD_MODE=true` + `CORS_ALLOW_ORIGINS`
+     env. Fails closed if the env is unset in prod.
+   * XFF: commit `465cb2d` + test_pc003_xff_trust.py (5/5 pass).
+6. **[mechanic verified; ops install pending]** Confirm GPG is
+   installed on the production host and `scripts/backup.sh` runs
+   end-to-end. `scripts/backup_restore_drill.sh` verified the
+   snapshot/tar/restore mechanic locally (14 tables, all counts
+   match, integrity_check OK). Production host still needs GPG
+   installed + a recipient key whose private half lives off-host,
+   and a `REMOTE_TARGET` (S3 / rclone) for off-site copies. Both
+   are operator-side setup, not code.
 
 Until all six are checked, the dev locks above stay in place.
 

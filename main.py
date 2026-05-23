@@ -2502,7 +2502,16 @@ def tech_login(req: TechLogin, request: Request, response: Response):
     token, _ = _issue_session("tech", tech["id"], timedelta(days=7), request)
     _set_session_cookie(response, COOKIE_TECH, token, 7 * 24 * 3600)
     bump_last_login("tech", tech["id"])
-    return {"token": token, "name": tech["name"], "tech_code": tech["tech_code"]}
+    # Pre-launch checklist item #2 — first-prod PIN reset. set_tech_pin
+    # clears must_change_credentials on a successful change. The tech
+    # portal reads must_change_credentials and forces the change-PIN
+    # flow before letting the tech reach the landing or jobs queue.
+    return {
+        "token":     token,
+        "name":      tech["name"],
+        "tech_code": tech["tech_code"],
+        "must_change_credentials": bool(tech.get("must_change_credentials")),
+    }
 
 
 @app.post("/api/tech/logout")
@@ -3612,6 +3621,12 @@ def admin_login(req: AdminLoginRequest, request: Request, response: Response):
     _set_session_cookie(response, COOKIE_ADMIN, token, 12 * 3600)
     bump_last_login("admin", admin["id"])
     _audit_from(admin, "admin.login", request)
+    # Pre-launch checklist item #2 — forced password reset on first
+    # prod login. The bootstrap super_admin is seeded with
+    # must_change_credentials=1 in database.bootstrap_super_admin;
+    # set_admin_password clears it on a successful change. The UI
+    # reads must_change_credentials and routes into the change-
+    # password flow before letting the admin reach any other surface.
     return {
         "token":    token,
         "name":     admin["name"],
@@ -3619,6 +3634,7 @@ def admin_login(req: AdminLoginRequest, request: Request, response: Response):
         "role":     admin["role"],
         "prid":     admin.get("prid"),
         "requires_mfa": False,
+        "must_change_credentials": bool(admin.get("must_change_credentials")),
     }
 
 
@@ -3658,6 +3674,9 @@ def admin_mfa_verify(body: MfaVerify, request: Request, response: Response):
         "role":     admin["role"],
         "prid":     admin.get("prid"),
         "requires_mfa": False,
+        # Mirror the admin_login response so the UI sees the flag
+        # regardless of whether the user has MFA enabled. (Item #2)
+        "must_change_credentials": bool(admin.get("must_change_credentials")),
     }
 
 
