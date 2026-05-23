@@ -907,9 +907,18 @@
           <button class="filter-btn" onclick="clearAuditFilters()">Clear</button>
           <span id="auditCount" style="margin-left:auto;font-size:12px;color:var(--muted);align-self:center;"></span>
         </div>
+        <!-- Bulk-resolve bar (alerts mode only). Hidden until at least
+             one open alert row is checked. -->
+        <div id="alertBulkBar" style="display:none;margin:0 0 10px;padding:10px 14px;background:#fef3c7;border:1px solid #fde68a;border-radius:8px;display:none;align-items:center;gap:10px;flex-wrap:wrap;">
+          <strong id="alertBulkCount" style="color:#92400e;">0 selected</strong>
+          <div style="flex:1;"></div>
+          <button class="btn btn-primary btn-sm" onclick="bulkResolveAlerts('resolved')">Resolve selected</button>
+          <button class="btn btn-ghost   btn-sm" onclick="bulkResolveAlerts('dismissed')">Dismiss selected</button>
+          <button class="btn btn-ghost   btn-sm" onclick="clearAlertSelection()">Clear</button>
+        </div>
         <div class="table-wrap">
           <table>
-            <thead><tr>
+            <thead id="auditTableHead"><tr>
               <th>When</th><th>Actor</th><th>Action</th><th>Target</th><th>Detail</th>
             </tr></thead>
             <tbody id="auditTableBody"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
@@ -7723,6 +7732,17 @@
     const until = document.getElementById('auditUntil')?.value;
     const minViewsEl = document.getElementById('auditMinViews');
     if (minViewsEl) minViewsEl.style.display = (mode === 'aggregate') ? '' : 'none';
+    // Switching out of alerts mode → restore the default thead and
+    // hide the bulk-resolve bar so they don't bleed into the audit /
+    // access / dormant renderers (which all assume the 5-col shape).
+    if (mode !== 'alerts') {
+      const thead = document.getElementById('auditTableHead');
+      if (thead) {
+        thead.innerHTML = '<tr><th>When</th><th>Actor</th><th>Action</th><th>Target</th><th>Detail</th></tr>';
+      }
+      _alertBulkBarVisible(false);
+      _alertSelection.clear();
+    }
     const params = new URLSearchParams();
     if (since) params.set('since', since + 'T00:00:00Z');
     if (until) params.set('until', until + 'T23:59:59Z');
@@ -7751,27 +7771,84 @@
     } catch {}
   }
 
+  // Multi-select state for the alerts table. Keyed by alert id.
+  // Re-derived from checked checkboxes on every interaction so a
+  // re-render (loadAudit) doesn't have to manually preserve it.
+  const _alertSelection = new Set();
+
+  function _alertBulkBarVisible(visible) {
+    const bar = document.getElementById('alertBulkBar');
+    if (!bar) return;
+    bar.style.display = visible ? 'flex' : 'none';
+  }
+
+  function _alertSelectionChanged() {
+    const checked = document.querySelectorAll('input.alert-select:checked');
+    _alertSelection.clear();
+    checked.forEach(cb => _alertSelection.add(Number(cb.value)));
+    const n = _alertSelection.size;
+    const label = document.getElementById('alertBulkCount');
+    if (label) label.textContent = `${n} selected`;
+    _alertBulkBarVisible(n > 0);
+    // Sync header checkbox (indeterminate when partial).
+    const head = document.getElementById('alertSelectAll');
+    if (head) {
+      const all = document.querySelectorAll('input.alert-select');
+      head.checked = (n > 0 && n === all.length);
+      head.indeterminate = (n > 0 && n < all.length);
+    }
+  }
+
+  function _alertSelectAllToggle(checkbox) {
+    document.querySelectorAll('input.alert-select').forEach(cb => {
+      cb.checked = checkbox.checked;
+    });
+    _alertSelectionChanged();
+  }
+
+  function clearAlertSelection() {
+    document.querySelectorAll('input.alert-select').forEach(cb => cb.checked = false);
+    _alertSelectionChanged();
+  }
+
   function renderSecurityAlerts(rows) {
     const tbody = document.getElementById('auditTableBody');
+    const thead = document.getElementById('auditTableHead');
     const countEl = document.getElementById('auditCount');
     if (countEl) countEl.textContent = rows.length ? `${rows.length} alert${rows.length === 1 ? '' : 's'}` : '';
+    const canResolve = can('security:resolve_alerts');
+    // Swap header in (with checkbox column for resolve-able admins).
+    if (thead) {
+      thead.innerHTML = `<tr>
+        ${canResolve ? '<th style="width:34px;"><input type="checkbox" id="alertSelectAll" onchange="_alertSelectAllToggle(this)" title="Select all open alerts" aria-label="Select all open alerts"></th>' : ''}
+        <th>When</th><th>Severity / Kind</th><th>Status</th><th>Summary</th><th>Actions</th>
+      </tr>`;
+    }
     if (!rows.length) {
-      tbody.innerHTML = '<tr><td colspan="5" class="empty">No security alerts.</td></tr>';
+      tbody.innerHTML = `<tr><td colspan="${canResolve ? 6 : 5}" class="empty">No security alerts.</td></tr>`;
+      _alertBulkBarVisible(false);
       return;
     }
     const fmt = (iso) => { try { return new Date(iso).toLocaleString(); } catch { return iso || ''; } };
-    const canResolve = can('security:resolve_alerts');
     tbody.innerHTML = rows.map(r => {
       const sev = (r.severity || 'medium').toLowerCase();
       const sevColor = sev === 'high' ? 'background:#fee2e2;color:#991b1b;' : (sev === 'medium' ? 'background:#fef3c7;color:#92400e;' : 'background:#e0e7ff;color:#3730a3;');
       const statusBadge = r.status === 'open'
         ? '<span class="badge" style="background:#fee2e2;color:#991b1b;">OPEN</span>'
         : `<span class="badge" style="background:#e5e7eb;color:#374151;">${escHtml(r.status.toUpperCase())}</span>`;
+      // Checkbox only on open rows the admin can resolve. Closed rows
+      // get an empty cell so the columns line up.
+      const checkCell = canResolve
+        ? (r.status === 'open'
+            ? `<td><input type="checkbox" class="alert-select" value="${r.id}" onchange="_alertSelectionChanged()" aria-label="Select alert #${r.id}"></td>`
+            : '<td></td>')
+        : '';
       const resolveBtns = (canResolve && r.status === 'open')
         ? `<button class="btn btn-ghost btn-sm" onclick="resolveAlert(${r.id}, 'resolved')">Resolve</button>
            <button class="btn btn-ghost btn-sm" onclick="resolveAlert(${r.id}, 'dismissed')">Dismiss</button>`
         : '';
       return `<tr>
+        ${checkCell}
         <td>${escHtml(fmt(r.created_at))}</td>
         <td><span class="badge" style="${sevColor}">${escHtml(sev.toUpperCase())}</span> ${escHtml(r.kind)}</td>
         <td>${statusBadge}</td>
@@ -7779,6 +7856,8 @@
         <td>${resolveBtns}</td>
       </tr>`;
     }).join('');
+    // Re-derive selection state (none after a fresh load).
+    _alertSelectionChanged();
   }
 
   async function resolveAlert(id, status) {
@@ -7795,6 +7874,36 @@
         window.scrollTo(0, 0);
       }
     } catch (e) { alert(e.message); }
+  }
+
+  async function bulkResolveAlerts(status) {
+    if (!_alertSelection.size) return;
+    const ids = [..._alertSelection];
+    const verb = (status === 'resolved') ? 'Resolve' : 'Dismiss';
+    const note = prompt(
+      `${verb} ${ids.length} alert${ids.length === 1 ? '' : 's'}. Shared note (optional, applied to all):`,
+      '',
+    );
+    if (note === null) return;
+    try {
+      const res = await api('POST', '/api/admin/security/alerts/bulk-resolve',
+                            { ids, note, status });
+      // The backend reports the gap if any selections went stale
+      // between fetch and submit (already-closed alerts skipped).
+      let msg = `${res.updated} alert${res.updated === 1 ? '' : 's'} ${status}.`;
+      if (res.skipped_already_closed) {
+        msg += ` ${res.skipped_already_closed} were already closed.`;
+      }
+      try { toast(msg, 'success'); } catch (_) { alert(msg); }
+      clearAlertSelection();
+      await loadAudit();
+      refreshSecurityBanner();
+      try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch (_) {
+        window.scrollTo(0, 0);
+      }
+    } catch (e) {
+      alert(e.message || 'Bulk action failed.');
+    }
   }
 
   function renderDormant(data) {

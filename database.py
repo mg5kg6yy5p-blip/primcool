@@ -5254,6 +5254,54 @@ def resolve_security_alert(alert_id: int, admin_id: int, note: str = "", status:
     con.close()
 
 
+def resolve_security_alerts_bulk(alert_ids: list, admin_id: int,
+                                 note: str = "",
+                                 status: str = "resolved") -> dict:
+    """Resolve OR dismiss a batch of open alerts in a single UPDATE.
+
+    Only flips alerts that are currently `status = 'open'` — already-
+    closed alerts are skipped (so a stale UI selection doesn't
+    overwrite an earlier resolution with the current admin's id).
+    Returns {requested, updated, skipped_already_closed} so the caller
+    can audit the gap.
+
+    Bulk path exists because the per-alert endpoint requires the admin
+    to enter a note + click twice per row, which doesn't scale when a
+    burst of low-severity alerts (e.g. tech_overtime_pending across a
+    whole shift) needs to be cleared in one pass."""
+    if not alert_ids:
+        return {"requested": 0, "updated": 0, "skipped_already_closed": 0}
+    # Defensive: enforce int + dedupe so a hand-crafted payload can't
+    # smuggle a SQL fragment past the IN-clause builder.
+    clean_ids = sorted({int(i) for i in alert_ids})
+    placeholders = ",".join("?" * len(clean_ids))
+    now_iso = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    # Count what's actually still open so we can report the gap.
+    open_now = con.execute(
+        f"SELECT id FROM security_alerts WHERE id IN ({placeholders}) "
+        f"AND status = 'open'",
+        clean_ids,
+    ).fetchall()
+    open_ids = [r["id"] for r in open_now]
+    if open_ids:
+        ph2 = ",".join("?" * len(open_ids))
+        con.execute(
+            f"UPDATE security_alerts SET status = ?, resolved_by = ?, "
+            f"resolved_at = ?, resolution_note = ? "
+            f"WHERE id IN ({ph2})",
+            [status, admin_id, now_iso, note or ""] + open_ids,
+        )
+    con.commit()
+    con.close()
+    return {
+        "requested": len(clean_ids),
+        "updated":   len(open_ids),
+        "skipped_already_closed": len(clean_ids) - len(open_ids),
+        "ids_updated": open_ids,
+    }
+
+
 def detect_anomalies_for_actor(actor_type: str, actor_id: int) -> list:
     """Run the standard checks against this actor's recent access_log.
     Returns a list of (kind, severity, summary, details) tuples for any

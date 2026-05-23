@@ -103,7 +103,8 @@ from database import (
     bump_last_login, terminate_account, reinstate_account,
     find_dormant_accounts, get_account_exit_report,
     create_security_alert, recent_alert_exists, list_security_alerts,
-    count_open_security_alerts, resolve_security_alert, detect_anomalies_for_actor,
+    count_open_security_alerts, resolve_security_alert,
+    resolve_security_alerts_bulk, detect_anomalies_for_actor,
     create_session, get_session_by_jti, is_session_active,
     revoke_session, revoke_all_sessions_for, get_active_sessions_for,
     mark_session_mfa_verified,
@@ -5897,6 +5898,44 @@ def admin_resolve_alert(request: Request, alert_id: int, body: AlertResolveBody)
                 target_type="security_alert", target_id=alert_id,
                 target_label=body.note or "")
     return {"ok": True}
+
+
+class AlertBulkResolveBody(BaseModel):
+    ids: List[int]
+    note: Optional[str] = None
+    status: Optional[str] = "resolved"  # 'resolved' | 'dismissed'
+
+
+@app.post("/api/admin/security/alerts/bulk-resolve")
+def admin_bulk_resolve_alerts(request: Request, body: AlertBulkResolveBody):
+    """Resolve / dismiss multiple open alerts in a single round-trip.
+
+    Per-row endpoint stays the unit primitive; this is a wrapper so the
+    admin UI can clear a burst of low-severity alerts (overtime
+    pending, day-off sign-in, etc.) without a per-row prompt loop.
+    Already-closed alerts are skipped silently — the response reports
+    the count so the UI can show "Resolved 7 of 9 (2 were already
+    closed)" when selections go stale between fetch and submit."""
+    admin = _require_perm(request, "security:resolve_alerts")
+    if body.status not in ("resolved", "dismissed"):
+        raise HTTPException(400, "status must be 'resolved' or 'dismissed'")
+    if not body.ids:
+        raise HTTPException(400, "ids must be a non-empty list")
+    if len(body.ids) > 500:
+        # Hard ceiling to prevent runaway requests.
+        raise HTTPException(400, "too many alerts in one batch (max 500)")
+    result = resolve_security_alerts_bulk(
+        body.ids, admin["id"], note=body.note or "", status=body.status,
+    )
+    _audit_from(admin, f"security.alert_{body.status}_bulk", request,
+                target_type="security_alert",
+                target_label=f"{result['updated']} of {result['requested']}",
+                after={"ids_updated": result["ids_updated"],
+                       "requested": result["requested"],
+                       "skipped_already_closed":
+                           result["skipped_already_closed"],
+                       "note": body.note or ""})
+    return {"ok": True, **result}
 
 
 def _csv_response(rows: list, columns: list, filename: str) -> PlainTextResponse:
