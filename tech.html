@@ -2118,8 +2118,7 @@
 
       // Sign-out continuation: if the landing redirected here with
       // ?pending=signout and this was the end-shift audit, finish the
-      // sign-out roundtrip now that the 5S is in. Anything else (start
-      // shift, ad-hoc audit) just goes back to the 5S home.
+      // sign-out roundtrip now that the 5S is in.
       if (window.__pcPendingAction === 'signout' &&
           fsState && fsState.phase === 'end_shift') {
         try {
@@ -2127,12 +2126,35 @@
           toast('Signed out ✓', 'ok');
         } catch (se) {
           // Most likely 409 not_clocked_in (already signed out by EOD
-          // cron in the meantime) — that's fine. The landing will
-          // re-pull state and show the right banner.
+          // cron in the meantime) — that's fine.
           toast('Audit saved — returning to home', 'ok');
         }
         window.location.replace('/tech/home');
         return;
+      }
+      // Sign-in continuation: after EACH start-shift audit during a
+      // pending=signin flow, try POST /sign-in. If it succeeds (all
+      // required audits are in), drop the tech straight into the jobs
+      // queue. If it 409s "5s_start_shift_required" they have more
+      // assets to audit — fsShowHome() will re-render the 5S home with
+      // remaining work outstanding.
+      if (window.__pcPendingAction === 'signin' &&
+          fsState && fsState.phase === 'start_shift') {
+        const body = {};
+        const reason = localStorage.getItem('pc_pending_dayoff_reason');
+        if (reason) body.dayoff_reason = reason;
+        try {
+          await api('POST', '/api/tech/me/sign-in', body);
+          // Clear the carried reason; we're in.
+          localStorage.removeItem('pc_pending_dayoff_reason');
+          toast('Signed in ✓', 'ok');
+          window.location.replace('/tech?view=jobs');
+          return;
+        } catch (se) {
+          // Not done — more assets need their start-shift audit.
+          fsShowHome();
+          return;
+        }
       }
       fsShowHome();
     } catch (e) {

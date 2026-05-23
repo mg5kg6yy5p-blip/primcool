@@ -33,7 +33,46 @@
     .hdr-sub{font-size:12px;opacity:.75;}
     .hdr-out{background:rgba(255,255,255,.12);color:#fff;border:1px solid rgba(255,255,255,.2);
              border-radius:8px;padding:7px 12px;font-size:13px;font-weight:600;}
+    /* Sign-in tab keeps the focused single-column feel — that page is
+       all about a single decision (sign in or out). Profile expands to
+       a wider 2-column grid on desktop so it reads like an actual
+       webpage instead of a long mobile scroll. */
     .container{max-width:680px;margin:0 auto;padding:14px;}
+    .container.wide{max-width:1180px;}
+    .profile-grid{display:grid;gap:14px;grid-template-columns:1fr;}
+    @media (min-width:900px){
+      .profile-grid{grid-template-columns:1fr 1fr;}
+      .profile-grid > .span-2{grid-column:span 2;}
+    }
+    .profile-grid .card{margin-bottom:0;}
+
+    /* Calendar-strip schedule — 7 narrow day cells instead of a stacked
+       list. Each cell shows DOW + hours (or "Off"), with an On-call
+       teal underline. */
+    .sched-strip{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;}
+    .sched-cell{padding:10px 6px;border:1px solid var(--border);
+                border-radius:8px;background:#f8fafc;text-align:center;
+                font-size:12px;min-height:78px;display:flex;flex-direction:column;
+                align-items:center;justify-content:center;gap:3px;}
+    .sched-cell.off{background:#fff7ed;color:#9a3412;}
+    .sched-cell.active{background:#f0fdf4;color:#166534;}
+    .sched-cell .dow{font-weight:700;letter-spacing:.4px;font-size:11px;
+                     color:var(--muted);text-transform:uppercase;}
+    .sched-cell .hrs{font-weight:600;color:var(--navy);font-size:12px;
+                     line-height:1.25;}
+    .sched-cell.off .hrs{color:#9a3412;}
+    .sched-cell.on-call{position:relative;}
+    .sched-cell.on-call::after{content:"On call";position:absolute;
+                               bottom:-7px;left:50%;transform:translateX(-50%);
+                               background:var(--teal);color:#fff;font-size:9px;
+                               font-weight:700;letter-spacing:.4px;
+                               padding:1px 6px;border-radius:6px;
+                               text-transform:uppercase;}
+
+    /* Clickable list rows — used for payslips. */
+    .clickrow{cursor:pointer;transition:background .12s;}
+    .clickrow:hover{background:#eef2f7;}
+    .clickrow .arrow{color:var(--muted);font-size:14px;margin-left:6px;}
     .tabs{display:grid;grid-template-columns:1fr 1fr;background:var(--card);
           border:1px solid var(--border);border-radius:12px;overflow:hidden;
           margin-bottom:14px;}
@@ -104,9 +143,12 @@
          the logo + name in /tech (jobs queue), /tech/home (this page),
          and the 5S audit screen all link back here so techs have a
          consistent way to return without needing a back button. -->
-    <a href="/tech/home" style="text-decoration:none;color:inherit;display:flex;align-items:center;gap:10px;min-width:0;flex:1;">
-      <div style="width:34px;height:34px;border-radius:8px;background:rgba(255,255,255,.15);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;letter-spacing:.5px;flex-shrink:0;">PC</div>
-      <div class="hdr-l">
+    <a href="/tech/home" style="text-decoration:none;color:inherit;display:flex;align-items:center;gap:12px;min-width:0;flex:1;">
+      <!-- PrimeCool wordmark — matches the convention used across
+           portal.html, admin.html, invoice_print.html (white "Prime"
+           with teal "Cool"). Never abbreviate to "PC". -->
+      <div style="font-size:18px;font-weight:700;letter-spacing:.3px;flex-shrink:0;">Prime<span style="color:var(--teal);">Cool</span></div>
+      <div class="hdr-l" style="padding-left:10px;border-left:1px solid rgba(255,255,255,.18);">
         <div class="hdr-name" id="hdrName">…</div>
         <div class="hdr-sub" id="hdrSub">PrimeCool Services</div>
       </div>
@@ -114,7 +156,7 @@
     <button class="hdr-out" onclick="doLogout()">Sign out</button>
   </header>
 
-  <div class="container">
+  <div class="container" id="container">
     <div class="tabs">
       <button id="tabSignin" class="active" onclick="switchTab('signin')">
         Sign In for Work
@@ -158,66 +200,90 @@
 
     <!-- ── My Profile tab ────────────────────────────────────────── -->
     <section id="paneProfile" style="display:none;">
-      <div class="card">
-        <h2>Profile</h2>
-        <div id="profileBody"><div class="empty">Loading…</div></div>
-      </div>
+      <div class="profile-grid">
 
-      <div class="card">
-        <h2>My Schedule</h2>
-        <div id="scheduleBody"><div class="empty">Loading…</div></div>
-        <div class="muted" style="font-size:12px;margin-top:8px;">
-          To change your schedule or on-call rotation, contact your
-          supervisor or payroll admin.
+        <!-- Identity (full width on desktop — sets the page header) -->
+        <div class="card span-2">
+          <h2>Profile</h2>
+          <div id="profileBody"><div class="empty">Loading…</div></div>
         </div>
-      </div>
 
-      <div class="card">
-        <h2>Pay</h2>
-        <div id="payBody"><div class="empty">Loading…</div></div>
-      </div>
-
-      <div class="card">
-        <h2>Performance (KPI)</h2>
-        <div id="kpiBody"><div class="empty">Loading…</div></div>
-        <div class="muted" style="font-size:12px;margin-top:8px;">
-          You see periods after your supervisor releases them.
-        </div>
-      </div>
-
-      <div class="card">
-        <h2>Certifications</h2>
-        <div id="certsBody"><div class="empty">Loading…</div></div>
-        <div class="muted" style="font-size:12px;margin-top:8px;">
-          Certifications are added by your supervisor. If a certification
-          is missing, ask them to add it.
-        </div>
-      </div>
-
-      <div class="card">
-        <h2>CV / Work history</h2>
-        <div id="cvBody"><div class="empty">Loading…</div></div>
-        <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
-          <button class="btn-ghost" style="padding:8px 14px;border-radius:8px;font-size:13px;font-weight:600;border:1px solid var(--border);background:#f3f4f6;color:var(--navy);width:auto;cursor:pointer;"
-                  onclick="cvOpenNew()">+ Add entry</button>
-        </div>
-      </div>
-
-      <div class="card">
-        <h2>Account</h2>
-        <div id="acctBody">
-          <div class="schedule-line">
-            <span>Sign out everywhere</span>
-            <button class="btn-ghost" style="padding:6px 12px;border-radius:6px;font-size:12px;font-weight:600;border:1px solid var(--border);background:#fff;color:var(--navy);width:auto;cursor:pointer;"
-                    onclick="doLogout()">Sign out</button>
-          </div>
+        <!-- Weekly schedule (full width — 7-cell calendar strip) -->
+        <div class="card span-2">
+          <h2>My Schedule</h2>
+          <div id="scheduleBody"><div class="empty">Loading…</div></div>
           <div class="muted" style="font-size:12px;margin-top:10px;">
-            To change your PIN or enable 2FA on this account, contact your
-            supervisor.
+            To change your schedule or on-call rotation, contact your
+            supervisor or payroll admin.
+          </div>
+        </div>
+
+        <!-- Pay (clickable rows → modal) -->
+        <div class="card">
+          <h2>Pay</h2>
+          <div id="payBody"><div class="empty">Loading…</div></div>
+          <div class="muted" style="font-size:12px;margin-top:8px;">
+            Tap a period to open the payslip.
+          </div>
+        </div>
+
+        <!-- KPI / Performance -->
+        <div class="card">
+          <h2>Performance (KPI)</h2>
+          <div id="kpiBody"><div class="empty">Loading…</div></div>
+          <div class="muted" style="font-size:12px;margin-top:8px;">
+            You see periods after your supervisor releases them.
+          </div>
+        </div>
+
+        <!-- Certifications -->
+        <div class="card">
+          <h2>Certifications</h2>
+          <div id="certsBody"><div class="empty">Loading…</div></div>
+          <div class="muted" style="font-size:12px;margin-top:8px;">
+            Certifications are added by your supervisor. If one is
+            missing, ask them to add it.
+          </div>
+        </div>
+
+        <!-- Account -->
+        <div class="card">
+          <h2>Account</h2>
+          <div id="acctBody">
+            <div class="schedule-line">
+              <span>Sign out everywhere</span>
+              <button class="btn-ghost" style="padding:6px 12px;border-radius:6px;font-size:12px;font-weight:600;border:1px solid var(--border);background:#fff;color:var(--navy);width:auto;cursor:pointer;"
+                      onclick="doLogout()">Sign out</button>
+            </div>
+            <div class="muted" style="font-size:12px;margin-top:10px;">
+              To change your PIN or enable 2FA on this account, contact
+              your supervisor.
+            </div>
+          </div>
+        </div>
+
+        <!-- CV / Work history (full width — entries can be long) -->
+        <div class="card span-2">
+          <h2>CV / Work history</h2>
+          <div id="cvBody"><div class="empty">Loading…</div></div>
+          <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="btn-ghost" style="padding:8px 14px;border-radius:8px;font-size:13px;font-weight:600;border:1px solid var(--border);background:#f3f4f6;color:var(--navy);width:auto;cursor:pointer;"
+                    onclick="cvOpenNew()">+ Add entry</button>
           </div>
         </div>
       </div>
     </section>
+
+    <!-- Payslip detail modal -->
+    <div id="psModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:100;align-items:center;justify-content:center;padding:14px;">
+      <div style="background:#fff;border-radius:12px;padding:20px 22px;max-width:560px;width:100%;max-height:90vh;overflow:auto;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:14px;">
+          <h3 id="psModalTitle" style="margin:0;color:var(--navy);font-size:17px;">Payslip</h3>
+          <button class="btn-ghost" style="padding:5px 10px;border-radius:6px;font-size:12px;font-weight:600;border:1px solid var(--border);background:#fff;color:var(--muted);width:auto;cursor:pointer;" onclick="psCloseModal()">Close</button>
+        </div>
+        <div id="psModalBody"><div class="empty">Loading…</div></div>
+      </div>
+    </div>
 
     <!-- CV entry modal — used for "Add" and "Edit" -->
     <div id="cvModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:100;align-items:center;justify-content:center;padding:14px;">
@@ -334,6 +400,8 @@
       document.getElementById('tabProfile').classList.toggle('active', t === 'profile');
       document.getElementById('paneSignin').style.display  = (t === 'signin')  ? '' : 'none';
       document.getElementById('paneProfile').style.display = (t === 'profile') ? '' : 'none';
+      // Profile reads like a webpage on desktop; Sign-in stays focused.
+      document.getElementById('container').classList.toggle('wide', t === 'profile');
       if (t === 'profile') loadProfileTab();
     }
 
@@ -510,23 +578,39 @@
     }
 
     // ── Sign in / out actions ─────────────────────────────────────────
+    // Sign-in flow:
+    //   1. Try POST /sign-in directly.
+    //   2. If success → toast + reload overview (we're done).
+    //   3. If 409 5s_start_shift_required → stash optional day-off reason
+    //      in localStorage and redirect to /tech?view=5s&pending=signin.
+    //      The tech.html post-audit hook re-attempts /sign-in after each
+    //      audit submission and, when it finally succeeds, redirects to
+    //      /tech?view=jobs (the queue). That single chain replaces the
+    //      old "Open 5S audit → finish → come back here → click recheck"
+    //      flow.
     async function doSignIn(isDayOff) {
-      const body = {};
+      let reason = '';
       if (isDayOff) {
-        const reason = (document.getElementById('dayoffReason').value || '').trim();
+        reason = (document.getElementById('dayoffReason').value || '').trim();
         if (!reason) {
           PC.toast('Day-off sign-in requires a reason.', 'warning');
           return;
         }
-        body.dayoff_reason = reason;
       }
+      const body = isDayOff ? { dayoff_reason: reason } : {};
       try {
         await api('POST', '/api/tech/me/sign-in', body);
         PC.toast('Signed in.', 'success');
-        await loadOverview();
+        // Land them straight in the queue rather than just toasting on
+        // the landing — they tapped Sign In to start working.
+        window.location.assign('/tech?view=jobs');
+        return;
       } catch (e) {
         if (e.status === 409 && /5s_start_shift_required/i.test(e.message)) {
-          renderGate('start');
+          // Stash reason for the post-audit hook to retry with.
+          if (reason) localStorage.setItem('pc_pending_dayoff_reason', reason);
+          else        localStorage.removeItem('pc_pending_dayoff_reason');
+          window.location.assign('/tech?view=5s&pending=signin');
           return;
         }
         if (e.status === 409 && /dayoff_reason_required/i.test(e.message)) {
@@ -546,25 +630,9 @@
       window.location.assign('/tech?view=5s&pending=signout');
     }
 
-    function renderGate(which) {
-      const label = (which === 'start')
-        ? 'start-of-shift'
-        : 'end-of-shift';
-      const area = document.getElementById('statusArea');
-      area.innerHTML = `
-        <div class="alert alert-warn">
-          <strong>5S ${esc(label)} audit required.</strong><br>
-          Please complete your 5S workplace audit before ${which === 'start' ? 'signing in' : 'signing out'}.
-        </div>
-        <div class="card">
-          <button class="btn btn-primary" onclick="go5S()">
-            Open 5S audit
-          </button>
-          <button class="btn btn-ghost" onclick="loadOverview()" style="margin-top:10px;">
-            I've finished — recheck
-          </button>
-        </div>`;
-    }
+    // (renderGate was removed: both sign-in and sign-out now route
+    // directly through the 5S audit instead of showing an intermediate
+    // banner with an "I've finished — recheck" button.)
 
     // ── My Profile tab (TP-4) ─────────────────────────────────────────
     // Profile is split across 7 cards: header info, weekly schedule,
@@ -624,53 +692,100 @@
         el.innerHTML = `<div class="empty">Could not load schedule: ${esc(e.message)}</div>`;
         return;
       }
-      const rows = (sched || []).map((d, i) => {
-        let label;
-        if (!d.active) {
-          label = '<span style="color:var(--orange);">Off</span>';
-        } else if (d.start_time && d.end_time) {
-          label = `${esc(fmt12(d.start_time))} – ${esc(fmt12(d.end_time))}`;
-        } else {
-          label = '<span style="color:var(--muted);">Not set</span>';
-        }
-        if (d.on_call) {
-          label += ' <span class="pill pill-success" style="margin-left:6px;">On call</span>';
-        }
-        return `<div class="schedule-line">
-          <span>${DOW[i]}</span><strong>${label}</strong></div>`;
+      // Compact 7-cell calendar strip instead of a 7-row stacked list.
+      // Each cell shows DOW + hours (or "Off"); on-call days get a
+      // teal pill underneath.
+      const cells = (sched || []).map((d, i) => {
+        const cls  = !d.active ? 'sched-cell off'
+                   : 'sched-cell active' + (d.on_call ? ' on-call' : '');
+        let hrs;
+        if (!d.active) hrs = 'Off';
+        else if (d.start_time && d.end_time)
+          hrs = `${esc(fmt12(d.start_time))}<br>${esc(fmt12(d.end_time))}`;
+        else hrs = '<span style="color:var(--muted);">—</span>';
+        return `<div class="${cls}">
+          <div class="dow">${DOW[i]}</div>
+          <div class="hrs">${hrs}</div>
+        </div>`;
       }).join('');
       let overridesHtml = '';
       if (overrides && overrides.length) {
-        overridesHtml = '<div class="muted" style="font-size:12px;margin-top:10px;font-weight:600;">Upcoming on-call dates</div>' +
-          overrides.map(o =>
-            `<div class="schedule-line">
-              <span>${esc(o.work_date)}</span>
-              <strong>${o.on_call ? '<span class="pill pill-success">On call</span>' : '<span class="pill">Off-call (override)</span>'}</strong>
-            </div>`
-          ).join('');
+        overridesHtml = `
+          <div style="margin-top:22px;">
+            <div class="muted" style="font-size:12px;font-weight:600;margin-bottom:6px;">Upcoming on-call dates</div>
+            ${overrides.map(o => `
+              <div class="schedule-line">
+                <span>${esc(o.work_date)}${o.note ? ' · <span style="color:var(--muted);font-weight:400;">' + esc(o.note) + '</span>' : ''}</span>
+                <strong>${o.on_call ? '<span class="pill pill-success">On call</span>' : '<span class="pill">Off-call (override)</span>'}</strong>
+              </div>`).join('')}
+          </div>`;
       }
-      el.innerHTML = rows + overridesHtml;
+      el.innerHTML = `<div class="sched-strip">${cells}</div>` + overridesHtml;
     }
 
     // ── Pay ───────────────────────────────────────────────────────────
+    let payCache = [];
     async function loadPay() {
       const el = document.getElementById('payBody');
       try {
-        const list = await api('GET', '/api/tech/me/payslips');
-        if (!list || !list.length) {
+        payCache = await api('GET', '/api/tech/me/payslips') || [];
+        if (!payCache.length) {
           el.innerHTML = '<div class="empty">No payslips yet. They appear here once the Director approves the pay period.</div>';
           return;
         }
-        el.innerHTML = list.slice(0, 6).map(p =>
-          `<div class="schedule-line">
+        el.innerHTML = payCache.slice(0, 6).map(p =>
+          `<div class="schedule-line clickrow" role="button" tabindex="0"
+                onclick="psOpenModal(${p.id})"
+                onkeydown="if(event.key==='Enter')psOpenModal(${p.id})">
             <span>${esc(p.period_label || p.period_key || '—')}</span>
-            <strong>${_fmtMoney(p.net_amount != null ? p.net_amount : p.gross_amount)}</strong>
+            <strong>${_fmtMoney(p.net_pay != null ? p.net_pay : p.gross_pay)}<span class="arrow">›</span></strong>
           </div>`
         ).join('');
       } catch (e) {
         // Endpoint may not exist on every deployment; absorb 404 quietly.
         el.innerHTML = '<div class="empty">No pay records available right now.</div>';
       }
+    }
+    async function psOpenModal(id) {
+      const m = document.getElementById('psModal');
+      const t = document.getElementById('psModalTitle');
+      const b = document.getElementById('psModalBody');
+      const head = payCache.find(x => x.id === id);
+      t.textContent = 'Payslip · ' + (head ? (head.period_label || head.period_key || '') : '');
+      b.innerHTML = '<div class="empty">Loading…</div>';
+      m.style.display = 'flex';
+      try {
+        const p = await api('GET', `/api/tech/me/payslips/${id}`);
+        // Field names mirror the payslips schema (hours_regular,
+        // gross_pay, net_pay, etc.) so the modal reads accurately.
+        const rows = [
+          ['Period',          p.period_label || p.period_key],
+          ['Dates',           p.period_start && p.period_end
+                                ? `${p.period_start} → ${p.period_end}` : null],
+          ['Status',          p.period_status],
+          ['Hours (regular)', p.hours_regular],
+          ['Hours (overtime)',p.hours_overtime],
+          ['Hourly rate',     p.hourly_rate != null ? _fmtMoney(p.hourly_rate) : null],
+          ['Overtime rate',   p.overtime_rate ? _fmtMoney(p.overtime_rate) : null],
+          ['Bonus',           p.bonus != null ? _fmtMoney(p.bonus) : null],
+          ['Gross pay',       p.gross_pay != null ? _fmtMoney(p.gross_pay) : null],
+          ['PAYE',            p.paye_tax != null ? _fmtMoney(p.paye_tax) : null],
+          ['NIS',             p.nis != null ? _fmtMoney(p.nis) : null],
+          ['NHT',             p.nht != null ? _fmtMoney(p.nht) : null],
+          ['Education tax',   p.education_tax != null ? _fmtMoney(p.education_tax) : null],
+          ['Other deductions',p.other_deductions ? _fmtMoney(p.other_deductions) : null],
+          ['Total deductions',p.total_deductions != null ? _fmtMoney(p.total_deductions) : null],
+          ['Net pay',         p.net_pay != null ? _fmtMoney(p.net_pay) : null],
+        ];
+        b.innerHTML = rows
+          .filter(([_, v]) => v != null && v !== '')
+          .map(([l, v]) => _fmtRow(l, v)).join('');
+      } catch (e) {
+        b.innerHTML = `<div class="empty">Could not load payslip: ${esc(e.message)}</div>`;
+      }
+    }
+    function psCloseModal() {
+      document.getElementById('psModal').style.display = 'none';
     }
 
     // ── KPI / Performance ────────────────────────────────────────────
