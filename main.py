@@ -2383,13 +2383,17 @@ async def portal_forgot_pin(request: Request, body: PortalForgotPin):
 def portal_reset_pin(body: PortalResetPin):
     if body.pin != body.confirm_pin:
         raise HTTPException(400, "PINs do not match")
-    try:
-        validate_pin_policy(body.pin)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
     customer_id = consume_customer_pin_reset(body.token)
     if not customer_id:
         raise HTTPException(400, "Reset link is invalid or has expired")
+    # Token proved ownership; load the customer row for the phone-as-PIN
+    # check. Same shape as the tech reset path.
+    cust = get_customer_by_id(customer_id) or {}
+    _validate_pin_or_400(
+        body.pin, phone_on_file=cust.get("phone"),
+        actor_type="customer", actor_id=customer_id,
+        label=cust.get("customer_code") or f"customer#{customer_id}",
+    )
     set_customer_pin(customer_id, body.pin)
     reset_pin_failures(customer_id)
     return {"ok": True}
@@ -2569,13 +2573,20 @@ async def tech_forgot_pin(request: Request, body: TechForgotPin):
 
 @app.post("/api/tech/reset-pin")
 def tech_reset_pin(body: TechResetPin):
-    if not body.pin.isdigit() or not (4 <= len(body.pin) <= 8):
-        raise HTTPException(400, "PIN must be 4–8 digits")
     if body.pin != body.confirm_pin:
         raise HTTPException(400, "PINs do not match")
     tech_id = consume_pin_reset_token(body.token)
     if not tech_id:
         raise HTTPException(400, "Reset link is invalid or has expired")
+    # Phone-on-file check requires the tech row; load it now (the
+    # token already proved ownership). 422 on weak PIN; security
+    # alert on phone-as-PIN attempt.
+    tech = get_tech_by_id(tech_id) or {}
+    _validate_pin_or_400(
+        body.pin, phone_on_file=tech.get("phone"),
+        actor_type="tech", actor_id=tech_id,
+        label=tech.get("tech_code") or f"tech#{tech_id}",
+    )
     set_tech_pin(tech_id, body.pin)
     return {"ok": True}
 
@@ -2963,6 +2974,37 @@ def _tp1_raise_security_alert(kind: str, severity: str, summary: str,
         )
     except Exception as e:
         logger.warning(f"_tp1_raise_security_alert failed: {e}")
+
+
+def _validate_pin_or_400(pin: str, phone_on_file: str,
+                         actor_type: str, actor_id: int,
+                         label: str = ""):
+    """Wrapper around database.validate_pin_policy that:
+      * Raises HTTPException(422) with the policy message on weak PINs.
+      * Specifically raises a security_alert with kind
+        'phone_as_pin_attempt' when the PIN matches the phone on
+        file — that's the most-likely-malicious pattern (a tech or
+        customer trying to use a phone number an attacker may have
+        from a contact card).
+    Callers MUST pass actor_type ('tech' | 'customer' | 'admin') and
+    actor_id so the alert can be attributed; label is a human-readable
+    hint for the alert summary."""
+    try:
+        validate_pin_policy(pin, phone_on_file=phone_on_file)
+    except ValueError as e:
+        msg = str(e)
+        if "phone number" in msg.lower():
+            _tp1_raise_security_alert(
+                kind="phone_as_pin_attempt",
+                severity="medium",
+                summary=(f"{actor_type.capitalize()} #{actor_id}"
+                        f"{(' (' + label + ')') if label else ''} "
+                        f"attempted to set a PIN matching their phone "
+                        f"number on file"),
+                actor_type=actor_type, actor_id=actor_id,
+                details={"label": label or None},
+            )
+        raise HTTPException(422, msg)
 
 
 def _tech_self_actor(tech_id: int) -> dict:
@@ -6149,10 +6191,14 @@ def admin_list_customers(request: Request):
 def admin_create_customer(request: Request, body: CustomerCreate):
     admin = _require_perm(request, "customer:create")
     if body.pin:
-        try:
-            validate_pin_policy(body.pin)
-        except ValueError as e:
-            raise HTTPException(400, str(e))
+        # New customer — phone-on-file is the value the admin just
+        # entered in this request. If they're trying to set the PIN
+        # to that phone, refuse + alert.
+        _validate_pin_or_400(
+            body.pin, phone_on_file=getattr(body, "phone", None),
+            actor_type="admin", actor_id=admin["id"],
+            label=f"new customer '{body.name}'",
+        )
     try:
         customer_id = create_customer(body.model_dump())
     except Exception as e:
@@ -6168,13 +6214,14 @@ def admin_create_customer(request: Request, body: CustomerCreate):
 @app.put("/api/admin/customers/{customer_id}/pin", response_model=OkResponse)
 def admin_reset_customer_pin(request: Request, customer_id: int, body: CustomerPinReset):
     admin = _require_perm(request, "customer:update")
-    try:
-        validate_pin_policy(body.pin)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
     cust = get_customer_by_id(customer_id)
     if not cust:
         raise HTTPException(404, "Customer not found")
+    _validate_pin_or_400(
+        body.pin, phone_on_file=cust.get("phone"),
+        actor_type="customer", actor_id=customer_id,
+        label=cust.get("customer_code") or f"customer#{customer_id}",
+    )
     set_customer_pin(customer_id, body.pin)
     _audit_from(admin, "customer.reset_pin", request,
                 target_type="customer", target_id=customer_id, target_label=cust["customer_code"])
@@ -8238,8 +8285,15 @@ def admin_list_techs(request: Request):
 @app.post("/api/admin/techs")
 def admin_create_tech(request: Request, body: TechCreate):
     admin = _require_perm(request, "tech:create")
-    if not body.pin.isdigit() or not (4 <= len(body.pin) <= 8):
-        raise HTTPException(400, "PIN must be 4–8 digits")
+    # New tech, so phone-on-file is whatever the admin entered in this
+    # same request. Phone-as-PIN check still applies — refuse to even
+    # create the row if the admin tries to set the new tech's PIN to
+    # their own phone number. (PIN min raised to 10 digits May 2026.)
+    _validate_pin_or_400(
+        body.pin, phone_on_file=body.phone,
+        actor_type="admin", actor_id=admin["id"],
+        label=f"new tech '{body.name}'",
+    )
     if body.role not in ("lead_tech", "tech", "apprentice"):
         raise HTTPException(400, "Invalid tech role")
     try:
@@ -8272,9 +8326,12 @@ def admin_update_tech(request: Request, tech_id: int, body: TechUpdate):
 @app.put("/api/admin/techs/{tech_id}/pin")
 def admin_reset_tech_pin(request: Request, tech_id: int, body: TechPinReset):
     admin = _require_perm(request, "tech:reset_pin")
-    if not body.pin.isdigit() or not (4 <= len(body.pin) <= 8):
-        raise HTTPException(400, "PIN must be 4–8 digits")
     tech = get_tech_by_id(tech_id)
+    _validate_pin_or_400(
+        body.pin, phone_on_file=(tech or {}).get("phone"),
+        actor_type="tech", actor_id=tech_id,
+        label=(tech or {}).get("tech_code") or f"tech#{tech_id}",
+    )
     set_tech_pin(tech_id, body.pin)
     _audit_from(admin, "tech.reset_pin", request,
                 target_type="tech", target_id=tech_id,

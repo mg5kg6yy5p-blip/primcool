@@ -2188,21 +2188,70 @@ def verify_customer(code: str, pin: str):
     return cust
 
 
-# ── PIN policy (Phase 3) ─────────────────────────────────────────────────────
-# Public-internet door is hardened: 6+ digits, no repeats, no sequential runs.
+# ── PIN policy (Phase 3, raised May 2026) ───────────────────────────────────
+# Public-internet door is hardened: 10–16 digits, no repeats, no sequential
+# runs, no phone-number-on-file matches.
 # Lockout: 5 failed attempts → 30-minute auto-reset window.
-PIN_MIN_LEN              = 6
-PIN_MAX_LEN              = 8
+#
+# The 10-digit floor was raised from 6 → 10 per the pre-launch security
+# review (GAP-PIN-STRENGTH). Existing PINs continue to authenticate
+# until the user changes them — at which point the new rules apply.
+# Combined with the must_change_credentials flag from item #2, every
+# active customer / tech is funnelled into a forced reset on first
+# prod login, so the floor effectively becomes mandatory then.
+PIN_MIN_LEN              = 10
+PIN_MAX_LEN              = 16
 PIN_LOCKOUT_THRESHOLD    = 5
 PIN_LOCKOUT_MINUTES      = 30
 
 
-def validate_pin_policy(pin: str):
+def _digits_only(s: str) -> str:
+    """Strip non-digit characters; used for phone-vs-PIN comparison so
+    formatting (spaces, dashes, +country) doesn't dodge the check."""
+    return "".join(c for c in (s or "") if c.isdigit())
+
+
+def pin_matches_phone(pin: str, phone_on_file: str) -> bool:
+    """True if the PIN looks like (or contains) the digits of the
+    phone-on-file — forward OR reversed. Conservative match:
+      * digits-only comparison so formatting doesn't dodge the check
+      * PIN substring of phone, OR phone substring of PIN
+      * same check against the REVERSED phone digits (PINs like
+        4321555678 vs phone 8765554321 must also be rejected — the
+        most common workaround once people are told "no, not your
+        phone number")
+      * 'phone too short to be a phone' guard (len<7) skips the check
+        rather than producing spurious matches against short tags.
+    Empty phone → False (nothing to match against)."""
+    p = _digits_only(pin)
+    q = _digits_only(phone_on_file)
+    if not p or not q or len(q) < 7:
+        return False
+    if p in q or q in p:
+        return True
+    qr = q[::-1]
+    if p in qr or qr in p:
+        return True
+    return False
+
+
+def validate_pin_policy(pin: str, phone_on_file: str = None):
     """Raises ValueError on weak PINs. Used by every PIN-setting code path
-    (customer create, set, reset). The rules:
-      - digits only, 6–8 chars
-      - reject all-same-digit (000000, 111111…)
-      - reject monotonic runs (012345, 123456, 987654, 543210)"""
+    (customer create, set, reset; tech reset; admin tech-create).
+
+    Rules (May 2026):
+      - digits only, 10–16 chars
+      - reject all-same-digit (1111111111, 2222222222…)
+      - reject monotonic runs (0123456789)
+      - reject any PIN that matches / contains / is contained in the
+        phone-on-file (phone_on_file optional; skipped if None or
+        empty). Phone-as-PIN is the single most common weak-PIN
+        pattern in field service.
+
+    Callers that have the user's phone-on-file in scope MUST pass it;
+    not passing it disables the phone check but the other rules still
+    apply. Callers should ALSO emit a security_alert when this raises
+    a phone-match (the helper doesn't because it has no actor context)."""
     if not pin or not pin.isdigit():
         raise ValueError("PIN must be digits only")
     if not (PIN_MIN_LEN <= len(pin) <= PIN_MAX_LEN):
@@ -2213,6 +2262,10 @@ def validate_pin_policy(pin: str):
     diffs = {int(pin[i+1]) - int(pin[i]) for i in range(len(pin)-1)}
     if diffs == {1} or diffs == {-1}:
         raise ValueError("PIN cannot be a sequential run of digits")
+    if phone_on_file and pin_matches_phone(pin, phone_on_file):
+        raise ValueError(
+            "PIN cannot be (or contain) your phone number on file"
+        )
 
 
 def record_pin_failure(customer_id: int) -> dict:
