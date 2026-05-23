@@ -1534,10 +1534,31 @@ def serve_photo(filename: str, exp: int = 0, sig: str = ""):
         raise HTTPException(404, "Photo not found")
     return FileResponse(str(path))
 
+# CORS — closes audit finding M4 (GAP-CORS).
+#
+# Dev (PROD_MODE=false): permissive — file://, localhost:*, dev
+# tooling, fetch-from-anywhere is fine and developers expect it.
+#
+# Prod (PROD_MODE=true): the only origins that may exchange cookies
+# or read responses are the ones explicitly listed in CORS_ALLOW_ORIGINS
+# (comma-separated, e.g. "https://app.primecool.example.jm,
+# https://portal.primecool.example.jm"). Falls back to ["null"] (no
+# valid origin) if nothing is set, which fails closed.
+#
+# CSRF middleware (csrf_origin_check) is the second line of defense
+# for mutating requests; this is the first line.
+_cors_origins_env = os.environ.get("CORS_ALLOW_ORIGINS", "").strip()
+if PROD_MODE:
+    _cors_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()] or ["null"]
+    _cors_allow_credentials = True
+else:
+    _cors_origins = ["*"]
+    _cors_allow_credentials = False  # CORS spec: cannot combine '*' with credentials
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_allow_credentials,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["*"],
 )
 
