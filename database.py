@@ -8606,25 +8606,47 @@ def compute_fx_display(jmd_total: float, foreign_currency: str,
 
 # ── Metrics + listing + CSV export ─────────────────────────────────────────
 def get_invoice_metrics(today: str = None) -> dict:
-    """Returns top-of-tab tile data: outstanding, overdue, invoiced_mtd,
-    collected_mtd. All amounts in JMD (the base currency)."""
+    """Returns top-of-tab tile data for the Invoices admin tab.
+
+    Response shape (all amounts in JMD, the base currency):
+      outstanding_amount_jmd  — total $ owed (status='sent' AND not paid)
+      outstanding_count       — number of outstanding invoices
+      overdue_amount_jmd      — total $ owed past due
+      overdue_count           — number of past-due invoices
+      invoiced_this_month     — total $ invoiced this calendar month
+      collected_this_month    — total $ collected this calendar month
+      as_of                   — date the snapshot was computed for
+
+    Legacy keys (kept for one release for backwards compat — DO NOT
+    rely on these names in new code):
+      outstanding             — alias of outstanding_amount_jmd
+      overdue                 — alias of overdue_amount_jmd
+
+    The legacy keys were ambiguous (number vs amount) and tripped a
+    reconciliation test that treated them as counts. Audit H1,
+    2026-05-23 — keys split so the field name announces its
+    semantics."""
     if today is None:
         today = datetime.now(timezone.utc).date().isoformat()
     month_prefix = today[:7]  # YYYY-MM
     con = _con()
     row = con.execute(
-        "SELECT COALESCE(SUM(total - amount_paid),0) AS outstanding "
+        "SELECT COALESCE(SUM(total - amount_paid),0) AS amt, "
+        "       COUNT(*) AS n "
         "FROM invoices WHERE status='sent' AND (total - amount_paid) > 0.01"
     ).fetchone()
-    outstanding = float(row["outstanding"] or 0)
+    outstanding_amt = float(row["amt"] or 0)
+    outstanding_n   = int(row["n"] or 0)
 
     row = con.execute(
-        "SELECT COALESCE(SUM(total - amount_paid),0) AS overdue "
+        "SELECT COALESCE(SUM(total - amount_paid),0) AS amt, "
+        "       COUNT(*) AS n "
         "FROM invoices WHERE status='sent' AND due_date < ? "
         "AND (total - amount_paid) > 0.01",
         (today,),
     ).fetchone()
-    overdue = float(row["overdue"] or 0)
+    overdue_amt = float(row["amt"] or 0)
+    overdue_n   = int(row["n"] or 0)
 
     row = con.execute(
         "SELECT COALESCE(SUM(total),0) AS inv_mtd "
@@ -8643,11 +8665,17 @@ def get_invoice_metrics(today: str = None) -> dict:
     collected_mtd = float(row["collected_mtd"] or 0)
     con.close()
     return {
-        "outstanding":          round(outstanding, 2),
-        "overdue":              round(overdue, 2),
-        "invoiced_this_month":  round(invoiced_mtd, 2),
-        "collected_this_month": round(collected_mtd, 2),
-        "as_of":                today,
+        # Explicit, unambiguous primary fields:
+        "outstanding_amount_jmd": round(outstanding_amt, 2),
+        "outstanding_count":      outstanding_n,
+        "overdue_amount_jmd":     round(overdue_amt, 2),
+        "overdue_count":          overdue_n,
+        "invoiced_this_month":    round(invoiced_mtd, 2),
+        "collected_this_month":   round(collected_mtd, 2),
+        "as_of":                  today,
+        # Legacy aliases (deprecated):
+        "outstanding":            round(outstanding_amt, 2),
+        "overdue":                round(overdue_amt, 2),
     }
 
 
