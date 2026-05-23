@@ -4,6 +4,7 @@ submissions.db
 submissions.db-shm
 submissions.db-wal
 submissions.db.bak-*
+submissions.db.before-*
 
 # Uploads — customer PII, photo evidence
 uploads/photos/*
@@ -37,3 +38,5 @@ venv/
 .idea/
 .DS_Store
 Thumbs.db
+dev.env.local
+.claude/launch.json
