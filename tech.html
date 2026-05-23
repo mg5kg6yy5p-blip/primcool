@@ -438,8 +438,14 @@
 <div id="app" style="display:none;">
   <header>
     <div>
-      <span class="brand">Prime<span>Cool</span></span>
-      <span class="tech-badge">Tech</span>
+      <!-- Brand acts as the "home" button — clicking it returns the tech
+           to the 2-tab landing at /tech/home. Per spec there's no
+           dedicated back button in the topbar, so the logo + name is the
+           way back. -->
+      <a href="/tech/home" style="text-decoration:none;color:inherit;display:inline-flex;align-items:center;gap:6px;">
+        <span class="brand">Prime<span>Cool</span></span>
+        <span class="tech-badge">Tech</span>
+      </a>
     </div>
     <div class="header-right">
       <span class="tech-name" id="hdrName"></span>
@@ -467,23 +473,18 @@
 
   <!-- LIST VIEW -->
   <div id="listView">
-    <!-- 5S workplace-discipline card -->
-    <div id="fsCard" style="margin:14px 14px 0;padding:14px 16px;background:linear-gradient(135deg,#0B2545 0%,#143264 100%);color:#fff;border-radius:12px;box-shadow:0 4px 14px rgba(11,37,69,0.18);display:flex;align-items:center;gap:14px;cursor:pointer;font-family:'Barlow',-apple-system,system-ui,sans-serif;" onclick="fsShowHome()">
-      <div style="flex:1;">
-        <div style="font-size:11px;font-weight:700;letter-spacing:0.8px;color:#22A08A;text-transform:uppercase;">5S Audit</div>
-        <div id="fsCardLine" style="font-size:14px;font-weight:600;margin-top:2px;">Loading…</div>
-      </div>
-      <div id="fsCardBadge" style="display:none;background:#dc2626;color:#fff;border-radius:14px;padding:4px 10px;font-size:12px;font-weight:700;">!</div>
-      <div id="fsExcBadge" style="display:none;background:#f59e0b;color:#0B2545;border-radius:14px;padding:4px 10px;font-size:12px;font-weight:700;">0</div>
-      <div style="font-size:22px;opacity:0.6;">›</div>
-    </div>
+    <!-- The 5S Audit card used to live here as a shortcut, but it let
+         the tech bypass the sign-in gate (tap card → run audit → never
+         sign in). The 5S audit is now reached ONLY through the landing
+         page's Sign In / Sign Out flow, which guarantees the audit is
+         tied to a clock event. -->
 
+    <!-- My Pay + My Performance tabs were also removed from this jobs
+         queue; both now live in /tech/home → My Profile. -->
     <div class="tabs">
       <div class="tab active" data-tab="today" onclick="setTab('today')">Today <span class="count" id="cnt-today">0</span></div>
       <div class="tab" data-tab="upcoming" onclick="setTab('upcoming')">Upcoming <span class="count" id="cnt-upcoming">0</span></div>
       <div class="tab" data-tab="done" onclick="setTab('done')">Done <span class="count" id="cnt-done">0</span></div>
-      <div class="tab" data-tab="payslips" onclick="setTab('payslips')">My Pay</div>
-      <div class="tab" data-tab="kpi" onclick="setTab('kpi')">My Performance</div>
     </div>
     <div class="list" id="jobList"></div>
   </div>
@@ -513,12 +514,38 @@
   let currentJob  = null;
   let timerInterval = null;
 
+  // ── Privacy / sign-in gate ───────────────────────────────────────────
+  // Customer name + address are PII. They are revealed in the jobs queue
+  // ONLY after the tech has clocked in for the day. Until then, every
+  // card shows "Locked — sign in to view" in place of the name and
+  // hides the address row entirely. Refreshed in showApp() and after
+  // every sign-in / sign-out roundtrip.
+  let isSignedInForWork = false;
+  function gateCust(name) {
+    return isSignedInForWork
+      ? esc(name || '—')
+      : '<span style="color:var(--muted);font-style:italic;">Locked — sign in to view</span>';
+  }
+  async function _refreshSignInState() {
+    try {
+      const o = await api('GET', '/api/tech/me/today-overview');
+      isSignedInForWork = (o && o.sign_in_status === 'signed_in');
+    } catch (_) { isSignedInForWork = false; }
+  }
+
   // ── Init ────────────────────────────────────────────────────────────────
   // TP-2 routing: the tech's home is the 2-tab landing at /tech/home, NOT
   // this jobs/5S/payslips PWA. If we land here with a valid token and no
   // ?view=jobs|5s override, bounce to the landing.
+  //
+  // ?pending=signout (with view=5s) means the landing's Sign Out button
+  // redirected the tech here to complete the end-of-shift 5S audit; on
+  // a successful audit submission the audit code below will auto-call
+  // /api/tech/me/sign-out and return to /tech/home.
   const _qs = new URLSearchParams(window.location.search);
   const _view = _qs.get('view');
+  const _pendingAction = _qs.get('pending'); // 'signout' | null
+  window.__pcPendingAction = _pendingAction; // expose for fsSubmit post-hook
   if (token) {
     if (!_view) {
       window.location.replace('/tech/home');
@@ -583,6 +610,7 @@
   async function showApp() {
     document.getElementById('loginScreen').style.display = 'none';
     document.getElementById('app').style.display = 'block';
+    await _refreshSignInState();
     await loadJobs();
     fsRefreshBadge();
     fsFlushQueue();
@@ -666,16 +694,10 @@
     document.getElementById('cnt-upcoming').textContent = buckets.upcoming.length;
     document.getElementById('cnt-done').textContent     = buckets.done.length;
 
-    // My-payslips tab swaps the job list for the employee's own payslips.
-    if (currentTab === 'payslips') {
-      renderMyPayslips();
-      return;
-    }
-    // My-Performance tab — own KPI scorecard (read-only, redacted overrides).
-    if (currentTab === 'kpi') {
-      renderMyKpi();
-      return;
-    }
+    // My-Pay and My-Performance tabs were moved to /tech/home → My Profile.
+    // The renderMyPayslips() and renderMyKpi() functions are kept defined
+    // below so /tech/home can call them via include, but they no longer
+    // surface here as queue tabs.
 
     const rows = buckets[currentTab];
     const wrap = document.getElementById('jobList');
@@ -694,13 +716,13 @@
           <span class="job-type ${j.visit_type === 'PM' ? 'pm-pill' : 'cm-pill'}">${j.visit_type}</span>
           <span class="job-status status-${j.status}">${j.status.replace('_',' ')}</span>
         </div>
-        <div class="job-customer">${esc(j.customer_name)}</div>
+        <div class="job-customer">${gateCust(j.customer_name)}</div>
         <div class="job-meta">
-          ${j.customer_company ? `<div>${esc(j.customer_company)}</div>` : ''}
+          ${(j.customer_company && isSignedInForWork) ? `<div>${esc(j.customer_company)}</div>` : ''}
           ${j.equipment_name ? `<div class="row">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
             ${(j.equipment_id && _gate) ? PC.gateLinkHtml('equipment', j.equipment_id, j.equipment_name, {}) : esc(j.equipment_name)}</div>` : ''}
-          ${j.customer_address ? `<div class="row">
+          ${(j.customer_address && isSignedInForWork) ? `<div class="row">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
             ${esc(j.customer_address)}</div>` : ''}
           ${j.scheduled_date ? `<div class="row">
@@ -788,11 +810,14 @@
         </div>` : ''}
 
         <!-- Customer card (phone intentionally omitted — see contact person below) -->
+        <!-- Until signed in for the day, customer PII (name, company,
+             address) is locked even on the detail view. -->
         <div class="detail-card">
           <h3>Customer</h3>
-          <div class="detail-row"><span class="l">Name</span><span class="v">${esc(j.customer_name)}</span></div>
-          ${j.customer_company ? `<div class="detail-row"><span class="l">Company</span><span class="v">${esc(j.customer_company)}</span></div>` : ''}
-          ${j.customer_address ? `<div class="detail-row"><span class="l">Address</span><span class="v"><a href="${mapsLink}" target="_blank">📍 ${esc(j.customer_address)}</a></span></div>` : ''}
+          <div class="detail-row"><span class="l">Name</span><span class="v">${gateCust(j.customer_name)}</span></div>
+          ${(j.customer_company && isSignedInForWork) ? `<div class="detail-row"><span class="l">Company</span><span class="v">${esc(j.customer_company)}</span></div>` : ''}
+          ${(j.customer_address && isSignedInForWork) ? `<div class="detail-row"><span class="l">Address</span><span class="v"><a href="${mapsLink}" target="_blank">📍 ${esc(j.customer_address)}</a></span></div>` : ''}
+          ${!isSignedInForWork ? `<div class="detail-row"><span class="l">Locked</span><span class="v" style="color:var(--muted);font-style:italic;">Sign in to view full customer details.</span></div>` : ''}
         </div>
 
         ${(j.contact_person_name || j.contact_person_phone) ? `
@@ -2090,6 +2115,25 @@
       toast(msg, 'ok');
       // Try to flush right away (no-op until the endpoint exists).
       fsFlushPhotoQueue();
+
+      // Sign-out continuation: if the landing redirected here with
+      // ?pending=signout and this was the end-shift audit, finish the
+      // sign-out roundtrip now that the 5S is in. Anything else (start
+      // shift, ad-hoc audit) just goes back to the 5S home.
+      if (window.__pcPendingAction === 'signout' &&
+          fsState && fsState.phase === 'end_shift') {
+        try {
+          await api('POST', '/api/tech/me/sign-out');
+          toast('Signed out ✓', 'ok');
+        } catch (se) {
+          // Most likely 409 not_clocked_in (already signed out by EOD
+          // cron in the meantime) — that's fine. The landing will
+          // re-pull state and show the right banner.
+          toast('Audit saved — returning to home', 'ok');
+        }
+        window.location.replace('/tech/home');
+        return;
+      }
       fsShowHome();
     } catch (e) {
       // Audit POST failed — queue the audit AND its pending photos together.

@@ -100,10 +100,17 @@
 </head>
 <body>
   <header class="hdr">
-    <div class="hdr-l">
-      <div class="hdr-name" id="hdrName">…</div>
-      <div class="hdr-sub" id="hdrSub">PrimeCool Services</div>
-    </div>
+    <!-- Brand block is also the "home" button across the tech portal:
+         the logo + name in /tech (jobs queue), /tech/home (this page),
+         and the 5S audit screen all link back here so techs have a
+         consistent way to return without needing a back button. -->
+    <a href="/tech/home" style="text-decoration:none;color:inherit;display:flex;align-items:center;gap:10px;min-width:0;flex:1;">
+      <div style="width:34px;height:34px;border-radius:8px;background:rgba(255,255,255,.15);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;letter-spacing:.5px;flex-shrink:0;">PC</div>
+      <div class="hdr-l">
+        <div class="hdr-name" id="hdrName">…</div>
+        <div class="hdr-sub" id="hdrSub">PrimeCool Services</div>
+      </div>
+    </a>
     <button class="hdr-out" onclick="doLogout()">Sign out</button>
   </header>
 
@@ -288,6 +295,15 @@
     function renderSchedule() {
       const el = document.getElementById('scheduleLine');
       const s = overview && overview.schedule_today;
+      const onCall = overview && overview.on_call_today;
+      if (onCall) {
+        // On-call replaces the schedule line entirely — the tech is
+        // explicitly allowed to be available outside business hours,
+        // so showing a "Day off" or fixed end time would be misleading.
+        el.innerHTML = `<span>Today</span>
+          <strong style="color:var(--teal-dark);">On call — no end-of-shift cutoff</strong>`;
+        return;
+      }
       if (s && s.active && s.start && s.end) {
         el.innerHTML = `<span>Today's schedule</span>
           <strong>${esc(fmt12(s.start))} – ${esc(fmt12(s.end))}</strong>`;
@@ -328,11 +344,23 @@
         const since = overview.signed_in_at;
         const inOt  = !!overview.in_overtime;
         const otOk  = !!overview.overtime_approved;
-        const otBanner = inOt
-          ? (otOk
-              ? `<div class="alert alert-success">You are past your scheduled end of day, but admin has approved overtime.</div>`
-              : `<div class="alert alert-warn"><strong>You are past your scheduled end of day.</strong> Overtime requires admin approval — please contact your supervisor.</div>`)
-          : '';
+        const autoAt = overview.auto_signout_at; // ISO string or null
+        // OT banner — three states:
+        //   approved        → green "admin has approved overtime"
+        //   pending + grace → orange "auto sign-out in 1h 14m" (live countdown)
+        //   pending no auto → orange "overtime requires admin approval"
+        let otBanner = '';
+        if (inOt && otOk) {
+          otBanner = `<div class="alert alert-success">You are past your scheduled end of day, but admin has approved overtime.</div>`;
+        } else if (inOt && autoAt) {
+          otBanner = `<div class="alert alert-warn">
+            <strong>You are past your scheduled end of day.</strong><br>
+            Overtime requires admin approval.
+            <span id="autoSignoutCountdown" style="display:block;margin-top:6px;font-weight:600;"></span>
+          </div>`;
+        } else if (inOt) {
+          otBanner = `<div class="alert alert-warn"><strong>You are past your scheduled end of day.</strong> Overtime requires admin approval — please contact your supervisor.</div>`;
+        }
         area.innerHTML = `
           ${otBanner}
           <div class="card">
@@ -351,11 +379,27 @@
             </div>
             <button class="btn btn-danger" style="margin-top:14px;"
                     onclick="doSignOut()">Sign Out</button>
+            <div class="muted" style="font-size:12px;text-align:center;margin-top:10px;">
+              Sign-out will take you through your 5S end-of-shift audit first.
+            </div>
           </div>`;
         elapsedTimer = setInterval(() => {
           const el = document.getElementById('elapsed');
-          if (el) el.textContent = elapsedFrom(since);
-          else { clearInterval(elapsedTimer); elapsedTimer = null; }
+          if (!el) { clearInterval(elapsedTimer); elapsedTimer = null; return; }
+          el.textContent = elapsedFrom(since);
+          // Countdown until auto-sign-out fires.
+          const cd = document.getElementById('autoSignoutCountdown');
+          if (cd && autoAt) {
+            const remainMs = new Date(autoAt).getTime() - Date.now();
+            if (remainMs <= 0) {
+              cd.textContent = 'Auto sign-out is firing now…';
+            } else {
+              const totalMin = Math.floor(remainMs / 60000);
+              const h = Math.floor(totalMin / 60);
+              const m = totalMin % 60;
+              cd.textContent = `Auto sign-out in ${h > 0 ? h + 'h ' : ''}${m}m`;
+            }
+          }
         }, 1000);
         return;
       }
@@ -418,23 +462,12 @@
     }
 
     async function doSignOut() {
-      if (!confirm('Sign out for the day?')) return;
-      try {
-        await api('POST', '/api/tech/me/sign-out');
-        PC.toast('Signed out.', 'success');
-        await loadOverview();
-      } catch (e) {
-        if (e.status === 409 && /5s_end_shift_required/i.test(e.message)) {
-          renderGate('end');
-          return;
-        }
-        if (e.status === 409 && /not_clocked_in/i.test(e.message)) {
-          PC.toast('You are not signed in.', 'warning');
-          await loadOverview();
-          return;
-        }
-        PC.toast(e.message || 'Sign-out failed.', 'error');
-      }
+      // Per spec: sign-out always routes through the 5S end-shift audit
+      // FIRST — the actual /api/tech/me/sign-out call happens after the
+      // audit submits successfully (tech.html handles the continuation
+      // when ?pending=signout is present in the URL).
+      if (!confirm('Sign out for the day? You\'ll complete your 5S end-of-shift audit on the next screen.')) return;
+      window.location.assign('/tech?view=5s&pending=signout');
     }
 
     function renderGate(which) {
