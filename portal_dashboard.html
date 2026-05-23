@@ -821,7 +821,15 @@
   </div>
 
   <script>
-    const token = localStorage.getItem('pc_token');
+    // Enrol mode: commercial customer was bounced here from /api/portal/login
+    // with requires_mfa_setup=true. They hold pc_mfa_enrol (a short-lived
+    // enrolment token) but no pc_token yet — confirming MFA upgrades them
+    // to a full session. Don't redirect in that case; show only the MFA
+    // setup panel.
+    const urlParams = new URLSearchParams(window.location.search);
+    const enrolMfaToken = localStorage.getItem('pc_mfa_enrol');
+    const isEnrolMode = !!enrolMfaToken && (urlParams.get('enrolMfa') === '1' || !localStorage.getItem('pc_token'));
+    let token = localStorage.getItem('pc_token') || (isEnrolMode ? enrolMfaToken : null);
     if (!token) window.location.replace('/portal');
 
     let dashboardData = null;
@@ -1438,10 +1446,13 @@
     function closeAcct() { document.getElementById('acctModal').classList.remove('open'); }
 
     async function apiPortal(method, url, body) {
+      // Fall back to the enrol token if the full session token isn't set yet
+      // (commercial customer mid-MFA-enrolment).
+      const authTok = token || localStorage.getItem('pc_mfa_enrol');
       const res = await fetch(url, {
         method,
         headers: { 'Content-Type':'application/json',
-                   ...(token ? {'Authorization': `Bearer ${token}`} : {}) },
+                   ...(authTok ? {'Authorization': `Bearer ${authTok}`} : {}) },
         credentials: 'include',
         body: body ? JSON.stringify(body) : undefined,
       });
@@ -1473,8 +1484,13 @@
         const res = await apiPortal('POST', '/api/portal/mfa/setup');
         mfaSecret = res.secret;
         document.getElementById('mfa-uri').textContent = res.provisioning_uri;
-        document.getElementById('mfa-setup-box').style.display = '';
-        document.getElementById('mfa-start-btn').style.display = 'none';
+        // The full account-modal version of the screen wraps these
+        // controls in a setup-box / start-btn; the enrol-mode page
+        // doesn't render either, so guard the lookups.
+        const box = document.getElementById('mfa-setup-box');
+        if (box) box.style.display = '';
+        const startBtn = document.getElementById('mfa-start-btn');
+        if (startBtn) startBtn.style.display = 'none';
       } catch (e) { acctErr(e.message); }
     }
     async function confirmMfa() {
@@ -1485,10 +1501,24 @@
         const box = document.getElementById('mfa-backup-codes');
         box.style.display = '';
         box.innerHTML = '<strong>Save these backup codes</strong> — each works once if you lose your authenticator:<br>' +
-          (res.backup_codes || []).map(c => `<code style="font-size:14px;">${esc(c)}</code>`).join('<br>');
+          (res.backup_codes || []).map(c => `<code style="font-size:14px;">${esc(c)}</code>`).join('<br>') +
+          '<br><br><button class="btn-primary" onclick="finishEnrol()" style="margin-top:8px;">I\'ve saved my codes — continue</button>';
         document.getElementById('mfa-status-msg').textContent = 'MFA is enabled on this account.';
         if (dashboardData && dashboardData.customer) dashboardData.customer.mfa_enabled = 1;
+        // Enrol flow: backend issued a full session token in res.token.
+        // Swap pc_mfa_enrol for pc_token so the next page-load is a normal session.
+        if (res.token) {
+          localStorage.setItem('pc_token', res.token);
+          localStorage.removeItem('pc_mfa_enrol');
+          if (res.name) localStorage.setItem('pc_name', res.name);
+          token = res.token;
+        }
       } catch (e) { acctErr(e.message); }
+    }
+
+    function finishEnrol() {
+      // Drop the ?enrolMfa=1 query and reload as a normal authenticated session.
+      window.location.replace('/portal/dashboard');
     }
 
     async function downloadMyData() {
@@ -1912,7 +1942,38 @@
       applyInitialView();
     };
 
-    load();
+    if (isEnrolMode) {
+      // Commercial customer arrived from /api/portal/login with
+      // requires_mfa_setup=true. Don't try to load the dashboard
+      // (the enrol token can't read /api/portal/me). Show only an
+      // MFA setup screen. After confirmMfa stores pc_token, the
+      // "continue" button reloads as a normal session.
+      document.body.innerHTML = `
+        <div style="max-width:560px;margin:60px auto;padding:28px;background:white;border:1px solid #e5e7eb;border-radius:12px;font-family:system-ui,-apple-system,sans-serif;">
+          <h1 style="margin:0 0 6px;font-size:22px;color:#0a2540;">Set up two-factor authentication</h1>
+          <p style="color:#6b7280;font-size:14px;margin:0 0 18px;line-height:1.5;">
+            Commercial accounts require an authenticator app before first sign-in.
+            Scan the code below with Google Authenticator, Authy, or 1Password,
+            then enter the 6-digit code to finish.
+          </p>
+          <div id="mfa-uri" style="font-family:monospace;font-size:11px;padding:10px;background:#f3f4f6;border-radius:6px;word-break:break-all;margin:0 0 14px;">Loading…</div>
+          <label style="display:block;font-size:13px;font-weight:600;color:#374151;margin-bottom:6px;">6-digit code from app</label>
+          <input id="mfa-code" type="text" inputmode="numeric" maxlength="6" placeholder="123456"
+                 style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:6px;font-size:16px;margin-bottom:10px;">
+          <button onclick="confirmMfa()"
+                  style="width:100%;padding:11px;background:#0a2540;color:white;border:none;border-radius:6px;font-weight:600;cursor:pointer;">
+            Confirm &amp; enable MFA
+          </button>
+          <div id="mfa-backup-codes" style="display:none;margin-top:14px;padding:12px;background:#fef3c7;border-radius:6px;font-size:12px;line-height:1.6;"></div>
+          <div id="acct-error" style="display:none;margin-top:12px;padding:10px;background:#fee2e2;color:#991b1b;border-radius:6px;font-size:13px;"></div>
+          <div style="margin-top:18px;text-align:center;">
+            <a href="#" onclick="logout();return false;" style="color:#6b7280;font-size:13px;">Cancel and sign out</a>
+          </div>
+        </div>`;
+      startMfa();
+    } else {
+      load();
+    }
 
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(() => {});
