@@ -8883,6 +8883,13 @@ async def _start_fs_escalation_loop():
     _asyncio.create_task(_fs_escalation_loop())
 
 
+@app.get("/tech/home")
+def tech_landing():
+    # TP-2: new 2-tab landing (Sign In for Work / My Profile) + company
+    # message board. The existing /tech remains the jobs/5S/payslips PWA.
+    return FileResponse("tech_landing.html")
+
+
 @app.get("/tech")
 def tech_page():
     return FileResponse("tech.html")

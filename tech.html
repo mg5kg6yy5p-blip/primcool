@@ -514,7 +514,19 @@
   let timerInterval = null;
 
   // ── Init ────────────────────────────────────────────────────────────────
-  if (token) showApp();
+  // TP-2 routing: the tech's home is the 2-tab landing at /tech/home, NOT
+  // this jobs/5S/payslips PWA. If we land here with a valid token and no
+  // ?view=jobs|5s override, bounce to the landing.
+  const _qs = new URLSearchParams(window.location.search);
+  const _view = _qs.get('view');
+  if (token) {
+    if (!_view) {
+      window.location.replace('/tech/home');
+    } else {
+      showApp();
+      if (_view === '5s') { setTimeout(() => { try { fsShowHome(); } catch(_){} }, 100); }
+    }
+  }
 
   // ── Auth ────────────────────────────────────────────────────────────────
   async function doLogin() {
@@ -537,7 +549,8 @@
       const data = await res.json();
       token = data.token;
       localStorage.setItem('pc_tech_token', token);
-      showApp();
+      // TP-2: route into the 2-tab landing rather than straight to jobs.
+      window.location.replace('/tech/home');
     } catch {
       showErr('Connection error. Try again.');
     } finally {
