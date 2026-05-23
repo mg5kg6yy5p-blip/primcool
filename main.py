@@ -3090,8 +3090,12 @@ def tp1_tech_profile(request: Request):
     t = get_tech_by_id(tech_id)
     if not t:
         raise HTTPException(404, "Not found")
+    # email_hash is an HMAC-blind-index used internally for
+    # password-reset lookups; not reversible but it's still a
+    # structured identifier that shouldn't leave the server.
+    # Audit M2, 2026-05-23.
     return {k: v for k, v in dict(t).items() if k not in
-            ("pin_hash", "mfa_secret", "backup_codes")}
+            ("pin_hash", "mfa_secret", "backup_codes", "email_hash")}
 
 
 @app.get("/api/tech/me/jobs-today")
