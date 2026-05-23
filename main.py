@@ -167,6 +167,20 @@ from database import (
     # Phase 7 Custom KPIs
     create_custom_kpi, archive_custom_kpi, set_manual_kpi_value,
     list_manual_kpi_history,
+    # TP-1a tech portal remodel helpers
+    set_tech_schedule_day, get_tech_schedule, get_tech_scheduled_end_today,
+    is_tech_scheduled_today,
+    record_clock_in, record_clock_out, record_auto_clock_out,
+    get_open_clock_in_today, list_clock_events_for_tech,
+    list_clocked_in_techs_today,
+    is_overtime_approved, approve_overtime,
+    list_tech_certifications, create_tech_certification,
+    list_certs_expiring_within,
+    list_tech_cv_entries, append_tech_cv_entry, lock_tech_cv_entry,
+    grant_cv_edit, cv_entry_is_editable, update_tech_cv_entry,
+    list_released_periods_for_tech, release_kpi_period_to_tech,
+    create_company_message, list_active_company_messages,
+    list_all_company_messages, hide_company_message,
 )
 import imghdr as _imghdr
 import mimetypes as _mimetypes
@@ -314,6 +328,25 @@ ADMIN_PERMS["hr_admin"].update({
     "kpi:note_write_recognition", "kpi:note_view",
     "kpi:goal_view", "kpi:pip_acknowledge",
 })
+
+# ── TP-1b: tech portal remodel permissions ───────────────────────────────────
+ADMIN_PERMS["super_admin"].update({
+    "tech:approve_overtime", "company:post_message", "company:read_messages",
+    "tech:manage_schedule", "tech:manage_certifications",
+    "tech:release_kpi_period", "tech:grant_cv_edit",
+})
+ADMIN_PERMS["supervisor_admin"].update({
+    "tech:approve_overtime", "company:read_messages",
+    "tech:manage_schedule", "tech:manage_certifications",
+    "tech:release_kpi_period",
+})
+ADMIN_PERMS["hr_admin"].update({
+    "tech:approve_overtime", "company:read_messages",
+    "tech:manage_certifications",
+})
+ADMIN_PERMS["system_admin"].update({"company:read_messages"})
+ADMIN_PERMS["ceo_assistant"].update({"company:read_messages"})
+ADMIN_PERMS["inventory_manager"].update({"company:read_messages"})
 
 
 def _admin_can(role: str, perm: str) -> bool:
@@ -2791,6 +2824,498 @@ def tech_delete_photo(request: Request, photo_id: int):
     except Exception:
         pass
     delete_photo(photo_id)
+    return {"ok": True}
+
+
+# ── TP-1b: tech portal remodel endpoints ─────────────────────────────────
+
+class TechSignInBody(BaseModel):
+    dayoff_reason: Optional[str] = None
+
+
+class TechCVAppendBody(BaseModel):
+    company: str
+    title: str
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    description: Optional[str] = ""
+
+
+class TechCVUpdateBody(BaseModel):
+    company: Optional[str] = None
+    title: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    description: Optional[str] = None
+
+
+class TechCertBody(BaseModel):
+    name: str
+    issuer: str
+    issued_date: Optional[str] = None
+    expiry_date: Optional[str] = None
+
+
+class TechScheduleDayBody(BaseModel):
+    day_of_week: int
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    active: int = 1
+
+
+class CompanyMessageBody(BaseModel):
+    title: str
+    body: str
+    expires_at: Optional[str] = None
+
+
+class GrantCVEditBody(BaseModel):
+    grant_until: str
+
+
+class OvertimeApproveBody(BaseModel):
+    notes: Optional[str] = ""
+
+
+def _tp1_raise_security_alert(kind: str, severity: str, summary: str,
+                              actor_type: str = "system",
+                              actor_id: int = None,
+                              details: dict = None):
+    try:
+        create_security_alert(
+            kind=kind, summary=summary, severity=severity,
+            actor_type=actor_type, actor_id=actor_id,
+            details=details or {},
+        )
+    except Exception as e:
+        logger.warning(f"_tp1_raise_security_alert failed: {e}")
+
+
+def _tech_self_actor(tech_id: int) -> dict:
+    return {"id": tech_id, "kind": "tech", "name": f"tech#{tech_id}",
+            "prid": None, "role": None}
+
+
+def _tp1_tech_audit(tech_id: int, action: str, request: Request,
+                    target_type: str = None, target_id: int = None,
+                    target_label: str = None, after=None):
+    try:
+        log_audit(
+            actor_type="tech", actor_id=tech_id, actor_prid=None,
+            actor_label=f"tech#{tech_id}", actor_role=None,
+            action=action,
+            target_type=target_type, target_id=target_id,
+            target_label=target_label, after_value=after,
+            ip_address=request.client.host if request.client else None,
+        )
+    except Exception as _e:
+        logger.debug(f"tech audit write failed: {_e}")
+
+
+@app.get("/api/tech/me/today-overview")
+def tp1_tech_today_overview(request: Request):
+    from datetime import datetime as _dt, timezone as _tz, date as _date
+    from database import _con as _dbcon
+    tech_id = _require_tech(request)
+    today_iso = _dt.now(_tz.utc).date().isoformat()
+    con = _dbcon()
+    rows = con.execute(
+        "SELECT visit_type FROM maintenance_visits "
+        "WHERE assigned_tech_id = ? AND scheduled_date = ?",
+        (tech_id, today_iso),
+    ).fetchall()
+    con.close()
+    pm = sum(1 for r in rows if (r["visit_type"] or "").upper() == "PM")
+    cm = sum(1 for r in rows if (r["visit_type"] or "").upper() == "CM")
+    sched_end = get_tech_scheduled_end_today(tech_id)
+    sched = get_tech_schedule(tech_id)
+    dow = _date.fromisoformat(today_iso).weekday()
+    today_sched = sched[dow] if dow < len(sched) else None
+    open_in = get_open_clock_in_today(tech_id)
+    sign_in_status = "signed_in" if open_in else "not_signed_in"
+    in_overtime = bool(open_in and sched_end and
+                       _dt.now(_tz.utc).isoformat() > sched_end)
+    ot_approved = is_overtime_approved(tech_id) if in_overtime else False
+    return {
+        "jobs_today_total": len(rows),
+        "pm_count": pm, "cm_count": cm,
+        "schedule_today": ({
+            "start": (today_sched or {}).get("start_time"),
+            "end":   (today_sched or {}).get("end_time"),
+            "active": bool((today_sched or {}).get("active")),
+        } if today_sched else None),
+        "sign_in_status": sign_in_status,
+        "signed_in_at": (open_in or {}).get("event_at"),
+        "in_overtime": in_overtime,
+        "overtime_approved": ot_approved,
+    }
+
+
+@app.post("/api/tech/me/sign-in")
+def tp1_tech_sign_in(request: Request, body: TechSignInBody):
+    from datetime import datetime as _dt, timezone as _tz
+    from database import _con as _dbcon
+    tech_id = _require_tech(request)
+    today_iso = _dt.now(_tz.utc).date().isoformat()
+    con = _dbcon()
+    has_5s = con.execute(
+        "SELECT 1 FROM fs_audits WHERE auditor_id = ? AND auditor_kind = 'tech' "
+        "AND phase = 'start_shift' AND substr(audit_ts, 1, 10) = ? LIMIT 1",
+        (tech_id, today_iso),
+    ).fetchone()
+    con.close()
+    if not has_5s:
+        raise HTTPException(409, "5s_start_shift_required")
+    scheduled = is_tech_scheduled_today(tech_id)
+    if not scheduled and not (body.dayoff_reason or "").strip():
+        raise HTTPException(409, "dayoff_reason_required")
+    notes = (body.dayoff_reason or "").strip() or None
+    eid = record_clock_in(tech_id, source="manual", notes=notes)
+    if not scheduled:
+        _tp1_raise_security_alert(
+            kind="tech_dayoff_signin", severity="medium",
+            actor_type="tech", actor_id=tech_id,
+            summary=f"Tech #{tech_id} signed in on a scheduled day off",
+            details={"reason": notes, "work_date": today_iso,
+                     "clock_in_id": eid},
+        )
+    _tp1_tech_audit(tech_id, "tech.sign_in", request,
+                    target_type="technician", target_id=tech_id,
+                    after={"clock_in_id": eid, "dayoff": not scheduled,
+                           "reason": notes})
+    return {"ok": True, "clock_in_id": eid}
+
+
+@app.post("/api/tech/me/sign-out")
+def tp1_tech_sign_out(request: Request):
+    from datetime import datetime as _dt, timezone as _tz
+    from database import _con as _dbcon
+    tech_id = _require_tech(request)
+    today_iso = _dt.now(_tz.utc).date().isoformat()
+    con = _dbcon()
+    has_5s = con.execute(
+        "SELECT 1 FROM fs_audits WHERE auditor_id = ? AND auditor_kind = 'tech' "
+        "AND phase = 'end_shift' AND substr(audit_ts, 1, 10) = ? LIMIT 1",
+        (tech_id, today_iso),
+    ).fetchone()
+    con.close()
+    if not has_5s:
+        raise HTTPException(409, "5s_end_shift_required")
+    if not get_open_clock_in_today(tech_id):
+        raise HTTPException(409, "not_clocked_in")
+    eid = record_clock_out(tech_id)
+    _tp1_tech_audit(tech_id, "tech.sign_out", request,
+                    target_type="technician", target_id=tech_id,
+                    after={"clock_out_id": eid})
+    return {"ok": True, "clock_out_id": eid}
+
+
+@app.get("/api/tech/me/clock-status")
+def tp1_tech_clock_status(request: Request):
+    from datetime import datetime as _dt, timezone as _tz
+    tech_id = _require_tech(request)
+    open_in = get_open_clock_in_today(tech_id)
+    sched_end = get_tech_scheduled_end_today(tech_id)
+    in_ot = bool(open_in and sched_end and
+                 _dt.now(_tz.utc).isoformat() > sched_end)
+    return {
+        "clocked_in": bool(open_in),
+        "signed_in_at": (open_in or {}).get("event_at"),
+        "schedule_today_end": sched_end,
+        "in_overtime": in_ot,
+        "overtime_approved": is_overtime_approved(tech_id) if in_ot else False,
+    }
+
+
+@app.get("/api/tech/me/profile")
+def tp1_tech_profile(request: Request):
+    tech_id = _require_tech(request)
+    t = get_tech_by_id(tech_id)
+    if not t:
+        raise HTTPException(404, "Not found")
+    return {k: v for k, v in dict(t).items() if k not in
+            ("pin_hash", "mfa_secret", "backup_codes")}
+
+
+@app.get("/api/tech/me/jobs-today")
+def tp1_tech_jobs_today(request: Request):
+    from datetime import datetime as _dt, timezone as _tz
+    from database import _con as _dbcon, _dec_row as _dr
+    tech_id = _require_tech(request)
+    today_iso = _dt.now(_tz.utc).date().isoformat()
+    con = _dbcon()
+    rows = con.execute(
+        "SELECT v.*, c.name AS customer_name, c.address AS customer_address, "
+        "c.phone AS customer_phone, c.customer_code AS customer_code, "
+        "e.name AS equipment_name "
+        "FROM maintenance_visits v "
+        "LEFT JOIN customers c ON c.id = v.customer_id "
+        "LEFT JOIN equipment e ON e.id = v.equipment_id "
+        "WHERE v.assigned_tech_id = ? AND v.scheduled_date = ? "
+        "ORDER BY v.scheduled_time, v.id",
+        (tech_id, today_iso),
+    ).fetchall()
+    con.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        if d.get("customer_address"):
+            try:
+                d["customer_address"] = _dr(
+                    "customers", {"address": d["customer_address"]}
+                )["address"]
+            except Exception:
+                pass
+        if d.get("customer_phone"):
+            try:
+                d["customer_phone"] = _dr(
+                    "customers", {"phone": d["customer_phone"]}
+                )["phone"]
+            except Exception:
+                pass
+        out.append(d)
+    return out
+
+
+@app.get("/api/tech/me/upcoming-counts")
+def tp1_tech_upcoming_counts(request: Request, days: int = 7):
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    from database import _con as _dbcon
+    tech_id = _require_tech(request)
+    today = _dt.now(_tz.utc).date()
+    out = []
+    con = _dbcon()
+    for i in range(1, int(days) + 1):
+        d = (today + _td(days=i)).isoformat()
+        rows = con.execute(
+            "SELECT visit_type FROM maintenance_visits "
+            "WHERE assigned_tech_id = ? AND scheduled_date = ?",
+            (tech_id, d),
+        ).fetchall()
+        pm = sum(1 for r in rows if (r["visit_type"] or "").upper() == "PM")
+        cm = sum(1 for r in rows if (r["visit_type"] or "").upper() == "CM")
+        out.append({"date": d, "pm_count": pm, "cm_count": cm,
+                    "total": len(rows)})
+    con.close()
+    return out
+
+
+@app.get("/api/tech/me/jobs-done")
+def tp1_tech_jobs_done(request: Request, limit: int = 50):
+    from database import _con as _dbcon
+    tech_id = _require_tech(request)
+    con = _dbcon()
+    rows = con.execute(
+        "SELECT v.id, v.visit_type, v.status, v.scheduled_date, "
+        "v.completed_date, v.start_time, v.end_time, v.work_done_summary, "
+        "v.equipment_id, e.name AS equipment_name "
+        "FROM maintenance_visits v "
+        "LEFT JOIN equipment e ON e.id = v.equipment_id "
+        "WHERE v.assigned_tech_id = ? AND v.status = 'completed' "
+        "ORDER BY COALESCE(v.completed_date, v.scheduled_date) DESC, v.id DESC "
+        "LIMIT ?",
+        (tech_id, int(limit)),
+    ).fetchall()
+    con.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["customer_name"] = "—"
+        d["customer_address"] = "—"
+        d["customer_phone"] = "—"
+        d["customer_code"] = "—"
+        out.append(d)
+    return out
+
+
+@app.get("/api/tech/me/cv")
+def tp1_tech_cv_list(request: Request):
+    tech_id = _require_tech(request)
+    entries = list_tech_cv_entries(tech_id)
+    for e in entries:
+        e["editable"] = cv_entry_is_editable(e)
+    return entries
+
+
+@app.post("/api/tech/me/cv")
+def tp1_tech_cv_append(request: Request, body: TechCVAppendBody):
+    tech_id = _require_tech(request)
+    if not (body.company or "").strip() or not (body.title or "").strip():
+        raise HTTPException(400, "company and title required")
+    eid = append_tech_cv_entry(tech_id, body.company.strip(),
+                               body.title.strip(),
+                               body.start_date or None,
+                               body.end_date or None,
+                               body.description or "")
+    _tp1_tech_audit(tech_id, "tech.cv_appended", request,
+                    target_type="technician", target_id=tech_id,
+                    after={"entry_id": eid, "company": body.company})
+    return {"ok": True, "id": eid}
+
+
+@app.post("/api/tech/me/cv/{entry_id}/lock")
+def tp1_tech_cv_lock(request: Request, entry_id: int):
+    tech_id = _require_tech(request)
+    ok = lock_tech_cv_entry(entry_id, tech_id)
+    if not ok:
+        raise HTTPException(409, "not_owner_or_already_locked")
+    _tp1_tech_audit(tech_id, "tech.cv_locked", request,
+                    target_type="technician", target_id=tech_id,
+                    after={"entry_id": entry_id})
+    return {"ok": True}
+
+
+@app.patch("/api/tech/me/cv/{entry_id}")
+def tp1_tech_cv_update(request: Request, entry_id: int,
+                       body: TechCVUpdateBody):
+    tech_id = _require_tech(request)
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    res = update_tech_cv_entry(entry_id, tech_id, fields)
+    if res == "not_owner":
+        raise HTTPException(404, "not_found")
+    if res == "locked":
+        raise HTTPException(409, "locked_no_grant")
+    _tp1_tech_audit(tech_id, "tech.cv_updated", request,
+                    target_type="technician", target_id=tech_id,
+                    after={"entry_id": entry_id})
+    return {"ok": True}
+
+
+@app.get("/api/tech/me/certifications")
+def tp1_tech_certs_list(request: Request):
+    tech_id = _require_tech(request)
+    return list_tech_certifications(tech_id, active_only=True)
+
+
+@app.get("/api/tech/me/certifications/expiring")
+def tp1_tech_certs_expiring(request: Request, days: int = 60):
+    tech_id = _require_tech(request)
+    return list_certs_expiring_within(int(days), tech_id=tech_id)
+
+
+@app.get("/api/tech/me/kpi/history")
+def tp1_tech_kpi_history(request: Request):
+    tech_id = _require_tech(request)
+    return {"released_periods": list_released_periods_for_tech(tech_id)}
+
+
+@app.get("/api/company/messages")
+def tp1_company_messages_for_viewer(request: Request, limit: int = 10):
+    try:
+        _require_admin(request)
+    except HTTPException:
+        _require_tech(request)
+    return list_active_company_messages(limit=int(limit))
+
+
+# ── Admin-side TP-1b endpoints ───────────────────────────
+
+@app.get("/api/admin/technicians/{tech_id}/schedule")
+def tp1_admin_get_tech_schedule(request: Request, tech_id: int):
+    _require_perm(request, "tech:manage_schedule")
+    return get_tech_schedule(tech_id)
+
+
+@app.post("/api/admin/technicians/{tech_id}/schedule")
+def tp1_admin_set_tech_schedule_day(request: Request, tech_id: int,
+                                    body: TechScheduleDayBody):
+    admin = _require_perm(request, "tech:manage_schedule")
+    if body.day_of_week not in range(7):
+        raise HTTPException(400, "day_of_week must be 0..6")
+    set_tech_schedule_day(tech_id, body.day_of_week,
+                          body.start_time, body.end_time,
+                          int(body.active), updated_by_admin_id=admin["id"])
+    _audit_from(admin, "tech.schedule_set", request,
+                target_type="technician", target_id=tech_id,
+                after=body.model_dump())
+    return {"ok": True}
+
+
+@app.get("/api/admin/technicians/{tech_id}/certifications")
+def tp1_admin_list_tech_certs(request: Request, tech_id: int):
+    _require_perm(request, "tech:manage_certifications")
+    return list_tech_certifications(tech_id, active_only=False)
+
+
+@app.post("/api/admin/technicians/{tech_id}/certifications")
+def tp1_admin_create_tech_cert(request: Request, tech_id: int,
+                               body: TechCertBody):
+    admin = _require_perm(request, "tech:manage_certifications")
+    cid = create_tech_certification(tech_id, body.name.strip(),
+                                    body.issuer.strip(),
+                                    body.issued_date, body.expiry_date,
+                                    created_by_admin_id=admin["id"])
+    _audit_from(admin, "tech.cert_added", request,
+                target_type="technician", target_id=tech_id,
+                after={"cert_id": cid, "name": body.name,
+                       "expiry": body.expiry_date})
+    return {"ok": True, "id": cid}
+
+
+@app.post("/api/admin/technicians/{tech_id}/cv/{entry_id}/grant-edit")
+def tp1_admin_grant_cv_edit(request: Request, tech_id: int, entry_id: int,
+                            body: GrantCVEditBody):
+    admin = _require_perm(request, "tech:grant_cv_edit")
+    ok = grant_cv_edit(entry_id, admin["id"], body.grant_until)
+    if not ok:
+        raise HTTPException(404, "not_found")
+    _audit_from(admin, "tech.cv_edit_granted", request,
+                target_type="technician", target_id=tech_id,
+                after={"entry_id": entry_id, "grant_until": body.grant_until})
+    return {"ok": True}
+
+
+@app.post("/api/admin/technicians/{tech_id}/kpi-period/{period_key}/release")
+def tp1_admin_release_kpi_period(request: Request, tech_id: int,
+                                 period_key: str):
+    admin = _require_perm(request, "tech:release_kpi_period")
+    rid = release_kpi_period_to_tech(tech_id, period_key, admin["id"])
+    _audit_from(admin, "tech.kpi_period_released", request,
+                target_type="technician", target_id=tech_id,
+                target_label=period_key, after={"release_id": rid})
+    return {"ok": True}
+
+
+@app.post("/api/admin/technicians/{tech_id}/overtime/approve")
+def tp1_admin_approve_overtime(request: Request, tech_id: int,
+                               body: OvertimeApproveBody = None):
+    admin = _require_perm(request, "tech:approve_overtime")
+    aid = approve_overtime(tech_id, admin["id"],
+                           notes=(body.notes if body else ""))
+    _audit_from(admin, "tech.overtime_approved", request,
+                target_type="technician", target_id=tech_id,
+                after={"approval_id": aid})
+    return {"ok": True, "id": aid}
+
+
+@app.get("/api/admin/company/messages")
+def tp1_admin_list_company_messages(request: Request, limit: int = 100):
+    _require_perm(request, "company:read_messages")
+    return list_all_company_messages(limit=int(limit))
+
+
+@app.post("/api/admin/company/messages")
+def tp1_admin_post_company_message(request: Request,
+                                   body: CompanyMessageBody):
+    admin = _require_perm(request, "company:post_message")
+    if not (body.title or "").strip() or not (body.body or "").strip():
+        raise HTTPException(400, "title and body required")
+    mid = create_company_message(admin["id"], body.title.strip(),
+                                 body.body, body.expires_at)
+    _audit_from(admin, "company.message_posted", request,
+                target_type="company_message", target_id=mid,
+                target_label=body.title)
+    return {"ok": True, "id": mid}
+
+
+@app.delete("/api/admin/company/messages/{message_id}")
+def tp1_admin_hide_company_message(request: Request, message_id: int):
+    admin = _require_perm(request, "company:post_message")
+    ok = hide_company_message(message_id, admin["id"])
+    if not ok:
+        raise HTTPException(404, "not_found_or_already_hidden")
+    _audit_from(admin, "company.message_hidden", request,
+                target_type="company_message", target_id=message_id)
     return {"ok": True}
 
 
@@ -8693,6 +9218,142 @@ async def _delegation_expiry_loop():
 @app.on_event("startup")
 async def _start_delegation_expiry_loop():
     _asyncio.create_task(_delegation_expiry_loop())
+
+
+# ── TP-1b: per-tech EOD enforcement cron ─────────────────────────────────
+TECH_EOD_GRACE_MIN = int(os.environ.get("TECH_EOD_GRACE_MIN", "120"))
+
+
+def _tech_eod_pass():
+    """Run one EOD enforcement pass."""
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    from database import _con as _dbcon
+    now = _dt.now(_tz.utc)
+    today_iso = now.date().isoformat()
+    techs = list_clocked_in_techs_today()
+    for t in techs:
+        tid = t["tech_id"]
+        sched_end = get_tech_scheduled_end_today(tid)
+        if not sched_end:
+            con = _dbcon()
+            try:
+                existing = con.execute(
+                    "SELECT 1 FROM security_alerts WHERE kind = 'tech_no_schedule' "
+                    "AND actor_id = ? AND substr(created_at, 1, 10) = ? LIMIT 1",
+                    (tid, today_iso),
+                ).fetchone()
+            finally:
+                con.close()
+            if not existing:
+                _tp1_raise_security_alert(
+                    kind="tech_no_schedule", severity="low",
+                    actor_type="tech", actor_id=tid,
+                    summary=f"Tech #{tid} clocked in but has no schedule on file",
+                    details={"work_date": today_iso},
+                )
+            continue
+        if now.isoformat() <= sched_end:
+            continue
+        if is_overtime_approved(tid):
+            continue
+        con = _dbcon()
+        try:
+            existing_ot = con.execute(
+                "SELECT 1 FROM security_alerts WHERE kind = 'tech_overtime_pending' "
+                "AND actor_id = ? AND substr(created_at, 1, 10) = ? LIMIT 1",
+                (tid, today_iso),
+            ).fetchone()
+        finally:
+            con.close()
+        if not existing_ot:
+            _tp1_raise_security_alert(
+                kind="tech_overtime_pending", severity="low",
+                actor_type="tech", actor_id=tid,
+                summary=f"Tech #{tid} is in overtime — pending admin approval",
+                details={"scheduled_end": sched_end, "work_date": today_iso},
+            )
+        try:
+            sched_end_dt = _dt.fromisoformat(sched_end)
+        except Exception:
+            continue
+        if now < sched_end_dt + _td(minutes=TECH_EOD_GRACE_MIN):
+            continue
+        try:
+            cid = record_auto_clock_out(tid, today=today_iso)
+        except Exception as e:
+            logger.warning(f"auto_clock_out failed for tech {tid}: {e}")
+            continue
+        # Synthesize an end_shift fail-all audit for the tech's assigned vehicle/asset.
+        con = _dbcon()
+        try:
+            asset = con.execute(
+                "SELECT id, asset_type FROM fs_assets WHERE assigned_tech_id = ? "
+                "AND asset_type = 'vehicle' AND active = 1 LIMIT 1",
+                (tid,),
+            ).fetchone()
+            if not asset:
+                asset = con.execute(
+                    "SELECT id, asset_type FROM fs_assets WHERE assigned_tech_id = ? "
+                    "AND active = 1 LIMIT 1",
+                    (tid,),
+                ).fetchone()
+        finally:
+            con.close()
+        if asset:
+            try:
+                from database import FS_DEFAULT_CHECKLIST
+                checklist = FS_DEFAULT_CHECKLIST.get(
+                    (asset["asset_type"], "end_shift"),
+                    FS_DEFAULT_CHECKLIST.get(
+                        (asset["asset_type"], "weekly_manager"), {})
+                )
+                items = []
+                for section, keys in (checklist or {}).items():
+                    for k in keys:
+                        items.append({
+                            "section": section, "item_key": k,
+                            "status": "fail",
+                            "note": ("Auto-recorded by EOD enforcement: tech "
+                                     "did not sign out by end-of-shift + grace"),
+                        })
+                if items:
+                    fs_submit_audit(asset_id=asset["id"], auditor_id=tid,
+                                    auditor_kind="tech", phase="end_shift",
+                                    items=items, client_meta=None)
+            except Exception as e:
+                logger.warning(f"synth end_shift fail-all failed for tech "
+                               f"{tid}: {e}")
+        try:
+            log_audit(actor_type="system",
+                      action="tech.auto_signout_5s_fail",
+                      target_type="technician", target_id=tid,
+                      target_label=f"work_date={today_iso}",
+                      after_value={"clock_event_id": cid,
+                                   "scheduled_end": sched_end,
+                                   "grace_min": TECH_EOD_GRACE_MIN})
+        except Exception:
+            pass
+        _tp1_raise_security_alert(
+            kind="tech_auto_signout", severity="medium",
+            actor_type="tech", actor_id=tid,
+            summary=(f"Tech #{tid} auto-signed-out at EOD; "
+                     f"all 5S items recorded as FAIL"),
+            details={"work_date": today_iso, "scheduled_end": sched_end},
+        )
+
+
+async def _tech_eod_loop():
+    while True:
+        try:
+            await _asyncio.sleep(5 * 60)
+            _tech_eod_pass()
+        except Exception as e:
+            logger.warning(f"tech EOD loop tick error: {e}")
+
+
+@app.on_event("startup")
+async def _start_tech_eod_loop():
+    _asyncio.create_task(_tech_eod_loop())
 
 
 @app.get("/")
