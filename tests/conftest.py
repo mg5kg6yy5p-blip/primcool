@@ -109,29 +109,61 @@ def _extract_session_cookie(resp, cookie_name: str):
     return None
 
 
+# ---------------------------------------------------------------------------
+# Auth-token fixtures.
+#
+# WHY THE TOKENS ARE ACQUIRED ON ISOLATED CLIENTS:
+#   When a test needs two different sessions (admin_token AND
+#   supervisor_token), both fixtures USED to log in on the shared
+#   `client` fixture. Both logins wrote to the same TestClient cookie
+#   jar, so the second one (supervisor) silently overwrote the first
+#   (director). When the test body then sent
+#   `cookies={"pc_admin_session": admin_token}` per request, httpx
+#   merged that with the jar — which still held the supervisor's
+#   cookie — and the server saw the supervisor's session.
+#
+#   That broke test_access_delegation.* (director's grant was actually
+#   submitted as the supervisor, who can't grant) and was a generally
+#   hostile foot-gun for any test mixing two roles.
+#
+#   Fix: each token fixture spins up its OWN ephemeral TestClient,
+#   does the login, extracts the cookie, and tears the client down.
+#   The shared `client` fixture (used by the test body) stays clean
+#   and the per-request `cookies={...}` is the single source of truth
+#   for the session.
+# ---------------------------------------------------------------------------
+def _isolated_login(app, payload):
+    """One-shot TestClient login. Returns the cookie value or None.
+    Doesn't pollute the test's shared `client` cookie jar."""
+    from fastapi.testclient import TestClient
+    with TestClient(app, headers={"Origin": "http://testserver"}) as c:
+        r = c.post(payload["path"], json=payload["body"])
+    return r, _extract_session_cookie(r, payload["cookie_name"])
+
+
 @pytest.fixture
-def admin_token(client):
+def admin_token(app):
     """Director (bootstrap super_admin) JWT cookie value."""
-    r = client.post(
-        "/api/admin/login",
-        json={
+    r, tok = _isolated_login(app, {
+        "path": "/api/admin/login",
+        "cookie_name": "pc_admin_session",
+        "body": {
             "username": os.environ.get("BOOTSTRAP_ADMIN_USERNAME", "director"),
             "password": os.environ.get("BOOTSTRAP_ADMIN_PASSWORD", "PrimeCool!Dev2026"),
         },
-    )
+    })
     if r.status_code != 200:
         pytest.skip(f"director login failed: {r.status_code} {r.text[:200]}")
     body = r.json()
     if body.get("requires_mfa"):
         pytest.skip("director login requires MFA — cannot acquire session in tests")
-    tok = _extract_session_cookie(r, "pc_admin_session")
     if not tok:
         pytest.skip("director login: no session cookie returned")
     return tok
 
 
 @pytest.fixture
-def supervisor_token(client):
+def supervisor_token(app):
     """A non-super supervisor admin if one exists. Otherwise skip."""
     conn = sqlite3.connect(str(_PROJECT_ROOT / "submissions.db"))
     try:
@@ -144,26 +176,28 @@ def supervisor_token(client):
     if not row:
         pytest.skip("no supervisor_admin user in DB")
     username = row[0]
-    # We don't know the password; try the dev bootstrap password as a guess.
     candidates = [
         os.environ.get("BOOTSTRAP_ADMIN_PASSWORD", "PrimeCool!Dev2026"),
         "PrimeCool!Dev2026",
         "password",
     ]
     for pw in candidates:
-        r = client.post("/api/admin/login", json={"username": username, "password": pw})
+        r, tok = _isolated_login(app, {
+            "path": "/api/admin/login",
+            "cookie_name": "pc_admin_session",
+            "body": {"username": username, "password": pw},
+        })
         if r.status_code == 200:
             body = r.json()
             if body.get("requires_mfa"):
                 continue
-            tok = _extract_session_cookie(r, "pc_admin_session")
             if tok:
                 return tok
     pytest.skip(f"could not log in supervisor_admin '{username}' with known dev passwords")
 
 
 @pytest.fixture
-def tech_token(client):
+def tech_token(app):
     """First active tech with PIN 123456 (or other dev PIN). Skip if no auth works."""
     conn = sqlite3.connect(str(_PROJECT_ROOT / "submissions.db"))
     try:
@@ -176,11 +210,13 @@ def tech_token(client):
         pytest.skip("no technicians seeded")
     tech_code = row[0]
     for pin in ("123456", "1234", "000000"):
-        r = client.post("/api/tech/login", json={"tech_code": tech_code, "pin": pin})
-        if r.status_code == 200:
-            tok = _extract_session_cookie(r, "pc_tech_session")
-            if tok:
-                return tok
+        r, tok = _isolated_login(app, {
+            "path": "/api/tech/login",
+            "cookie_name": "pc_tech_session",
+            "body": {"tech_code": tech_code, "pin": pin},
+        })
+        if r.status_code == 200 and tok:
+            return tok
     pytest.skip(f"could not log in tech '{tech_code}' with known dev PINs")
 
 

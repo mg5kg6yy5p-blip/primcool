@@ -1286,6 +1286,24 @@ def init_db():
         _lg.getLogger("primecool").warning(
             f"fs_audit_items sustain migration failed: {e}")
 
+    # Spelling normalization: historical seed data + some legacy code
+    # paths wrote 'canceled' (US) while newer code writes 'cancelled'
+    # (UK). The aging report's WHERE clause only excluded one
+    # spelling — the other slipped into outstanding totals and
+    # produced a 4-invoice discrepancy vs the metrics endpoint.
+    # Normalize to 'cancelled' (canonical) on every boot.
+    try:
+        cur = con.execute(
+            "UPDATE invoices SET status='cancelled' WHERE status='canceled'"
+        )
+        if cur.rowcount:
+            import logging as _lg
+            _lg.getLogger("primecool").info(
+                f"invoices: normalized {cur.rowcount} row(s) "
+                f"status='canceled' → 'cancelled'")
+    except sqlite3.OperationalError:
+        pass  # invoices table not present (first-boot edge)
+
     # Exceptions — chain-hashed; state changes recorded as
     # immutable rows in fs_exception_events. Header rows DO get a status update
     # on resolution/escalation; rebuilt chain_hash is OK because the events
@@ -6687,8 +6705,12 @@ def get_ar_aging(as_of: str = None) -> dict:
       bucket_61_90 → 61 ≤ days_overdue ≤ 90
       bucket_90+   → days_overdue > 90
 
-    'Outstanding' = (total - amount_paid) > 0.01 AND status != 'draft' AND
-    status != 'cancelled'. Drafts and cancelled don't carry receivable.
+    'Outstanding' = (total - amount_paid) > 0.01 AND status NOT IN
+    ('draft', 'cancelled', 'canceled'). Both spellings are excluded —
+    historical seed data and some legacy paths wrote 'canceled' (US)
+    while newer code writes 'cancelled' (UK). Audit reconciliation
+    test caught 4 'canceled' rows leaking into aging while the
+    metrics endpoint correctly excluded them.
     """
     from datetime import date as _d, datetime as _dt, timedelta as _td
     if as_of is None:
@@ -6700,7 +6722,7 @@ def get_ar_aging(as_of: str = None) -> dict:
                   i.amount_paid, i.status, i.currency
              FROM invoices i
              JOIN customers c ON i.customer_id = c.id
-            WHERE i.status NOT IN ('draft', 'cancelled')
+            WHERE i.status NOT IN ('draft', 'cancelled', 'canceled')
               AND (i.total - i.amount_paid) > 0.01
             ORDER BY i.due_date ASC"""
     ).fetchall()
