@@ -1919,8 +1919,11 @@
 
   function fsRenderAudit() {
     const { checklist, answers, phase } = fsState;
-    const sections = ['sort', 'set', 'shine', 'standardize'];
-    const sectionLabels = { sort: 'Sort', set: 'Set in order', shine: 'Shine', standardize: 'Standardize' };
+    // 5S framework — all five categories must render. Sustain was added back
+    // after being lost in a refactor (see FS_DEFAULT_CHECKLIST comment).
+    const sections = ['sort', 'set', 'shine', 'standardize', 'sustain'];
+    const sectionLabels = { sort: 'Sort', set: 'Set in order', shine: 'Shine',
+                            standardize: 'Standardize', sustain: 'Sustain' };
     const items = checklist.items;
     const required = items.length;
     const answered = items.filter(i => answers[i.item_key] && answers[i.item_key].status).length;

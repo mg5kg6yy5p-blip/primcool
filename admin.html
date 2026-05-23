@@ -8400,8 +8400,9 @@
     meta.textContent = 'Auditor: ' + (d.auditor_kind || '—') + ':' + (d.auditor_id || '—') + ' · ' + when;
 
     // Group items by section
-    const sections = ['sort','set','shine','standardize'];
-    const titles = { sort:'Sort', set:'Set in Order', shine:'Shine', standardize:'Standardize' };
+    const sections = ['sort','set','shine','standardize','sustain'];
+    const titles = { sort:'Sort', set:'Set in Order', shine:'Shine',
+                     standardize:'Standardize', sustain:'Sustain' };
     const items = Array.isArray(d.items) ? d.items : [];
     const grouped = {};
     items.forEach(function(it){

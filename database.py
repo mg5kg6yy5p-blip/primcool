@@ -1754,11 +1754,32 @@ def init_db():
             start_time TEXT,
             end_time TEXT,
             active INTEGER NOT NULL DEFAULT 1,
+            on_call INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL,
             updated_by_admin_id INTEGER,
             UNIQUE(tech_id, day_of_week)
         )
     """)
+    # On-call columns added post-TP-1a; pre-existing rows need the migration.
+    try:
+        con.execute("ALTER TABLE tech_schedules ADD COLUMN on_call "
+                    "INTEGER NOT NULL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass  # column already present
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS tech_on_call_overrides (
+            id INTEGER PRIMARY KEY,
+            tech_id INTEGER NOT NULL,
+            work_date TEXT NOT NULL,
+            on_call INTEGER NOT NULL DEFAULT 1,
+            note TEXT,
+            created_at TEXT NOT NULL,
+            created_by_admin_id INTEGER,
+            UNIQUE(tech_id, work_date)
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_on_call_override_date "
+                "ON tech_on_call_overrides(work_date, tech_id)")
     con.execute("""
         CREATE TABLE IF NOT EXISTS tech_clock_events (
             id INTEGER PRIMARY KEY,
@@ -6665,35 +6686,45 @@ def _fs_label(key: str) -> str:
 
 # Default checklist by (asset_type, phase). Each section maps to ordered item keys.
 FS_DEFAULT_CHECKLIST = {
+    # 5S framework: Sort · Set in Order · Shine · Standardize · Sustain.
+    # The 5th S (Sustain / Shitsuke) was dropped from the original templates
+    # by mistake — the spec defines it as "audit and enforce discipline":
+    # daily audits actually happening, exceptions reviewed, escalations
+    # acknowledged. Translated into per-shift/per-asset items below.
     ("vehicle", "start_shift"): {
         "sort":        ["unauthorized_items_removed", "personal_items_stowed"],
         "set":         ["tools_in_assigned_locations", "parts_in_assigned_bins"],
         "shine":       ["exterior_clean", "interior_clean", "fluids_checked", "tires_visual_ok", "lights_working"],
         "standardize": ["odometer_logged", "fuel_logged", "no_new_damage", "safety_gear_present"],
+        "sustain":     ["shift_brief_acknowledged", "prior_exceptions_reviewed"],
     },
     ("vehicle", "end_shift"): {
         "sort":        ["van_decluttered", "trash_removed"],
         "set":         ["tools_returned_to_locations", "remaining_parts_to_bins"],
         "shine":       ["interior_wipedown", "any_spills_cleaned"],
         "standardize": ["parts_used_logged", "odometer_logged", "fuel_logged", "damage_reported"],
+        "sustain":     ["audit_completed_on_time", "any_exceptions_logged"],
     },
     ("toolkit", "start_shift"): {
         "sort":        ["only_sop_tools_present"],
         "set":         ["each_tool_in_slot"],
         "shine":       ["tools_clean", "tools_no_corrosion", "tools_no_damage"],
         "standardize": ["tool_count_matches"],
+        "sustain":     ["shift_brief_acknowledged"],
     },
     ("toolkit", "end_shift"): {
         "sort":        ["no_extraneous_items"],
         "set":         ["all_tools_returned_to_slots"],
         "shine":       ["tools_wiped_down"],
         "standardize": ["tool_count_matches", "any_damage_logged"],
+        "sustain":     ["audit_completed_on_time"],
     },
     ("storage", "weekly_manager"): {
         "sort":        ["expired_items_removed", "obsolete_items_removed"],
         "set":         ["bins_labeled", "items_in_correct_bins"],
         "shine":       ["shelves_clean", "no_pest_evidence"],
         "standardize": ["par_levels_recorded", "expiry_scan_completed"],
+        "sustain":     ["weekly_audit_completed", "compliance_score_recorded"],
     },
     ("vehicle", "weekly_manager"): {
         "sort":        ["van_decluttered", "trash_removed", "unauthorized_items_removed"],
@@ -6702,6 +6733,7 @@ FS_DEFAULT_CHECKLIST = {
                         "lights_working", "any_spills_cleaned"],
         "standardize": ["odometer_logged", "fuel_logged", "no_new_damage", "safety_gear_present",
                         "tool_wear_assessment", "photographic_record_taken"],
+        "sustain":     ["weekly_audit_completed", "escalations_reviewed"],
     },
     ("toolkit", "weekly_manager"): {
         "sort":        ["only_sop_tools_present", "no_extraneous_items"],
@@ -6709,6 +6741,7 @@ FS_DEFAULT_CHECKLIST = {
         "shine":       ["tools_clean", "tools_no_corrosion", "tools_no_damage", "tools_wiped_down"],
         "standardize": ["tool_count_matches", "any_damage_logged",
                         "tool_wear_assessment", "part_expiry_scan_passed", "photographic_record_taken"],
+        "sustain":     ["weekly_audit_completed", "escalations_reviewed"],
     },
 }
 
@@ -6726,7 +6759,7 @@ def get_checklist_for_phase(asset_id: int, phase: str):
     if not tpl:
         return []
     out = []
-    for section in ("sort", "set", "shine", "standardize"):
+    for section in ("sort", "set", "shine", "standardize", "sustain"):
         for key in tpl.get(section, []):
             out.append({
                 "section":    section,
@@ -11577,11 +11610,13 @@ def count_visible_for(viewer_id: int, viewer_kind: str, viewer_role: str,
 # ── Tech schedules ────────────────────────────────────────
 def get_tech_schedule(tech_id: int) -> list:
     """Return list of dicts for all 7 weekdays. Days without a row are
-    treated as off (returned with start_time=None, end_time=None, active=0)."""
+    treated as off (returned with start_time=None, end_time=None, active=0,
+    on_call=0)."""
     con = _con()
     rows = con.execute(
-        "SELECT day_of_week, start_time, end_time, active, updated_at, "
-        "updated_by_admin_id FROM tech_schedules WHERE tech_id = ?",
+        "SELECT day_of_week, start_time, end_time, active, on_call, "
+        "updated_at, updated_by_admin_id FROM tech_schedules "
+        "WHERE tech_id = ?",
         (tech_id,),
     ).fetchall()
     con.close()
@@ -11592,31 +11627,117 @@ def get_tech_schedule(tech_id: int) -> list:
             out.append(by_day[d])
         else:
             out.append({"day_of_week": d, "start_time": None,
-                        "end_time": None, "active": 0,
+                        "end_time": None, "active": 0, "on_call": 0,
                         "updated_at": None, "updated_by_admin_id": None})
     return out
 
 
 def set_tech_schedule_day(tech_id: int, day_of_week: int,
                           start_time: str = None, end_time: str = None,
-                          active: int = 1, updated_by_admin_id: int = None) -> None:
+                          active: int = 1, on_call: int = 0,
+                          updated_by_admin_id: int = None) -> None:
     if day_of_week not in range(7):
         raise ValueError("day_of_week must be 0..6")
     now = datetime.now(timezone.utc).isoformat()
     con = _con()
     con.execute(
         "INSERT INTO tech_schedules (tech_id, day_of_week, start_time, "
-        "end_time, active, updated_at, updated_by_admin_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?) "
+        "end_time, active, on_call, updated_at, updated_by_admin_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(tech_id, day_of_week) DO UPDATE SET "
         "start_time=excluded.start_time, end_time=excluded.end_time, "
-        "active=excluded.active, updated_at=excluded.updated_at, "
+        "active=excluded.active, on_call=excluded.on_call, "
+        "updated_at=excluded.updated_at, "
         "updated_by_admin_id=excluded.updated_by_admin_id",
         (tech_id, day_of_week, start_time, end_time, int(bool(active)),
-         now, updated_by_admin_id),
+         int(bool(on_call)), now, updated_by_admin_id),
     )
     con.commit()
     con.close()
+
+
+# ── On-call overrides ──────────────────────────────────────
+def set_tech_on_call_override(tech_id: int, work_date: str,
+                              on_call: int = 1, note: str = None,
+                              admin_id: int = None) -> None:
+    """Toggle on-call for a specific date for a specific tech. Used for
+    one-off coverage (e.g. covering a colleague's weekend) without
+    changing the permanent weekday schedule."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    con.execute(
+        "INSERT INTO tech_on_call_overrides (tech_id, work_date, on_call, "
+        "note, created_at, created_by_admin_id) VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(tech_id, work_date) DO UPDATE SET "
+        "on_call=excluded.on_call, note=excluded.note, "
+        "created_at=excluded.created_at, "
+        "created_by_admin_id=excluded.created_by_admin_id",
+        (tech_id, work_date, int(bool(on_call)), note, now, admin_id),
+    )
+    con.commit()
+    con.close()
+
+
+def delete_tech_on_call_override(tech_id: int, work_date: str) -> None:
+    con = _con()
+    con.execute("DELETE FROM tech_on_call_overrides "
+                "WHERE tech_id = ? AND work_date = ?",
+                (tech_id, work_date))
+    con.commit()
+    con.close()
+
+
+def list_tech_on_call_overrides(tech_id: int, since_date: str = None) -> list:
+    """List of upcoming/past overrides for a tech. since_date filters
+    out work_dates older than that date if given."""
+    con = _con()
+    if since_date:
+        rows = con.execute(
+            "SELECT * FROM tech_on_call_overrides "
+            "WHERE tech_id = ? AND work_date >= ? "
+            "ORDER BY work_date ASC",
+            (tech_id, since_date),
+        ).fetchall()
+    else:
+        rows = con.execute(
+            "SELECT * FROM tech_on_call_overrides "
+            "WHERE tech_id = ? ORDER BY work_date ASC",
+            (tech_id,),
+        ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def is_tech_on_call_today(tech_id: int, today=None) -> bool:
+    """True if the tech is on-call for `today` (either via the weekday
+    schedule's on_call flag, or via a per-date override row). Defaults
+    to today in UTC."""
+    if today is None:
+        today = datetime.now(timezone.utc).date()
+    today_iso = today.isoformat() if hasattr(today, "isoformat") else today
+    dow = today.weekday() if hasattr(today, "weekday") else None
+    con = _con()
+    # Per-date override wins over the weekday default — supports both
+    # "on-call today even though I'm not normally" and "off-call today
+    # even though my Tuesday slot is on-call".
+    ov = con.execute(
+        "SELECT on_call FROM tech_on_call_overrides "
+        "WHERE tech_id = ? AND work_date = ?",
+        (tech_id, today_iso),
+    ).fetchone()
+    if ov is not None:
+        con.close()
+        return bool(ov["on_call"])
+    if dow is None:
+        con.close()
+        return False
+    row = con.execute(
+        "SELECT on_call FROM tech_schedules "
+        "WHERE tech_id = ? AND day_of_week = ?",
+        (tech_id, dow),
+    ).fetchone()
+    con.close()
+    return bool(row and row["on_call"])
 
 
 def get_tech_scheduled_end_today(tech_id: int, today=None):

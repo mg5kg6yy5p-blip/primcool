@@ -170,6 +170,8 @@ from database import (
     # TP-1a tech portal remodel helpers
     set_tech_schedule_day, get_tech_schedule, get_tech_scheduled_end_today,
     is_tech_scheduled_today,
+    is_tech_on_call_today, set_tech_on_call_override,
+    delete_tech_on_call_override, list_tech_on_call_overrides,
     record_clock_in, record_clock_out, record_auto_clock_out,
     get_open_clock_in_today, list_clock_events_for_tech,
     list_clocked_in_techs_today,
@@ -2861,6 +2863,19 @@ class TechScheduleDayBody(BaseModel):
     start_time: Optional[str] = None
     end_time: Optional[str] = None
     active: int = 1
+    # When the weekday's `on_call` flag is set, the tech is permanently on
+    # call that weekday — sign-in/sign-out outside the start/end window
+    # generates no alarm and is not subject to the 2h auto-sign-out cutoff.
+    on_call: int = 0
+
+
+class TechOnCallOverrideBody(BaseModel):
+    # ISO date (YYYY-MM-DD). Used for one-off on-call coverage on a date
+    # that isn't a permanent on-call weekday — e.g. covering for a
+    # colleague this Saturday only.
+    work_date: str
+    on_call: int = 1
+    note: Optional[str] = None
 
 
 class CompanyMessageBody(BaseModel):
@@ -2927,15 +2942,27 @@ def tp1_tech_today_overview(request: Request):
     con.close()
     pm = sum(1 for r in rows if (r["visit_type"] or "").upper() == "PM")
     cm = sum(1 for r in rows if (r["visit_type"] or "").upper() == "CM")
+    from datetime import timedelta as _td
     sched_end = get_tech_scheduled_end_today(tech_id)
     sched = get_tech_schedule(tech_id)
     dow = _date.fromisoformat(today_iso).weekday()
     today_sched = sched[dow] if dow < len(sched) else None
+    on_call = is_tech_on_call_today(tech_id)
     open_in = get_open_clock_in_today(tech_id)
     sign_in_status = "signed_in" if open_in else "not_signed_in"
-    in_overtime = bool(open_in and sched_end and
+    in_overtime = bool(open_in and sched_end and not on_call and
                        _dt.now(_tz.utc).isoformat() > sched_end)
     ot_approved = is_overtime_approved(tech_id) if in_overtime else False
+    # Surface the 2h-grace deadline so the landing can render a countdown
+    # like "auto sign-out in 1h 14m". Skipped for on-call (no cutoff).
+    auto_signout_at = None
+    if in_overtime and sched_end and not ot_approved:
+        try:
+            grace_min = int(os.environ.get("TECH_EOD_GRACE_MIN", "120"))
+            auto_signout_at = (_dt.fromisoformat(sched_end) +
+                               _td(minutes=grace_min)).isoformat()
+        except Exception:
+            auto_signout_at = None
     return {
         "jobs_today_total": len(rows),
         "pm_count": pm, "cm_count": cm,
@@ -2943,11 +2970,14 @@ def tp1_tech_today_overview(request: Request):
             "start": (today_sched or {}).get("start_time"),
             "end":   (today_sched or {}).get("end_time"),
             "active": bool((today_sched or {}).get("active")),
+            "on_call": bool((today_sched or {}).get("on_call")),
         } if today_sched else None),
+        "on_call_today": on_call,
         "sign_in_status": sign_in_status,
         "signed_in_at": (open_in or {}).get("event_at"),
         "in_overtime": in_overtime,
         "overtime_approved": ot_approved,
+        "auto_signout_at": auto_signout_at,
     }
 
 
@@ -2967,11 +2997,14 @@ def tp1_tech_sign_in(request: Request, body: TechSignInBody):
     if not has_5s:
         raise HTTPException(409, "5s_start_shift_required")
     scheduled = is_tech_scheduled_today(tech_id)
-    if not scheduled and not (body.dayoff_reason or "").strip():
+    on_call   = is_tech_on_call_today(tech_id)
+    # On-call techs may sign in any time without justifying — the system
+    # already expects them to be available outside operational hours.
+    if not scheduled and not on_call and not (body.dayoff_reason or "").strip():
         raise HTTPException(409, "dayoff_reason_required")
     notes = (body.dayoff_reason or "").strip() or None
     eid = record_clock_in(tech_id, source="manual", notes=notes)
-    if not scheduled:
+    if not scheduled and not on_call:
         _tp1_raise_security_alert(
             kind="tech_dayoff_signin", severity="medium",
             actor_type="tech", actor_id=tech_id,
@@ -3224,10 +3257,48 @@ def tp1_admin_set_tech_schedule_day(request: Request, tech_id: int,
         raise HTTPException(400, "day_of_week must be 0..6")
     set_tech_schedule_day(tech_id, body.day_of_week,
                           body.start_time, body.end_time,
-                          int(body.active), updated_by_admin_id=admin["id"])
+                          int(body.active), on_call=int(body.on_call),
+                          updated_by_admin_id=admin["id"])
     _audit_from(admin, "tech.schedule_set", request,
                 target_type="technician", target_id=tech_id,
                 after=body.model_dump())
+    return {"ok": True}
+
+
+# ── On-call overrides (one-off date coverage) ────────────────────────
+@app.get("/api/admin/technicians/{tech_id}/on-call-overrides")
+def tp1_admin_list_on_call_overrides(request: Request, tech_id: int,
+                                     since: Optional[str] = None):
+    _require_perm(request, "tech:manage_schedule")
+    return list_tech_on_call_overrides(tech_id, since_date=since)
+
+
+@app.post("/api/admin/technicians/{tech_id}/on-call-overrides")
+def tp1_admin_set_on_call_override(request: Request, tech_id: int,
+                                   body: TechOnCallOverrideBody):
+    admin = _require_perm(request, "tech:manage_schedule")
+    try:
+        # Light validation: YYYY-MM-DD.
+        datetime.strptime(body.work_date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(400, "work_date must be YYYY-MM-DD")
+    set_tech_on_call_override(tech_id, body.work_date,
+                              on_call=int(body.on_call), note=body.note,
+                              admin_id=admin["id"])
+    _audit_from(admin, "tech.on_call_override_set", request,
+                target_type="technician", target_id=tech_id,
+                after=body.model_dump())
+    return {"ok": True}
+
+
+@app.delete("/api/admin/technicians/{tech_id}/on-call-overrides/{work_date}")
+def tp1_admin_delete_on_call_override(request: Request, tech_id: int,
+                                      work_date: str):
+    admin = _require_perm(request, "tech:manage_schedule")
+    delete_tech_on_call_override(tech_id, work_date)
+    _audit_from(admin, "tech.on_call_override_cleared", request,
+                target_type="technician", target_id=tech_id,
+                after={"work_date": work_date})
     return {"ok": True}
 
 
@@ -9240,6 +9311,11 @@ def _tech_eod_pass():
     techs = list_clocked_in_techs_today()
     for t in techs:
         tid = t["tech_id"]
+        # On-call techs are explicitly allowed to be clocked in outside
+        # normal hours — no overtime alert, no auto-sign-out cutoff. They
+        # close out their shift manually (with the 5S end-shift audit).
+        if is_tech_on_call_today(tid):
+            continue
         sched_end = get_tech_scheduled_end_today(tid)
         if not sched_end:
             con = _dbcon()
