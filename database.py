@@ -488,6 +488,20 @@ def init_db():
         ("must_enrol_mfa",
             "ALTER TABLE technicians ADD COLUMN must_enrol_mfa "
             "INTEGER NOT NULL DEFAULT 0"),
+        # Warehouse module — W1 (additive β):
+        # staff_type discriminates field techs vs warehouse staff vs
+        # parts runner. department lets the admin filter by team
+        # without overloading staff_type. Both default such that
+        # existing rows = field techs (no behavior change for techs).
+        # CHECK constraints are not added via ALTER (SQLite limit);
+        # validation lives at create_tech / create_staff helpers and
+        # at endpoint pydantic layers.
+        ("staff_type",
+            "ALTER TABLE technicians ADD COLUMN staff_type TEXT NOT NULL "
+            "DEFAULT 'tech'"),
+        ("department",
+            "ALTER TABLE technicians ADD COLUMN department TEXT NOT NULL "
+            "DEFAULT 'field'"),
     ):
         if name not in tech_cols:
             try: con.execute(sql)
@@ -3385,14 +3399,20 @@ def verify_tech(code: str, pin: str):
 
 
 def get_all_techs():
+    """Returns ONLY field technicians (staff_type='tech') — warehouse
+    staff and parts runners share the table but live behind
+    list_staff() / the warehouse admin endpoints. Keeping this filter
+    here means the legacy /api/admin/techs UI doesn't accidentally
+    surface warehouse rows it has no UI for."""
     con = _con()
     rows = con.execute(
         """
         SELECT t.id, t.tech_code, t.name, t.phone, t.email, t.role, t.prid,
-               t.hourly_rate, t.active, t.created_at,
+               t.hourly_rate, t.active, t.created_at, t.staff_type, t.department,
                (SELECT COUNT(*) FROM maintenance_visits v
                 WHERE v.assigned_tech_id = t.id AND v.status != 'completed') AS active_jobs
         FROM technicians t
+        WHERE t.staff_type = 'tech'
         ORDER BY t.active DESC, t.name
         """
     ).fetchall()
@@ -3400,31 +3420,51 @@ def get_all_techs():
     return _dec_rows("technicians", rows)
 
 
-def create_tech(data: dict) -> tuple:
-    """Returns (tech_id, prid). If `tech_code` not provided, PRID is used
-    as the tech_code.
+VALID_STAFF_TYPES = ("tech", "warehouse_floor", "parts_runner",
+                     "warehouse_manager")
+VALID_DEPARTMENTS = ("field", "warehouse", "office")
 
-    Auto-provisions the same operational shape T01 has so every new
-    tech can sign in immediately without a separate admin setup pass:
-      * One active vehicle asset (VAN-<hub>-NN) assigned to the tech.
-      * One active toolkit asset (TKIT-<hub>-NN) assigned to the tech.
-      * A default Mon–Fri 08:00–17:00 active schedule (weekends off,
-        no on-call). Admin can edit afterwards from the tech profile.
-    The hub_id defaults to 1 (Kingston) for now; once multi-hub is
-    real the caller will pass it through data['hub_id']."""
+
+def create_tech(data: dict) -> tuple:
+    """Returns (staff_id, prid). If `tech_code` not provided, PRID is used
+    as the staff_code.
+
+    Auto-provisions per staff_type:
+      * 'tech'              → 1 active vehicle (VAN-<hub>-NN) + 1 toolkit
+                              (TKIT-<hub>-NN) + Mon–Fri 08-17 schedule
+      * 'parts_runner'      → 1 truck (TRK-<hub>-NN) + 1 PPE locker
+                              (PPE-<hub>-NN) + Mon–Fri 08-17 schedule
+      * 'warehouse_floor'   → 1 PPE locker only + Mon–Fri 08-17 schedule
+                              (forklift / pallet-jack assigned later by
+                              the warehouse manager from the assets UI)
+      * 'warehouse_manager' → 1 PPE locker only + Mon–Fri 08-17 schedule
+
+    hub_id defaults to 1 (Kingston). staff_type defaults to 'tech' for
+    backwards compat with existing callers (admin_create_tech endpoint
+    didn't know about the column yet)."""
     hire_date = (data.get("hire_date") or "").strip() or None
     prid      = generate_prid(name=data["name"], hire_date=hire_date)
     raw_code  = (data.get("tech_code") or "").strip().upper()
     tech_code = raw_code if raw_code else prid
     hub_id    = int(data.get("hub_id") or 1)
     now_iso   = datetime.now(timezone.utc).isoformat()
+    staff_type = (data.get("staff_type") or "tech").strip()
+    department = (data.get("department") or "").strip() or (
+        "field" if staff_type == "tech" else "warehouse"
+    )
+    if staff_type not in VALID_STAFF_TYPES:
+        raise ValueError(f"invalid staff_type: {staff_type}")
+    if department not in VALID_DEPARTMENTS:
+        raise ValueError(f"invalid department: {department}")
+
     con = _con()
     cur = con.execute(
         """
         INSERT INTO technicians
             (tech_code, pin_hash, name, phone, email, email_hash, role,
-             prid, hire_date, hourly_rate, active, created_at, hub_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+             prid, hire_date, hourly_rate, active, created_at, hub_id,
+             staff_type, department)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
         """,
         (
             tech_code,
@@ -3439,13 +3479,12 @@ def create_tech(data: dict) -> tuple:
             float(data.get("hourly_rate") or 0),
             now_iso,
             hub_id,
+            staff_type,
+            department,
         ),
     )
     tech_id = cur.lastrowid
 
-    # Auto-provision: pick the next free per-hub asset code so codes
-    # stay readable (VAN-KIN-01, VAN-KIN-02, …) regardless of any
-    # earlier deletions.
     hub_prefix = {1: "KIN"}.get(hub_id, f"HUB{hub_id}")
 
     def _next_asset_code(prefix: str) -> str:
@@ -3460,25 +3499,33 @@ def create_tech(data: dict) -> tuple:
                 return candidate
             n += 1
 
-    van_code = _next_asset_code("VAN")
-    con.execute(
-        "INSERT INTO fs_assets (asset_code, asset_type, label, hub_id, "
-        "assigned_tech_id, static_location, active, created_at, notes) "
-        "VALUES (?, 'vehicle', ?, ?, ?, NULL, 1, ?, NULL)",
-        (van_code, f"{hub_prefix} Service Van {van_code.rsplit('-', 1)[-1]}",
-         hub_id, tech_id, now_iso),
-    )
-    tkit_code = _next_asset_code("TKIT")
-    con.execute(
-        "INSERT INTO fs_assets (asset_code, asset_type, label, hub_id, "
-        "assigned_tech_id, static_location, active, created_at, notes) "
-        "VALUES (?, 'toolkit', ?, ?, ?, NULL, 1, ?, NULL)",
-        (tkit_code, f"{hub_prefix} Toolkit {tkit_code.rsplit('-', 1)[-1]}",
-         hub_id, tech_id, now_iso),
-    )
+    def _provision_asset(prefix: str, asset_type: str, label_tpl: str):
+        code = _next_asset_code(prefix)
+        con.execute(
+            "INSERT INTO fs_assets (asset_code, asset_type, label, hub_id, "
+            "assigned_tech_id, static_location, active, created_at, notes) "
+            "VALUES (?, ?, ?, ?, ?, NULL, 1, ?, NULL)",
+            (code, asset_type, label_tpl.format(num=code.rsplit("-", 1)[-1]),
+             hub_id, tech_id, now_iso),
+        )
 
-    # Default Mon–Fri 08:00–17:00 active. Days 5/6 = Sat/Sun → no row
-    # (treated as off-day by get_tech_schedule's fill-in).
+    # Per-staff_type provisioning. Asset types reuse the existing 5S
+    # checklist registry: 'vehicle' (van / truck) and 'toolkit' (toolkit
+    # / PPE locker) both have FS_DEFAULT_CHECKLIST entries.
+    if staff_type == "tech":
+        _provision_asset("VAN",  "vehicle",
+                         f"{hub_prefix} Service Van {{num}}")
+        _provision_asset("TKIT", "toolkit",
+                         f"{hub_prefix} Toolkit {{num}}")
+    elif staff_type == "parts_runner":
+        _provision_asset("TRK",  "vehicle",
+                         f"{hub_prefix} Parts Truck {{num}}")
+        _provision_asset("PPE",  "toolkit",
+                         f"{hub_prefix} Runner PPE Locker {{num}}")
+    elif staff_type in ("warehouse_floor", "warehouse_manager"):
+        _provision_asset("PPE",  "toolkit",
+                         f"{hub_prefix} Warehouse PPE Locker {{num}}")
+    # Default Mon–Fri 08:00–17:00 active for every staff type.
     for dow in (0, 1, 2, 3, 4):
         con.execute(
             "INSERT INTO tech_schedules (tech_id, day_of_week, start_time, "
@@ -3490,6 +3537,39 @@ def create_tech(data: dict) -> tuple:
     con.commit()
     con.close()
     return tech_id, prid
+
+
+# ── Unified staff helpers (W1 additive β) ────────────────────────────
+# These read against the `technicians` table but filter / shape the
+# result for the warehouse module's consumers. New warehouse code uses
+# `list_staff`; legacy tech code keeps using `get_all_techs` (which
+# only returns staff_type='tech' rows post-this-commit).
+
+def list_staff(staff_type=None, department=None, active_only=True) -> list:
+    """List staff with optional filters. staff_type / department are
+    strings (one of VALID_STAFF_TYPES / VALID_DEPARTMENTS) or None for
+    no filter. Returns full staff rows decrypted."""
+    where = []
+    args  = []
+    if staff_type is not None:
+        where.append("staff_type = ?"); args.append(staff_type)
+    if department is not None:
+        where.append("department = ?"); args.append(department)
+    if active_only:
+        where.append("active = 1")
+    sql = "SELECT * FROM technicians"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY staff_type, name"
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    return _dec_rows("technicians", rows)
+
+
+def get_staff_by_id(staff_id: int):
+    """Alias for get_tech_by_id — semantic clarity for warehouse callers."""
+    return get_tech_by_id(staff_id)
 
 
 def set_tech_pin(tech_id: int, pin: str):
