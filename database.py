@@ -177,6 +177,11 @@ _PII_RAND = {
     # Customer account credit ledger — operator notes may name people or
     # describe disputes; encrypt to match the rest of the customer PII surface.
     "customer_credit_movements":    ["note"],
+    # TP-1 tech-portal remodel — CV entries (job-history) and company-wide
+    # message board. Free-text bodies are PII-adjacent (could name customers,
+    # contain wage details, gossip, etc.) so we encrypt them at rest.
+    "tech_cv_entries":              ["description"],
+    "company_messages":             ["body"],
 }
 # Columns that need equality lookup → deterministic encryption + blind index.
 _PII_DET = {
