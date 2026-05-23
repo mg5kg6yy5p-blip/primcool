@@ -7452,25 +7452,60 @@ def list_coaching(tech_id=None, status=None, limit=100):
 
 
 # ── "Today" status for tech ──────────────────────────────────────────────────
+def audit_cycle_threshold(tech_id: int, today_iso: str = None) -> str:
+    """ISO timestamp: the boundary below which 5S audits no longer 'count'
+    for the current shift cycle. Defined as the most recent
+    tech_clock_events row (clock-in OR clock-out) for this tech on
+    today's date. If none yet (first sign-in of the day), falls back
+    to today 00:00:00 UTC.
+
+    Rationale: each shift cycle gets its own start_shift + end_shift
+    audits. After a tech signs out, the next sign-in must re-do the
+    start-shift 5S; after a tech signs in, the matching sign-out must
+    re-do the end-shift 5S. Without this scoping a tech could sign in,
+    sign out, then sign in again without doing a new 5S — and a tech
+    who's already clocked in could sign out using yesterday's
+    end-shift audit. Both bugs were reported in field testing."""
+    if today_iso is None:
+        today_iso = datetime.now(timezone.utc).date().isoformat()
+    con = _con()
+    row = con.execute(
+        "SELECT event_at FROM tech_clock_events "
+        "WHERE tech_id = ? AND work_date = ? "
+        "ORDER BY event_at DESC LIMIT 1",
+        (tech_id, today_iso),
+    ).fetchone()
+    con.close()
+    if row and row["event_at"]:
+        return row["event_at"]
+    # First action of the day — anything submitted today counts.
+    return f"{today_iso}T00:00:00+00:00"
+
+
 def fs_today_status_for_tech(tech_id: int) -> dict:
-    """Returns whether tech has submitted start_shift / end_shift audits today
-    for each of their assigned assets that requires them."""
+    """Per-asset start/end audit state SCOPED TO THE CURRENT SHIFT CYCLE.
+    Audits older than the most recent clock event today are treated as
+    'not done' so the 5S home page re-enables the buttons for the new
+    cycle. See audit_cycle_threshold for the semantics."""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    threshold = audit_cycle_threshold(tech_id, today)
     assets = list_assets(tech_id=tech_id, active_only=True)
-    out = {"date": today, "assets": []}
+    out = {"date": today, "cycle_threshold": threshold, "assets": []}
     con = _con()
     for a in assets:
         if a["asset_type"] not in ("vehicle", "toolkit"):
             continue
         start_done = bool(con.execute(
             "SELECT 1 FROM fs_audits WHERE asset_id=? AND auditor_id=? "
-            "AND auditor_kind='tech' AND phase='start_shift' AND substr(audit_ts,1,10)=?",
-            (a["id"], tech_id, today),
+            "AND auditor_kind='tech' AND phase='start_shift' "
+            "AND audit_ts > ?",
+            (a["id"], tech_id, threshold),
         ).fetchone())
         end_done = bool(con.execute(
             "SELECT 1 FROM fs_audits WHERE asset_id=? AND auditor_id=? "
-            "AND auditor_kind='tech' AND phase='end_shift' AND substr(audit_ts,1,10)=?",
-            (a["id"], tech_id, today),
+            "AND auditor_kind='tech' AND phase='end_shift' "
+            "AND audit_ts > ?",
+            (a["id"], tech_id, threshold),
         ).fetchone())
         out["assets"].append({
             "asset_id":   a["id"],

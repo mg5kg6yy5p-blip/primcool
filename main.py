@@ -2988,10 +2988,14 @@ def tp1_tech_today_overview(request: Request):
 def _all_audits_done_for_today(tech_id: int, phase: str,
                                today_iso: str) -> bool:
     """Per the field spec the tech must complete the start- or end-shift
-    audit for EVERY assigned auditable asset (vehicle + toolkit), not
-    just one. Storage isn't audited per-shift, so it's excluded — same
-    filter the 5S home page uses to render the asset list."""
-    from database import _con as _dbcon
+    audit for EVERY assigned auditable asset (vehicle + toolkit) FOR
+    THE CURRENT CYCLE — i.e. submitted after the most recent clock
+    event today. See database.audit_cycle_threshold for the semantics.
+
+    Storage isn't audited per-shift, so it's excluded — same filter
+    the 5S home page uses to render the asset list."""
+    from database import _con as _dbcon, audit_cycle_threshold
+    threshold = audit_cycle_threshold(tech_id, today_iso)
     con = _dbcon()
     assets = con.execute(
         "SELECT id FROM fs_assets WHERE assigned_tech_id = ? "
@@ -3005,9 +3009,9 @@ def _all_audits_done_for_today(tech_id: int, phase: str,
     for a in assets:
         done = con.execute(
             "SELECT 1 FROM fs_audits WHERE asset_id = ? AND auditor_id = ? "
-            "AND auditor_kind = 'tech' AND phase = ? "
-            "AND substr(audit_ts, 1, 10) = ? LIMIT 1",
-            (a["id"], tech_id, phase, today_iso),
+            "AND auditor_kind = 'tech' AND phase = ? AND audit_ts > ? "
+            "LIMIT 1",
+            (a["id"], tech_id, phase, threshold),
         ).fetchone()
         if not done:
             con.close()
