@@ -12118,34 +12118,73 @@ def get_open_clock_in_today(tech_id: int, today=None):
 
 def record_clock_in(tech_id: int, source: str = "manual",
                     notes: str = None) -> int:
+    """Idempotent clock-in. If the tech is already clocked in (most
+    recent clock event is a clock_in with no matching clock_out),
+    returns the existing clock_in's id without inserting a duplicate.
+
+    Without this, two concurrent sign-in attempts (double-tap, retry
+    after a flaky network, two open tabs) created two clock_in rows
+    in succession — corrupting the event chain's invariant that each
+    tech has at most one open cycle and producing duplicate audit
+    entries. Surfaced in audits of a3bf399, 23b02c8, and e1f0bff
+    before being prioritized."""
     if source not in ("manual", "auto_eod"):
         raise ValueError("invalid source")
-    from datetime import date
     now = datetime.now(timezone.utc)
     work_date = now.date().isoformat()
     con = _con()
-    prior = _last_clock_event_chain(con)
-    row = {
-        "tech_id": tech_id, "kind": "clock_in",
-        "event_at": now.isoformat(), "source": source,
-        "notes": notes, "work_date": work_date,
-    }
-    chash = _chain_hash_clock_event(prior, row)
-    cur = con.execute(
-        "INSERT INTO tech_clock_events (tech_id, kind, event_at, source, "
-        "notes, work_date, prior_chain_hash, chain_hash, hub_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)",
-        (tech_id, "clock_in", now.isoformat(), source, notes, work_date,
-         prior, chash),
-    )
-    eid = cur.lastrowid
-    con.commit()
+    # BEGIN IMMEDIATE acquires a RESERVED lock immediately so a
+    # concurrent record_clock_in can't slip its SELECT through the
+    # window between our SELECT and INSERT. WAL mode allows readers
+    # to continue throughout.
+    con.execute("BEGIN IMMEDIATE")
+    try:
+        existing = con.execute(
+            "SELECT * FROM tech_clock_events WHERE tech_id = ? "
+            "ORDER BY event_at DESC LIMIT 1",
+            (tech_id,),
+        ).fetchone()
+        if existing and existing["kind"] == "clock_in":
+            con.commit()
+            con.close()
+            import logging as _lg
+            _lg.getLogger("primecool").info(
+                f"record_clock_in: idempotent return for tech {tech_id} "
+                f"(open clock_in #{existing['id']} already exists)")
+            return existing["id"]
+        prior = _last_clock_event_chain(con)
+        row = {
+            "tech_id": tech_id, "kind": "clock_in",
+            "event_at": now.isoformat(), "source": source,
+            "notes": notes, "work_date": work_date,
+        }
+        chash = _chain_hash_clock_event(prior, row)
+        cur = con.execute(
+            "INSERT INTO tech_clock_events (tech_id, kind, event_at, "
+            "source, notes, work_date, prior_chain_hash, chain_hash, "
+            "hub_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)",
+            (tech_id, "clock_in", now.isoformat(), source, notes,
+             work_date, prior, chash),
+        )
+        eid = cur.lastrowid
+        con.commit()
+    except Exception:
+        con.rollback()
+        con.close()
+        raise
     con.close()
     return eid
 
 
 def record_clock_out(tech_id: int, source: str = "manual",
                      kind: str = "clock_out") -> int:
+    """Idempotent clock-out. If the tech's most recent clock event is
+    already a clock_out / auto_clock_out (i.e. there's no open cycle
+    to close), returns that event's id without inserting a duplicate.
+
+    Symmetric with record_clock_in's idempotency — same race surface
+    (double-tap on Sign Out, retry after network blip, concurrent
+    sign-out request from the EOD cron)."""
     if source not in ("manual", "auto_eod"):
         raise ValueError("invalid source")
     if kind not in ("clock_out", "auto_clock_out"):
@@ -12153,21 +12192,42 @@ def record_clock_out(tech_id: int, source: str = "manual",
     now = datetime.now(timezone.utc)
     work_date = now.date().isoformat()
     con = _con()
-    prior = _last_clock_event_chain(con)
-    row = {
-        "tech_id": tech_id, "kind": kind,
-        "event_at": now.isoformat(), "source": source,
-        "notes": None, "work_date": work_date,
-    }
-    chash = _chain_hash_clock_event(prior, row)
-    cur = con.execute(
-        "INSERT INTO tech_clock_events (tech_id, kind, event_at, source, "
-        "notes, work_date, prior_chain_hash, chain_hash, hub_id) "
-        "VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 1)",
-        (tech_id, kind, now.isoformat(), source, work_date, prior, chash),
-    )
-    eid = cur.lastrowid
-    con.commit()
+    con.execute("BEGIN IMMEDIATE")
+    try:
+        existing = con.execute(
+            "SELECT * FROM tech_clock_events WHERE tech_id = ? "
+            "ORDER BY event_at DESC LIMIT 1",
+            (tech_id,),
+        ).fetchone()
+        if existing and existing["kind"] in ("clock_out", "auto_clock_out"):
+            con.commit()
+            con.close()
+            import logging as _lg
+            _lg.getLogger("primecool").info(
+                f"record_clock_out: idempotent return for tech {tech_id} "
+                f"(no open cycle; latest event #{existing['id']} is "
+                f"{existing['kind']})")
+            return existing["id"]
+        prior = _last_clock_event_chain(con)
+        row = {
+            "tech_id": tech_id, "kind": kind,
+            "event_at": now.isoformat(), "source": source,
+            "notes": None, "work_date": work_date,
+        }
+        chash = _chain_hash_clock_event(prior, row)
+        cur = con.execute(
+            "INSERT INTO tech_clock_events (tech_id, kind, event_at, "
+            "source, notes, work_date, prior_chain_hash, chain_hash, "
+            "hub_id) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 1)",
+            (tech_id, kind, now.isoformat(), source, work_date,
+             prior, chash),
+        )
+        eid = cur.lastrowid
+        con.commit()
+    except Exception:
+        con.rollback()
+        con.close()
+        raise
     con.close()
     return eid
 
