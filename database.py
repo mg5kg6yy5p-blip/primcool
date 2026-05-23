@@ -1745,6 +1745,103 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+    # ── TP-1a: Tech-portal remodel schema ──────────────────────────────────
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS tech_schedules (
+            id INTEGER PRIMARY KEY,
+            tech_id INTEGER NOT NULL,
+            day_of_week INTEGER NOT NULL CHECK (day_of_week BETWEEN 0 AND 6),
+            start_time TEXT,
+            end_time TEXT,
+            active INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT NOT NULL,
+            updated_by_admin_id INTEGER,
+            UNIQUE(tech_id, day_of_week)
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS tech_clock_events (
+            id INTEGER PRIMARY KEY,
+            tech_id INTEGER NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('clock_in','clock_out','auto_clock_out')),
+            event_at TEXT NOT NULL,
+            source TEXT NOT NULL CHECK (source IN ('manual','auto_eod')),
+            notes TEXT,
+            work_date TEXT NOT NULL,
+            prior_chain_hash TEXT,
+            chain_hash TEXT NOT NULL,
+            hub_id INTEGER NOT NULL DEFAULT 1
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_clockev_tech_date "
+                "ON tech_clock_events(tech_id, work_date)")
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS tech_overtime_approvals (
+            id INTEGER PRIMARY KEY,
+            tech_id INTEGER NOT NULL,
+            work_date TEXT NOT NULL,
+            approved_by_admin_id INTEGER NOT NULL,
+            approved_at TEXT NOT NULL,
+            notes TEXT,
+            UNIQUE(tech_id, work_date)
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS tech_certifications (
+            id INTEGER PRIMARY KEY,
+            tech_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            issuer TEXT NOT NULL,
+            issued_date TEXT,
+            expiry_date TEXT,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            created_by_admin_id INTEGER
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS tech_cv_entries (
+            id INTEGER PRIMARY KEY,
+            tech_id INTEGER NOT NULL,
+            company TEXT NOT NULL,
+            title TEXT NOT NULL,
+            start_date TEXT,
+            end_date TEXT,
+            description TEXT,
+            status TEXT NOT NULL CHECK (status IN ('draft','locked')) DEFAULT 'draft',
+            locked_at TEXT,
+            edit_grant_by_admin_id INTEGER,
+            edit_grant_at TEXT,
+            edit_grant_until TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS kpi_periods_released_to_tech (
+            id INTEGER PRIMARY KEY,
+            tech_id INTEGER NOT NULL,
+            period_key TEXT NOT NULL,
+            released_by_admin_id INTEGER NOT NULL,
+            released_at TEXT NOT NULL,
+            UNIQUE(tech_id, period_key)
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS company_messages (
+            id INTEGER PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL,
+            posted_by_admin_id INTEGER NOT NULL,
+            posted_at TEXT NOT NULL,
+            expires_at TEXT,
+            hidden_at TEXT,
+            hidden_by_admin_id INTEGER
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_company_msg_active "
+                "ON company_messages(hidden_at, expires_at, posted_at)")
+
     con.commit()
     con.close()
     _backfill_prids()
@@ -11471,3 +11568,569 @@ def count_visible_for(viewer_id: int, viewer_kind: str, viewer_role: str,
     finally:
         try: con.close()
         except Exception: pass
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# TP-1a: Tech-portal remodel helpers
+# ══════════════════════════════════════════════════════════════════════════
+
+# ── Tech schedules ────────────────────────────────────────
+def get_tech_schedule(tech_id: int) -> list:
+    """Return list of dicts for all 7 weekdays. Days without a row are
+    treated as off (returned with start_time=None, end_time=None, active=0)."""
+    con = _con()
+    rows = con.execute(
+        "SELECT day_of_week, start_time, end_time, active, updated_at, "
+        "updated_by_admin_id FROM tech_schedules WHERE tech_id = ?",
+        (tech_id,),
+    ).fetchall()
+    con.close()
+    by_day = {r["day_of_week"]: dict(r) for r in rows}
+    out = []
+    for d in range(7):
+        if d in by_day:
+            out.append(by_day[d])
+        else:
+            out.append({"day_of_week": d, "start_time": None,
+                        "end_time": None, "active": 0,
+                        "updated_at": None, "updated_by_admin_id": None})
+    return out
+
+
+def set_tech_schedule_day(tech_id: int, day_of_week: int,
+                          start_time: str = None, end_time: str = None,
+                          active: int = 1, updated_by_admin_id: int = None) -> None:
+    if day_of_week not in range(7):
+        raise ValueError("day_of_week must be 0..6")
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    con.execute(
+        "INSERT INTO tech_schedules (tech_id, day_of_week, start_time, "
+        "end_time, active, updated_at, updated_by_admin_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(tech_id, day_of_week) DO UPDATE SET "
+        "start_time=excluded.start_time, end_time=excluded.end_time, "
+        "active=excluded.active, updated_at=excluded.updated_at, "
+        "updated_by_admin_id=excluded.updated_by_admin_id",
+        (tech_id, day_of_week, start_time, end_time, int(bool(active)),
+         now, updated_by_admin_id),
+    )
+    con.commit()
+    con.close()
+
+
+def get_tech_scheduled_end_today(tech_id: int, today=None):
+    """Returns ISO datetime string for today's scheduled end, or None if
+    no schedule / day_off / active=0. `today` overrideable for tests."""
+    from datetime import date, datetime as _dt
+    if today is None:
+        today = datetime.now(timezone.utc).date()
+    dow = today.weekday()  # 0=Mon, 6=Sun
+    con = _con()
+    row = con.execute(
+        "SELECT start_time, end_time, active FROM tech_schedules "
+        "WHERE tech_id = ? AND day_of_week = ?",
+        (tech_id, dow),
+    ).fetchone()
+    con.close()
+    if not row or not row["active"] or not row["end_time"]:
+        return None
+    try:
+        hh, mm = row["end_time"].split(":")
+        return _dt(today.year, today.month, today.day,
+                   int(hh), int(mm), tzinfo=timezone.utc).isoformat()
+    except Exception:
+        return None
+
+
+def is_tech_scheduled_today(tech_id: int, today=None) -> bool:
+    return get_tech_scheduled_end_today(tech_id, today=today) is not None
+
+
+# ── Tech clock events ─────────────────────────────────────
+def _chain_hash_clock_event(prior_hash: str, row: dict) -> str:
+    import hashlib, json as _j
+    keys = ("tech_id", "kind", "event_at", "source", "notes", "work_date")
+    payload = {k: row.get(k) for k in keys}
+    body = (prior_hash or "") + _j.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _last_clock_event_chain(con) -> str:
+    r = con.execute(
+        "SELECT chain_hash FROM tech_clock_events ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    return r["chain_hash"] if r else ""
+
+
+def get_open_clock_in_today(tech_id: int, today=None):
+    """Return the open clock_in row for today (no matching clock_out or
+    auto_clock_out on the same work_date), or None."""
+    from datetime import date
+    if today is None:
+        today = datetime.now(timezone.utc).date().isoformat()
+    elif hasattr(today, "isoformat"):
+        today = today.isoformat()
+    con = _con()
+    cin = con.execute(
+        "SELECT * FROM tech_clock_events WHERE tech_id = ? AND work_date = ? "
+        "AND kind = 'clock_in' ORDER BY id DESC LIMIT 1",
+        (tech_id, today),
+    ).fetchone()
+    if not cin:
+        con.close()
+        return None
+    cout = con.execute(
+        "SELECT 1 FROM tech_clock_events WHERE tech_id = ? AND work_date = ? "
+        "AND kind IN ('clock_out','auto_clock_out') AND id > ? LIMIT 1",
+        (tech_id, today, cin["id"]),
+    ).fetchone()
+    con.close()
+    return dict(cin) if not cout else None
+
+
+def record_clock_in(tech_id: int, source: str = "manual",
+                    notes: str = None) -> int:
+    if source not in ("manual", "auto_eod"):
+        raise ValueError("invalid source")
+    from datetime import date
+    now = datetime.now(timezone.utc)
+    work_date = now.date().isoformat()
+    con = _con()
+    prior = _last_clock_event_chain(con)
+    row = {
+        "tech_id": tech_id, "kind": "clock_in",
+        "event_at": now.isoformat(), "source": source,
+        "notes": notes, "work_date": work_date,
+    }
+    chash = _chain_hash_clock_event(prior, row)
+    cur = con.execute(
+        "INSERT INTO tech_clock_events (tech_id, kind, event_at, source, "
+        "notes, work_date, prior_chain_hash, chain_hash, hub_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)",
+        (tech_id, "clock_in", now.isoformat(), source, notes, work_date,
+         prior, chash),
+    )
+    eid = cur.lastrowid
+    con.commit()
+    con.close()
+    return eid
+
+
+def record_clock_out(tech_id: int, source: str = "manual",
+                     kind: str = "clock_out") -> int:
+    if source not in ("manual", "auto_eod"):
+        raise ValueError("invalid source")
+    if kind not in ("clock_out", "auto_clock_out"):
+        raise ValueError("invalid kind")
+    now = datetime.now(timezone.utc)
+    work_date = now.date().isoformat()
+    con = _con()
+    prior = _last_clock_event_chain(con)
+    row = {
+        "tech_id": tech_id, "kind": kind,
+        "event_at": now.isoformat(), "source": source,
+        "notes": None, "work_date": work_date,
+    }
+    chash = _chain_hash_clock_event(prior, row)
+    cur = con.execute(
+        "INSERT INTO tech_clock_events (tech_id, kind, event_at, source, "
+        "notes, work_date, prior_chain_hash, chain_hash, hub_id) "
+        "VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 1)",
+        (tech_id, kind, now.isoformat(), source, work_date, prior, chash),
+    )
+    eid = cur.lastrowid
+    con.commit()
+    con.close()
+    return eid
+
+
+def record_auto_clock_out(tech_id: int, today=None) -> int:
+    """Idempotent: returns existing auto_clock_out id if one already exists
+    today, else creates a new one and returns its id."""
+    from datetime import date
+    if today is None:
+        today = datetime.now(timezone.utc).date().isoformat()
+    elif hasattr(today, "isoformat"):
+        today = today.isoformat()
+    con = _con()
+    existing = con.execute(
+        "SELECT id FROM tech_clock_events WHERE tech_id = ? AND work_date = ? "
+        "AND kind = 'auto_clock_out' LIMIT 1",
+        (tech_id, today),
+    ).fetchone()
+    con.close()
+    if existing:
+        return existing["id"]
+    return record_clock_out(tech_id, source="auto_eod", kind="auto_clock_out")
+
+
+def list_clock_events_for_tech(tech_id: int, work_date: str = None,
+                               limit: int = 200) -> list:
+    con = _con()
+    if work_date:
+        rows = con.execute(
+            "SELECT * FROM tech_clock_events WHERE tech_id = ? AND "
+            "work_date = ? ORDER BY id DESC LIMIT ?",
+            (tech_id, work_date, int(limit)),
+        ).fetchall()
+    else:
+        rows = con.execute(
+            "SELECT * FROM tech_clock_events WHERE tech_id = ? "
+            "ORDER BY id DESC LIMIT ?",
+            (tech_id, int(limit)),
+        ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def list_clocked_in_techs_today(today=None) -> list:
+    """For the EOD cron. Returns [{tech_id, signed_in_at, clock_in_id}]
+    for techs with an open clock_in today (no clock_out/auto_clock_out
+    on the same work_date)."""
+    from datetime import date
+    if today is None:
+        today = datetime.now(timezone.utc).date().isoformat()
+    elif hasattr(today, "isoformat"):
+        today = today.isoformat()
+    con = _con()
+    rows = con.execute(
+        "SELECT tech_id, MAX(id) AS clock_in_id, MAX(event_at) AS signed_in_at "
+        "FROM tech_clock_events "
+        "WHERE work_date = ? AND kind = 'clock_in' "
+        "GROUP BY tech_id",
+        (today,),
+    ).fetchall()
+    out = []
+    for r in rows:
+        cout = con.execute(
+            "SELECT 1 FROM tech_clock_events WHERE tech_id = ? AND work_date = ? "
+            "AND kind IN ('clock_out','auto_clock_out') AND id > ? LIMIT 1",
+            (r["tech_id"], today, r["clock_in_id"]),
+        ).fetchone()
+        if not cout:
+            out.append({"tech_id": r["tech_id"],
+                        "signed_in_at": r["signed_in_at"],
+                        "clock_in_id": r["clock_in_id"]})
+    con.close()
+    return out
+
+
+# ── Overtime approvals ────────────────────────────────────
+def is_overtime_approved(tech_id: int, work_date=None) -> bool:
+    from datetime import date
+    if work_date is None:
+        work_date = datetime.now(timezone.utc).date().isoformat()
+    elif hasattr(work_date, "isoformat"):
+        work_date = work_date.isoformat()
+    con = _con()
+    r = con.execute(
+        "SELECT 1 FROM tech_overtime_approvals "
+        "WHERE tech_id = ? AND work_date = ? LIMIT 1",
+        (tech_id, work_date),
+    ).fetchone()
+    con.close()
+    return bool(r)
+
+
+def approve_overtime(tech_id: int, approved_by_admin_id: int,
+                     work_date=None, notes: str = "") -> int:
+    """Idempotent - returns existing id if already approved today."""
+    from datetime import date
+    if work_date is None:
+        work_date = datetime.now(timezone.utc).date().isoformat()
+    elif hasattr(work_date, "isoformat"):
+        work_date = work_date.isoformat()
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    existing = con.execute(
+        "SELECT id FROM tech_overtime_approvals "
+        "WHERE tech_id = ? AND work_date = ?",
+        (tech_id, work_date),
+    ).fetchone()
+    if existing:
+        con.close()
+        return existing["id"]
+    cur = con.execute(
+        "INSERT INTO tech_overtime_approvals (tech_id, work_date, "
+        "approved_by_admin_id, approved_at, notes) VALUES (?, ?, ?, ?, ?)",
+        (tech_id, work_date, approved_by_admin_id, now, notes or ""),
+    )
+    aid = cur.lastrowid
+    con.commit()
+    con.close()
+    return aid
+
+
+# ── Tech certifications ───────────────────────────────────
+def list_tech_certifications(tech_id: int, active_only: bool = True) -> list:
+    con = _con()
+    # CASE WHEN ensures NULL expiry_date sorts last across all SQLite versions.
+    if active_only:
+        rows = con.execute(
+            "SELECT * FROM tech_certifications WHERE tech_id = ? AND active = 1 "
+            "ORDER BY CASE WHEN expiry_date IS NULL THEN 1 ELSE 0 END, "
+            "expiry_date, name",
+            (tech_id,),
+        ).fetchall()
+    else:
+        rows = con.execute(
+            "SELECT * FROM tech_certifications WHERE tech_id = ? "
+            "ORDER BY CASE WHEN expiry_date IS NULL THEN 1 ELSE 0 END, "
+            "expiry_date, name",
+            (tech_id,),
+        ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def create_tech_certification(tech_id: int, name: str, issuer: str,
+                              issued_date: str = None,
+                              expiry_date: str = None,
+                              created_by_admin_id: int = None) -> int:
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    cur = con.execute(
+        "INSERT INTO tech_certifications (tech_id, name, issuer, issued_date, "
+        "expiry_date, active, created_at, created_by_admin_id) "
+        "VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
+        (tech_id, name, issuer, issued_date, expiry_date, now,
+         created_by_admin_id),
+    )
+    cid = cur.lastrowid
+    con.commit()
+    con.close()
+    return cid
+
+
+def list_certs_expiring_within(days: int, tech_id: int = None) -> list:
+    """Returns active certs with expiry_date within `days` from today
+    (including already-expired). Optionally filtered to a tech."""
+    from datetime import date, timedelta
+    cutoff = (datetime.now(timezone.utc).date() + timedelta(days=int(days))).isoformat()
+    con = _con()
+    if tech_id is not None:
+        rows = con.execute(
+            "SELECT * FROM tech_certifications WHERE active = 1 "
+            "AND expiry_date IS NOT NULL AND expiry_date <= ? "
+            "AND tech_id = ? ORDER BY expiry_date",
+            (cutoff, tech_id),
+        ).fetchall()
+    else:
+        rows = con.execute(
+            "SELECT * FROM tech_certifications WHERE active = 1 "
+            "AND expiry_date IS NOT NULL AND expiry_date <= ? "
+            "ORDER BY expiry_date",
+            (cutoff,),
+        ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+# ── Tech CV entries ───────────────────────────────────────
+def list_tech_cv_entries(tech_id: int) -> list:
+    con = _con()
+    rows = con.execute(
+        "SELECT * FROM tech_cv_entries WHERE tech_id = ? ORDER BY id ASC",
+        (tech_id,),
+    ).fetchall()
+    con.close()
+    return [_dec_row("tech_cv_entries", r) for r in rows]
+
+
+def append_tech_cv_entry(tech_id: int, company: str, title: str,
+                         start_date: str = None, end_date: str = None,
+                         description: str = "") -> int:
+    now = datetime.now(timezone.utc).isoformat()
+    enc = _enc_dict("tech_cv_entries", {"description": description or ""})
+    con = _con()
+    cur = con.execute(
+        "INSERT INTO tech_cv_entries (tech_id, company, title, start_date, "
+        "end_date, description, status, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, 'draft', ?)",
+        (tech_id, company, title, start_date, end_date,
+         enc.get("description"), now),
+    )
+    eid = cur.lastrowid
+    con.commit()
+    con.close()
+    return eid
+
+
+def lock_tech_cv_entry(entry_id: int, tech_id: int) -> bool:
+    """Tech can flip own draft -> locked. Returns False if not owner or
+    already locked beyond grant window."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    cur = con.execute(
+        "UPDATE tech_cv_entries SET status='locked', locked_at=?, updated_at=? "
+        "WHERE id = ? AND tech_id = ? AND status = 'draft'",
+        (now, now, entry_id, tech_id),
+    )
+    con.commit()
+    n = cur.rowcount
+    con.close()
+    return n > 0
+
+
+def grant_cv_edit(entry_id: int, admin_id: int, grant_until_iso: str) -> bool:
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    cur = con.execute(
+        "UPDATE tech_cv_entries SET edit_grant_by_admin_id = ?, "
+        "edit_grant_at = ?, edit_grant_until = ?, updated_at = ? "
+        "WHERE id = ?",
+        (admin_id, now, grant_until_iso, now, entry_id),
+    )
+    con.commit()
+    n = cur.rowcount
+    con.close()
+    return n > 0
+
+
+def cv_entry_is_editable(entry: dict) -> bool:
+    """Lazy check - entry is editable when status='draft' OR (status='locked'
+    AND edit_grant_until is in the future)."""
+    if entry.get("status") == "draft":
+        return True
+    gu = entry.get("edit_grant_until")
+    if not gu:
+        return False
+    try:
+        return gu > datetime.now(timezone.utc).isoformat()
+    except Exception:
+        return False
+
+
+def update_tech_cv_entry(entry_id: int, tech_id: int, fields: dict) -> str:
+    """Update fields on own CV entry. Returns 'ok' | 'not_owner' | 'locked'.
+    Encrypts description if provided."""
+    con = _con()
+    row = con.execute(
+        "SELECT * FROM tech_cv_entries WHERE id = ? AND tech_id = ?",
+        (entry_id, tech_id),
+    ).fetchone()
+    if not row:
+        con.close()
+        return "not_owner"
+    entry = dict(row)
+    if not cv_entry_is_editable(entry):
+        con.close()
+        return "locked"
+    sets = []
+    vals = []
+    for k in ("company", "title", "start_date", "end_date"):
+        if k in fields:
+            sets.append(f"{k} = ?")
+            vals.append(fields[k])
+    if "description" in fields:
+        enc = _enc_dict("tech_cv_entries",
+                        {"description": fields["description"] or ""})
+        sets.append("description = ?")
+        vals.append(enc.get("description"))
+    if not sets:
+        con.close()
+        return "ok"
+    sets.append("updated_at = ?")
+    vals.append(datetime.now(timezone.utc).isoformat())
+    vals.append(entry_id)
+    con.execute(f"UPDATE tech_cv_entries SET {', '.join(sets)} WHERE id = ?",
+                vals)
+    con.commit()
+    con.close()
+    return "ok"
+
+
+# ── KPI period release ────────────────────────────────────
+def list_released_periods_for_tech(tech_id: int) -> list:
+    con = _con()
+    rows = con.execute(
+        "SELECT period_key, released_by_admin_id, released_at "
+        "FROM kpi_periods_released_to_tech WHERE tech_id = ? "
+        "ORDER BY period_key DESC",
+        (tech_id,),
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def release_kpi_period_to_tech(tech_id: int, period_key: str,
+                               released_by_admin_id: int) -> int:
+    """Idempotent - returns existing id if already released."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    existing = con.execute(
+        "SELECT id FROM kpi_periods_released_to_tech "
+        "WHERE tech_id = ? AND period_key = ?",
+        (tech_id, period_key),
+    ).fetchone()
+    if existing:
+        con.close()
+        return existing["id"]
+    cur = con.execute(
+        "INSERT INTO kpi_periods_released_to_tech "
+        "(tech_id, period_key, released_by_admin_id, released_at) "
+        "VALUES (?, ?, ?, ?)",
+        (tech_id, period_key, released_by_admin_id, now),
+    )
+    rid = cur.lastrowid
+    con.commit()
+    con.close()
+    return rid
+
+
+# ── Company messages ──────────────────────────────────────
+def create_company_message(admin_id: int, title: str, body: str,
+                           expires_at: str = None) -> int:
+    now = datetime.now(timezone.utc).isoformat()
+    enc = _enc_dict("company_messages", {"body": body or ""})
+    con = _con()
+    cur = con.execute(
+        "INSERT INTO company_messages (title, body, posted_by_admin_id, "
+        "posted_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+        (title, enc.get("body"), admin_id, now, expires_at),
+    )
+    mid = cur.lastrowid
+    con.commit()
+    con.close()
+    return mid
+
+
+def list_active_company_messages(limit: int = 20) -> list:
+    """Decrypted, latest first, excludes hidden and expired."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    rows = con.execute(
+        "SELECT * FROM company_messages "
+        "WHERE hidden_at IS NULL "
+        "AND (expires_at IS NULL OR expires_at > ?) "
+        "ORDER BY posted_at DESC LIMIT ?",
+        (now, int(limit)),
+    ).fetchall()
+    con.close()
+    return [_dec_row("company_messages", r) for r in rows]
+
+
+def list_all_company_messages(limit: int = 100) -> list:
+    """Admin-side: includes hidden + expired."""
+    con = _con()
+    rows = con.execute(
+        "SELECT * FROM company_messages ORDER BY posted_at DESC LIMIT ?",
+        (int(limit),),
+    ).fetchall()
+    con.close()
+    return [_dec_row("company_messages", r) for r in rows]
+
+
+def hide_company_message(message_id: int, admin_id: int) -> bool:
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    cur = con.execute(
+        "UPDATE company_messages SET hidden_at = ?, hidden_by_admin_id = ? "
+        "WHERE id = ? AND hidden_at IS NULL",
+        (now, admin_id, message_id),
+    )
+    con.commit()
+    n = cur.rowcount
+    con.close()
+    return n > 0
