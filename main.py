@@ -63,6 +63,8 @@ from database import (
     create_review, get_review_for_visit, get_customer_reviews,
     get_all_reviews, get_approved_reviews, update_review_status, delete_review,
     verify_tech, get_tech_by_id, get_all_techs, create_tech, update_tech,
+    # W1+W2 unified staff helpers
+    list_staff, get_staff_by_id, VALID_STAFF_TYPES, VALID_DEPARTMENTS,
     delete_tech, set_tech_pin,
     get_tech_by_code_and_email, create_pin_reset_token, consume_pin_reset_token,
     create_photo, get_visit_photos, get_photo_by_id, delete_photo,
@@ -358,6 +360,34 @@ ADMIN_PERMS["system_admin"].update({"company:read_messages"})
 ADMIN_PERMS["ceo_assistant"].update({"company:read_messages",
                                      "company:post_message"})
 ADMIN_PERMS["inventory_manager"].update({"company:read_messages"})
+
+# ── Warehouse module permissions (W2) ────────────────────────────────────────
+# Operator directive: "inventory manager is material manager not a people
+# manager and don't have the same powers." So inventory_manager keeps its
+# stock/PO scope and gets warehouse:view_queue (so they can see what's
+# moving on the floor) — but NOT warehouse:manage_staff (people management).
+#
+# super_admin + hr_admin are the only roles that can add/remove warehouse
+# staff (mirrors the existing tech:create / tech:delete pattern; those
+# perms are reused — staff_type='warehouse_floor' rows live in the same
+# technicians table as a tech, so existing tech:create grants the right
+# to create any staff_type).
+#
+# A future "warehouse_manager" admin role could be added if the operator
+# wants in-warehouse line-manager autonomy without giving inventory_manager
+# people-management powers. Filed for follow-up.
+ADMIN_PERMS["super_admin"].update({
+    "warehouse:view_queue", "warehouse:manage_assets",
+})
+ADMIN_PERMS["supervisor_admin"].update({
+    "warehouse:view_queue", "warehouse:manage_assets",
+})
+ADMIN_PERMS["inventory_manager"].update({
+    "warehouse:view_queue",  # material visibility only — NO manage_assets
+})
+ADMIN_PERMS["hr_admin"].update({
+    "warehouse:view_queue",  # for staffing context — read-only
+})
 
 
 def _admin_can(role: str, perm: str) -> bool:
@@ -1839,6 +1869,10 @@ class TechCreate(BaseModel):
     role:        str = "tech"   # 'lead_tech' | 'tech' | 'apprentice'
     hire_date:   str = ""
     hourly_rate: float = 0
+    # W1+W2: unified staff entity. staff_type controls per-role asset
+    # provisioning (vehicle/truck/PPE locker) in create_tech.
+    staff_type:  Optional[str] = "tech"   # see VALID_STAFF_TYPES
+    department:  Optional[str] = None     # defaults per staff_type
 
 
 class TechUpdate(BaseModel):
@@ -8670,10 +8704,21 @@ def admin_create_tech(request: Request, body: TechCreate):
         actor_type="admin", actor_id=admin["id"],
         label=f"new tech '{body.name}'",
     )
-    if body.role not in ("lead_tech", "tech", "apprentice"):
-        raise HTTPException(400, "Invalid tech role")
+    # Role validation depends on staff_type. Field techs use the
+    # traditional level enum; warehouse staff use 'tech' as a
+    # placeholder (a separate role taxonomy for warehouse could be
+    # added later if needed).
+    staff_type = (body.staff_type or "tech").strip()
+    if staff_type == "tech":
+        if body.role not in ("lead_tech", "tech", "apprentice"):
+            raise HTTPException(400, "Invalid tech role")
+    elif staff_type not in ("warehouse_floor", "parts_runner",
+                            "warehouse_manager"):
+        raise HTTPException(400, f"Invalid staff_type: {staff_type}")
     try:
         tech_id, prid = create_tech(body.model_dump())
+    except ValueError as ve:
+        raise HTTPException(400, str(ve))
     except Exception as e:
         if "UNIQUE" in str(e):
             raise HTTPException(409, "PRID conflict — try again")
@@ -8681,7 +8726,8 @@ def admin_create_tech(request: Request, body: TechCreate):
     _audit_from(admin, "tech.create", request,
                 target_type="tech", target_id=tech_id, target_label=prid,
                 after={"name": body.name, "tech_code": prid,
-                       "role": body.role, "email": body.email})
+                       "role": body.role, "email": body.email,
+                       "staff_type": staff_type})
     return {"id": tech_id, "prid": prid, "tech_code": prid}
 
 
@@ -8727,6 +8773,52 @@ def admin_delete_tech(request: Request, tech_id: int):
                 target_label=tech["tech_code"],
                 before=tech)
     return {"ok": True}
+
+
+# ── Unified staff listing (W2) ──────────────────────────────────────
+# Reads against the same `technicians` table via list_staff(), filtered
+# by staff_type / department. /api/admin/techs already exists and now
+# filters to staff_type='tech' only (see database.get_all_techs). This
+# new endpoint is the warehouse-aware equivalent for any admin who
+# needs to see across all staff categories.
+
+@app.get("/api/admin/staff")
+def admin_list_staff(request: Request,
+                     staff_type: Optional[str] = None,
+                     department: Optional[str] = None,
+                     active: bool = True):
+    """List staff with optional staff_type / department filters.
+    Reuses the tech:view permission (the entity is the same row in the
+    same table). Filters validated against VALID_STAFF_TYPES /
+    VALID_DEPARTMENTS to prevent typos returning empty lists silently."""
+    _require_perm(request, "tech:view")
+    if staff_type and staff_type not in VALID_STAFF_TYPES:
+        raise HTTPException(400,
+            f"staff_type must be one of {sorted(VALID_STAFF_TYPES)}")
+    if department and department not in VALID_DEPARTMENTS:
+        raise HTTPException(400,
+            f"department must be one of {sorted(VALID_DEPARTMENTS)}")
+    return list_staff(staff_type=staff_type, department=department,
+                      active_only=bool(active))
+
+
+@app.get("/api/admin/warehouse/staff")
+def admin_list_warehouse_staff(request: Request):
+    """Shortcut: every warehouse-department staff row, active by
+    default. Used by the warehouse admin tab to render the floor +
+    parts-runner roster in one place. Available to anyone with
+    warehouse:view_queue (inventory_manager included)."""
+    _require_perm(request, "warehouse:view_queue")
+    return list_staff(department="warehouse", active_only=True)
+
+
+@app.get("/warehouse")
+def warehouse_admin_page():
+    """Serves the warehouse admin landing (W2). Just returns admin.html
+    today since the warehouse tab lives inside the existing admin
+    panel surface; a dedicated /warehouse SPA can replace this later
+    if the surface grows."""
+    return FileResponse("admin.html")
 
 
 @app.get("/api/admin/photos/{photo_id}/meta")
