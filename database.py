@@ -1374,6 +1374,44 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # invoices table not present (first-boot edge)
 
+    # W3.a — Per-asset 5S checklist overrides. Warehouse manager
+    # edits via /api/admin/fs/assets/{id}/checklist/{phase}; resolver
+    # in get_checklist_for_phase consults this first, falls back to
+    # FS_DEFAULT_CHECKLIST by asset_type.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS fs_asset_checklists (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset_id              INTEGER NOT NULL REFERENCES fs_assets(id),
+            phase                 TEXT NOT NULL,
+            items_json            TEXT NOT NULL,
+            updated_at            TEXT NOT NULL,
+            updated_by_admin_id   INTEGER,
+            UNIQUE(asset_id, phase)
+        )
+    """)
+
+    # W3.b — Month-end equipment checksheet archive. Operator
+    # workflow: staff complete per-use paper checksheets during the
+    # month; warehouse manager scans / photos them and uploads at
+    # month-end as a compliance archive. The system stores the file
+    # + metadata; it does NOT enforce per-use completion in
+    # real-time (that's the role of the daily login/logout 5S).
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS warehouse_checksheet_uploads (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset_id            INTEGER NOT NULL REFERENCES fs_assets(id),
+            period_yyyymm       TEXT NOT NULL,
+            filename            TEXT NOT NULL,
+            content_type        TEXT,
+            size_bytes          INTEGER NOT NULL,
+            uploaded_by_admin_id INTEGER NOT NULL,
+            uploaded_at         TEXT NOT NULL,
+            notes               TEXT
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_wh_chk_asset_period "
+                "ON warehouse_checksheet_uploads(asset_id, period_yyyymm)")
+
     # Exceptions — chain-hashed; state changes recorded as
     # immutable rows in fs_exception_events. Header rows DO get a status update
     # on resolution/escalation; rebuilt chain_hash is OK because the events
@@ -7342,14 +7380,50 @@ FS_DEFAULT_CHECKLIST = {
 
 
 def get_checklist_for_phase(asset_id: int, phase: str):
-    """Returns ordered list[ {section, item_key, item_label} ] for the given
-    asset_id and phase. If the asset_type/phase combination is missing from
-    FS_DEFAULT_CHECKLIST, returns [] (caller can reject)."""
+    """Returns ordered list[ {section, item_key, item_label} ] for the
+    given asset_id and phase.
+
+    Resolution order:
+      1. If a row exists in fs_asset_checklists for (asset_id, phase),
+         use that JSON override. Warehouse manager edits these per
+         asset via /api/admin/fs/assets/{id}/checklist/{phase}.
+      2. Else fall back to FS_DEFAULT_CHECKLIST by (asset_type, phase).
+      3. If neither exists, returns [] (caller rejects with 400)."""
     if phase not in FS_VALID_PHASES:
         return []
     asset = get_asset_by_id(asset_id)
     if not asset:
         return []
+    # 1. per-asset override?
+    con = _con()
+    row = con.execute(
+        "SELECT items_json FROM fs_asset_checklists "
+        "WHERE asset_id = ? AND phase = ?",
+        (asset_id, phase),
+    ).fetchone()
+    con.close()
+    if row and row["items_json"]:
+        try:
+            import json as _json
+            override = _json.loads(row["items_json"])
+            # Expected shape (mirrors FS_DEFAULT_CHECKLIST):
+            #   { "sort": ["item_key", ...], "set": [...], ... }
+            out = []
+            for section in ("sort", "set", "shine", "standardize", "sustain"):
+                for key in override.get(section, []) or []:
+                    out.append({
+                        "section":    section,
+                        "item_key":   key,
+                        "item_label": _fs_label(key),
+                    })
+            if out:
+                return out
+            # empty override → fall through to default (operator intent
+            # was probably "I cleared all items" which we treat as
+            # "use the default" rather than "no checklist exists")
+        except Exception:
+            pass  # malformed override → fall back to default
+    # 2. default by asset_type
     tpl = FS_DEFAULT_CHECKLIST.get((asset["asset_type"], phase))
     if not tpl:
         return []
@@ -7362,6 +7436,52 @@ def get_checklist_for_phase(asset_id: int, phase: str):
                 "item_label": _fs_label(key),
             })
     return out
+
+
+def set_asset_checklist_override(asset_id: int, phase: str,
+                                  items_by_section: dict,
+                                  edited_by_admin_id: int) -> None:
+    """UPSERT the per-asset checklist override. items_by_section is
+    {section_name: [item_key, ...]} matching FS_DEFAULT_CHECKLIST
+    shape. Pass an empty dict to clear (the resolver then falls back
+    to the default).
+
+    Audit M_W3, 2026-05-23: warehouse manager + admins can customize
+    per-asset checklists without redeploying. Validation is loose
+    (sections trimmed; unknown sections dropped) so a typo doesn't
+    invalidate the whole override."""
+    import json as _json
+    if phase not in FS_VALID_PHASES:
+        raise ValueError(f"invalid phase: {phase}")
+    clean = {}
+    for sec in ("sort", "set", "shine", "standardize", "sustain"):
+        keys = items_by_section.get(sec) or []
+        clean[sec] = [str(k).strip() for k in keys if str(k).strip()]
+    items_json = _json.dumps(clean)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    con.execute(
+        "INSERT INTO fs_asset_checklists (asset_id, phase, items_json, "
+        "updated_at, updated_by_admin_id) VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(asset_id, phase) DO UPDATE SET "
+        "items_json = excluded.items_json, "
+        "updated_at = excluded.updated_at, "
+        "updated_by_admin_id = excluded.updated_by_admin_id",
+        (asset_id, phase, items_json, now_iso, edited_by_admin_id),
+    )
+    con.commit()
+    con.close()
+
+
+def clear_asset_checklist_override(asset_id: int, phase: str) -> None:
+    """Drop the override row; resolver falls back to the default."""
+    con = _con()
+    con.execute(
+        "DELETE FROM fs_asset_checklists WHERE asset_id = ? AND phase = ?",
+        (asset_id, phase),
+    )
+    con.commit()
+    con.close()
 
 
 # ── Asset CRUD ───────────────────────────────────────────────────────────────

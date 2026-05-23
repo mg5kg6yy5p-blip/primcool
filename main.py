@@ -8821,6 +8821,196 @@ def warehouse_admin_page():
     return FileResponse("admin.html")
 
 
+# ── W3.a — per-asset 5S checklist override (warehouse manager edits) ─
+
+class AssetChecklistOverride(BaseModel):
+    # Mirrors FS_DEFAULT_CHECKLIST shape: each section is a list of
+    # item_key strings. Unknown sections are dropped server-side.
+    items_by_section: Dict[str, List[str]]
+
+
+@app.get("/api/admin/fs/assets/{asset_id}/checklist/{phase}")
+def admin_get_asset_checklist(request: Request, asset_id: int, phase: str):
+    """Returns the EFFECTIVE checklist (override if present, else the
+    asset_type default). Used by the warehouse manager UI to edit.
+    Gated by warehouse:manage_assets so the inventory_manager can SEE
+    the live checklist via the 5S panel but cannot EDIT it."""
+    _require_perm(request, "warehouse:manage_assets")
+    from database import get_checklist_for_phase as _gcfp
+    items = _gcfp(asset_id, phase)
+    if not items:
+        raise HTTPException(404,
+            "No checklist exists for this asset / phase combination")
+    return {"asset_id": asset_id, "phase": phase, "items": items}
+
+
+@app.post("/api/admin/fs/assets/{asset_id}/checklist/{phase}")
+def admin_set_asset_checklist(request: Request, asset_id: int, phase: str,
+                              body: AssetChecklistOverride):
+    """UPSERT a per-asset checklist override. Items are passed as
+    {section: [item_key, ...]} matching FS_DEFAULT_CHECKLIST shape.
+    Pass an empty dict to delete the override (resolver falls back
+    to the asset_type default)."""
+    admin = _require_perm(request, "warehouse:manage_assets")
+    from database import (set_asset_checklist_override,
+                          clear_asset_checklist_override)
+    if not any(body.items_by_section.values()):
+        clear_asset_checklist_override(asset_id, phase)
+        action = "fs.asset_checklist_cleared"
+    else:
+        try:
+            set_asset_checklist_override(
+                asset_id, phase, body.items_by_section,
+                edited_by_admin_id=admin["id"],
+            )
+        except ValueError as ve:
+            raise HTTPException(400, str(ve))
+        action = "fs.asset_checklist_override_set"
+    _audit_from(admin, action, request,
+                target_type="fs_asset", target_id=asset_id,
+                target_label=f"phase={phase}",
+                after={"sections": {k: len(v) for k, v
+                                    in body.items_by_section.items()}})
+    return {"ok": True}
+
+
+# ── W3.b — month-end equipment checksheet archive ─────────────────
+
+CHECKSHEET_DIR = Path(os.environ.get(
+    "CHECKSHEET_DIR", "uploads/checksheets"))
+CHECKSHEET_DIR.mkdir(parents=True, exist_ok=True)
+MAX_CHECKSHEET_SIZE = int(os.environ.get(
+    "MAX_CHECKSHEET_SIZE_BYTES", str(10 * 1024 * 1024)))  # 10 MB
+ALLOWED_CHECKSHEET_EXTS = {".pdf", ".jpg", ".jpeg", ".png", ".heic"}
+
+
+@app.post("/api/admin/warehouse/checksheets")
+async def admin_upload_checksheet(
+    request: Request,
+    asset_id: int = Form(...),
+    period_yyyymm: str = Form(...),
+    notes: str = Form(""),
+    file: UploadFile = File(...),
+):
+    """Month-end equipment checksheet upload. Operator workflow per
+    spec: staff complete per-use paper checksheets during the month;
+    the warehouse manager scans/photographs them and uploads at month
+    end for compliance archive. The system stores the file +
+    metadata; it does NOT enforce per-use completion in real time
+    (that's the role of the daily 5S login/logout audit chain).
+
+    Body (multipart):
+      asset_id (int)        — the fs_asset whose checksheet this is
+      period_yyyymm (str)   — 'YYYY-MM' the sheet covers
+      notes (str, optional) — free-text context
+      file                  — the scan/photo (PDF/JPG/PNG/HEIC ≤ 10 MB)
+
+    Gated by warehouse:manage_assets so the upload is restricted to
+    operators authorized to assert "these are the official records
+    for this period"."""
+    admin = _require_perm(request, "warehouse:manage_assets")
+    # Validate period
+    import re as _re
+    if not _re.match(r"^\d{4}-\d{2}$", (period_yyyymm or "").strip()):
+        raise HTTPException(400, "period_yyyymm must be YYYY-MM")
+    # Validate file
+    raw = await file.read()
+    if len(raw) > MAX_CHECKSHEET_SIZE:
+        raise HTTPException(413,
+            f"File exceeds {MAX_CHECKSHEET_SIZE // (1024*1024)} MB limit")
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in ALLOWED_CHECKSHEET_EXTS:
+        raise HTTPException(415,
+            f"Unsupported file type — allow {sorted(ALLOWED_CHECKSHEET_EXTS)}")
+    # Confirm asset exists
+    from database import get_asset_by_id as _gabi
+    asset = _gabi(asset_id)
+    if not asset:
+        raise HTTPException(404, "Asset not found")
+    # Persist file
+    safe_stem = _re.sub(r"[^A-Za-z0-9_-]+", "_",
+                        Path(file.filename or "sheet").stem)[:80]
+    fname = (f"{asset['asset_code']}-{period_yyyymm}-"
+             f"{_secrets.token_urlsafe(6)}-{safe_stem}{ext}")
+    dest = CHECKSHEET_DIR / fname
+    dest.write_bytes(raw)
+    # Record metadata
+    from database import _con as _dbcon
+    now_iso = datetime.now(timezone.utc).isoformat()
+    con = _dbcon()
+    try:
+        cur = con.execute(
+            "INSERT INTO warehouse_checksheet_uploads "
+            "(asset_id, period_yyyymm, filename, content_type, "
+            "size_bytes, uploaded_by_admin_id, uploaded_at, notes) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (asset_id, period_yyyymm, fname, file.content_type or "",
+             len(raw), admin["id"], now_iso, (notes or "").strip() or None),
+        )
+        upload_id = cur.lastrowid
+        con.commit()
+    finally:
+        con.close()
+    _audit_from(admin, "warehouse.checksheet_uploaded", request,
+                target_type="fs_asset", target_id=asset_id,
+                target_label=f"{asset['asset_code']} {period_yyyymm}",
+                after={"upload_id": upload_id,
+                       "size_bytes": len(raw),
+                       "filename": fname})
+    return {"ok": True, "upload_id": upload_id, "filename": fname}
+
+
+@app.get("/api/admin/warehouse/checksheets")
+def admin_list_checksheets(request: Request,
+                           asset_id: Optional[int] = None,
+                           period_yyyymm: Optional[str] = None):
+    """List checksheet uploads, optionally filtered by asset_id and/or
+    period. Read access via warehouse:view_queue."""
+    _require_perm(request, "warehouse:view_queue")
+    where, args = [], []
+    if asset_id is not None:
+        where.append("asset_id = ?"); args.append(int(asset_id))
+    if period_yyyymm:
+        where.append("period_yyyymm = ?"); args.append(period_yyyymm)
+    sql = "SELECT * FROM warehouse_checksheet_uploads"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY uploaded_at DESC LIMIT 500"
+    from database import _con as _dbcon
+    con = _dbcon()
+    try:
+        rows = [dict(r) for r in con.execute(sql, args).fetchall()]
+    finally:
+        con.close()
+    return rows
+
+
+@app.get("/api/admin/warehouse/checksheets/{upload_id}/download")
+def admin_download_checksheet(request: Request, upload_id: int):
+    """Download a checksheet file. Direct file-download is gated by
+    warehouse:view_queue (same as the listing) — the file IS the
+    archived artifact, and warehouse:manage_assets is reserved for
+    write actions."""
+    _require_perm(request, "warehouse:view_queue")
+    from database import _con as _dbcon
+    con = _dbcon()
+    try:
+        row = con.execute(
+            "SELECT * FROM warehouse_checksheet_uploads WHERE id = ?",
+            (upload_id,),
+        ).fetchone()
+    finally:
+        con.close()
+    if not row:
+        raise HTTPException(404, "Upload not found")
+    path = CHECKSHEET_DIR / row["filename"]
+    if not path.exists():
+        raise HTTPException(404, "File missing from disk")
+    return FileResponse(str(path),
+                        media_type=row["content_type"] or "application/octet-stream",
+                        filename=row["filename"])
+
+
 @app.get("/api/admin/photos/{photo_id}/meta")
 def admin_photo_meta(request: Request, photo_id: int):
     """Full chain-of-custody metadata for a single photo: server stamps
