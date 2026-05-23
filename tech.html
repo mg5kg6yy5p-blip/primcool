@@ -699,29 +699,60 @@
     // below so /tech/home can call them via include, but they no longer
     // surface here as queue tabs.
 
-    const rows = buckets[currentTab];
+    // Today tab — reveal ONE job at a time. The next non-completed job
+    // shows with all its details; once the tech marks it complete and
+    // returns here, it falls into the Done bucket and the next job
+    // (if any) takes its place. Other tabs stay as full lists.
+    let rows;
+    if (currentTab === 'today') {
+      const next = buckets.today.find(j => j.status !== 'completed');
+      rows = next ? [next] : [];
+    } else {
+      rows = buckets[currentTab];
+    }
     const wrap = document.getElementById('jobList');
     if (!rows.length) {
+      const emptyMsg = currentTab === 'today'
+        ? (buckets.today.length
+            ? 'All today\'s jobs are complete — well done!'
+            : 'No jobs scheduled for today.')
+        : currentTab === 'upcoming' ? 'No upcoming jobs.' : 'No completed jobs yet.';
       wrap.innerHTML = `
         <div class="empty">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-          <div>${currentTab === 'today' ? 'No jobs scheduled for today.' : currentTab === 'upcoming' ? 'No upcoming jobs.' : 'No completed jobs yet.'}</div>
+          <div>${emptyMsg}</div>
         </div>`;
       return;
     }
+    // Surface "N more after this" copy below the single Today card so
+    // the tech knows there's more work coming after the current job.
+    const moreAfter = (currentTab === 'today')
+      ? buckets.today.filter(j => j.status !== 'completed' && j.id !== rows[0].id).length
+      : 0;
     const _gate = (typeof PC !== 'undefined' && PC.gateLinkHtml);
-    wrap.innerHTML = rows.map(j => `
-      <div class="job-card ${j.status}" data-pc-row-visit="${j.id}">
+    const todayHeader = (currentTab === 'today')
+      ? `<div style="margin:0 14px 12px;font-size:13px;color:var(--navy);font-weight:600;display:flex;align-items:center;gap:8px;">
+           Now serving · next job
+           ${moreAfter ? `<span style="background:rgba(11,37,69,0.08);color:var(--navy);padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;">${moreAfter} more after this</span>` : '<span style="background:rgba(34,160,138,0.15);color:var(--teal-deep,#0a7261);padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;">Last one today</span>'}
+         </div>`
+      : '';
+    const isTodayTab = (currentTab === 'today');
+    wrap.innerHTML = todayHeader + rows.map(j => `
+      <div class="job-card ${j.status}" data-pc-row-visit="${j.id}"
+           ${isTodayTab ? 'style="border:2px solid var(--teal);background:#fff;padding:18px;"' : ''}>
         <div class="job-top">
           <span class="job-type ${j.visit_type === 'PM' ? 'pm-pill' : 'cm-pill'}">${j.visit_type}</span>
           <span class="job-status status-${j.status}">${j.status.replace('_',' ')}</span>
         </div>
-        <div class="job-customer">${gateCust(j.customer_name)}</div>
+        <div class="job-customer" ${isTodayTab ? 'style="font-size:18px;margin-top:6px;"' : ''}>${gateCust(j.customer_name)}</div>
         <div class="job-meta">
           ${(j.customer_company && isSignedInForWork) ? `<div>${esc(j.customer_company)}</div>` : ''}
           ${j.equipment_name ? `<div class="row">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
             ${(j.equipment_id && _gate) ? PC.gateLinkHtml('equipment', j.equipment_id, j.equipment_name, {}) : esc(j.equipment_name)}</div>` : ''}
+          ${(isTodayTab && j.contact_person_name && isSignedInForWork) ? `<div class="row">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+            ${esc(j.contact_person_name)}${j.contact_person_phone ? ' · ' + esc(j.contact_person_phone) : ''}</div>` : ''}
           ${(j.customer_address && isSignedInForWork) ? `<div class="row">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
             ${esc(j.customer_address)}</div>` : ''}
@@ -729,6 +760,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
             ${fmtDate(j.scheduled_date)}${j.scheduled_time ? ' · ' + fmtTime12(j.scheduled_time) : ''}</div>` : ''}
         </div>
+        ${isTodayTab ? `<div style="margin-top:14px;"><button class="btn btn-primary" style="width:100%;padding:12px;background:var(--teal);color:#fff;border:none;border-radius:8px;font-weight:700;font-size:14px;cursor:pointer;">Open job →</button></div>` : ''}
       </div>`).join('');
     // Decorate each job card with PC.gateRow so click-through honors access bundle.
     if (typeof PC !== 'undefined' && PC.gateRow) {
@@ -1876,18 +1908,34 @@
           if (a.asset_type === 'storage') continue;
           const t = todayByAsset[a.id] || {};
           const startDone = !!t.start_shift_done, endDone = !!t.end_shift_done;
+          // Once a start_shift or end_shift audit is submitted for a
+          // given asset today, that button is fully disabled (not just
+          // tinted). A tech can't re-submit an audit through the same
+          // link — the immutable chain has the entry. The other phase's
+          // button stays active until its own audit lands.
+          const startBtnHtml = startDone
+            ? `<button disabled title="Start-of-shift audit already submitted today"
+                       style="flex:1;padding:10px;border-radius:8px;border:none;background:#e5f6f1;color:var(--teal-deep);font-weight:700;font-size:13px;cursor:not-allowed;opacity:0.85;">
+                 ✓ Start-of-shift done
+               </button>`
+            : `<button onclick="fsStart(${a.id},'start_shift')"
+                       style="flex:1;padding:10px;border-radius:8px;border:none;background:var(--teal);color:#fff;font-weight:700;font-size:13px;cursor:pointer;">
+                 Start-of-shift
+               </button>`;
+          const endBtnHtml = endDone
+            ? `<button disabled title="End-of-shift audit already submitted today"
+                       style="flex:1;padding:10px;border-radius:8px;border:none;background:#e5f6f1;color:var(--teal-deep);font-weight:700;font-size:13px;cursor:not-allowed;opacity:0.85;">
+                 ✓ End-of-shift done
+               </button>`
+            : `<button onclick="fsStart(${a.id},'end_shift')"
+                       style="flex:1;padding:10px;border-radius:8px;border:none;background:var(--navy);color:#fff;font-weight:700;font-size:13px;cursor:pointer;">
+                 End-of-shift
+               </button>`;
           html += `
             <div style="background:#fff;border-radius:12px;padding:14px;margin-bottom:12px;box-shadow:0 2px 6px rgba(11,37,69,0.06);">
               <div style="font-weight:700;color:var(--navy);">${esc(a.label)}</div>
               <div style="color:var(--muted);font-size:12px;margin-bottom:10px;">${esc(a.asset_code)} · ${esc(a.asset_type)}</div>
-              <div style="display:flex;gap:8px;">
-                <button onclick="fsStart(${a.id},'start_shift')" style="flex:1;padding:10px;border-radius:8px;border:none;background:${startDone ? '#e5f6f1' : 'var(--teal)'};color:${startDone ? 'var(--teal-deep)' : '#fff'};font-weight:700;font-size:13px;cursor:pointer;">
-                  ${startDone ? '✓ Start done' : 'Start-of-shift'}
-                </button>
-                <button onclick="fsStart(${a.id},'end_shift')" style="flex:1;padding:10px;border-radius:8px;border:none;background:${endDone ? '#e5f6f1' : 'var(--navy)'};color:${endDone ? 'var(--teal-deep)' : '#fff'};font-weight:700;font-size:13px;cursor:pointer;">
-                  ${endDone ? '✓ End done' : 'End-of-shift'}
-                </button>
-              </div>
+              <div style="display:flex;gap:8px;">${startBtnHtml}${endBtnHtml}</div>
             </div>
           `;
         }

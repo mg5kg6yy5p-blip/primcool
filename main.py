@@ -2985,20 +2985,43 @@ def tp1_tech_today_overview(request: Request):
     }
 
 
+def _all_audits_done_for_today(tech_id: int, phase: str,
+                               today_iso: str) -> bool:
+    """Per the field spec the tech must complete the start- or end-shift
+    audit for EVERY assigned auditable asset (vehicle + toolkit), not
+    just one. Storage isn't audited per-shift, so it's excluded — same
+    filter the 5S home page uses to render the asset list."""
+    from database import _con as _dbcon
+    con = _dbcon()
+    assets = con.execute(
+        "SELECT id FROM fs_assets WHERE assigned_tech_id = ? "
+        "AND active = 1 AND asset_type IN ('vehicle','toolkit')",
+        (tech_id,),
+    ).fetchall()
+    if not assets:
+        # No auditable assets means there's nothing to gate on.
+        con.close()
+        return True
+    for a in assets:
+        done = con.execute(
+            "SELECT 1 FROM fs_audits WHERE asset_id = ? AND auditor_id = ? "
+            "AND auditor_kind = 'tech' AND phase = ? "
+            "AND substr(audit_ts, 1, 10) = ? LIMIT 1",
+            (a["id"], tech_id, phase, today_iso),
+        ).fetchone()
+        if not done:
+            con.close()
+            return False
+    con.close()
+    return True
+
+
 @app.post("/api/tech/me/sign-in")
 def tp1_tech_sign_in(request: Request, body: TechSignInBody):
     from datetime import datetime as _dt, timezone as _tz
-    from database import _con as _dbcon
     tech_id = _require_tech(request)
     today_iso = _dt.now(_tz.utc).date().isoformat()
-    con = _dbcon()
-    has_5s = con.execute(
-        "SELECT 1 FROM fs_audits WHERE auditor_id = ? AND auditor_kind = 'tech' "
-        "AND phase = 'start_shift' AND substr(audit_ts, 1, 10) = ? LIMIT 1",
-        (tech_id, today_iso),
-    ).fetchone()
-    con.close()
-    if not has_5s:
+    if not _all_audits_done_for_today(tech_id, "start_shift", today_iso):
         raise HTTPException(409, "5s_start_shift_required")
     scheduled = is_tech_scheduled_today(tech_id)
     on_call   = is_tech_on_call_today(tech_id)
@@ -3026,17 +3049,9 @@ def tp1_tech_sign_in(request: Request, body: TechSignInBody):
 @app.post("/api/tech/me/sign-out")
 def tp1_tech_sign_out(request: Request):
     from datetime import datetime as _dt, timezone as _tz
-    from database import _con as _dbcon
     tech_id = _require_tech(request)
     today_iso = _dt.now(_tz.utc).date().isoformat()
-    con = _dbcon()
-    has_5s = con.execute(
-        "SELECT 1 FROM fs_audits WHERE auditor_id = ? AND auditor_kind = 'tech' "
-        "AND phase = 'end_shift' AND substr(audit_ts, 1, 10) = ? LIMIT 1",
-        (tech_id, today_iso),
-    ).fetchone()
-    con.close()
-    if not has_5s:
+    if not _all_audits_done_for_today(tech_id, "end_shift", today_iso):
         raise HTTPException(409, "5s_end_shift_required")
     if not get_open_clock_in_today(tech_id):
         raise HTTPException(409, "not_clocked_in")

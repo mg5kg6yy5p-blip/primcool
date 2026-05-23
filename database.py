@@ -1235,7 +1235,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS fs_audit_items (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             audit_id    INTEGER NOT NULL REFERENCES fs_audits(id),
-            section     TEXT NOT NULL CHECK (section IN ('sort','set','shine','standardize')),
+            section     TEXT NOT NULL CHECK (section IN
+                ('sort','set','shine','standardize','sustain')),
             item_key    TEXT NOT NULL,
             item_label  TEXT NOT NULL,
             status      TEXT NOT NULL CHECK (status IN ('pass','fail','na')),
@@ -1243,6 +1244,47 @@ def init_db():
         )
     """)
     con.execute("CREATE INDEX IF NOT EXISTS idx_fs_audit_items_audit ON fs_audit_items(audit_id)")
+    # Forward-compat migration: older DBs were created with a CHECK
+    # constraint that omitted 'sustain' (the 5th S was added back in a
+    # later commit). SQLite can't ALTER a CHECK constraint, so we
+    # rebuild the table when we detect the old shape.
+    try:
+        sql_row = con.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='fs_audit_items'"
+        ).fetchone()
+        # init_db uses a default sqlite3.Row-less connection; index by
+        # position rather than name.
+        existing_sql = (sql_row[0] if sql_row else "") or ""
+        if "'sustain'" not in existing_sql:
+            # init_db is already inside its own transaction; no BEGIN.
+            con.execute("""
+                CREATE TABLE fs_audit_items_new (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    audit_id    INTEGER NOT NULL REFERENCES fs_audits(id),
+                    section     TEXT NOT NULL CHECK (section IN
+                        ('sort','set','shine','standardize','sustain')),
+                    item_key    TEXT NOT NULL,
+                    item_label  TEXT NOT NULL,
+                    status      TEXT NOT NULL CHECK (status IN ('pass','fail','na')),
+                    note        TEXT
+                )
+            """)
+            con.execute("INSERT INTO fs_audit_items_new (id, audit_id, "
+                        "section, item_key, item_label, status, note) "
+                        "SELECT id, audit_id, section, item_key, "
+                        "item_label, status, note FROM fs_audit_items")
+            con.execute("DROP TABLE fs_audit_items")
+            con.execute("ALTER TABLE fs_audit_items_new RENAME TO fs_audit_items")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_fs_audit_items_audit "
+                        "ON fs_audit_items(audit_id)")
+            con.commit()
+            import logging as _lg
+            _lg.getLogger("primecool").info(
+                "Migrated fs_audit_items: added 'sustain' to CHECK")
+    except sqlite3.OperationalError as e:
+        import logging as _lg
+        _lg.getLogger("primecool").warning(
+            f"fs_audit_items sustain migration failed: {e}")
 
     # Exceptions — chain-hashed; state changes recorded as
     # immutable rows in fs_exception_events. Header rows DO get a status update
