@@ -1978,16 +1978,35 @@
   }
 
   async function fsStart(assetId, phase) {
-    fsState = { mode: 'audit', assetId, phase, checklist: null, answers: {}, photos: {} };
+    fsState = { mode: 'audit', assetId, phase,
+                checklist: null, answers: {}, photos: {},
+                todayInfo: null };
     const v = document.getElementById('fsView');
     v.innerHTML = '<div style="color:var(--muted);font-size:14px;padding:30px 0;text-align:center;">Loading checklist…</div>';
     try {
-      const cl = await api('GET', `/api/tech/5s/checklist?asset_id=${assetId}&phase=${phase}`);
+      // Load the checklist AND a fresh cycle-scoped status snapshot so
+      // fsRenderAudit can decide whether the submit button should say
+      // "Submit audit" / "Next →" / "Submit & sign in / out".
+      const [cl, today] = await Promise.all([
+        api('GET', `/api/tech/5s/checklist?asset_id=${assetId}&phase=${phase}`),
+        api('GET', '/api/tech/5s/today').catch(() => null),
+      ]);
       fsState.checklist = cl;
+      fsState.todayInfo = today;
       fsRenderAudit();
     } catch (e) {
       v.innerHTML = `<div style="color:var(--red);">Could not load checklist: ${esc(String(e.message || e))}</div>`;
     }
+  }
+
+  // Returns the next asset of the same phase that's still pending for
+  // the current cycle, EXCLUDING the one currently being audited.
+  // Returns null when this is the last one (so the post-submit hook
+  // should redirect to sign-in/sign-out instead of starting another).
+  function _fsNextPendingAsset(snapshot, currentAssetId, phase) {
+    if (!snapshot || !snapshot.assets) return null;
+    const key = (phase === 'start_shift') ? 'start_shift_done' : 'end_shift_done';
+    return snapshot.assets.find(a => !a[key] && a.asset_id !== currentAssetId) || null;
   }
 
   function fsRenderAudit() {
@@ -2054,7 +2073,27 @@
       html += '</div>';
     }
     const canSubmit = (answered === required);
-    html += `<button onclick="fsSubmit()" ${canSubmit ? '' : 'disabled'} style="width:100%;padding:14px;background:${canSubmit?'var(--teal)':'var(--border)'};color:#fff;border:none;border-radius:10px;font-weight:700;font-size:15px;cursor:${canSubmit?'pointer':'not-allowed'};">${canSubmit?'Submit audit':'Answer every item to submit'}</button>`;
+    // Label the submit button by what happens next:
+    //   * In a pending=signin/signout flow with another asset still
+    //     pending for THIS phase → "Next: <asset label> →"
+    //   * In a pending flow with no more assets pending →
+    //     "Submit & sign in / Submit & sign out"
+    //   * Standalone (ad-hoc audit, no pending) → "Submit audit"
+    let submitLabel = 'Submit audit';
+    const pending = window.__pcPendingAction;
+    if (canSubmit && pending) {
+      const next = _fsNextPendingAsset(fsState.todayInfo,
+                                        fsState.assetId, phase);
+      if (next) {
+        submitLabel = `Next: ${next.label || next.asset_code} →`;
+      } else if (pending === 'signin') {
+        submitLabel = 'Submit & sign in';
+      } else if (pending === 'signout') {
+        submitLabel = 'Submit & sign out';
+      }
+    }
+    if (!canSubmit) submitLabel = 'Answer every item to submit';
+    html += `<button onclick="fsSubmit()" ${canSubmit ? '' : 'disabled'} style="width:100%;padding:14px;background:${canSubmit?'var(--teal)':'var(--border)'};color:#fff;border:none;border-radius:10px;font-weight:700;font-size:15px;cursor:${canSubmit?'pointer':'not-allowed'};">${esc(submitLabel)}</button>`;
     document.getElementById('fsView').innerHTML = html;
   }
 
@@ -2164,46 +2203,71 @@
       // Try to flush right away (no-op until the endpoint exists).
       fsFlushPhotoQueue();
 
-      // Sign-out continuation: if the landing redirected here with
-      // ?pending=signout and this was the end-shift audit, finish the
-      // sign-out roundtrip now that the 5S is in.
-      if (window.__pcPendingAction === 'signout' &&
-          fsState && fsState.phase === 'end_shift') {
+      // Pending sign-in / sign-out flows:
+      //   1. Try the corresponding API call.
+      //   2. If it succeeds → all required audits are in → redirect.
+      //   3. If it 409s "_required" → look up the NEXT pending asset
+      //      of this phase and start its audit directly. The user
+      //      shouldn't have to bounce back to the 5S home, find the
+      //      next active button, and tap it — they already committed
+      //      to the chain.
+      //   4. Fall back to fsShowHome() defensively if nothing is left
+      //      to do (state drift, race condition).
+      const pending = window.__pcPendingAction;
+      if (pending === 'signout' && fsState && fsState.phase === 'end_shift') {
         try {
           await api('POST', '/api/tech/me/sign-out');
           toast('Signed out ✓', 'ok');
+          window.location.replace('/tech/home');
+          return;
         } catch (se) {
-          // Most likely 409 not_clocked_in (already signed out by EOD
-          // cron in the meantime) — that's fine.
+          // Fetch the freshest cycle status before deciding next step.
+          let snapshot = null;
+          try { snapshot = await api('GET', '/api/tech/5s/today'); }
+          catch (_) {}
+          const next = _fsNextPendingAsset(snapshot, fsState.assetId,
+                                           'end_shift');
+          if (next) {
+            toast(`Next: ${next.label || next.asset_code}`, 'ok');
+            fsStart(next.asset_id, 'end_shift');
+            return;
+          }
+          // Nothing left to audit but sign-out still 409'd — unusual.
+          // Most likely 409 not_clocked_in (EOD cron already signed
+          // them out). Just bounce home — the landing will resolve.
           toast('Audit saved — returning to home', 'ok');
+          window.location.replace('/tech/home');
+          return;
         }
-        window.location.replace('/tech/home');
-        return;
       }
-      // Sign-in continuation: after EACH start-shift audit during a
-      // pending=signin flow, try POST /sign-in. If it succeeds (all
-      // required audits are in), drop the tech straight into the jobs
-      // queue. If it 409s "5s_start_shift_required" they have more
-      // assets to audit — fsShowHome() will re-render the 5S home with
-      // remaining work outstanding.
-      if (window.__pcPendingAction === 'signin' &&
-          fsState && fsState.phase === 'start_shift') {
+      if (pending === 'signin' && fsState && fsState.phase === 'start_shift') {
         const body = {};
         const reason = localStorage.getItem('pc_pending_dayoff_reason');
         if (reason) body.dayoff_reason = reason;
         try {
           await api('POST', '/api/tech/me/sign-in', body);
-          // Clear the carried reason; we're in.
           localStorage.removeItem('pc_pending_dayoff_reason');
           toast('Signed in ✓', 'ok');
           window.location.replace('/tech?view=jobs');
           return;
         } catch (se) {
-          // Not done — more assets need their start-shift audit.
+          let snapshot = null;
+          try { snapshot = await api('GET', '/api/tech/5s/today'); }
+          catch (_) {}
+          const next = _fsNextPendingAsset(snapshot, fsState.assetId,
+                                           'start_shift');
+          if (next) {
+            toast(`Next: ${next.label || next.asset_code}`, 'ok');
+            fsStart(next.asset_id, 'start_shift');
+            return;
+          }
+          // Shouldn't normally happen — sign-in 409'd but no pending
+          // assets. Fall back to home so the tech sees full state.
           fsShowHome();
           return;
         }
       }
+      // No pending action — ad-hoc audit, just go back to 5S home.
       fsShowHome();
     } catch (e) {
       // Audit POST failed — queue the audit AND its pending photos together.
