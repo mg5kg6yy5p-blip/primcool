@@ -7455,30 +7455,39 @@ def list_coaching(tech_id=None, status=None, limit=100):
 def audit_cycle_threshold(tech_id: int, today_iso: str = None) -> str:
     """ISO timestamp: the boundary below which 5S audits no longer 'count'
     for the current shift cycle. Defined as the most recent
-    tech_clock_events row (clock-in OR clock-out) for this tech on
-    today's date. If none yet (first sign-in of the day), falls back
-    to today 00:00:00 UTC.
+    tech_clock_events row (clock-in OR clock-out) for this tech
+    regardless of work_date. Falls back to today 00:00:00 UTC only if
+    the tech has no clock events on record at all.
 
-    Rationale: each shift cycle gets its own start_shift + end_shift
-    audits. After a tech signs out, the next sign-in must re-do the
-    start-shift 5S; after a tech signs in, the matching sign-out must
-    re-do the end-shift 5S. Without this scoping a tech could sign in,
-    sign out, then sign in again without doing a new 5S — and a tech
-    who's already clocked in could sign out using yesterday's
-    end-shift audit. Both bugs were reported in field testing."""
+    Why "regardless of work_date" matters: a tech who clocks in at
+    6:55 PM Jamaica time (11:55 PM UTC) and is still working at 7:00
+    PM JM (00:00 UTC next day) has a clock_in stamped with yesterday's
+    UTC work_date. Filtering by today's work_date would skip that row,
+    fall back to "today 00:00 UTC", and incorrectly invalidate the
+    yesterday-evening audits that belong to the still-open cycle. By
+    looking at the absolute most recent event the cycle is preserved
+    across midnight UTC.
+
+    Rationale for cycle scoping itself: each shift gets its own
+    start_shift + end_shift audits. After a tech signs out, the next
+    sign-in must re-do the start-shift 5S; after a tech signs in, the
+    matching sign-out must re-do the end-shift 5S. Reported in field
+    testing without this scoping a tech could sign in, sign out, then
+    sign in again without doing a new 5S — and could sign out using
+    the morning's end-shift audit."""
     if today_iso is None:
         today_iso = datetime.now(timezone.utc).date().isoformat()
     con = _con()
     row = con.execute(
         "SELECT event_at FROM tech_clock_events "
-        "WHERE tech_id = ? AND work_date = ? "
+        "WHERE tech_id = ? "
         "ORDER BY event_at DESC LIMIT 1",
-        (tech_id, today_iso),
+        (tech_id,),
     ).fetchone()
     con.close()
     if row and row["event_at"]:
         return row["event_at"]
-    # First action of the day — anything submitted today counts.
+    # No clock events ever — anything submitted today is fresh.
     return f"{today_iso}T00:00:00+00:00"
 
 
