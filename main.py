@@ -1924,6 +1924,12 @@ class InvoicePayment(BaseModel):
     method:       str = ""
     reference:    str = ""
     notes:        str = ""
+    # Client-supplied UUID per "Record Payment" click. If two requests
+    # arrive with the same (invoice_id, idempotency_key), the second
+    # silently returns the first payment's id without inserting a
+    # duplicate. Optional — omit for legacy / scripted callers.
+    # Audit M3, 2026-05-23.
+    idempotency_key: Optional[str] = None
 
 
 class TechForgotPin(BaseModel):

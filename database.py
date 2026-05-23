@@ -659,10 +659,25 @@ def init_db():
         ("prior_chain_hash",     "ALTER TABLE invoice_payments ADD COLUMN prior_chain_hash TEXT"),
         ("chain_hash",           "ALTER TABLE invoice_payments ADD COLUMN chain_hash TEXT"),
         ("voided_at",            "ALTER TABLE invoice_payments ADD COLUMN voided_at TEXT"),
+        # idempotency_key: client-supplied UUID per "Record Payment"
+        # click; lets the helper return the existing row on retry
+        # instead of inserting a duplicate. Nullable so legacy paths
+        # without a key still insert normally. Audit M3, 2026-05-23.
+        ("idempotency_key",      "ALTER TABLE invoice_payments ADD COLUMN idempotency_key TEXT"),
     ):
         if col not in ip_cols:
             try: con.execute(sql)
             except sqlite3.OperationalError: pass
+    # Per-invoice unique index so two payments on the same invoice
+    # can't share an idempotency key. NULL idempotency_keys are not
+    # constrained (SQLite UNIQUE allows multiple NULLs by default).
+    try:
+        con.execute("CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "uq_invoice_payment_idemp "
+                    "ON invoice_payments(invoice_id, idempotency_key) "
+                    "WHERE idempotency_key IS NOT NULL")
+    except sqlite3.OperationalError:
+        pass
 
     # FX rates cache + manual-override history.
     con.execute("""
@@ -4729,14 +4744,40 @@ def record_invoice_payment(invoice_id: int, data: dict,
                             recorded_by: int = None,
                             recorded_by_label: str = None,
                             recorded_by_prid: str = None) -> int:
+    """Insert a payment row and recompute invoice totals.
+
+    Idempotency: if `data` carries 'idempotency_key', a row with the
+    same (invoice_id, idempotency_key) is returned without inserting
+    a duplicate. The client UI generates a UUID per "Record Payment"
+    click and reuses it on retry — so a double-tap or a network blip
+    that triggers a retry can't double-credit an invoice.
+
+    Backwards-compat: requests without idempotency_key still INSERT
+    unconditionally (legacy behavior). Audit M3, 2026-05-23."""
     now = datetime.now(timezone.utc).isoformat()
+    idem = (data.get("idempotency_key") or "").strip() or None
     con = _con()
+    if idem:
+        existing = con.execute(
+            "SELECT id FROM invoice_payments "
+            "WHERE invoice_id = ? AND idempotency_key = ? LIMIT 1",
+            (invoice_id, idem),
+        ).fetchone()
+        if existing:
+            con.close()
+            import logging as _lg
+            _lg.getLogger("primecool").info(
+                f"record_invoice_payment: idempotent return invoice "
+                f"#{invoice_id} payment #{existing['id']} "
+                f"(key={idem[:8]}…)")
+            return existing["id"]
     cur = con.execute(
         """
         INSERT INTO invoice_payments
             (invoice_id, payment_date, amount, method, reference, notes,
-             recorded_by, recorded_by_label, recorded_by_prid, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             recorded_by, recorded_by_label, recorded_by_prid, created_at,
+             idempotency_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             invoice_id,
@@ -4746,6 +4787,7 @@ def record_invoice_payment(invoice_id: int, data: dict,
             data.get("reference", ""),
             data.get("notes", ""),
             recorded_by, recorded_by_label, recorded_by_prid, now,
+            idem,
         ),
     )
     payment_id = cur.lastrowid
