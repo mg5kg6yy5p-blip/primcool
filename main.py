@@ -7481,10 +7481,13 @@ def tech_kpi_notes_list(request: Request, limit: int = 50):
         limit=max(1, min(limit, 200)),
     )
     # Team-period notes for periods where self has scores
+    # Use database._con() (was: bare sqlite3.connect("submissions.db"))
+    # so the connection inherits journal_mode=WAL, synchronous=FULL,
+    # and foreign_keys=ON; and honors DB_PATH env overrides instead of
+    # hard-coding the file. Audit M1, 2026-05-23.
     try:
-        import sqlite3
-        con = sqlite3.connect("submissions.db")
-        con.row_factory = sqlite3.Row
+        from database import _con as _dbcon
+        con = _dbcon()
         period_keys = [r["period_key"] for r in con.execute(
             "SELECT DISTINCT period_key FROM kpi_scores WHERE tech_id=? "
             "ORDER BY period_key DESC LIMIT 12", (tech_id,),
@@ -7573,12 +7576,14 @@ def admin_kpi_goal_update(request: Request, goal_id: int,
         updates["description"] = body.description.strip()
     if not updates:
         return {"ok": True, "goal": g}
-    # Encrypt then update
-    from database import _enc_dict as _enc_d
+    # Encrypt then update via database._con() so the connection
+    # inherits the WAL / synchronous=FULL / foreign_keys=ON pragmas
+    # and honors DB_PATH env overrides. Audit M1, 2026-05-23.
+    from database import _enc_dict as _enc_d, _con as _dbcon
     enc = _enc_d("kpi_goals", updates)
     sets = ", ".join(f"{k}=?" for k in enc.keys())
     args = list(enc.values()) + [goal_id]
-    con = sqlite3.connect("submissions.db")
+    con = _dbcon()
     con.execute(f"UPDATE kpi_goals SET {sets} WHERE id=?", args)
     con.commit(); con.close()
     _audit_from(admin, "kpi.goal.updated", request,
