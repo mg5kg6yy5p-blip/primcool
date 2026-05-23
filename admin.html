@@ -505,6 +505,10 @@
         Performance KPI
         <span id="kpiFlagBadge" style="margin-left:auto;background:var(--danger);color:white;font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px;display:none;"></span>
       </div>
+      <div class="nav-item" onclick="showPanel('companymsg')" id="nav-companymsg" style="display:none;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Company Messages
+      </div>
       <div class="sidebar-reset" id="sidebarResetOrder" title="Restore the default sidebar order"
            onclick="resetSidebarOrder()" style="display:none;">
         ↺ Reset order
@@ -1037,6 +1041,50 @@
             <div id="tdf-reviews-list"><div class="empty" style="padding:14px;">Loading…</div></div>
           </div>
 
+          <!-- Schedule & On-Call (TP-1b admin UI) -->
+          <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:18px;">
+            <h3 style="margin:0 0 12px;color:var(--navy);font-size:16px;">Schedule &amp; On-Call</h3>
+            <div class="muted" style="font-size:12px;margin-bottom:12px;">
+              Set the tech's weekly hours. Days marked "On call" are exempt
+              from the day-off-signin alert and from the 2-hour auto-sign-out
+              cutoff. Use the override row below for one-off coverage.
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr>
+                  <th>Day</th><th>Start</th><th>End</th>
+                  <th style="text-align:center;">Active</th>
+                  <th style="text-align:center;">On call</th>
+                  <th></th>
+                </tr></thead>
+                <tbody id="tdf-sched-body"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+              </table>
+            </div>
+            <h4 style="margin:18px 0 8px;color:var(--navy);font-size:14px;">One-off on-call dates</h4>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px;">
+              <label style="font-size:12px;font-weight:600;color:#374151;">Date
+                <input id="tdf-oncall-date" type="date" style="display:block;padding:7px 10px;border:1px solid var(--border);border-radius:6px;margin-top:3px;">
+              </label>
+              <label style="font-size:12px;font-weight:600;color:#374151;">Note
+                <input id="tdf-oncall-note" type="text" placeholder="e.g. covering Andre" style="display:block;padding:7px 10px;border:1px solid var(--border);border-radius:6px;margin-top:3px;width:240px;">
+              </label>
+              <button class="btn btn-primary btn-sm" onclick="tdfAddOnCallOverride(true)">+ On call</button>
+              <button class="btn btn-ghost btn-sm" onclick="tdfAddOnCallOverride(false)">− Off call</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Date</th><th>State</th><th>Note</th><th></th></tr></thead>
+                <tbody id="tdf-oncall-body"><tr><td colspan="4" class="empty">No overrides set.</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- CV edit-request approval queue -->
+          <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:18px;">
+            <h3 style="margin:0 0 12px;color:var(--navy);font-size:16px;">CV Edit Requests</h3>
+            <div id="tdf-cv-requests"><div class="empty" style="padding:14px;">Loading…</div></div>
+          </div>
+
           <!-- Bonus & Payroll -->
           <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:18px;">
             <h3 style="margin:0 0 12px;color:var(--navy);font-size:16px;">Bonus &amp; Payroll Summary</h3>
@@ -1098,6 +1146,40 @@
             <thead><tr><th>Customer</th><th>Type</th><th>Status</th><th>Scheduled</th><th>Completed</th><th>Assigned Tech</th><th>Equipment</th><th>Actions</th></tr></thead>
             <tbody id="visitTableBody"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
           </table>
+        </div>
+      </div>
+
+      <!-- ── Company Messages panel ── -->
+      <div class="panel" id="panel-companymsg">
+        <div class="top-bar">
+          <h2>Company Messages</h2>
+        </div>
+        <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:18px;">
+          <h3 style="margin:0 0 12px;color:var(--navy);font-size:16px;">Post a new message</h3>
+          <div style="display:grid;gap:10px;">
+            <label style="font-size:13px;font-weight:600;color:#374151;">
+              Title
+              <input id="cm-title" type="text" maxlength="120" placeholder="e.g. Holiday roster published"
+                     style="display:block;width:100%;padding:9px;border:1px solid var(--border);border-radius:8px;font-size:14px;margin-top:4px;">
+            </label>
+            <label style="font-size:13px;font-weight:600;color:#374151;">
+              Body
+              <textarea id="cm-body" rows="5" placeholder="Plain text. Posted to the tech home page (visible to everyone with company:read_messages)."
+                        style="display:block;width:100%;padding:9px;border:1px solid var(--border);border-radius:8px;font-size:14px;margin-top:4px;font-family:inherit;resize:vertical;"></textarea>
+            </label>
+            <label style="font-size:13px;font-weight:600;color:#374151;">
+              Expires at (optional, ISO date)
+              <input id="cm-expires" type="date"
+                     style="display:block;padding:9px;border:1px solid var(--border);border-radius:8px;font-size:14px;margin-top:4px;">
+            </label>
+            <div>
+              <button class="btn btn-primary" onclick="cmPostMessage()">Post message</button>
+            </div>
+          </div>
+        </div>
+        <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;">
+          <h3 style="margin:0 0 12px;color:var(--navy);font-size:16px;">Recent messages</h3>
+          <div id="cm-list"><div class="empty" style="padding:14px;">Loading…</div></div>
         </div>
       </div>
 
@@ -2772,6 +2854,12 @@
       // Fire-and-forget refresh of the flag badge.
       refreshKpiFlagBadge();
     }
+    // Company Messages — super_admin and ceo_assistant can compose; anyone
+    // with company:post_message sees the nav and the composer form.
+    if (can('company:post_message')) {
+      const ncm = document.getElementById('nav-companymsg');
+      if (ncm) ncm.style.display = 'flex';
+    }
     // Delegations — super_admin OR admin with delegation power.
     if (currentAdmin && (currentAdmin.role === 'super_admin'
         || currentAdmin.has_delegation_power === 1
@@ -3187,6 +3275,7 @@
     document.getElementById(`nav-${name}`).classList.add('active');
     if (name === 'fs') { fsLoadCurrentTab(); }
     if (name === 'delegations') { loadDelegationsPanel(); }
+    if (name === 'companymsg') { cmLoad(); }
   }
 
   // ── Customers ──────────────────────────────────────────────────────────────
@@ -4264,6 +4353,8 @@
       loadTdfReviews();
       loadTdfCertifications();
       loadTdfPayroll();
+      loadTdfSchedule();
+      loadTdfCvRequests();
     } catch (e) {
       if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) {
         showTechList();
@@ -4861,6 +4952,188 @@
       }
     } catch (e) {
       el.innerHTML = '<em>Certifications unavailable.</em>';
+    }
+  }
+
+  // ── Schedule & On-Call editor ─────────────────────────────────────
+  const TDF_DOW = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  async function loadTdfSchedule() {
+    if (!tdfState.tech) return;
+    const tid = tdfState.tech.id;
+    const sBody = document.getElementById('tdf-sched-body');
+    const oBody = document.getElementById('tdf-oncall-body');
+    let sched = [];
+    let overrides = [];
+    try {
+      sched = await api('GET', `/api/admin/technicians/${tid}/schedule`);
+    } catch (e) {
+      sBody.innerHTML = `<tr><td colspan="6" class="empty">Could not load schedule: ${escHtml(e.message)}</td></tr>`;
+      return;
+    }
+    try {
+      overrides = await api('GET', `/api/admin/technicians/${tid}/on-call-overrides`);
+    } catch (_) { /* override endpoint may 404 on older deploys */ }
+    sBody.innerHTML = (sched || []).map((d, i) => `
+      <tr data-dow="${i}">
+        <td><strong>${TDF_DOW[i]}</strong></td>
+        <td><input type="time" value="${escHtml(d.start_time || '')}" data-f="start"
+                   style="padding:6px;border:1px solid var(--border);border-radius:6px;"></td>
+        <td><input type="time" value="${escHtml(d.end_time || '')}" data-f="end"
+                   style="padding:6px;border:1px solid var(--border);border-radius:6px;"></td>
+        <td style="text-align:center;"><input type="checkbox" data-f="active" ${d.active ? 'checked' : ''}></td>
+        <td style="text-align:center;"><input type="checkbox" data-f="oncall" ${d.on_call ? 'checked' : ''}></td>
+        <td><button class="btn btn-primary btn-sm" onclick="tdfSaveSchedDay(${i})">Save</button></td>
+      </tr>`).join('');
+    if (!overrides || !overrides.length) {
+      oBody.innerHTML = '<tr><td colspan="4" class="empty">No overrides set.</td></tr>';
+    } else {
+      oBody.innerHTML = overrides.map(o => `
+        <tr>
+          <td>${escHtml(o.work_date)}</td>
+          <td>${o.on_call ? '<span class="badge" style="background:#dcfce7;color:#166534;">On call</span>'
+                          : '<span class="badge" style="background:#fee2e2;color:#991b1b;">Off-call (override)</span>'}</td>
+          <td>${escHtml(o.note || '')}</td>
+          <td><button class="btn btn-ghost btn-sm" onclick="tdfDeleteOnCallOverride('${escHtml(o.work_date)}')">Clear</button></td>
+        </tr>`).join('');
+    }
+  }
+  async function tdfSaveSchedDay(dow) {
+    if (!tdfState.tech) return;
+    const row = document.querySelector(`#tdf-sched-body tr[data-dow="${dow}"]`);
+    const body = {
+      day_of_week: dow,
+      start_time: row.querySelector('[data-f="start"]').value || null,
+      end_time:   row.querySelector('[data-f="end"]').value   || null,
+      active:     row.querySelector('[data-f="active"]').checked ? 1 : 0,
+      on_call:    row.querySelector('[data-f="oncall"]').checked ? 1 : 0,
+    };
+    try {
+      await api('POST', `/api/admin/technicians/${tdfState.tech.id}/schedule`, body);
+      toast('Saved ' + TDF_DOW[dow], 'success');
+    } catch (e) {
+      toast('Save failed: ' + e.message, 'error');
+    }
+  }
+  async function tdfAddOnCallOverride(onCall) {
+    if (!tdfState.tech) return;
+    const date = document.getElementById('tdf-oncall-date').value;
+    const note = document.getElementById('tdf-oncall-note').value;
+    if (!date) { toast('Pick a date', 'warning'); return; }
+    try {
+      await api('POST', `/api/admin/technicians/${tdfState.tech.id}/on-call-overrides`,
+                { work_date: date, on_call: onCall ? 1 : 0, note: note || null });
+      toast('Override saved', 'success');
+      document.getElementById('tdf-oncall-note').value = '';
+      loadTdfSchedule();
+    } catch (e) {
+      toast('Save failed: ' + e.message, 'error');
+    }
+  }
+  async function tdfDeleteOnCallOverride(date) {
+    if (!tdfState.tech) return;
+    if (!confirm('Clear the override for ' + date + '?')) return;
+    try {
+      await api('DELETE', `/api/admin/technicians/${tdfState.tech.id}/on-call-overrides/${date}`);
+      toast('Cleared', 'success');
+      loadTdfSchedule();
+    } catch (e) {
+      toast('Clear failed: ' + e.message, 'error');
+    }
+  }
+
+  // ── CV edit-request approval queue (per tech) ─────────────────────
+  async function loadTdfCvRequests() {
+    if (!tdfState.tech) return;
+    const el = document.getElementById('tdf-cv-requests');
+    let list = [];
+    try {
+      list = await api('GET', `/api/admin/cv-edit-requests?tech_id=${tdfState.tech.id}`);
+    } catch (e) {
+      el.innerHTML = `<div class="empty">Could not load requests: ${escHtml(e.message)}</div>`;
+      return;
+    }
+    if (!list.length) {
+      el.innerHTML = '<div class="empty" style="padding:14px;">No pending CV edit requests.</div>';
+      return;
+    }
+    el.innerHTML = list.map(r => `
+      <div style="padding:10px 12px;background:#fef3c7;border:1px solid #fde68a;border-radius:8px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+        <div style="min-width:0;flex:1;">
+          <div style="font-weight:600;color:var(--navy);">Entry #${r.entry_id}</div>
+          <div class="muted" style="font-size:12px;">Requested ${escHtml(r.requested_at || '')}</div>
+          ${r.note ? `<div style="font-size:13px;margin-top:4px;">${escHtml(r.note)}</div>` : ''}
+        </div>
+        <div style="display:flex;gap:6px;">
+          <button class="btn btn-primary btn-sm" onclick="tdfApproveCv(${r.id})">Approve 60 min</button>
+          <button class="btn btn-ghost btn-sm" onclick="tdfDenyCv(${r.id})">Deny</button>
+        </div>
+      </div>`).join('');
+  }
+  async function tdfApproveCv(rid) {
+    try {
+      await api('POST', `/api/admin/cv-edit-requests/${rid}/approve`, { grant_minutes: 60 });
+      toast('Approved — tech has 60 minutes to edit.', 'success');
+      loadTdfCvRequests();
+    } catch (e) { toast('Approve failed: ' + e.message, 'error'); }
+  }
+  async function tdfDenyCv(rid) {
+    const note = prompt('Reason (optional):') || null;
+    try {
+      await api('POST', `/api/admin/cv-edit-requests/${rid}/deny`, { note });
+      toast('Denied.', 'success');
+      loadTdfCvRequests();
+    } catch (e) { toast('Deny failed: ' + e.message, 'error'); }
+  }
+
+  // ── Company Messages panel ────────────────────────────────────────
+  async function cmLoad() {
+    const el = document.getElementById('cm-list');
+    try {
+      const list = await api('GET', '/api/admin/company/messages');
+      if (!list || !list.length) {
+        el.innerHTML = '<div class="empty" style="padding:14px;">No messages posted.</div>';
+        return;
+      }
+      el.innerHTML = list.map(m => `
+        <div style="padding:12px 14px;background:#f8fafc;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;">
+            <div style="font-weight:600;color:var(--navy);">${escHtml(m.title || '—')}</div>
+            <div style="font-size:11px;color:var(--muted);white-space:nowrap;">${escHtml(m.posted_at || '')}</div>
+          </div>
+          <div style="font-size:13px;color:var(--text);margin-top:4px;white-space:pre-wrap;">${escHtml(m.body || '')}</div>
+          ${m.expires_at ? `<div style="font-size:11px;color:var(--muted);margin-top:6px;">Expires ${escHtml(m.expires_at)}</div>` : ''}
+          ${m.hidden_at ? `<div style="font-size:11px;color:#991b1b;margin-top:6px;">Hidden ${escHtml(m.hidden_at)}</div>` : `<div style="margin-top:8px;"><button class="btn btn-ghost btn-sm" onclick="cmHideMessage(${m.id})">Hide</button></div>`}
+        </div>`).join('');
+    } catch (e) {
+      el.innerHTML = `<div class="empty">Could not load: ${escHtml(e.message)}</div>`;
+    }
+  }
+  async function cmPostMessage() {
+    const title = document.getElementById('cm-title').value.trim();
+    const body  = document.getElementById('cm-body').value.trim();
+    const exp   = document.getElementById('cm-expires').value;
+    if (!title || !body) { toast('Title and body are required.', 'warning'); return; }
+    const payload = { title, body };
+    if (exp) payload.expires_at = exp + 'T23:59:59+00:00';
+    try {
+      await api('POST', '/api/admin/company/messages', payload);
+      toast('Posted to the message board.', 'success');
+      document.getElementById('cm-title').value = '';
+      document.getElementById('cm-body').value = '';
+      document.getElementById('cm-expires').value = '';
+      cmLoad();
+    } catch (e) {
+      toast('Post failed: ' + e.message, 'error');
+    }
+  }
+  async function cmHideMessage(id) {
+    if (!confirm('Hide this message from the board?')) return;
+    try {
+      await api('DELETE', `/api/admin/company/messages/${id}`);
+      toast('Hidden.', 'success');
+      cmLoad();
+    } catch (e) {
+      toast('Hide failed: ' + e.message, 'error');
     }
   }
 

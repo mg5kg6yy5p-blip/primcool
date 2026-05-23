@@ -350,7 +350,8 @@ ADMIN_PERMS["hr_admin"].update({
     "tech:manage_certifications",
 })
 ADMIN_PERMS["system_admin"].update({"company:read_messages"})
-ADMIN_PERMS["ceo_assistant"].update({"company:read_messages"})
+ADMIN_PERMS["ceo_assistant"].update({"company:read_messages",
+                                     "company:post_message"})
 ADMIN_PERMS["inventory_manager"].update({"company:read_messages"})
 
 
