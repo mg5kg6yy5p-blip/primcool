@@ -12679,7 +12679,9 @@
         <td>${cell('utilization')}</td>
         <td>${cell('sla_adherence')}</td>
         <td>${cell('safety_compliance')}</td>
-        <td><span class="badge" style="background:#eff6ff;color:#1e40af;" title="Open flags">view</span></td>
+        <td><button class="btn btn-edit btn-sm pc-stop-prop"
+                    onclick="event.stopPropagation();kpiOpenScorecard(${r.tech_id})"
+                    title="Open full KPI scorecard for ${esc(r.name || '')}">View →</button></td>
       </tr>`;
     }).join('');
     if (typeof PC !== 'undefined' && PC.gateRow) {
