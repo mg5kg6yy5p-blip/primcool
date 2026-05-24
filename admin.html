@@ -101,6 +101,68 @@
     .nav-item svg { width: 17px; height: 17px; flex-shrink: 0; }
     .main { flex: 1; padding: 28px 28px 60px; overflow-y: auto; }
 
+    /* ── Breadcrumbs ─────────────────────────────────────────────────────
+       Small horizontal trail at the top of every panel so users always
+       know where they are even three clicks deep. */
+    .pc-crumbs {
+      display: flex; align-items: center; flex-wrap: wrap;
+      gap: 6px; margin: 0 0 12px;
+      font-size: 12px; color: var(--muted);
+    }
+    .pc-crumbs a {
+      color: var(--teal); cursor: pointer; text-decoration: none;
+    }
+    .pc-crumbs a:hover { text-decoration: underline; }
+    .pc-crumbs .sep { color: #cbd5e1; }
+    .pc-crumbs .cur { color: var(--navy); font-weight: 600; }
+
+    /* ── Command palette (Cmd/Ctrl-K) ────────────────────────────────────
+       Single global-search affordance. Indexes sidebar destinations +
+       in-memory customers, techs, invoices, parts. Replaces breadcrumb
+       backtracking for "I need to find X right now". */
+    .pc-cmdk-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(11,37,69,0.45); z-index: 500;
+      backdrop-filter: blur(3px);
+      align-items: flex-start; justify-content: center;
+      padding-top: 80px;
+    }
+    .pc-cmdk-overlay.open { display: flex; }
+    .pc-cmdk {
+      width: min(640px, 92vw); max-height: 70vh;
+      background: var(--white); border-radius: 14px;
+      box-shadow: 0 20px 60px rgba(11,37,69,0.4);
+      overflow: hidden; display: flex; flex-direction: column;
+    }
+    .pc-cmdk input {
+      border: none; outline: none; padding: 18px 20px;
+      font-size: 16px; color: var(--navy);
+      border-bottom: 1px solid var(--border);
+    }
+    .pc-cmdk-list { overflow-y: auto; flex: 1; }
+    .pc-cmdk-item {
+      padding: 11px 18px; display: flex; align-items: center; gap: 12px;
+      cursor: pointer; font-size: 14px; color: var(--text);
+      border-bottom: 1px solid #f1f5f9;
+    }
+    .pc-cmdk-item:hover, .pc-cmdk-item.active {
+      background: rgba(34,160,138,0.08); color: var(--navy);
+    }
+    .pc-cmdk-item .type-tag {
+      font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
+      color: var(--muted); margin-left: auto;
+    }
+    .pc-cmdk-hint {
+      padding: 8px 18px; font-size: 11px; color: var(--muted);
+      background: #f8fafc; border-top: 1px solid var(--border);
+      display: flex; justify-content: space-between;
+    }
+    .pc-cmdk-hint kbd {
+      background: var(--white); border: 1px solid var(--border);
+      border-radius: 3px; padding: 1px 6px; font-size: 10px;
+      font-family: ui-monospace, monospace;
+    }
+
     /* ── Panels ── */
     .panel { display: none; }
     .panel.active { display: block; }
@@ -579,10 +641,23 @@
       <span class="admin-tag">Admin</span>
     </div>
     <div style="display:flex;gap:8px;align-items:center;">
+      <button class="logout-btn" onclick="pcCmdkOpen()" title="Search anything (Cmd/Ctrl-K)">🔎 Search</button>
       <button class="logout-btn" id="securityBtn" onclick="openSecurityModal()" title="Account security">🔒 Security</button>
       <button class="logout-btn" onclick="adminLogout()">Sign out</button>
     </div>
   </header>
+
+  <!-- ── Command palette (global search) ─────────────────────────────── -->
+  <div class="pc-cmdk-overlay" id="pcCmdkOverlay" onclick="if(event.target===this)pcCmdkClose()">
+    <div class="pc-cmdk" role="dialog" aria-label="Command palette">
+      <input id="pcCmdkInput" type="text" placeholder="Jump to a customer, tech, invoice, part, or section…" autocomplete="off">
+      <div class="pc-cmdk-list" id="pcCmdkList"></div>
+      <div class="pc-cmdk-hint">
+        <span><kbd>↑</kbd> <kbd>↓</kbd> navigate &nbsp; <kbd>Enter</kbd> open &nbsp; <kbd>Esc</kbd> close</span>
+        <span>Indexed locally — no server round-trip.</span>
+      </div>
+    </div>
+  </div>
 
   <!-- Mobile-nav backdrop — clicking it closes the drawer. -->
   <div class="nav-backdrop" id="navBackdrop" onclick="closeNav()"></div>
@@ -681,6 +756,9 @@
     </nav>
 
     <div class="main">
+
+      <!-- ── Breadcrumbs (updated by showPanel + detail openers) ── -->
+      <nav class="pc-crumbs" id="pcCrumbs" aria-label="Breadcrumb"></nav>
 
       <div id="securityAlertBanner" style="display:none;margin-bottom:16px;padding:12px 16px;border-radius:8px;background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;font-size:14px;font-weight:600;cursor:pointer;" onclick="showPanel('audit'); document.getElementById('auditMode').value='alerts'; loadAudit();"></div>
       <!-- Recipient delegation banner — dismissible per session. -->
@@ -3947,6 +4025,162 @@
     if (e.key === 'Escape') closeNav();
   });
 
+  // ── Breadcrumb state ───────────────────────────────────────────────────
+  // Each entry: { label, onClick (optional) }. showPanel resets to a
+  // two-step crumb ("Admin > <Panel>") and detail openers (customer,
+  // visit, etc.) push a third step.
+  const _PANEL_TITLES = {
+    customers: 'Customers', visits: 'All Visits', techs: 'Technicians',
+    invoices: 'Invoices',   documents: 'Documents', inventory: 'Warehouse',
+    warehouse: 'Warehouse Ops', schedule: 'Schedule', timesheets: 'Timesheets',
+    payroll: 'Payroll', mypay: 'My Payslips', admins: 'Admins',
+    audit: 'Audit Log', reviews: 'Reviews', fs: '5S',
+    delegations: 'Delegations', kpi: 'Performance KPI',
+    companymsg: 'Company Messages', myprofile: 'My Profile',
+  };
+  function _setCrumbs(items) {
+    const wrap = document.getElementById('pcCrumbs');
+    if (!wrap) return;
+    wrap.innerHTML = items.map((it, i) => {
+      const isLast = i === items.length - 1;
+      const label = escHtml(it.label || '');
+      if (isLast) return `<span class="cur">${label}</span>`;
+      const onclick = it.onClick ? ` onclick="${it.onClick}"` : '';
+      return `<a${onclick}>${label}</a><span class="sep">›</span>`;
+    }).join(' ');
+  }
+  // ── Cmd/Ctrl-K command palette ─────────────────────────────────────────
+  // Indexes from in-memory state — no extra server roundtrip. Picks
+  // sidebar destinations PLUS whichever lists have already been loaded
+  // (customers / techs / invoices / parts). Keyboard-first: arrows to
+  // navigate, Enter to open, Escape to dismiss.
+  let _cmdkActiveIdx = 0;
+  let _cmdkResults   = [];
+  function _cmdkIndex() {
+    const items = [];
+    // Sidebar destinations — always available.
+    Object.entries(_PANEL_TITLES).forEach(([k, v]) => {
+      const navEl = document.getElementById('nav-' + k);
+      // Only include sections this role can see.
+      if (navEl && navEl.offsetParent !== null) {
+        items.push({ kind:'section', icon:'🧭', label: v, hint: 'Go to ' + v,
+                     onOpen: () => showPanel(k) });
+      }
+    });
+    // Customers
+    try { (allCustomers || []).forEach(c => items.push({
+      kind:'customer', icon:'👥', label: c.name || '(no name)',
+      hint: c.company || c.customer_code || '',
+      onOpen: () => { showPanel('customers'); routeCustomerDetail(c.id); },
+    })); } catch(_){}
+    // Techs
+    try { (allTechs || []).forEach(t => items.push({
+      kind:'tech', icon:'🛠', label: t.name || '(no name)',
+      hint: (t.tech_code || '') + (t.role ? ' · ' + t.role.replace(/_/g,' ') : ''),
+      onOpen: () => { showPanel('techs'); if (typeof tdfOpenById === 'function') tdfOpenById(t.id); },
+    })); } catch(_){}
+    // Invoices
+    try { (allInvoices || []).forEach(i => items.push({
+      kind:'invoice', icon:'🧾',
+      label: '#' + (i.invoice_number || i.id) + ' — ' + (i.customer_name || ''),
+      hint: 'Invoice · ' + (i.status || ''),
+      onOpen: () => { showPanel('invoices'); if (typeof openInvoice === 'function') openInvoice(i.id); },
+    })); } catch(_){}
+    // Parts
+    try { (allParts || []).forEach(p => items.push({
+      kind:'part', icon:'📦',
+      label: (p.sku || '') + ' — ' + (p.name || ''),
+      hint: 'Part · qty ' + (p.quantity ?? 0),
+      onOpen: () => showPanel('inventory'),
+    })); } catch(_){}
+    return items;
+  }
+  function pcCmdkOpen() {
+    const overlay = document.getElementById('pcCmdkOverlay');
+    const input   = document.getElementById('pcCmdkInput');
+    overlay.classList.add('open');
+    input.value = '';
+    _cmdkActiveIdx = 0;
+    _cmdkRender('');
+    setTimeout(() => input.focus(), 30);
+  }
+  function pcCmdkClose() {
+    document.getElementById('pcCmdkOverlay')?.classList.remove('open');
+  }
+  function _cmdkRender(q) {
+    const list = document.getElementById('pcCmdkList');
+    const idx = _cmdkIndex();
+    const needle = (q || '').toLowerCase().trim();
+    _cmdkResults = needle
+      ? idx.filter(it => (it.label + ' ' + (it.hint||'')).toLowerCase().includes(needle))
+      : idx.filter(it => it.kind === 'section');   // sections only on empty query
+    _cmdkResults = _cmdkResults.slice(0, 40);
+    if (_cmdkActiveIdx >= _cmdkResults.length) _cmdkActiveIdx = 0;
+    if (!_cmdkResults.length) {
+      list.innerHTML = `<div style="padding:24px;text-align:center;color:var(--muted);font-size:13px;">No matches for "${escHtml(q)}".</div>`;
+      return;
+    }
+    list.innerHTML = _cmdkResults.map((it, i) => `
+      <div class="pc-cmdk-item${i === _cmdkActiveIdx ? ' active' : ''}" data-i="${i}">
+        <span style="font-size:18px;">${it.icon}</span>
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:600;color:var(--navy);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escHtml(it.label)}</div>
+          ${it.hint ? `<div style="font-size:11px;color:var(--muted);">${escHtml(it.hint)}</div>` : ''}
+        </div>
+        <span class="type-tag">${it.kind}</span>
+      </div>`).join('');
+    list.querySelectorAll('.pc-cmdk-item').forEach(el => {
+      el.addEventListener('mouseenter', () => {
+        _cmdkActiveIdx = Number(el.dataset.i);
+        list.querySelectorAll('.pc-cmdk-item').forEach((x,i)=>x.classList.toggle('active', i===_cmdkActiveIdx));
+      });
+      el.addEventListener('click', () => _cmdkExec());
+    });
+  }
+  function _cmdkExec() {
+    const hit = _cmdkResults[_cmdkActiveIdx];
+    if (!hit) return;
+    pcCmdkClose();
+    try { hit.onOpen(); } catch(e) { console.warn(e); }
+  }
+  document.addEventListener('keydown', (e) => {
+    // Global hotkey: Cmd-K (Mac) / Ctrl-K (everyone else).
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+      e.preventDefault();
+      pcCmdkOpen();
+      return;
+    }
+    const overlay = document.getElementById('pcCmdkOverlay');
+    if (!overlay || !overlay.classList.contains('open')) return;
+    if (e.key === 'Escape')      { pcCmdkClose(); }
+    else if (e.key === 'ArrowDown') { e.preventDefault(); _cmdkActiveIdx = Math.min(_cmdkActiveIdx + 1, _cmdkResults.length - 1); _cmdkRender(document.getElementById('pcCmdkInput').value); }
+    else if (e.key === 'ArrowUp')   { e.preventDefault(); _cmdkActiveIdx = Math.max(_cmdkActiveIdx - 1, 0); _cmdkRender(document.getElementById('pcCmdkInput').value); }
+    else if (e.key === 'Enter')     { e.preventDefault(); _cmdkExec(); }
+  });
+  document.addEventListener('input', (e) => {
+    if (e.target && e.target.id === 'pcCmdkInput') {
+      _cmdkActiveIdx = 0;
+      _cmdkRender(e.target.value);
+    }
+  });
+  window.pcCmdkOpen = pcCmdkOpen;
+  window.pcCmdkClose = pcCmdkClose;
+
+  function pcPushCrumb(label) {
+    // Append a third step on top of the current panel crumbs.
+    const wrap = document.getElementById('pcCrumbs');
+    if (!wrap) return;
+    // Re-derive current panel from .active
+    const active = document.querySelector('.panel.active')?.id?.replace('panel-','');
+    const panelLabel = _PANEL_TITLES[active] || 'Admin';
+    _setCrumbs([
+      { label: 'Admin', onClick: "showPanel('customers')" },
+      { label: panelLabel, onClick: "showPanel('" + active + "')" },
+      { label: label },
+    ]);
+  }
+  window.pcPushCrumb = pcPushCrumb;
+
   function showPanel(name) {
     // Any panel switch on mobile also closes the drawer.
     closeNav();
@@ -3954,6 +4188,10 @@
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
     document.getElementById(`panel-${name}`).classList.add('active');
     document.getElementById(`nav-${name}`).classList.add('active');
+    _setCrumbs([
+      { label: 'Admin', onClick: "showPanel('customers')" },
+      { label: _PANEL_TITLES[name] || name },
+    ]);
     if (name === 'fs') { fsLoadCurrentTab(); }
     if (name === 'delegations') { loadDelegationsPanel(); }
     if (name === 'companymsg') { cmLoad(); }
@@ -4024,6 +4262,7 @@
   function openCustomerDetail(id) {
     currentCustomer = allCustomers.find(c => c.id === id);
     if (!currentCustomer) return;
+    try { pcPushCrumb(currentCustomer.name); } catch(_){}
     document.getElementById('detailName').textContent = currentCustomer.name;
     document.getElementById('detailMeta').textContent = [
       currentCustomer.customer_code,
