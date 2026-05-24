@@ -15,29 +15,42 @@
 
   // ── Toast ─────────────────────────────────────────────────
   // PC.toast(message, kind?) — kind: 'info' (default) | 'success' | 'warning' | 'error'
+  // Brand-aligned pill: PrimeCool navy by default, lime for success,
+  // amber for warning, brand red for error. Slides up + fades in.
+  // Auto-injects a stylesheet once.
+  if (!document.getElementById('pc-toast-style')) {
+    const s = document.createElement('style');
+    s.id = 'pc-toast-style';
+    s.textContent =
+      '#pc-toast-host{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:99999;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none;}' +
+      '@media (min-width:900px){#pc-toast-host{left:auto;right:24px;bottom:24px;transform:none;align-items:flex-end;}}' +
+      '.pc-toast{display:inline-flex;align-items:center;gap:10px;padding:11px 18px;border-radius:999px;font:600 13px/1.3 "IBM Plex Sans","Barlow",system-ui,sans-serif;box-shadow:0 8px 24px rgba(15,42,74,0.4);max-width:min(420px,calc(100vw - 48px));pointer-events:auto;opacity:0;transform:translateY(8px);transition:opacity 220ms cubic-bezier(0.16,1,0.3,1),transform 220ms cubic-bezier(0.16,1,0.3,1);}' +
+      '.pc-toast.show{opacity:1;transform:translateY(0);}' +
+      '.pc-toast .ico{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;font-size:11px;font-weight:800;flex-shrink:0;}';
+    document.head && document.head.appendChild(s);
+  }
   PC.toast = function (message, kind) {
     kind = kind || 'info';
     let host = document.getElementById('pc-toast-host');
-    if (!host) {
-      host = document.createElement('div');
-      host.id = 'pc-toast-host';
-      host.style.cssText = 'position:fixed;top:18px;right:18px;z-index:99999;display:flex;flex-direction:column;gap:8px;pointer-events:none;';
-      document.body.appendChild(host);
-    }
-    const colors = {
-      info:    { bg: '#0B2545', fg: '#fff' },
-      success: { bg: '#22A08A', fg: '#fff' },
-      warning: { bg: '#f59e0b', fg: '#1a2533' },
-      error:   { bg: '#dc2626', fg: '#fff' },
+    if (!host) { host = document.createElement('div'); host.id = 'pc-toast-host'; document.body.appendChild(host); }
+    const styles = {
+      info:    { bg: '#0F2A4A', fg: '#fff',     ico: 'ℹ', icoBg: 'rgba(125,211,232,0.25)', icoFg: '#7DD3E8' },
+      success: { bg: '#0F2A4A', fg: '#fff',     ico: '✓', icoBg: '#B6E021',                icoFg: '#0F2A4A' },
+      warning: { bg: '#FFF1D6', fg: '#9A6700',  ico: '⚠', icoBg: '#FFD27A',                icoFg: '#5B3B00' },
+      error:   { bg: '#FFE2E2', fg: '#B42318',  ico: '×', icoBg: '#B42318',                icoFg: '#fff'    },
     };
-    const c = colors[kind] || colors.info;
+    const c = styles[kind] || styles.info;
     const el = document.createElement('div');
+    el.className = 'pc-toast';
     el.setAttribute('role', 'status');
     el.setAttribute('aria-live', 'polite');
-    el.style.cssText = 'background:' + c.bg + ';color:' + c.fg + ';padding:10px 14px;border-radius:8px;box-shadow:0 4px 14px rgba(0,0,0,0.18);font:14px Barlow,system-ui,sans-serif;max-width:380px;pointer-events:auto;transition:opacity 200ms ease;';
-    el.textContent = String(message == null ? '' : message);
+    el.style.background = c.bg;
+    el.style.color = c.fg;
+    el.innerHTML = '<span class="ico" style="background:' + c.icoBg + ';color:' + c.icoFg + ';">' + c.ico + '</span><span></span>';
+    el.lastChild.textContent = String(message == null ? '' : message);
     host.appendChild(el);
-    setTimeout(function () { el.style.opacity = '0'; }, 3200);
+    requestAnimationFrame(function () { el.classList.add('show'); });
+    setTimeout(function () { el.classList.remove('show'); }, 3200);
     setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 3700);
   };
 

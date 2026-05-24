@@ -124,6 +124,39 @@
     .pc-pill--dispatched { background: var(--ice);  color: var(--navy); }
     .pc-pill--scheduled  { background: #E7EDF3; color: #5A6B7B; }
     .pc-pill--active     { background: var(--lime); color: var(--navy); }
+    /* ── Skeleton loader ─────────────────────────────────────────────────
+       Replaces "Loading…" plain text in tables/cards with shimmering
+       gray blocks. Auto-applied by pcAutoSkeleton() to any element
+       with class="pc-skeleton" or data-pc-skeleton="<rows>".
+       Inspired by the polished loading states in the reference. */
+    .pc-skeleton-line, .pc-skeleton-block {
+      background: linear-gradient(90deg, #eef2f7 0%, #f5f8fb 50%, #eef2f7 100%);
+      background-size: 200% 100%;
+      border-radius: 6px;
+      animation: pcShimmer 1.4s ease-in-out infinite;
+    }
+    .pc-skeleton-line { height: 12px; margin: 6px 0; }
+    .pc-skeleton-block { height: 38px; }
+    @keyframes pcShimmer {
+      0%   { background-position: 100% 0; }
+      100% { background-position: -100% 0; }
+    }
+    /* Consistent empty-state component. Use:
+         <div class="pc-empty">
+           <div class="pc-empty-glyph">📭</div>
+           <div class="pc-empty-title">Nothing here yet</div>
+           <div class="pc-empty-sub">Helpful context line.</div>
+         </div> */
+    .pc-empty {
+      padding: 32px 20px; text-align: center;
+      color: var(--muted); font-size: 13px;
+    }
+    .pc-empty-glyph { font-size: 28px; margin-bottom: 8px; opacity: 0.7; }
+    .pc-empty-title { font-family: var(--font-display); font-weight: 700;
+                       color: var(--navy); font-size: 15px; margin-bottom: 4px; }
+    .pc-empty-sub   { font-size: 12px; color: var(--muted); max-width: 360px;
+                       margin: 0 auto; line-height: 1.5; }
+
     /* Brand snowflake mark — used in the header logo + anywhere we want
        a tiny visual signature. Inline SVG via background, sized 16-24px. */
     .pc-snowflake {
@@ -10258,6 +10291,44 @@
   document.querySelectorAll('.modal-overlay').forEach(el => {
     el.addEventListener('click', e => { if (e.target === el) el.classList.remove('open'); });
   });
+
+  // ── Skeleton loader auto-swap ─────────────────────────────────────────
+  // Replaces any <td class="empty">Loading…</td> with shimmering skeleton
+  // bars sized to the colspan. Idempotent + debounced — runs on every
+  // DOM mutation so newly-rendered tables get the polish too. Once real
+  // data lands, the table's own render function overwrites the tbody and
+  // the skeletons are gone naturally.
+  function pcSwapLoadingSkeletons(root) {
+    root = root || document;
+    root.querySelectorAll('td.empty, .empty').forEach(td => {
+      const txt = (td.textContent || '').trim().toLowerCase();
+      if (txt !== 'loading…' && txt !== 'loading...') return;
+      if (td.dataset.pcSkeleton === '1') return;       // already swapped
+      td.dataset.pcSkeleton = '1';
+      // Make 3 shimmer bars stacked. Width pattern (90/70/85%) mimics
+      // a typical row of unknown column widths.
+      td.innerHTML =
+        '<div class="pc-skeleton-line" style="width:90%;"></div>' +
+        '<div class="pc-skeleton-line" style="width:70%;"></div>' +
+        '<div class="pc-skeleton-line" style="width:85%;"></div>';
+    });
+  }
+  window.pcSwapLoadingSkeletons = pcSwapLoadingSkeletons;
+  let _pcSkeletonDebounce = null;
+  function _pcSkeletonScan() {
+    if (_pcSkeletonDebounce) return;
+    _pcSkeletonDebounce = setTimeout(() => {
+      _pcSkeletonDebounce = null;
+      try { pcSwapLoadingSkeletons(document); } catch(_) {}
+    }, 80);
+  }
+  document.addEventListener('DOMContentLoaded', _pcSkeletonScan);
+  setTimeout(_pcSkeletonScan, 200);
+  const _pcSkeletonObserver = new MutationObserver(_pcSkeletonScan);
+  setTimeout(() => {
+    const root = document.getElementById('app') || document.body;
+    if (root) _pcSkeletonObserver.observe(root, { childList: true, subtree: true });
+  }, 500);
 
   // ── Sub-field auto-scroll (>7 rows → own scroll wheel) ─────────────────
   // Walks a root subtree, finds candidate "sub-field" containers
