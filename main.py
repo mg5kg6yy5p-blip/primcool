@@ -70,6 +70,10 @@ from database import (
     VALID_MOVEMENT_REASONS, VALID_MOVEMENT_REFS,
     # Pass C receiving queue
     list_open_pos_for_receiving,
+    # Pass D warehouse deliveries
+    create_warehouse_delivery, list_warehouse_deliveries,
+    mark_delivery_loaded, mark_delivery_delivered,
+    cancel_warehouse_delivery, VALID_DELIVERY_KINDS,
     delete_tech, set_tech_pin,
     get_tech_by_code_and_email, create_pin_reset_token, consume_pin_reset_token,
     create_photo, get_visit_photos, get_photo_by_id, delete_photo,
@@ -8930,6 +8934,123 @@ def admin_warehouse_receiving_queue(request: Request):
     received see the queue."""
     _require_perm(request, "po:receive")
     return list_open_pos_for_receiving()
+
+
+# ── Warehouse deliveries / shipping queue (Pass D) ──────────────────
+
+class WarehouseDeliveryCreate(BaseModel):
+    source_location_id: int
+    part_id:            int
+    quantity:           float
+    destination_kind:   str        # see VALID_DELIVERY_KINDS
+    destination_id:     Optional[int]  = None
+    destination_label:  Optional[str]  = None
+    runner_staff_id:    Optional[int]  = None
+    notes:              Optional[str]  = None
+
+
+@app.post("/api/admin/warehouse/deliveries")
+def admin_warehouse_create_delivery(request: Request,
+                                    body: WarehouseDeliveryCreate):
+    """Create a pending delivery. Doesn't move inventory until
+    /mark-loaded is called (runner has the parts physically loaded).
+    Gated by warehouse:manage_assets (write-side)."""
+    admin = _require_perm(request, "warehouse:manage_assets")
+    try:
+        did = create_warehouse_delivery(
+            source_location_id=body.source_location_id,
+            part_id=body.part_id,
+            quantity=float(body.quantity),
+            destination_kind=body.destination_kind,
+            created_by_admin_id=admin["id"],
+            destination_id=body.destination_id,
+            destination_label=body.destination_label,
+            runner_staff_id=body.runner_staff_id,
+            notes=body.notes,
+        )
+    except ValueError as ve:
+        raise HTTPException(400, str(ve))
+    _audit_from(admin, "warehouse.delivery.created", request,
+                target_type="warehouse_delivery", target_id=did,
+                after={"part_id": body.part_id,
+                       "quantity": body.quantity,
+                       "destination_kind": body.destination_kind,
+                       "destination_id": body.destination_id,
+                       "runner_staff_id": body.runner_staff_id})
+    return {"ok": True, "id": did}
+
+
+@app.get("/api/admin/warehouse/deliveries")
+def admin_warehouse_list_deliveries(request: Request,
+                                    status: Optional[str] = None,
+                                    runner_staff_id: Optional[int] = None,
+                                    limit: int = 200):
+    """Filtered delivery list. Gated by warehouse:view_queue (read)."""
+    _require_perm(request, "warehouse:view_queue")
+    if status and status not in (
+        "pending", "loaded", "delivered", "cancelled"
+    ):
+        raise HTTPException(400, "invalid status filter")
+    return list_warehouse_deliveries(
+        status=status, runner_staff_id=runner_staff_id,
+        limit=max(1, min(int(limit), 1000)),
+    )
+
+
+@app.post("/api/admin/warehouse/deliveries/{delivery_id}/mark-loaded")
+def admin_warehouse_mark_loaded(request: Request, delivery_id: int):
+    """Runner has loaded the parts. Posts the outbound part_movement
+    (qty_delta<0, from_location set, chain-hashed) and flips the
+    delivery to 'loaded'. Idempotent."""
+    admin = _require_perm(request, "warehouse:manage_assets")
+    try:
+        result = mark_delivery_loaded(
+            delivery_id,
+            performed_by_admin_id=admin["id"],
+            performed_by_label=admin.get("name"),
+            performed_by_prid=admin.get("prid"),
+        )
+    except ValueError as ve:
+        raise HTTPException(404, str(ve))
+    _audit_from(admin, "warehouse.delivery.loaded", request,
+                target_type="warehouse_delivery", target_id=delivery_id,
+                after={"movement_id": result.get("movement_id"),
+                       "already_loaded": result.get("already_loaded", False)})
+    return result
+
+
+@app.post("/api/admin/warehouse/deliveries/{delivery_id}/mark-delivered")
+def admin_warehouse_mark_delivered(request: Request, delivery_id: int):
+    """Final transition — just timestamps. Returns 409 if the delivery
+    isn't in 'loaded' state (can't deliver something that wasn't
+    physically loaded onto the truck)."""
+    admin = _require_perm(request, "warehouse:manage_assets")
+    if not mark_delivery_delivered(delivery_id):
+        raise HTTPException(409, "Delivery must be in 'loaded' status to mark delivered")
+    _audit_from(admin, "warehouse.delivery.delivered", request,
+                target_type="warehouse_delivery", target_id=delivery_id)
+    return {"ok": True}
+
+
+class CancelBody(BaseModel):
+    reason: Optional[str] = None
+
+
+@app.post("/api/admin/warehouse/deliveries/{delivery_id}/cancel")
+def admin_warehouse_cancel_delivery(request: Request, delivery_id: int,
+                                    body: CancelBody):
+    """Cancel a pending delivery before it's loaded. Refuses to
+    cancel a loaded/delivered delivery (use a 'return' movement
+    instead — the parts have already left the warehouse)."""
+    admin = _require_perm(request, "warehouse:manage_assets")
+    if not cancel_warehouse_delivery(delivery_id, reason=body.reason):
+        raise HTTPException(409,
+            "Only pending deliveries can be cancelled. If already loaded,"
+            " record a 'return' movement to bring parts back into stock.")
+    _audit_from(admin, "warehouse.delivery.cancelled", request,
+                target_type="warehouse_delivery", target_id=delivery_id,
+                after={"reason": body.reason})
+    return {"ok": True}
 
 
 @app.get("/warehouse")

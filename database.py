@@ -645,6 +645,39 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_part_movements_ref "
                 "ON part_movements(reference_kind, reference_id)")
 
+    # Warehouse deliveries (Pass D) — runner-driven outbound shipments.
+    # A delivery progresses through pending → loaded → delivered. The
+    # loaded transition posts the outbound part_movement (from source
+    # → out the door); the delivered transition just stamps the final
+    # timestamp so the runner can confirm receipt at destination.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS warehouse_deliveries (
+            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_location_id   INTEGER NOT NULL REFERENCES fs_assets(id),
+            part_id              INTEGER NOT NULL REFERENCES parts(id),
+            quantity             REAL NOT NULL,
+            destination_kind     TEXT NOT NULL CHECK (destination_kind IN
+                                  ('customer','visit','tech','other')),
+            destination_id       INTEGER,  -- soft FK; depends on kind
+            destination_label    TEXT,     -- human-readable fallback
+            runner_staff_id      INTEGER REFERENCES technicians(id),
+            status               TEXT NOT NULL DEFAULT 'pending' CHECK
+                                  (status IN ('pending','loaded','delivered','cancelled')),
+            notes                TEXT,
+            created_by_admin_id  INTEGER NOT NULL,
+            created_at           TEXT NOT NULL,
+            loaded_at            TEXT,
+            delivered_at         TEXT,
+            cancelled_at         TEXT,
+            cancelled_reason     TEXT,
+            movement_id          INTEGER REFERENCES part_movements(id)
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_wh_deliveries_status "
+                "ON warehouse_deliveries(status, created_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_wh_deliveries_runner "
+                "ON warehouse_deliveries(runner_staff_id, status)")
+
     con.execute("""
         CREATE TABLE IF NOT EXISTS invoices (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4921,9 +4954,17 @@ def list_warehouse_movements(part_id: int = None,
         where.append("m.reference_id = ?"); args.append(int(reference_id))
     if since:
         where.append("m.created_at >= ?"); args.append(since)
+    # Note: movement_type holds the reason taxonomy ('receipt' /
+    # 'pick' / 'shipped' / etc.); the legacy `reason` column holds
+    # the free-text notes. We alias movement_type AS reason in the
+    # API contract so callers get the canonical token, not the
+    # free-text. notes is surfaced separately as movement_notes.
     sql = """
         SELECT m.id, m.part_id, p.sku, p.name AS part_name, p.unit,
-               m.quantity_delta, m.reason, m.reference_kind, m.reference_id,
+               m.quantity_delta,
+               m.movement_type AS reason,
+               m.reason        AS movement_notes,
+               m.reference_kind, m.reference_id,
                m.from_location_id, fa.asset_code AS from_location_code,
                fa.label                          AS from_location_label,
                m.to_location_id,   ta.asset_code AS to_location_code,
@@ -6644,6 +6685,158 @@ def record_goods_received(po_id: int, po_line_id: int, part_id: int,
     con.commit()
     con.close()
     return grn_id
+
+
+VALID_DELIVERY_KINDS = ("customer", "visit", "tech", "other")
+
+
+def create_warehouse_delivery(source_location_id: int, part_id: int,
+                                quantity: float,
+                                destination_kind: str,
+                                created_by_admin_id: int,
+                                destination_id: int = None,
+                                destination_label: str = None,
+                                runner_staff_id: int = None,
+                                notes: str = None) -> int:
+    """Records a pending delivery. No inventory movement yet — that
+    happens when mark_delivery_loaded is called (runner has the parts
+    physically loaded on their truck). Returns the new delivery id."""
+    if destination_kind not in VALID_DELIVERY_KINDS:
+        raise ValueError(f"invalid destination_kind: {destination_kind}")
+    if quantity <= 0:
+        raise ValueError("quantity must be positive")
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    cur = con.execute(
+        """INSERT INTO warehouse_deliveries
+            (source_location_id, part_id, quantity, destination_kind,
+             destination_id, destination_label, runner_staff_id,
+             status, notes, created_by_admin_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)""",
+        (source_location_id, part_id, float(quantity), destination_kind,
+         destination_id, destination_label, runner_staff_id, notes,
+         created_by_admin_id, now),
+    )
+    did = cur.lastrowid
+    con.commit()
+    con.close()
+    return did
+
+
+def list_warehouse_deliveries(status: str = None,
+                               runner_staff_id: int = None,
+                               limit: int = 200) -> list:
+    """Filtered delivery list with parts + location + runner joined."""
+    where = []
+    args  = []
+    if status:
+        where.append("d.status = ?"); args.append(status)
+    if runner_staff_id is not None:
+        where.append("d.runner_staff_id = ?"); args.append(int(runner_staff_id))
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    sql = f"""
+        SELECT d.*,
+               p.sku, p.name AS part_name, p.unit,
+               a.asset_code AS source_code, a.label AS source_label,
+               t.name AS runner_name, t.tech_code AS runner_code
+        FROM warehouse_deliveries d
+        JOIN parts p           ON d.part_id = p.id
+        JOIN fs_assets a       ON d.source_location_id = a.id
+        LEFT JOIN technicians t ON d.runner_staff_id = t.id
+        {where_sql}
+        ORDER BY d.status='pending' DESC, d.status='loaded' DESC,
+                 d.created_at DESC
+        LIMIT ?
+    """
+    args.append(int(limit))
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def mark_delivery_loaded(delivery_id: int, performed_by_admin_id: int,
+                          performed_by_label: str = None,
+                          performed_by_prid: str = None) -> dict:
+    """Runner has the parts physically loaded. Posts the outbound
+    part_movement (qty_delta < 0, from_location_id set) and flips
+    the delivery to 'loaded'. Idempotent: if already loaded, returns
+    the existing movement_id."""
+    con = _con()
+    row = con.execute(
+        "SELECT * FROM warehouse_deliveries WHERE id = ?", (delivery_id,)
+    ).fetchone()
+    if not row:
+        con.close()
+        raise ValueError("delivery not found")
+    row = dict(row)
+    if row["status"] in ("loaded", "delivered"):
+        con.close()
+        return {"ok": True, "movement_id": row.get("movement_id"),
+                "already_loaded": True}
+    if row["status"] == "cancelled":
+        con.close()
+        raise ValueError("delivery is cancelled")
+    con.close()
+    # Post the outbound movement via record_part_movement (handles
+    # chain hashing + transactional parts.quantity update).
+    movement_id = record_part_movement(
+        part_id=row["part_id"],
+        quantity_delta=-float(row["quantity"]),
+        reason="shipped",
+        from_location_id=row["source_location_id"],
+        performed_by_type="admin",
+        performed_by_id=performed_by_admin_id,
+        performed_by_label=performed_by_label,
+        performed_by_prid=performed_by_prid,
+        reference_kind="delivery",
+        reference_id=delivery_id,
+        notes=f"loaded for delivery #{delivery_id}",
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    con.execute(
+        "UPDATE warehouse_deliveries SET status='loaded', loaded_at=?, "
+        "movement_id=? WHERE id=?",
+        (now, movement_id, delivery_id),
+    )
+    con.commit()
+    con.close()
+    return {"ok": True, "movement_id": movement_id, "already_loaded": False}
+
+
+def mark_delivery_delivered(delivery_id: int) -> bool:
+    """Final transition — just timestamps. The outbound movement
+    already posted when the delivery was marked loaded."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    cur = con.execute(
+        "UPDATE warehouse_deliveries SET status='delivered', "
+        "delivered_at=? WHERE id=? AND status='loaded'",
+        (now, delivery_id),
+    )
+    con.commit()
+    n = cur.rowcount
+    con.close()
+    return n > 0
+
+
+def cancel_warehouse_delivery(delivery_id: int, reason: str = None) -> bool:
+    """Cancel a pending delivery before it's loaded. If already loaded,
+    the operator should record a 'return' movement separately rather
+    than cancelling — the parts have already left the warehouse."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    cur = con.execute(
+        "UPDATE warehouse_deliveries SET status='cancelled', "
+        "cancelled_at=?, cancelled_reason=? "
+        "WHERE id=? AND status='pending'",
+        (now, reason, delivery_id),
+    )
+    con.commit()
+    n = cur.rowcount
+    con.close()
+    return n > 0
 
 
 def list_open_pos_for_receiving() -> list:

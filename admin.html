@@ -1204,6 +1204,7 @@
             <button class="filter-btn" id="wh-tab-staff"     onclick="whSwitchTab('staff')">Staff</button>
             <button class="filter-btn" id="wh-tab-receiving" onclick="whSwitchTab('receiving')">Receiving</button>
             <button class="filter-btn" id="wh-tab-stock"     onclick="whSwitchTab('stock')">Stock</button>
+            <button class="filter-btn" id="wh-tab-shipping"  onclick="whSwitchTab('shipping')">Shipping</button>
             <button class="filter-btn" id="wh-tab-checklist" onclick="whSwitchTab('checklist')">Checklists</button>
             <button class="filter-btn" id="wh-tab-sheets"    onclick="whSwitchTab('sheets')">Month-end sheets</button>
           </div>
@@ -1274,6 +1275,77 @@
                 </tr></thead>
                 <tbody id="wh-stock-body"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
               </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Sub-tab: Shipping (deliveries log) ── -->
+        <div id="wh-pane-shipping" style="display:none;">
+          <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:18px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+              <h3 style="margin:0;color:var(--navy);font-size:16px;">Outbound deliveries</h3>
+              <div style="display:flex;gap:8px;align-items:center;">
+                <select id="wh-ship-status" onchange="whLoadShipping()" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
+                  <option value="">Active (pending + loaded)</option>
+                  <option value="pending">Pending</option>
+                  <option value="loaded">Loaded (in transit)</option>
+                  <option value="delivered">Delivered</option>
+                  <option value="cancelled">Cancelled</option>
+                </select>
+                <button class="btn btn-primary btn-sm" onclick="whOpenNewDelivery()">+ New delivery</button>
+              </div>
+            </div>
+            <div class="muted" style="font-size:12px;margin-bottom:12px;">
+              Runner-driven outbound shipments — delivering a part to a
+              customer site, between hubs, or to a tech mid-route.
+              <strong>Pending</strong> = scheduled, no inventory move yet.
+              <strong>Loaded</strong> = parts physically on the truck, outbound movement posted.
+              <strong>Delivered</strong> = handed off at destination.
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr>
+                  <th>When</th><th>From</th><th>Part</th><th class="num">Qty</th>
+                  <th>Destination</th><th>Runner</th><th>Status</th><th></th>
+                </tr></thead>
+                <tbody id="wh-ship-body"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- New delivery modal -->
+        <div class="modal-overlay" id="modal-whNewDelivery">
+          <div class="modal-card">
+            <div class="modal-header">
+              <h3>Schedule a delivery</h3>
+              <button class="modal-close" onclick="closeModal('whNewDelivery')">×</button>
+            </div>
+            <div class="modal-body">
+              <label class="modal-label">From location</label>
+              <select id="wh-nd-from" class="modal-input"></select>
+              <label class="modal-label">Part</label>
+              <select id="wh-nd-part" class="modal-input"></select>
+              <label class="modal-label">Quantity</label>
+              <input id="wh-nd-qty" class="modal-input" type="number" min="0.01" step="0.01">
+              <label class="modal-label">Destination type</label>
+              <select id="wh-nd-dkind" class="modal-input">
+                <option value="customer">Customer site</option>
+                <option value="tech">Tech (mid-route)</option>
+                <option value="visit">Visit (specific job)</option>
+                <option value="other">Other / ad-hoc</option>
+              </select>
+              <label class="modal-label">Destination label (free text)</label>
+              <input id="wh-nd-dlabel" class="modal-input" type="text" placeholder="e.g. Royal Plaza maintenance, 14 King St.">
+              <label class="modal-label">Runner (parts runner)</label>
+              <select id="wh-nd-runner" class="modal-input"></select>
+              <label class="modal-label">Notes (optional)</label>
+              <input id="wh-nd-notes" class="modal-input" type="text">
+              <div class="form-error" id="err-whNewDelivery"></div>
+            </div>
+            <div class="modal-footer">
+              <button class="btn btn-ghost"   onclick="closeModal('whNewDelivery')">Cancel</button>
+              <button class="btn btn-primary" onclick="whSubmitNewDelivery()">Schedule</button>
             </div>
           </div>
         </div>
@@ -5425,6 +5497,7 @@
     if (tab === 'staff')     whLoadStaff();
     if (tab === 'receiving') whLoadReceiving();
     if (tab === 'stock')     { whLoadStockLocations(); whLoadStock(); }
+    if (tab === 'shipping')  whLoadShipping();
     if (tab === 'checklist') whLoadAssetsThenChecklist();
     if (tab === 'sheets')    { whLoadAssetsForChecksheet(); whLoadChecksheets(); }
   }
@@ -5897,6 +5970,185 @@
     } catch (e) {
       errEl.textContent = e.message || 'Transfer failed.';
       errEl.style.display = 'block';
+    }
+  }
+
+  // ── Sub-tab: Shipping / deliveries log (Pass D) ──────────────────
+  let _whPartsCache = null;
+  let _whRunnersCache = null;
+
+  async function _whLoadPartsCache() {
+    if (_whPartsCache) return _whPartsCache;
+    try { _whPartsCache = (await api('GET', '/api/admin/parts')) || []; }
+    catch (e) { _whPartsCache = []; }
+    return _whPartsCache;
+  }
+  async function _whLoadRunnersCache() {
+    if (_whRunnersCache) return _whRunnersCache;
+    try {
+      // Anyone in the warehouse department can run a delivery, but
+      // parts_runner is the canonical role. We surface both so the
+      // operator can dispatch a floor staffer in a pinch.
+      const all = await api('GET', '/api/admin/warehouse/staff');
+      _whRunnersCache = (all || []).filter(s =>
+        ['parts_runner', 'warehouse_floor', 'warehouse_manager'].includes(s.staff_type));
+    } catch (e) { _whRunnersCache = []; }
+    return _whRunnersCache;
+  }
+
+  async function whLoadShipping() {
+    const tbody = document.getElementById('wh-ship-body');
+    const status = document.getElementById('wh-ship-status').value;
+    try {
+      // Empty status filter means "active" — fetch pending + loaded
+      // separately and combine; cleaner than asking the server to
+      // OR them inline.
+      let rows;
+      if (status) {
+        rows = await api('GET', '/api/admin/warehouse/deliveries?status=' + encodeURIComponent(status));
+      } else {
+        const [p, l] = await Promise.all([
+          api('GET', '/api/admin/warehouse/deliveries?status=pending'),
+          api('GET', '/api/admin/warehouse/deliveries?status=loaded'),
+        ]);
+        rows = [...p, ...l];
+      }
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty">No deliveries in this state.</td></tr>';
+        return;
+      }
+      const _statusBadge = (s) => {
+        const map = {
+          pending:   ['#fef3c7', '#92400e', 'PENDING'],
+          loaded:    ['#dbeafe', '#1e40af', 'LOADED'],
+          delivered: ['#dcfce7', '#166534', 'DELIVERED'],
+          cancelled: ['#fee2e2', '#991b1b', 'CANCELLED'],
+        };
+        const [bg, fg, lbl] = map[s] || ['#e5e7eb', '#374151', s.toUpperCase()];
+        return `<span class="badge" style="background:${bg};color:${fg};">${lbl}</span>`;
+      };
+      tbody.innerHTML = rows.map(r => {
+        const dest = r.destination_label ||
+          (r.destination_kind + (r.destination_id ? ' #' + r.destination_id : ''));
+        let actions = '';
+        if (r.status === 'pending') {
+          actions = `<button class="btn btn-primary btn-sm" onclick="whMarkLoaded(${r.id})">Mark loaded</button>
+                     <button class="btn btn-ghost btn-sm" onclick="whCancelDelivery(${r.id})">Cancel</button>`;
+        } else if (r.status === 'loaded') {
+          actions = `<button class="btn btn-primary btn-sm" onclick="whMarkDelivered(${r.id})">Mark delivered</button>`;
+        }
+        return `<tr>
+          <td><span class="muted" style="font-size:11px;">${escHtml((r.created_at || '').slice(0, 16).replace('T', ' '))}</span></td>
+          <td><strong>${escHtml(r.source_code)}</strong></td>
+          <td><span style="font-family:monospace;font-size:11px;">${escHtml(r.sku)}</span> ${escHtml(r.part_name)}</td>
+          <td class="num">${r.quantity} ${escHtml(r.unit || '')}</td>
+          <td>${escHtml(dest)}<div class="muted" style="font-size:11px;">${escHtml(r.destination_kind)}</div></td>
+          <td>${r.runner_name ? escHtml(r.runner_name) + '<div class="muted" style="font-size:11px;">' + escHtml(r.runner_code) + '</div>' : '<span class="muted">unassigned</span>'}</td>
+          <td>${_statusBadge(r.status)}</td>
+          <td>${actions}</td>
+        </tr>`;
+      }).join('');
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="8" class="empty">Could not load shipping: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  async function whOpenNewDelivery() {
+    // Populate dropdowns from caches
+    await Promise.all([
+      _whLoadAssetsCache(), _whLoadPartsCache(), _whLoadRunnersCache(),
+    ]);
+    const fromSel   = document.getElementById('wh-nd-from');
+    const partSel   = document.getElementById('wh-nd-part');
+    const runnerSel = document.getElementById('wh-nd-runner');
+    fromSel.innerHTML = '';
+    _whAssetOptions().forEach(a => {
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = `${a.asset_code} — ${a.label}`;
+      if (a.asset_type === 'storage') opt.selected = true;
+      fromSel.appendChild(opt);
+    });
+    partSel.innerHTML = '';
+    (_whPartsCache || []).filter(p => p.active).forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = `${p.sku} — ${p.name} (on hand ${p.quantity})`;
+      partSel.appendChild(opt);
+    });
+    runnerSel.innerHTML = '<option value="">(unassigned)</option>';
+    (_whRunnersCache || []).forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s.id;
+      opt.textContent = `${s.tech_code} — ${s.name} (${s.staff_type.replace(/_/g, ' ')})`;
+      if (s.staff_type === 'parts_runner') opt.selected = true;
+      runnerSel.appendChild(opt);
+    });
+    ['wh-nd-qty', 'wh-nd-dlabel', 'wh-nd-notes'].forEach(id => {
+      document.getElementById(id).value = '';
+    });
+    document.getElementById('wh-nd-dkind').value = 'customer';
+    document.getElementById('err-whNewDelivery').style.display = 'none';
+    document.getElementById('modal-whNewDelivery').classList.add('open');
+  }
+
+  async function whSubmitNewDelivery() {
+    const body = {
+      source_location_id: parseInt(document.getElementById('wh-nd-from').value, 10),
+      part_id:            parseInt(document.getElementById('wh-nd-part').value, 10),
+      quantity:           parseFloat(document.getElementById('wh-nd-qty').value) || 0,
+      destination_kind:   document.getElementById('wh-nd-dkind').value,
+      destination_label:  document.getElementById('wh-nd-dlabel').value.trim(),
+      notes:              document.getElementById('wh-nd-notes').value.trim(),
+    };
+    const runnerVal = document.getElementById('wh-nd-runner').value;
+    if (runnerVal) body.runner_staff_id = parseInt(runnerVal, 10);
+    const errEl = document.getElementById('err-whNewDelivery');
+    errEl.style.display = 'none';
+    if (!body.source_location_id || !body.part_id || body.quantity <= 0) {
+      errEl.textContent = 'Source, part, and a positive quantity are required.';
+      errEl.style.display = 'block';
+      return;
+    }
+    try {
+      await api('POST', '/api/admin/warehouse/deliveries', body);
+      closeModal('whNewDelivery');
+      toast('Delivery scheduled.', 'success');
+      whLoadShipping();
+    } catch (e) {
+      errEl.textContent = e.message || 'Schedule failed.';
+      errEl.style.display = 'block';
+    }
+  }
+
+  async function whMarkLoaded(id) {
+    if (!confirm('Confirm parts physically loaded? An outbound movement will be posted (qty leaves source location).')) return;
+    try {
+      await api('POST', `/api/admin/warehouse/deliveries/${id}/mark-loaded`);
+      toast('Marked loaded.', 'success');
+      whLoadShipping();
+    } catch (e) {
+      toast('Failed: ' + e.message, 'error');
+    }
+  }
+  async function whMarkDelivered(id) {
+    if (!confirm('Confirm delivery completed at destination?')) return;
+    try {
+      await api('POST', `/api/admin/warehouse/deliveries/${id}/mark-delivered`);
+      toast('Marked delivered.', 'success');
+      whLoadShipping();
+    } catch (e) {
+      toast('Failed: ' + e.message, 'error');
+    }
+  }
+  async function whCancelDelivery(id) {
+    const reason = prompt('Reason for cancellation (optional):') || '';
+    try {
+      await api('POST', `/api/admin/warehouse/deliveries/${id}/cancel`, { reason });
+      toast('Cancelled.', 'success');
+      whLoadShipping();
+    } catch (e) {
+      toast('Failed: ' + e.message, 'error');
     }
   }
 
