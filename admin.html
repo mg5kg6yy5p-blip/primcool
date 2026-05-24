@@ -10112,16 +10112,31 @@
   function pcAutoScrollSubfields(root) {
     root = root || document;
     const candidates = [];
-    // (1) Tables inside modal bodies.
-    root.querySelectorAll('.modal-body table').forEach(t => candidates.push({ wrap: t.closest('.table-wrap') || t.parentElement, table: t, kind: 'table' }));
-    // (2) Tables inside details.section bodies (collapsible cards).
-    root.querySelectorAll('details.section table').forEach(t => candidates.push({ wrap: t.closest('.table-wrap') || t.parentElement, table: t, kind: 'table' }));
-    // (2b) Tables inside any Warehouse Ops sub-pane or KPI sub-panel —
-    //      these are by-definition sub-fields of the parent panel.
-    root.querySelectorAll('[id^="wh-pane-"] table, [id^="kpiSubpanel-"] table').forEach(t => candidates.push({ wrap: t.closest('.table-wrap') || t.parentElement, table: t, kind: 'table' }));
-    // (3) Explicit opt-in: any descendant of an element with the
-    //     data-pc-subfield="1" attribute OR class subfield-scroll-host.
-    root.querySelectorAll('[data-pc-subfield="1"] table, .subfield-scroll-host table').forEach(t => candidates.push({ wrap: t.closest('.table-wrap') || t.parentElement, table: t, kind: 'table' }));
+    // Operator directive expanded: EVERY table/list with >7 rows gets
+    // its own scroll wheel, top-level panel tables included (Customers,
+    // All Visits, Invoices, Audit Log, Timesheets, etc.), not just
+    // sub-fields nested inside cards/modals.
+    // (0) Every .table-wrap (top-level panel tables AND nested ones).
+    root.querySelectorAll('.table-wrap').forEach(w => {
+      const t = w.querySelector('table');
+      if (t) candidates.push({ wrap: w, table: t, kind: 'table' });
+    });
+    // (1) Tables inside modal bodies that aren't wrapped in .table-wrap.
+    root.querySelectorAll('.modal-body table').forEach(t => {
+      if (!t.closest('.table-wrap')) candidates.push({ wrap: t.parentElement, table: t, kind: 'table' });
+    });
+    // (2) Tables inside details.section bodies.
+    root.querySelectorAll('details.section table').forEach(t => {
+      if (!t.closest('.table-wrap')) candidates.push({ wrap: t.parentElement, table: t, kind: 'table' });
+    });
+    // (2b) Tables inside any Warehouse Ops sub-pane or KPI sub-panel.
+    root.querySelectorAll('[id^="wh-pane-"] table, [id^="kpiSubpanel-"] table').forEach(t => {
+      if (!t.closest('.table-wrap')) candidates.push({ wrap: t.parentElement, table: t, kind: 'table' });
+    });
+    // (3) Explicit opt-in: data-pc-subfield="1" or .subfield-scroll-host.
+    root.querySelectorAll('[data-pc-subfield="1"] table, .subfield-scroll-host table').forEach(t => {
+      if (!t.closest('.table-wrap')) candidates.push({ wrap: t.parentElement, table: t, kind: 'table' });
+    });
     // Same opt-in for non-table lists.
     root.querySelectorAll('[data-pc-subfield="1"] > ul, [data-pc-subfield="1"] > ol, .subfield-scroll-host > ul, .subfield-scroll-host > ol').forEach(l => candidates.push({ wrap: l, table: l, kind: 'list' }));
     candidates.forEach(c => {
