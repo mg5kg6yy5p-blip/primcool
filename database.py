@@ -3755,24 +3755,57 @@ def consume_pin_reset_token(token: str):
 
 
 def delete_tech(tech_id: int):
-    """Cascade-clean a tech account.
+    """Soft-delete a tech account.
 
-    Owned operational config is hard-deleted (fs_assets, schedule,
-    on-call, certs, CV, KPI per-tech rows, overtime approvals, clock
-    events, reset tokens, reviews). Historical / financial rows are
-    preserved with a soft NULL of the tech reference:
-      * maintenance_visits.assigned_tech_id → NULL
-      * invoice_line_items.tech_id          → NULL
-    fs_audits is left alone — append-only chain; the auditor_id
-    becomes a soft reference once the tech row is gone, but the
-    chain hash continues to validate.
+    Operator directive (May 2026): "never delete tech records; soft-
+    delete + show them in Technicians under an 'Inactive/Offboarded'
+    filter so historic records remain traceable."
 
-    Without this cascade the orphan asset rows kept showing as
-    "assigned to a non-existent tech" in the 5S admin views — field
-    technicians ran into this when an admin deactivated and re-added
-    a tech via a different code."""
+    Behavior:
+      * active=0, employment_status='terminated', terminated_at=now
+      * fs_assets: assigned_tech_id → NULL on every asset they had
+        (so the 5S admin views don't show "assigned to a deactivated
+        tech"; the assets become unassigned + available for reassignment)
+      * Everything else is preserved — schedule, CV, certifications,
+        KPI scores, reviews, clock events, payslips. The terminated
+        tech row stays JOIN-able from maintenance_visits +
+        invoice_line_items + fs_audits, so historic dashboards never
+        lose attribution.
+
+    Use hard_delete_tech() ONLY from the prod-cutover wipe script
+    where the operator wants a clean slate."""
+    now = datetime.now(timezone.utc).isoformat()
     con = _con()
-    # Owned operational tables — hard delete.
+    con.execute(
+        "UPDATE technicians SET active = 0, "
+        "employment_status = 'terminated', terminated_at = ? "
+        "WHERE id = ?",
+        (now, tech_id),
+    )
+    # Unassign assets so the 5S register doesn't flag orphans, but
+    # don't delete the asset rows themselves.
+    try:
+        con.execute(
+            "UPDATE fs_assets SET assigned_tech_id = NULL "
+            "WHERE assigned_tech_id = ?",
+            (tech_id,),
+        )
+    except sqlite3.OperationalError:
+        pass
+    con.commit()
+    con.close()
+
+
+def hard_delete_tech(tech_id: int):
+    """Cascade-DELETE a tech account. Operator-only path used by the
+    prod-cutover wipe script (scripts/cleanup_techs_to_t01.py and
+    scripts/wipe_and_reseed_prod.py). The admin UI's "Delete" button
+    routes through soft delete_tech() above per operator directive.
+
+    Owned operational config is hard-deleted; historical references
+    on maintenance_visits + invoice_line_items are NULLed. fs_audits
+    is left untouched (append-only chain)."""
+    con = _con()
     owned_tables = [
         ("fs_assets",                    "assigned_tech_id"),
         ("tech_schedules",               "tech_id"),
@@ -3799,9 +3832,7 @@ def delete_tech(tech_id: int):
         try:
             con.execute(f"DELETE FROM {table} WHERE {col} = ?", (tech_id,))
         except sqlite3.OperationalError:
-            # Table may not exist on older deployments; skip quietly.
             pass
-    # Soft handle history.
     con.execute("UPDATE maintenance_visits SET assigned_tech_id = NULL "
                 "WHERE assigned_tech_id = ?", (tech_id,))
     try:
@@ -3811,7 +3842,6 @@ def delete_tech(tech_id: int):
         pass
     con.execute("DELETE FROM technicians WHERE id = ?", (tech_id,))
     con.commit()
-    con.close()
     con.close()
 
 

@@ -6938,12 +6938,20 @@ def admin_customer_update(request: Request, customer_id: int, body: CustomerProf
     return {"ok": True, "customer": after}
 
 
-@app.get("/api/admin/customers/{customer_id}/equipment", response_model=Dict[str, Any])
+@app.get("/api/admin/customers/{customer_id}/equipment",
+         response_model=List[Dict[str, Any]])
 def admin_list_equipment(request: Request, customer_id: int):
     """super_admin sees the enriched view (PM/CM dates + decrypted serial/
     location/notes) and an audit row is written. Other roles fall back to
     the legacy basic equipment list — needed because the existing Customers
-    tab "View" button is wired to this endpoint for all admin roles."""
+    tab "View" button is wired to this endpoint for all admin roles.
+
+    response_model was Dict[str, Any] but both backing helpers
+    (get_customer_equipment_with_visits, get_customer_equipment) return
+    a LIST of equipment rows. FastAPI tried to coerce list → dict and
+    500'd with ResponseValidationError on every call — fully broke the
+    Equipment Register on customer detail pages. Field-reported by
+    super_admin May 2026."""
     admin = _require_admin(request)
     if admin["role"] == "super_admin":
         cust = get_customer_by_id(customer_id)

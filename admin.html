@@ -935,7 +935,15 @@
         <div id="techList">
           <div class="top-bar">
             <h2>Technicians</h2>
-            <div style="display:flex;gap:8px;">
+            <div style="display:flex;gap:8px;align-items:center;">
+              <!-- Active / Inactive / All — offboarded techs stay in the
+                   list so historic visit attribution remains visible. -->
+              <button class="filter-btn active" id="techFilter-active"
+                      onclick="setTechFilter('active', this)">Active</button>
+              <button class="filter-btn"        id="techFilter-inactive"
+                      onclick="setTechFilter('inactive', this)">Inactive</button>
+              <button class="filter-btn"        id="techFilter-all"
+                      onclick="setTechFilter('all', this)">All</button>
               <button class="btn btn-ghost" id="exportTechsBtn" onclick="exportResource('techs')" style="display:none;">⬇ Export CSV</button>
               <button class="btn btn-primary" onclick="openModal('addTech')">+ Add Technician</button>
             </div>
@@ -943,7 +951,7 @@
           <div class="table-wrap">
             <table>
               <thead><tr>
-                <th>Code</th><th>Name</th><th>Phone</th><th>Active Jobs</th><th>Status</th><th>Actions</th>
+                <th>Code</th><th>Name</th><th>Phone</th><th>Open Jobs</th><th>Status</th><th>Actions</th>
               </tr></thead>
               <tbody id="techTableBody"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
             </table>
@@ -9082,6 +9090,18 @@
   }
 
   // ── Technicians ────────────────────────────────────────────────────────────
+  // techFilter: 'active' (default) | 'inactive' | 'all'. Inactive shows
+  // offboarded / terminated techs so historic visit attribution
+  // remains discoverable from the admin UI.
+  let techFilter = 'active';
+
+  function setTechFilter(f, el) {
+    techFilter = f;
+    document.querySelectorAll('[id^="techFilter-"]').forEach(b =>
+      b.classList.toggle('active', b === el));
+    renderTechs();
+  }
+
   async function loadTechs() {
     try {
       allTechs = await api('GET', '/api/admin/techs');
@@ -9096,9 +9116,21 @@
       tbody.innerHTML = '<tr><td colspan="6" class="empty">No technicians yet. Add your first one.</td></tr>';
       return;
     }
+    const rows = allTechs.filter(t =>
+      techFilter === 'all'      ? true
+      : techFilter === 'active' ? !!t.active
+                                : !t.active
+    );
+    if (!rows.length) {
+      const msg = techFilter === 'inactive'
+        ? 'No inactive / offboarded technicians.'
+        : 'No active technicians.';
+      tbody.innerHTML = `<tr><td colspan="6" class="empty">${msg}</td></tr>`;
+      return;
+    }
     const roleLabel = { lead_tech: 'Lead Tech', tech: 'Technician', apprentice: 'Apprentice' };
     const isSuper = (currentAdmin && currentAdmin.role === 'super_admin');
-    tbody.innerHTML = allTechs.map(t => {
+    tbody.innerHTML = rows.map(t => {
       return `
       <tr data-pc-row-tech="${t.id}" style="${t.active ? '' : 'opacity:0.55;'}">
         <td><span class="code-pill">${t.tech_code}</span>${t.prid ? `<br><span style="font-size:10px;color:var(--muted);font-family:'Courier New',monospace;">${t.prid}</span>` : ''}</td>
