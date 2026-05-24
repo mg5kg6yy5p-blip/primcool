@@ -118,8 +118,43 @@
     .btn-edit { background: #eff6ff; color: #1d4ed8; }
     .btn-edit:hover { background: #dbeafe; }
 
-    /* ── Table ── */
-    .table-wrap { background: var(--white); border-radius: 12px; border: 1px solid var(--border); overflow: hidden; }
+    /* ── Table ──
+       Default to horizontal-scroll so a too-wide table never silently
+       clips its rightmost column at 1195px (auditor's case: All Visits
+       Delete, Admins Offboard, Audit Log DETAILS, Schedule SAT).
+       The scroll-shadow trick (linear-gradient backgrounds with
+       background-attachment:local + background-attachment:scroll)
+       gives the user a visual cue that more columns exist to the right. */
+    .table-wrap {
+      background: var(--white);
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      overflow-x: auto;
+      overflow-y: hidden;
+      background-image:
+        linear-gradient(to right, var(--white), var(--white)),
+        linear-gradient(to right, var(--white), var(--white)),
+        linear-gradient(to right, rgba(11,37,69,0.18), rgba(11,37,69,0)),
+        linear-gradient(to left,  rgba(11,37,69,0.18), rgba(11,37,69,0));
+      background-position: left center, right center, left center, right center;
+      background-repeat: no-repeat;
+      background-color: var(--white);
+      background-size: 24px 100%, 24px 100%, 16px 100%, 16px 100%;
+      background-attachment: local, local, scroll, scroll;
+    }
+    .table-wrap.no-shadow { background-image: none; }
+    /* Sticky rightmost action column — keeps Delete/Edit/Offboard
+       visible even when the table is wider than the viewport.
+       Opt-in via class="actions-sticky" on a <td>/<th>. */
+    .table-wrap table th.actions-sticky,
+    .table-wrap table td.actions-sticky {
+      position: sticky; right: 0; z-index: 2;
+      background: var(--white);
+      box-shadow: -8px 0 12px -8px rgba(11,37,69,0.18);
+      white-space: nowrap;
+    }
+    .table-wrap table thead th.actions-sticky { background: #f8fafc; }
+    .table-wrap table tr:hover td.actions-sticky { background: #fafbfc; }
     /* Inner scroll wheel — used on long lists so they don't blow out the whole
        page scroll. Pair with <details> for a collapse-able section. */
     .scrollbox { max-height: 480px; overflow-y: auto; }
