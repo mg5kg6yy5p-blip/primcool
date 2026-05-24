@@ -11112,10 +11112,10 @@
     }).join('') || '<div style="color:var(--muted);">No tech compliance data yet.</div>';
     body.innerHTML = `
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:18px;">
-        <div data-tile="fs-open" style="background:#eff6ff;padding:12px;border-radius:8px;cursor:pointer;"><div style="font-size:11px;color:#1d4ed8;font-weight:700;">OPEN</div><div data-tile-count="fs-open" style="font-size:22px;font-weight:800;">${d.open_exceptions}</div></div>
-        <div data-tile="fs-escalated" style="background:#fef3c7;padding:12px;border-radius:8px;cursor:pointer;"><div style="font-size:11px;color:#92400e;font-weight:700;">ESCALATED</div><div data-tile-count="fs-escalated" style="font-size:22px;font-weight:800;">${d.escalated_exceptions}</div></div>
-        <div data-tile="fs-director" style="background:#fee2e2;padding:12px;border-radius:8px;cursor:pointer;"><div style="font-size:11px;color:#991b1b;font-weight:700;">TO DIRECTOR</div><div data-tile-count="fs-director" style="font-size:22px;font-weight:800;">${d.director_exceptions}</div></div>
-        <div data-tile="fs-safety" style="background:#f3f4f6;padding:12px;border-radius:8px;cursor:pointer;"><div style="font-size:11px;color:#374151;font-weight:700;">SAFETY RED</div><div data-tile-count="fs-safety" style="font-size:22px;font-weight:800;">${d.safety_red_count}</div></div>
+        <div data-tile="fs-open" tabindex="0" role="button" aria-label="Show open exceptions" onclick="fsOpenExceptions({status:'open'})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();fsOpenExceptions({status:'open'});}" style="background:#eff6ff;padding:12px;border-radius:8px;cursor:pointer;"><div style="font-size:11px;color:#1d4ed8;font-weight:700;">OPEN</div><div data-tile-count="fs-open" style="font-size:22px;font-weight:800;">${d.open_exceptions}</div></div>
+        <div data-tile="fs-escalated" tabindex="0" role="button" aria-label="Show escalated exceptions" onclick="fsOpenExceptions({status:'escalated'})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();fsOpenExceptions({status:'escalated'});}" style="background:#fef3c7;padding:12px;border-radius:8px;cursor:pointer;"><div style="font-size:11px;color:#92400e;font-weight:700;">ESCALATED</div><div data-tile-count="fs-escalated" style="font-size:22px;font-weight:800;">${d.escalated_exceptions}</div></div>
+        <div data-tile="fs-director" tabindex="0" role="button" aria-label="Show exceptions escalated to director" onclick="fsOpenExceptions({status:'escalated_director'})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();fsOpenExceptions({status:'escalated_director'});}" style="background:#fee2e2;padding:12px;border-radius:8px;cursor:pointer;"><div style="font-size:11px;color:#991b1b;font-weight:700;">TO DIRECTOR</div><div data-tile-count="fs-director" style="font-size:22px;font-weight:800;">${d.director_exceptions}</div></div>
+        <div data-tile="fs-safety" tabindex="0" role="button" aria-label="Show open safety / LOTO exceptions" onclick="fsOpenExceptions({severity:'safety_loto',status:'all'})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();fsOpenExceptions({severity:'safety_loto',status:'all'});}" style="background:#f3f4f6;padding:12px;border-radius:8px;cursor:pointer;"><div style="font-size:11px;color:#374151;font-weight:700;">SAFETY RED</div><div data-tile-count="fs-safety" style="font-size:22px;font-weight:800;">${d.safety_red_count}</div></div>
       </div>
       <h3 style="margin-bottom:10px;">Tech compliance (rolling 30 days)</h3>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;">${tilesHtml}</div>
@@ -11274,12 +11274,41 @@
 
     document.getElementById('modal-fsAuditDetail').classList.add('open');
   }
+  // Filter state for the Exceptions sub-tab. Default to open exceptions
+  // (matches the original behaviour); the four dashboard tiles overwrite
+  // this via fsOpenExceptions() before switching tabs.
+  let fsExFilter = { status: 'open', severity: null };
+  function fsOpenExceptions(filter) {
+    fsExFilter = Object.assign({ status: 'open', severity: null }, filter || {});
+    // Switch to the Exceptions tab.
+    const exBtn = document.querySelector('#fsTabs .filter-btn:nth-child(3)');
+    fsSetTab('exceptions', exBtn);
+  }
+  window.fsOpenExceptions = fsOpenExceptions;
+
   async function fsRenderExceptions(body) {
-    const rows = await api('GET', '/api/admin/5s/exceptions?status=open').catch(function(e){
+    const qs = new URLSearchParams();
+    if (fsExFilter.status)   qs.set('status', fsExFilter.status);
+    if (fsExFilter.severity) qs.set('severity', fsExFilter.severity);
+    const rows = await api('GET', '/api/admin/5s/exceptions?' + qs.toString()).catch(function(e){
       if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return null;
       throw e;
     });
     if (!rows) return;
+    // Surface what filter is currently active so the user understands
+    // why the count differs from the dashboard tile (e.g. they clicked
+    // "TO DIRECTOR" and now see only those rows).
+    const filterLabel = fsExFilter.severity === 'safety_loto'
+      ? 'Showing <strong>Safety / LOTO</strong> exceptions'
+      : (fsExFilter.status === 'open'                  ? 'Showing <strong>Open</strong> exceptions'
+       : fsExFilter.status === 'escalated'             ? 'Showing <strong>Escalated</strong> exceptions'
+       : fsExFilter.status === 'escalated_director'    ? 'Showing exceptions <strong>escalated to Director</strong>'
+       : fsExFilter.status === 'all'                   ? 'Showing <strong>all</strong> exceptions'
+       : `Showing <strong>${esc(fsExFilter.status || '')}</strong> exceptions`);
+    const filterBar = `<div style="display:flex;justify-content:space-between;align-items:center;background:#f8fafc;border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:12px;color:var(--text);">
+      <div>${filterLabel} <span style="color:var(--muted);">· ${rows.length} ${rows.length === 1 ? 'row' : 'rows'}</span></div>
+      ${(fsExFilter.status !== 'open' || fsExFilter.severity) ? `<button class="btn btn-ghost btn-sm" onclick="fsOpenExceptions({status:'open'})">Reset to Open</button>` : ''}
+    </div>`;
     const _gateFS = (typeof PC !== 'undefined' && PC.gateLinkHtml);
     const esc2 = rows.length ? rows.map(e=>{
       // Sensitive-value gating: description (and any resolution/override
@@ -11308,8 +11337,8 @@
           ${can('fs:exception_escalate_director') ? `<button class="btn btn-danger btn-sm pc-stop-prop" style="margin-left:4px;" onclick="event.stopPropagation();fsEscalate(${e.id})">Escalate</button>` : ''}
         </td>
       </tr>`;
-    }).join('') : '<tr><td colspan="7" class="empty">No open exceptions.</td></tr>';
-    body.innerHTML = `<table>
+    }).join('') : '<tr><td colspan="7" class="empty">No exceptions match the current filter.</td></tr>';
+    body.innerHTML = filterBar + `<table>
       <thead><tr><th>ID</th><th>Opened</th><th>Category</th><th>Severity</th><th>Status</th><th>Description</th><th>Actions</th></tr></thead>
       <tbody>${esc2}</tbody></table>`;
     // FIXME: fs_exception has no dedicated detail route; leaving rows without
