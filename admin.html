@@ -11084,9 +11084,35 @@
     if (!d) return;
     const banner = document.getElementById('fsSafetyBanner');
     if (d.safety_red_count > 0) {
-      banner.style.display = 'block';
-      banner.textContent = `⚠ ${d.safety_red_count} safety/LOTO exception(s) open — review immediately.`;
-    } else { banner.style.display = 'none'; }
+      // Make the banner an actionable button: clicking ANY part of it
+      // jumps straight into the Exceptions tab pre-filtered to safety
+      // / LOTO, where each row has its Resolve / Escalate buttons.
+      // Previously the banner was plain text with no path forward.
+      banner.style.display = 'flex';
+      banner.style.justifyContent = 'space-between';
+      banner.style.alignItems = 'center';
+      banner.style.gap = '12px';
+      banner.style.cursor = 'pointer';
+      banner.setAttribute('role', 'button');
+      banner.setAttribute('tabindex', '0');
+      banner.setAttribute('aria-label', `Review ${d.safety_red_count} open safety / LOTO exceptions`);
+      banner.onclick = () => fsOpenExceptions({ severity: 'safety_loto', status: 'all' });
+      banner.onkeydown = (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          fsOpenExceptions({ severity: 'safety_loto', status: 'all' });
+        }
+      };
+      banner.innerHTML = `
+        <span>⚠ <strong>${d.safety_red_count} safety / LOTO exception${d.safety_red_count === 1 ? '' : 's'} open</strong> — review immediately.</span>
+        <span style="background:#fff;color:#991b1b;border:1px solid #fca5a5;border-radius:6px;padding:5px 12px;font-size:12px;font-weight:700;white-space:nowrap;">Review &amp; Resolve →</span>`;
+    } else {
+      banner.style.display = 'none';
+      banner.onclick = null;
+      banner.onkeydown = null;
+      banner.removeAttribute('role');
+      banner.removeAttribute('tabindex');
+    }
     // Sidebar badge — mirrors the KPI flag badge pattern. Total count
     // is open + escalated + director-tier (anything still actionable).
     const fsBadge = document.getElementById('fsRedBadge');
