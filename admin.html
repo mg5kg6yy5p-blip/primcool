@@ -120,6 +120,18 @@
 
     /* ── Table ── */
     .table-wrap { background: var(--white); border-radius: 12px; border: 1px solid var(--border); overflow: hidden; }
+    /* Inner scroll wheel — used on long lists so they don't blow out the whole
+       page scroll. Pair with <details> for a collapse-able section. */
+    .scrollbox { max-height: 480px; overflow-y: auto; }
+    .scrollbox::-webkit-scrollbar { width: 8px; }
+    .scrollbox::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+    .scrollbox::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    details.section { background: var(--white); border: 1px solid var(--border); border-radius: 12px; padding: 0; margin-bottom: 14px; }
+    details.section > summary { cursor: pointer; list-style: none; padding: 12px 16px; display:flex; align-items:center; justify-content:space-between; gap:10px; font-weight:600; color: var(--navy); font-size:14px; outline:none; }
+    details.section > summary::-webkit-details-marker { display: none; }
+    details.section > summary::after { content: '▾'; color: var(--muted); font-size:12px; }
+    details.section[open] > summary::after { content: '▴'; }
+    details.section > .body { padding: 0 16px 16px; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th { background: #f8fafc; padding: 11px 16px; text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.7px; color: var(--muted); border-bottom: 1px solid var(--border); }
     td { padding: 12px 16px; border-bottom: 1px solid var(--border); vertical-align: middle; color: var(--text); }
@@ -458,8 +470,8 @@
         <span id="docsExpiringBadge" style="margin-left:auto;background:var(--danger);color:white;font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px;display:none;"></span>
       </div>
       <div class="nav-item" onclick="showPanel('inventory')" id="nav-inventory" style="display:none;">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
-        Inventory
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        Warehouse
         <span id="lowStockBadge" style="margin-left:auto;background:var(--danger);color:white;font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px;display:none;"></span>
       </div>
       <div class="nav-item" onclick="showPanel('schedule')" id="nav-schedule" style="display:none;">
@@ -509,9 +521,9 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
         Company Messages
       </div>
-      <div class="nav-item" onclick="showPanel('warehouse')" id="nav-warehouse" style="display:none;">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-        Warehouse
+      <div class="nav-item" onclick="showPanel('warehouse')" id="nav-warehouse" style="display:none;" title="Receiving, shipping, checklists & month-end sheets — super_admin + HR onboarding lives here too">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/><circle cx="12" cy="14" r="2"/></svg>
+        Warehouse Ops
       </div>
       <div class="nav-item" onclick="showPanel('myprofile')" id="nav-myprofile">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
@@ -736,35 +748,80 @@
       <!-- ── Inventory panel ── -->
       <div class="panel" id="panel-inventory">
         <div class="top-bar">
-          <h2>Inventory</h2>
+          <h2>Warehouse</h2>
           <div style="display:flex;gap:8px;">
+            <button class="btn btn-ghost" id="invWhOpsBtn" onclick="showPanel('warehouse')" style="display:none;" title="Receiving, shipping, checklists, month-end sheets & staff onboarding">🏗 Warehouse Ops →</button>
             <button class="btn btn-ghost" id="invProcurementBtn" onclick="openProcurement()" style="display:none;">📦 Procurement</button>
             <button class="btn btn-ghost" id="exportInventoryBtn" onclick="exportResource('parts')" style="display:none;">⬇ Export CSV</button>
             <button class="btn btn-primary" id="addPartBtn" onclick="openModal('addPart')" style="display:none;">+ Add Part</button>
           </div>
         </div>
 
-        <div id="inv-summary" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:20px;"></div>
+        <!-- Warehouse Staff roster — read-only here. Onboarding & position
+             assignment are handled by super_admin + HR via Warehouse Ops. -->
+        <details class="section" id="inv-staff-section" open>
+          <summary>
+            <span>Warehouse Staff <span id="inv-staff-count" class="badge" style="background:var(--light);color:var(--muted);font-weight:600;margin-left:6px;">—</span></span>
+          </summary>
+          <div class="body">
+            <div class="muted" style="font-size:12px;margin-bottom:10px;line-height:1.5;">
+              The three warehouse archetypes &mdash;
+              <strong>Warehouse Manager</strong> (oversees the floor),
+              <strong>Warehouse Floor</strong> (inventory movement &amp; stock checks),
+              and <strong>Parts Runner</strong> (drives company truck on deliveries).
+              <br>
+              <em>Onboarding and position assignment are handled by <strong>super_admin</strong> + <strong>HR</strong> via Warehouse Ops &rarr; Staff.</em>
+            </div>
+            <div class="scrollbox" style="max-height:280px;border:1px solid var(--border);border-radius:8px;">
+              <table style="width:100%;border-collapse:collapse;font-size:13px;">
+                <thead style="position:sticky;top:0;background:var(--light);">
+                  <tr>
+                    <th style="text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);">Code</th>
+                    <th style="text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);">Name</th>
+                    <th style="text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);">Role</th>
+                    <th style="text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);">Department</th>
+                    <th style="text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);">Phone</th>
+                    <th style="text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);">Status</th>
+                  </tr>
+                </thead>
+                <tbody id="inv-staff-body">
+                  <tr><td colspan="6" class="empty" style="padding:14px;">Loading…</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </details>
 
-        <div class="filter-bar" id="invFilters" style="gap:8px;">
-          <button class="filter-btn active" data-f="all" onclick="setInvFilter('all',this)">All</button>
-          <button class="filter-btn" data-f="low" onclick="setInvFilter('low',this)">Low Stock</button>
-          <button class="filter-btn" data-f="out" onclick="setInvFilter('out',this)">Out of Stock</button>
-          <button class="filter-btn" data-f="inactive" onclick="setInvFilter('inactive',this)">Inactive</button>
-          <input type="text" id="inv-search" oninput="renderInventory()" placeholder="Search SKU, name, category…" style="margin-left:auto;padding:6px 12px;border:1px solid var(--border);border-radius:6px;font-size:13px;min-width:240px;">
-        </div>
+        <details class="section" id="inv-list-section" open>
+          <summary>
+            <span>Parts &amp; Inventory <span id="inv-parts-count" class="badge" style="background:var(--light);color:var(--muted);font-weight:600;margin-left:6px;">—</span></span>
+          </summary>
+          <div class="body">
+            <div id="inv-summary" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:14px;"></div>
 
-        <div class="table-wrap">
-          <table>
-            <thead><tr>
-              <th>SKU</th><th>Name</th><th>Category</th><th>Quantity</th><th>Reorder</th><th>Unit Cost</th><th>Value</th><th>Actions</th>
-            </tr></thead>
-            <tbody id="inv-tbody"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
-          </table>
-        </div>
-        <p style="font-size:12px;color:var(--muted);margin-top:14px;line-height:1.5;">
-          Click <strong>Adjust</strong> to record stock received from a supplier, used on a job, or a manual count correction. Every change is logged with the actor's PRID.
-        </p>
+            <div class="filter-bar" id="invFilters" style="gap:8px;">
+              <button class="filter-btn active" data-f="all" onclick="setInvFilter('all',this)">All</button>
+              <button class="filter-btn" data-f="low" onclick="setInvFilter('low',this)">Low Stock</button>
+              <button class="filter-btn" data-f="out" onclick="setInvFilter('out',this)">Out of Stock</button>
+              <button class="filter-btn" data-f="inactive" onclick="setInvFilter('inactive',this)">Inactive</button>
+              <input type="text" id="inv-search" oninput="renderInventory()" placeholder="Search SKU, name, category…" style="margin-left:auto;padding:6px 12px;border:1px solid var(--border);border-radius:6px;font-size:13px;min-width:240px;">
+            </div>
+
+            <!-- Own scroll wheel: long parts catalogs don't push the rest of
+                 the page off-screen. Header row stays sticky inside. -->
+            <div class="table-wrap scrollbox" style="max-height:560px;">
+              <table>
+                <thead style="position:sticky;top:0;background:#f8fafc;z-index:1;"><tr>
+                  <th>SKU</th><th>Name</th><th>Category</th><th>Quantity</th><th>Reorder</th><th>Unit Cost</th><th>Value</th><th>Actions</th>
+                </tr></thead>
+                <tbody id="inv-tbody"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+              </table>
+            </div>
+            <p style="font-size:12px;color:var(--muted);margin-top:14px;line-height:1.5;">
+              Click <strong>Adjust</strong> to record stock received from a supplier, used on a job, or a manual count correction. Every change is logged with the actor's PRID.
+            </p>
+          </div>
+        </details>
       </div>
 
       <!-- ── Schedule panel ── -->
@@ -3713,6 +3770,7 @@
     if (name === 'companymsg') { cmLoad(); }
     if (name === 'warehouse') { whInit(); }
     if (name === 'myprofile') { loadMpProfile(); }
+    if (name === 'inventory') { loadInventoryStaffCard(); }
   }
 
   // ── Customers ──────────────────────────────────────────────────────────────
@@ -8101,6 +8159,53 @@
     } catch(e) {}
   }
 
+  // Warehouse Staff roster — surfaced inside the (renamed) Warehouse panel
+  // as a read-only quick-view. Editing/onboarding lives in Warehouse Ops
+  // (super_admin + HR only), per operator requirement.
+  async function loadInventoryStaffCard() {
+    const tbody  = document.getElementById('inv-staff-body');
+    const badge  = document.getElementById('inv-staff-count');
+    const opsBtn = document.getElementById('invWhOpsBtn');
+    if (opsBtn && (typeof can === 'function') && can('warehouse:view_queue')) {
+      // Anyone who can see warehouse ops gets the shortcut button.
+      opsBtn.style.display = '';
+    }
+    if (!tbody) return;
+    try {
+      // Endpoint already exists and is permission-gated server-side;
+      // a 403 here just hides the section cleanly.
+      const rows = await api('GET', '/api/admin/warehouse/staff');
+      if (!rows || !rows.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty" style="padding:14px;">No warehouse staff on roster yet. <em>Onboarded by super_admin + HR via Warehouse Ops.</em></td></tr>';
+        if (badge) badge.textContent = '0';
+        return;
+      }
+      // Sort: manager → floor → parts_runner, then by name.
+      const order = { warehouse_manager: 0, warehouse_floor: 1, parts_runner: 2 };
+      rows.sort((a, b) => (order[a.staff_type] ?? 9) - (order[b.staff_type] ?? 9)
+                       || (a.name || '').localeCompare(b.name || ''));
+      const prettyType = (t) => ({
+        warehouse_manager: '👷‍♂️ Warehouse Manager',
+        warehouse_floor:   '📦 Warehouse Floor',
+        parts_runner:      '🚚 Parts Runner',
+      }[t] || (t || '').replace(/_/g,' '));
+      tbody.innerHTML = rows.map(s => `
+        <tr>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border);"><strong>${escHtml(s.tech_code || '')}</strong></td>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border);">${escHtml(s.name || '')}</td>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border);">${escHtml(prettyType(s.staff_type))}</td>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border);">${escHtml(s.department || '—')}</td>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border);">${escHtml(s.phone || '—')}</td>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border);">${s.active
+            ? '<span class="badge" style="background:#dcfce7;color:#166534;">Active</span>'
+            : '<span class="badge" style="background:#fee2e2;color:#991b1b;">Inactive</span>'}</td>
+        </tr>`).join('');
+      if (badge) badge.textContent = String(rows.length);
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="6" class="empty" style="padding:14px;">Could not load roster: ${escHtml(e.message || '')}</td></tr>`;
+    }
+  }
+
   function setInvFilter(f, btn) {
     invFilter = f;
     document.querySelectorAll('#invFilters .filter-btn').forEach(b => b.classList.remove('active'));
@@ -8137,6 +8242,9 @@
       ${summaryCard('Low Stock', lowCount, lowCount ? '#f59e0b' : '#94a3b8')}
       ${summaryCard('Out of Stock', outCount, outCount ? '#dc2626' : '#94a3b8')}
     `;
+    // Parts count badge on the collapsible section heading.
+    const partsCountEl = document.getElementById('inv-parts-count');
+    if (partsCountEl) partsCountEl.textContent = String(active.length);
     // Sidebar badge
     const totalAlerts = lowCount + outCount;
     const badge = document.getElementById('lowStockBadge');
