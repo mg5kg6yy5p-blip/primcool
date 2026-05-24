@@ -10,23 +10,48 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="PrimeCool">
   <link rel="apple-touch-icon" href="/icons/customer-apple.png">
+  <!-- PrimeCool brand fonts (shared across surfaces). -->
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800;900&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
   <style>
     :root {
-      --navy: #0B2545;
+      --navy: #0F2A4A;
+      --navy-2: #11335A;
       --teal: #22A08A;
+      --ice:  #7DD3E8;
+      --lime: #B6E021;
+      --mist: #F2F6FA;
       --light: #f0f4f8;
       --white: #ffffff;
       --text: #1a2533;
       --muted: #5A6472;
       --border: #dde3ea;
+      --font-display: 'Archivo','Segoe UI',system-ui,-apple-system,sans-serif;
+      --font-body:    'IBM Plex Sans','Segoe UI',system-ui,-apple-system,sans-serif;
+      --font-mono:    'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace;
+      --shadow-sm: 0 1px 3px rgba(15,42,74,0.08), 0 8px 24px -16px rgba(15,42,74,0.25);
+      --gradient-cool: linear-gradient(90deg, var(--ice), var(--lime));
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      font-family: var(--font-body);
       background: var(--light);
       min-height: 100vh;
       color: var(--text);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      font-feature-settings: "tnum" 1, "kern" 1;
     }
+    h1, h2, h3, .pc-display { font-family: var(--font-display); letter-spacing: -0.01em; }
+    .pc-mono, code, kbd, samp { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+    .pc-snowflake { display:inline-block;width:18px;height:18px;background:var(--lime);border-radius:5px;flex-shrink:0;position:relative;vertical-align:middle; }
+    .pc-snowflake::before { content:"";position:absolute;inset:3px;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230F2A4A' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><line x1='12' y1='2' x2='12' y2='22'/><line x1='2' y1='12' x2='22' y2='12'/><line x1='4.93' y1='4.93' x2='19.07' y2='19.07'/><line x1='19.07' y1='4.93' x2='4.93' y2='19.07'/></svg>");background-size:contain;background-repeat:no-repeat; }
+    .pc-skeleton-line,.pc-skeleton-block{background:linear-gradient(90deg,#eef2f7 0%,#f5f8fb 50%,#eef2f7 100%);background-size:200% 100%;border-radius:6px;animation:pcShimmer 1.4s ease-in-out infinite;}
+    .pc-skeleton-line{height:12px;margin:6px 0;} .pc-skeleton-block{height:38px;}
+    @keyframes pcShimmer{0%{background-position:100% 0;}100%{background-position:-100% 0;}}
+    .pc-empty{padding:32px 20px;text-align:center;color:var(--muted);font-size:13px;}
+    .pc-empty-glyph{font-size:28px;margin-bottom:8px;opacity:0.7;}
+    .pc-empty-title{font-family:var(--font-display);font-weight:700;color:var(--navy);font-size:15px;margin-bottom:4px;}
+    .pc-empty-sub{font-size:12px;color:var(--muted);max-width:360px;margin:0 auto;line-height:1.5;}
     header {
       background: var(--navy);
       padding: 0 32px;
@@ -538,7 +563,10 @@
 </head>
 <body>
   <header>
-    <a href="/" class="logo">Prime<span>Cool</span> Services</a>
+    <a href="/" class="logo pc-display" style="display:flex;align-items:center;gap:10px;">
+      <span class="pc-snowflake" aria-hidden="true"></span>
+      <span style="display:inline-flex;align-items:baseline;">Prime<span>Cool</span><span style="font-size:11px;font-weight:600;letter-spacing:0.18em;text-transform:uppercase;color:var(--ice);margin-left:8px;align-self:center;">Services</span></span>
+    </a>
     <div class="header-right">
       <span class="customer-name" id="headerName"></span>
       <button class="logout-btn" onclick="openServiceRequest()" style="background:#22A08A;color:white;border-color:#22A08A;margin-right:8px;">+ Request Service</button>

@@ -29,6 +29,21 @@
       '.pc-toast .ico{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;font-size:11px;font-weight:800;flex-shrink:0;}';
     document.head && document.head.appendChild(s);
   }
+  // ── Density (compact / comfortable) — shared across surfaces ──────────
+  PC.applyDensity = function (mode) {
+    document.body.dataset.pcDensity = mode === 'compact' ? 'compact' : 'comfortable';
+  };
+  PC.toggleDensity = function () {
+    const cur = (document.body.dataset.pcDensity || 'comfortable');
+    const next = cur === 'compact' ? 'comfortable' : 'compact';
+    try { localStorage.setItem('pc_density', next); } catch (_) {}
+    PC.applyDensity(next);
+    if (PC.toast) PC.toast('Density: ' + next, 'success');
+    return next;
+  };
+  try { PC.applyDensity(localStorage.getItem('pc_density') || 'comfortable'); }
+  catch (_) { PC.applyDensity('comfortable'); }
+
   // ── Skeleton loader auto-swap ─────────────────────────────────────────
   // Any element with class="empty" whose text is literally "Loading…"
   // gets replaced with three shimmer bars. Idempotent + debounced via

@@ -46,6 +46,15 @@
     .pc-avatar.lg{width:56px;height:56px;font-size:18px;}
     .pc-snowflake{display:inline-block;width:18px;height:18px;background:var(--lime);border-radius:5px;flex-shrink:0;position:relative;}
     .pc-snowflake::before{content:"";position:absolute;inset:3px;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230F2A4A' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><line x1='12' y1='2' x2='12' y2='22'/><line x1='2' y1='12' x2='22' y2='12'/><line x1='4.93' y1='4.93' x2='19.07' y2='19.07'/><line x1='19.07' y1='4.93' x2='4.93' y2='19.07'/></svg>");background-size:contain;background-repeat:no-repeat;}
+    /* Density toggle — tighter padding for users who like seeing more
+       at once. Persisted in localStorage via PC.applyDensity (shared). */
+    body[data-pc-density="compact"] .card{padding:11px 14px;margin-bottom:10px;border-radius:12px;}
+    body[data-pc-density="compact"] .card h2{margin:0 0 6px;font-size:14px;}
+    body[data-pc-density="compact"] .tabs button{padding:10px 8px;font-size:13px;}
+    body[data-pc-density="compact"] .row + .row{margin-top:6px;}
+    body[data-pc-density="compact"] .schedule-line{padding:8px 10px;}
+    body[data-pc-density="compact"] .clock-display{font-size:28px;}
+
     /* Skeleton loaders + empty state — shared brand utilities. */
     .pc-skeleton-line,.pc-skeleton-block{background:linear-gradient(90deg,#eef2f7 0%,#f5f8fb 50%,#eef2f7 100%);background-size:200% 100%;border-radius:6px;animation:pcShimmer 1.4s ease-in-out infinite;}
     .pc-skeleton-line{height:12px;margin:6px 0;}
@@ -217,6 +226,7 @@
         <div class="hdr-sub" id="hdrSub">PrimeCool Services</div>
       </div>
     </a>
+    <button class="hdr-out" onclick="PC && PC.toggleDensity && PC.toggleDensity()" title="Toggle compact / comfortable density" style="margin-right:6px;">▤</button>
     <button class="hdr-out" onclick="doLogout()">Sign out</button>
   </header>
 
@@ -1031,12 +1041,16 @@
 <style>
   @page { size: A4; margin: 14mm; }
   * { box-sizing: border-box; }
-  body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1a2533; margin: 0; font-size: 11px; line-height: 1.35; background:#fff; }
+  /* Web/preview view uses Plex; on a printer, ink-saver fallbacks. */
+  body { font-family: 'IBM Plex Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1a2533; margin: 0; font-size: 11px; line-height: 1.35; background:#fff; font-feature-settings:"tnum" 1,"kern" 1; -webkit-font-smoothing:antialiased; }
   .sheet { max-width: 780px; margin: 0 auto; padding: 18px 22px; }
   .row { display: flex; gap: 14px; }
   .col { flex: 1; }
-  .hdr { display:flex; justify-content:space-between; align-items:flex-start; border-bottom: 3px solid #0B2545; padding-bottom: 12px; margin-bottom: 14px; }
-  .co-name { font-size: 22px; font-weight: 800; color: #0B2545; letter-spacing: .3px; }
+  .hdr { display:flex; justify-content:space-between; align-items:flex-start; border-bottom: 3px solid #0F2A4A; padding-bottom: 12px; margin-bottom: 14px; position: relative; }
+  /* Brand accent across the bottom of the header divider — invisible in
+     ink-saver, subtle on color print. */
+  .hdr::after { content:""; position:absolute; left:0; right:0; bottom:-3px; height:3px; background: linear-gradient(90deg, #7DD3E8, #B6E021); border-radius: 999px; }
+  .co-name { font-family: 'Archivo','IBM Plex Sans',Helvetica,Arial,sans-serif; font-size: 22px; font-weight: 800; color: #0F2A4A; letter-spacing: -0.01em; }
   .co-name em { color: #22A08A; font-style: normal; }
   .co-meta { font-size: 10.5px; color: #555; margin-top: 4px; line-height: 1.5; }
   .ps-label { background: #22A08A; color: #fff; padding: 6px 14px; border-radius: 4px; font-weight: 800; letter-spacing: 1.2px; font-size: 12px; }
@@ -1061,7 +1075,18 @@
   .net-pay-box .v { font-size: 26px; font-weight: 700; margin-top: 6px; letter-spacing: .2px; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
   .footer-note { margin-top: 14px; background: #f5f7fa; border: 1px solid #cdd5e0; border-radius: 4px; padding: 7px 10px; font-size: 10px; color: #4a5566; }
   .tagline { text-align: center; color: #22A08A; font-style: italic; margin-top: 10px; font-size: 11px; }
-  @media print { .no-print { display: none !important; } }
+  @media print {
+    .no-print { display: none !important; }
+    /* Preserve the brand colors on paper — printers strip background
+       colors by default; print-color-adjust forces them through. */
+    body, .sheet, .net-pay-box, .ps-label, .tot, table.tbl th, .box-h {
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
+    /* A4 ergonomic: keep the net-pay block + payment-info row from
+       breaking across pages. */
+    .net-pay-box, .row, table.tbl { page-break-inside: avoid; }
+  }
   .print-bar { position: fixed; top: 8px; right: 8px; display:flex; gap: 6px; }
   .print-bar button { background: #0B2545; color: #fff; border: none; padding: 7px 14px; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 12px; }
   .print-bar button.alt { background: #6b7280; }

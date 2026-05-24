@@ -87,6 +87,45 @@
     .btn:active, .filter-btn:active, .kpi-tile:active, [data-tile]:active {
       transform: scale(0.985);
     }
+    /* ── Micro-interactions ─────────────────────────────────────────────
+       Row hover tint that gets brighter when interactive (i.e. carries
+       a click handler or is a customer/visit/tech row). Smooth focus
+       ring fade-in. Subtle press feedback for touch users. */
+    tr[data-pc-row-customer], tr[data-pc-row-visit],
+    tr[data-pc-row-kpitech], tr[data-pc-row-fsex] {
+      cursor: pointer;
+      transition: background var(--motion-fast), box-shadow var(--motion-fast);
+    }
+    tr[data-pc-row-customer]:hover, tr[data-pc-row-visit]:hover,
+    tr[data-pc-row-kpitech]:hover, tr[data-pc-row-fsex]:hover {
+      background: linear-gradient(90deg, rgba(125,211,232,0.10), rgba(182,224,33,0.06)) !important;
+    }
+    /* Press feedback for touch (no hover state on touch devices). */
+    @media (hover: none) {
+      .btn:active, .filter-btn:active, .nav-item:active,
+      .kpi-tile:active, [data-tile]:active, .pc-cmdk-item:active {
+        background: rgba(15,42,74,0.05);
+        transform: scale(0.98);
+      }
+    }
+    /* Animate the focus ring in so keyboard navigation feels alive. */
+    *:focus-visible { animation: pcFocusIn 160ms var(--ease-out); }
+    @keyframes pcFocusIn {
+      from { box-shadow: 0 0 0 0 rgba(34,160,138,0.0); }
+      to   { box-shadow: 0 0 0 0 rgba(34,160,138,0.0); }
+    }
+    /* Link underline grows on hover instead of just toggling. */
+    a.pc-link, .pc-crumbs a {
+      background-image: linear-gradient(var(--teal), var(--teal));
+      background-repeat: no-repeat;
+      background-position: 0 100%;
+      background-size: 0% 1.5px;
+      transition: background-size var(--motion-med);
+    }
+    a.pc-link:hover, .pc-crumbs a:hover {
+      background-size: 100% 1.5px;
+      text-decoration: none;
+    }
     /* Header sits above the page; subtle bottom shadow ties it to the layout. */
     header { box-shadow: 0 1px 0 rgba(0,0,0,0.08), 0 6px 14px rgba(15,42,74,0.18); }
 
@@ -11106,11 +11145,15 @@
         table.tbl td{padding:4px 8px;border:1px solid #e0e6ee;}
         table.tbl td.num{text-align:right;font-variant-numeric:tabular-nums;}
         .tot{background:#f5f7fa;font-weight:700;color:#0B2545;}
-        .net-pay-box{background:#22A08A;color:#fff;border-radius:6px;padding:14px;text-align:center;}
-        .net-pay-box .l{font-size:11px;font-weight:700;letter-spacing:1.4px;opacity:.92;}
-        .net-pay-box .v{font-size:24px;font-weight:800;margin-top:6px;letter-spacing:.3px;}
+        .net-pay-box{background:linear-gradient(135deg,#11335A,#0F2A4A);color:#fff;border-radius:12px;padding:16px 18px;text-align:center;box-shadow:0 2px 4px rgba(15,42,74,0.08),0 12px 28px -10px rgba(15,42,74,0.20);}
+        .net-pay-box .l{font-size:11px;font-weight:700;letter-spacing:1.4px;opacity:.92;color:#7DD3E8;}
+        .net-pay-box .v{font-size:26px;font-weight:700;margin-top:6px;letter-spacing:.2px;font-family:'IBM Plex Mono',ui-monospace,monospace;font-variant-numeric:tabular-nums;}
         .footer-note{margin-top:14px;background:#f5f7fa;border:1px solid #cdd5e0;border-radius:4px;padding:7px 10px;font-size:10px;color:#4a5566;}
-        @media print{.no-print{display:none !important;}}
+        @media print{
+          .no-print{display:none !important;}
+          body,.net-pay-box,.tot,table.tbl th{-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;}
+          .net-pay-box,.row,table.tbl{page-break-inside:avoid;}
+        }
         .print-bar{position:fixed;top:8px;right:8px;display:flex;gap:6px;}
         .print-bar button{background:#0B2545;color:#fff;border:none;padding:7px 14px;border-radius:4px;cursor:pointer;font-weight:600;font-size:12px;}
         .print-bar button.alt{background:#6b7280;}
