@@ -4918,7 +4918,7 @@
     document.getElementById('tdf-profile-grid').innerHTML = [
       fld('Phone', t.phone || ''),
       fld('Email', t.email || ''),
-      fld('Hourly Rate', t.hourly_rate ? `J$${Number(t.hourly_rate).toFixed(2)}/hr` : '—'),
+      fld('Hourly Rate', t.hourly_rate ? `${fmtJMD(t.hourly_rate)}/hr` : '—'),
       fld('Hire Date', t.hire_date || ''),
     ].join('');
 
@@ -7430,6 +7430,16 @@
     return sym + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
 
+  // Single canonical Jamaica-dollar formatter. Always J$, always with
+  // thousands separators, always 2 decimals. Use this for *every* money
+  // display that doesn't carry an explicit currency code (i.e. all
+  // payroll / inventory / warehouse views — invoicing still uses
+  // fmtMoney(n, currency) because some customers transact in USD/TTD).
+  function fmtJMD(n) {
+    return fmtMoney(n, 'JMD');
+  }
+  window.fmtJMD = fmtJMD;
+
   function isOverdue(inv) {
     if (inv.status !== 'sent') return false;
     const balance = (inv.total || 0) - (inv.amount_paid || 0);
@@ -8262,7 +8272,7 @@
     const totalValue = active.reduce((s, p) => s + (p.quantity * p.unit_cost), 0);
     document.getElementById('inv-summary').innerHTML = `
       ${summaryCard('Active Parts', active.length, '#0B2545')}
-      ${summaryCard('Total Stock Value', '$' + totalValue.toFixed(2), '#059669')}
+      ${summaryCard('Total Stock Value', fmtJMD(totalValue), '#059669')}
       ${summaryCard('Low Stock', lowCount, lowCount ? '#f59e0b' : '#94a3b8')}
       ${summaryCard('Out of Stock', outCount, outCount ? '#dc2626' : '#94a3b8')}
     `;
@@ -9364,7 +9374,7 @@
       return `
       <tr data-pc-row-tech="${t.id}" style="${t.active ? '' : 'opacity:0.55;'}">
         <td><span class="code-pill">${t.tech_code}</span>${t.prid ? `<br><span style="font-size:10px;color:var(--muted);font-family:'Courier New',monospace;">${t.prid}</span>` : ''}</td>
-        <td><strong>${escHtml(t.name)}</strong>${t.email ? `<br><span style="font-size:11px;color:var(--muted);">${escHtml(t.email)}</span>` : ''}<br><span class="badge" style="background:#eff6ff;color:#1d4ed8;margin-top:3px;display:inline-block;">${roleLabel[t.role] || 'Technician'}</span>${t.hourly_rate > 0 ? `<br><span style="font-size:11px;color:var(--muted);margin-top:2px;display:inline-block;">J$${Number(t.hourly_rate).toFixed(2)}/hr</span>` : '<br><span style="font-size:11px;color:#dc2626;margin-top:2px;display:inline-block;">No rate set</span>'}</td>
+        <td><strong>${escHtml(t.name)}</strong>${t.email ? `<br><span style="font-size:11px;color:var(--muted);">${escHtml(t.email)}</span>` : ''}<br><span class="badge" style="background:#eff6ff;color:#1d4ed8;margin-top:3px;display:inline-block;">${roleLabel[t.role] || 'Technician'}</span>${t.hourly_rate > 0 ? `<br><span style="font-size:11px;color:var(--muted);margin-top:2px;display:inline-block;">${fmtJMD(t.hourly_rate)}/hr</span>` : '<br><span style="font-size:11px;color:#dc2626;margin-top:2px;display:inline-block;">No rate set</span>'}</td>
         <td>${escHtml(t.phone) || '—'}</td>
         <td>${t.active_jobs > 0 ? `<span class="badge badge-in_progress">${t.active_jobs} active</span>` : '<span style="color:var(--muted);">0</span>'}</td>
         <td>${t.active ? '<span class="badge badge-confirmed">Active</span>' : '<span class="badge" style="background:#f3f4f6;color:var(--muted);">Inactive</span>'}</td>
