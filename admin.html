@@ -10116,26 +10116,17 @@
     // its own scroll wheel, top-level panel tables included (Customers,
     // All Visits, Invoices, Audit Log, Timesheets, etc.), not just
     // sub-fields nested inside cards/modals.
-    // (0) Every .table-wrap (top-level panel tables AND nested ones).
-    root.querySelectorAll('.table-wrap').forEach(w => {
-      const t = w.querySelector('table');
-      if (t) candidates.push({ wrap: w, table: t, kind: 'table' });
-    });
-    // (1) Tables inside modal bodies that aren't wrapped in .table-wrap.
-    root.querySelectorAll('.modal-body table').forEach(t => {
-      if (!t.closest('.table-wrap')) candidates.push({ wrap: t.parentElement, table: t, kind: 'table' });
-    });
-    // (2) Tables inside details.section bodies.
-    root.querySelectorAll('details.section table').forEach(t => {
-      if (!t.closest('.table-wrap')) candidates.push({ wrap: t.parentElement, table: t, kind: 'table' });
-    });
-    // (2b) Tables inside any Warehouse Ops sub-pane or KPI sub-panel.
-    root.querySelectorAll('[id^="wh-pane-"] table, [id^="kpiSubpanel-"] table').forEach(t => {
-      if (!t.closest('.table-wrap')) candidates.push({ wrap: t.parentElement, table: t, kind: 'table' });
-    });
-    // (3) Explicit opt-in: data-pc-subfield="1" or .subfield-scroll-host.
-    root.querySelectorAll('[data-pc-subfield="1"] table, .subfield-scroll-host table').forEach(t => {
-      if (!t.closest('.table-wrap')) candidates.push({ wrap: t.parentElement, table: t, kind: 'table' });
+    // Catch EVERY <table> inside the .panel area (5S Audits, etc. write
+    // bare <table>s without .table-wrap and were slipping past). Use
+    // .table-wrap when present, otherwise the immediate parent acts as
+    // the scroll container. The "already capped" + "paginated" skip
+    // rules below still gate this so we don't over-cap.
+    const seenTables = new Set();
+    root.querySelectorAll('.panel table, .modal-body table, [data-pc-subfield="1"] table, .subfield-scroll-host table').forEach(t => {
+      if (seenTables.has(t)) return;
+      seenTables.add(t);
+      const wrap = t.closest('.table-wrap') || t.parentElement;
+      candidates.push({ wrap, table: t, kind: 'table' });
     });
     // Same opt-in for non-table lists.
     root.querySelectorAll('[data-pc-subfield="1"] > ul, [data-pc-subfield="1"] > ol, .subfield-scroll-host > ul, .subfield-scroll-host > ol').forEach(l => candidates.push({ wrap: l, table: l, kind: 'list' }));
