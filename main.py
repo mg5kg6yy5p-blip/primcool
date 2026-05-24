@@ -65,6 +65,9 @@ from database import (
     verify_tech, get_tech_by_id, get_all_techs, create_tech, update_tech,
     # W1+W2 unified staff helpers
     list_staff, get_staff_by_id, VALID_STAFF_TYPES, VALID_DEPARTMENTS,
+    # Pass B warehouse movements
+    record_part_movement, list_warehouse_movements, stock_by_location,
+    VALID_MOVEMENT_REASONS, VALID_MOVEMENT_REFS,
     delete_tech, set_tech_pin,
     get_tech_by_code_and_email, create_pin_reset_token, consume_pin_reset_token,
     create_photo, get_visit_photos, get_photo_by_id, delete_photo,
@@ -8815,6 +8818,98 @@ def admin_list_warehouse_staff(request: Request):
     warehouse:view_queue (inventory_manager included)."""
     _require_perm(request, "warehouse:view_queue")
     return list_staff(department="warehouse", active_only=True)
+
+
+# ── Warehouse inventory movements (Pass B) ──────────────────────────
+# Append-only, chain-hashed history of every part movement (receipt /
+# pick / transfer / adjustment / return / shipped). The parts.quantity
+# global total stays in sync via record_part_movement's transactional
+# UPDATE; per-location on-hand is computed from movements at read
+# time via stock_by_location().
+
+class WarehouseMovementBody(BaseModel):
+    part_id:          int
+    quantity_delta:   float     # signed: + inbound, - outbound
+    reason:           str       # see VALID_MOVEMENT_REASONS
+    from_location_id: Optional[int] = None
+    to_location_id:   Optional[int] = None
+    reference_kind:   Optional[str] = None
+    reference_id:     Optional[int] = None
+    notes:            Optional[str] = None
+
+
+@app.post("/api/admin/warehouse/movements")
+def admin_warehouse_record_movement(request: Request,
+                                    body: WarehouseMovementBody):
+    """Record a single inventory movement. Quantity sign convention:
+       + for inbound (receipt / return), - for outbound (pick /
+       shipped). Transfers can be a single row with both
+       from_/to_location_id set; the quantity_delta is then 0 at the
+       parts.quantity global total (the part didn't enter or leave
+       the warehouse, just moved within it) — but on-hand at each
+       location updates correctly via the per-location aggregation."""
+    admin = _require_perm(request, "warehouse:manage_assets")
+    try:
+        mid = record_part_movement(
+            part_id=body.part_id,
+            quantity_delta=float(body.quantity_delta),
+            reason=body.reason,
+            from_location_id=body.from_location_id,
+            to_location_id=body.to_location_id,
+            performed_by_type="admin",
+            performed_by_id=admin["id"],
+            performed_by_label=admin.get("name"),
+            performed_by_prid=admin.get("prid"),
+            reference_kind=body.reference_kind,
+            reference_id=body.reference_id,
+            notes=body.notes,
+        )
+    except ValueError as ve:
+        raise HTTPException(400, str(ve))
+    _audit_from(admin, "warehouse.movement.recorded", request,
+                target_type="part_movement", target_id=mid,
+                after={"part_id": body.part_id,
+                       "quantity_delta": body.quantity_delta,
+                       "reason": body.reason,
+                       "from_location_id": body.from_location_id,
+                       "to_location_id":   body.to_location_id,
+                       "reference_kind":   body.reference_kind,
+                       "reference_id":     body.reference_id})
+    return {"ok": True, "id": mid}
+
+
+@app.get("/api/admin/warehouse/movements")
+def admin_warehouse_list_movements(request: Request,
+                                   part_id: Optional[int] = None,
+                                   location_id: Optional[int] = None,
+                                   reason: Optional[str] = None,
+                                   reference_kind: Optional[str] = None,
+                                   reference_id: Optional[int] = None,
+                                   since: Optional[str] = None,
+                                   limit: int = 200):
+    """Filtered movement history. Read-only — gated by view_queue so
+    inventory_manager + supervisors can audit without write perms."""
+    _require_perm(request, "warehouse:view_queue")
+    if reason and reason not in VALID_MOVEMENT_REASONS:
+        raise HTTPException(400,
+            f"reason must be one of {sorted(VALID_MOVEMENT_REASONS)}")
+    if reference_kind and reference_kind not in VALID_MOVEMENT_REFS:
+        raise HTTPException(400,
+            f"reference_kind must be one of {sorted(VALID_MOVEMENT_REFS)}")
+    return list_warehouse_movements(
+        part_id=part_id, location_id=location_id, reason=reason,
+        reference_kind=reference_kind, reference_id=reference_id,
+        since=since, limit=max(1, min(int(limit), 1000)),
+    )
+
+
+@app.get("/api/admin/warehouse/stock-by-location")
+def admin_warehouse_stock_by_location(request: Request,
+                                      location_id: Optional[int] = None):
+    """Per-location on-hand grid, computed from movements. Optional
+    location_id filter narrows to one bin / van / truck."""
+    _require_perm(request, "warehouse:view_queue")
+    return stock_by_location(location_id=location_id)
 
 
 @app.get("/warehouse")

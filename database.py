@@ -613,6 +613,37 @@ def init_db():
         )
     """)
     con.execute("CREATE INDEX IF NOT EXISTS idx_part_movements_part ON part_movements(part_id, created_at)")
+    # Warehouse module (Pass B): part_movements gets location tracking
+    # so we know where each part IS, not just net quantity changes.
+    # Additive ALTERs — existing rows keep nulls (unknown location);
+    # only new warehouse-driven movements populate them.
+    pm_cols = {row[1] for row in con.execute(
+        "PRAGMA table_info(part_movements)")}
+    for col, sql in (
+        ("from_location_id",
+            "ALTER TABLE part_movements ADD COLUMN from_location_id "
+            "INTEGER REFERENCES fs_assets(id)"),
+        ("to_location_id",
+            "ALTER TABLE part_movements ADD COLUMN to_location_id "
+            "INTEGER REFERENCES fs_assets(id)"),
+        ("reference_kind",
+            "ALTER TABLE part_movements ADD COLUMN reference_kind TEXT"),
+        ("reference_id",
+            "ALTER TABLE part_movements ADD COLUMN reference_id INTEGER"),
+        ("prior_chain_hash",
+            "ALTER TABLE part_movements ADD COLUMN prior_chain_hash TEXT"),
+        ("chain_hash",
+            "ALTER TABLE part_movements ADD COLUMN chain_hash TEXT"),
+    ):
+        if col not in pm_cols:
+            try: con.execute(sql)
+            except sqlite3.OperationalError: pass
+    con.execute("CREATE INDEX IF NOT EXISTS idx_part_movements_from "
+                "ON part_movements(from_location_id, created_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_part_movements_to "
+                "ON part_movements(to_location_id, created_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_part_movements_ref "
+                "ON part_movements(reference_kind, reference_id)")
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS invoices (
@@ -4697,6 +4728,288 @@ def get_part_movements(part_id: int, limit: int = 100):
         """,
         (part_id, limit),
     ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Warehouse module — part movements with location tracking (Pass B)
+# ══════════════════════════════════════════════════════════════════════════
+# Movements answer two questions the simple parts.quantity total can't:
+#   1. WHERE is this part physically right now? (location stock)
+#   2. WHAT was its history? (auditable chain across receipts / picks /
+#      transfers / adjustments / returns / shipments)
+#
+# Direction is implicit from from_/to_location_id:
+#   receipt    → to_location_id set, from null
+#   pick       → from_location_id set, to null (consumed for visit)
+#   transfer   → both set
+#   adjustment → both null (positive or negative quantity_delta)
+#   return     → to_location_id set, from null (parts coming back)
+#   shipped    → from_location_id set, to null (parts going out the door)
+# Chain-hashed so the warehouse manager has a tamper-evident trail.
+
+VALID_MOVEMENT_REASONS = (
+    "receipt", "pick", "transfer", "adjustment", "return", "shipped",
+)
+VALID_MOVEMENT_REFS = (
+    "po", "visit", "delivery", "adjustment", "count", "transfer",
+)
+
+
+def _chain_hash_part_movement(prior_hash: str, row: dict) -> str:
+    import hashlib, json as _j
+    keys = ("part_id", "quantity_delta", "from_location_id", "to_location_id",
+            "reason", "reference_kind", "reference_id",
+            "performed_by_type", "performed_by_id", "created_at")
+    payload = {k: row.get(k) for k in keys}
+    canon = _j.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(
+        ((prior_hash or "") + canon).encode("utf-8")
+    ).hexdigest()
+
+
+def record_part_movement(part_id: int, quantity_delta: float, reason: str,
+                          from_location_id: int = None,
+                          to_location_id: int = None,
+                          performed_by_type: str = None,
+                          performed_by_id: int = None,
+                          performed_by_label: str = None,
+                          performed_by_prid: str = None,
+                          reference_kind: str = None,
+                          reference_id: int = None,
+                          notes: str = None,
+                          visit_id: int = None) -> int:
+    """Append-only movement row + transactional quantity update on parts.
+
+    Returns the new movement id. The caller is responsible for ensuring
+    quantity_delta carries the right sign (+ for inbound, − for outbound).
+    The chain_hash is computed inside the transaction so concurrent
+    writers can't interleave a bad link.
+
+    visit_id is kept for backwards-compat with existing tech pick rows;
+    new warehouse code uses (reference_kind='visit', reference_id=...)
+    instead — both columns are populated when both apply."""
+    if reason not in VALID_MOVEMENT_REASONS:
+        raise ValueError(f"invalid reason: {reason}")
+    if reference_kind is not None and reference_kind not in VALID_MOVEMENT_REFS:
+        raise ValueError(f"invalid reference_kind: {reference_kind}")
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    con.execute("BEGIN IMMEDIATE")
+    try:
+        prior = con.execute(
+            "SELECT chain_hash FROM part_movements "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        prior_hash = (prior["chain_hash"] if prior else "") or ""
+        row = {
+            "part_id": part_id, "quantity_delta": float(quantity_delta),
+            "from_location_id": from_location_id,
+            "to_location_id":   to_location_id,
+            "reason": reason,
+            "reference_kind": reference_kind,
+            "reference_id":   reference_id,
+            "performed_by_type": performed_by_type,
+            "performed_by_id":   performed_by_id,
+            "created_at": now,
+        }
+        chash = _chain_hash_part_movement(prior_hash, row)
+        # movement_type and reason are both populated with the same
+        # value — historical schema had movement_type as discriminator
+        # + reason as free-text rationale; the warehouse module
+        # collapses both into the single reason taxonomy. notes
+        # (free-text) doesn't have a dedicated column today; if the
+        # operator needs it, ALTER ADD COLUMN notes TEXT later.
+        cur = con.execute(
+            """
+            INSERT INTO part_movements
+                (part_id, movement_type, quantity_delta, reason,
+                 from_location_id, to_location_id, reference_kind,
+                 reference_id, visit_id,
+                 performed_by_type, performed_by_id, performed_by_prid,
+                 performed_by_label, prior_chain_hash, chain_hash,
+                 created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (part_id, reason, float(quantity_delta), notes or reason,
+             from_location_id, to_location_id, reference_kind,
+             reference_id, visit_id,
+             performed_by_type, performed_by_id, performed_by_prid,
+             performed_by_label, prior_hash, chash, now),
+        )
+        mid = cur.lastrowid
+        # Keep the parts.quantity rolling total in sync (the materialised
+        # "global on-hand" count). Per-location stock is computed from
+        # movements at read time.
+        con.execute(
+            "UPDATE parts SET quantity = quantity + ?, updated_at = ? "
+            "WHERE id = ?",
+            (float(quantity_delta), now, part_id),
+        )
+        con.commit()
+    except Exception:
+        con.rollback()
+        con.close()
+        raise
+    con.close()
+    return mid
+
+
+def record_transfer(part_id: int, qty: float,
+                     from_location_id: int, to_location_id: int,
+                     performed_by_type: str = None,
+                     performed_by_id: int = None,
+                     performed_by_label: str = None,
+                     performed_by_prid: str = None,
+                     notes: str = None) -> dict:
+    """A transfer is two atomic movements:
+      OUT row (qty_delta = -qty, from_location_id set)
+      IN  row (qty_delta = +qty, to_location_id   set)
+
+    Both rows share reference_kind='transfer' and reference_id=<out_id>
+    so the IN row points at the OUT row. The parts.quantity global
+    total stays unchanged across the pair (-qty + +qty = 0) since
+    a transfer doesn't enter or leave the warehouse as a whole.
+    Returns {out_id, in_id}."""
+    if qty <= 0:
+        raise ValueError("qty must be positive")
+    out_id = record_part_movement(
+        part_id=part_id, quantity_delta=-float(qty), reason="transfer",
+        from_location_id=from_location_id,
+        performed_by_type=performed_by_type,
+        performed_by_id=performed_by_id,
+        performed_by_label=performed_by_label,
+        performed_by_prid=performed_by_prid,
+        reference_kind="transfer", reference_id=None,
+        notes=notes,
+    )
+    in_id = record_part_movement(
+        part_id=part_id, quantity_delta=float(qty), reason="transfer",
+        to_location_id=to_location_id,
+        performed_by_type=performed_by_type,
+        performed_by_id=performed_by_id,
+        performed_by_label=performed_by_label,
+        performed_by_prid=performed_by_prid,
+        reference_kind="transfer", reference_id=out_id,
+        notes=notes,
+    )
+    return {"out_id": out_id, "in_id": in_id}
+
+
+def list_warehouse_movements(part_id: int = None,
+                              location_id: int = None,
+                              reason: str = None,
+                              reference_kind: str = None,
+                              reference_id: int = None,
+                              since: str = None,
+                              limit: int = 200) -> list:
+    """Filtered movement history. Joins parts + (optionally) location
+    asset rows for human-readable output. Sorted DESC by created_at."""
+    where = []
+    args  = []
+    if part_id is not None:
+        where.append("m.part_id = ?"); args.append(int(part_id))
+    if location_id is not None:
+        where.append("(m.from_location_id = ? OR m.to_location_id = ?)")
+        args.extend([int(location_id), int(location_id)])
+    if reason:
+        where.append("m.reason = ?"); args.append(reason)
+    if reference_kind:
+        where.append("m.reference_kind = ?"); args.append(reference_kind)
+    if reference_id is not None:
+        where.append("m.reference_id = ?"); args.append(int(reference_id))
+    if since:
+        where.append("m.created_at >= ?"); args.append(since)
+    sql = """
+        SELECT m.id, m.part_id, p.sku, p.name AS part_name, p.unit,
+               m.quantity_delta, m.reason, m.reference_kind, m.reference_id,
+               m.from_location_id, fa.asset_code AS from_location_code,
+               fa.label                          AS from_location_label,
+               m.to_location_id,   ta.asset_code AS to_location_code,
+               ta.label                          AS to_location_label,
+               m.performed_by_type, m.performed_by_id,
+               m.performed_by_label, m.performed_by_prid,
+               m.visit_id, m.created_at, m.chain_hash
+        FROM part_movements m
+        JOIN parts p ON m.part_id = p.id
+        LEFT JOIN fs_assets fa ON m.from_location_id = fa.id
+        LEFT JOIN fs_assets ta ON m.to_location_id   = ta.id
+    """
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY m.created_at DESC, m.id DESC LIMIT ?"
+    args.append(int(limit))
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def stock_by_location(location_id: int = None) -> list:
+    """Computed per-location on-hand from movements. Returns rows of
+    {location_id, asset_code, label, part_id, sku, part_name, on_hand}.
+    on_hand = sum(to-direction qty) - sum(from-direction qty) at this
+    location for each part. Rows with on_hand <= 0 are filtered out.
+
+    If location_id is None, returns the full grid across every
+    location that has any inbound movement on record."""
+    where = []
+    args  = []
+    if location_id is not None:
+        where.append("loc.id = ?"); args.append(int(location_id))
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    # Sub-query computes the row; outer WHERE filters on_hand > 0
+    # (SQLite rejects HAVING on a non-aggregate query, so the filter
+    # has to happen in the outer SELECT).
+    sql = f"""
+        SELECT * FROM (
+            WITH ins AS (
+                SELECT to_location_id   AS loc_id, part_id,
+                       SUM(quantity_delta) AS inflow
+                FROM part_movements
+                WHERE to_location_id IS NOT NULL
+                  AND quantity_delta > 0
+                GROUP BY to_location_id, part_id
+            ),
+            outs AS (
+                -- Outflow only counts rows where qty_delta is negative.
+                -- Convention: picks / shipped have qty_delta < 0 and
+                -- from_location set. Transfers are recorded as TWO
+                -- rows (one OUT row qty_delta < 0 + from_location,
+                -- one IN row qty_delta > 0 + to_location) — see
+                -- record_transfer() helper.
+                SELECT from_location_id AS loc_id, part_id,
+                       SUM(ABS(quantity_delta)) AS outflow
+                FROM part_movements
+                WHERE from_location_id IS NOT NULL
+                  AND quantity_delta < 0
+                GROUP BY from_location_id, part_id
+            ),
+            all_pairs AS (
+                SELECT loc_id, part_id FROM ins
+                UNION
+                SELECT loc_id, part_id FROM outs
+            )
+            SELECT loc.id   AS location_id,
+                   loc.asset_code, loc.label,
+                   p.id     AS part_id, p.sku, p.name AS part_name, p.unit,
+                   COALESCE(ins.inflow, 0)   AS inflow,
+                   COALESCE(outs.outflow, 0) AS outflow,
+                   COALESCE(ins.inflow, 0) - COALESCE(outs.outflow, 0)
+                                              AS on_hand
+            FROM all_pairs ap
+            JOIN fs_assets loc ON ap.loc_id  = loc.id
+            JOIN parts     p   ON ap.part_id = p.id
+            LEFT JOIN ins  ON ins.loc_id  = ap.loc_id AND ins.part_id  = ap.part_id
+            LEFT JOIN outs ON outs.loc_id = ap.loc_id AND outs.part_id = ap.part_id
+            {where_sql}
+        ) AS computed
+        WHERE on_hand > 0
+        ORDER BY asset_code, sku
+    """
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
     con.close()
     return [dict(r) for r in rows]
 
