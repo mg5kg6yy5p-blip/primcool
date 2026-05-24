@@ -398,9 +398,49 @@
     .filter-btn { padding: 5px 14px; border-radius: 20px; font-size: 12px; font-weight: 600; border: 1px solid var(--border); background: var(--white); color: var(--muted); cursor: pointer; }
     .filter-btn.active { background: var(--teal); color: white; border-color: var(--teal); }
 
+    /* ── Mobile nav (≤1024 px) ──────────────────────────────────────────
+       Auditor flagged "no mobile navigation — at 768px the sidebar is
+       removed entirely with no hamburger". The new behaviour:
+       - Hamburger button in the header (hidden on desktop).
+       - Sidebar becomes a slide-in drawer with a backdrop.
+       - Tapping a nav item closes the drawer.
+       - Same kbd shortcut (Escape) closes it. */
+    .menu-toggle {
+      display: none;
+      background: rgba(255,255,255,0.1); color: white;
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 6px;
+      width: 36px; height: 32px;
+      align-items: center; justify-content: center;
+      cursor: pointer; padding: 0;
+      margin-right: 12px;
+    }
+    .menu-toggle:hover { background: rgba(255,255,255,0.18); }
+    .menu-toggle svg { width: 18px; height: 18px; }
+    .nav-backdrop {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(11,37,69,0.45);
+      z-index: 180;
+      backdrop-filter: blur(2px);
+    }
+    .nav-backdrop.open { display: block; }
+    @media (max-width: 1024px) {
+      .menu-toggle { display: inline-flex; }
+      .sidebar {
+        position: fixed; top: 56px; left: 0;
+        height: calc(100vh - 56px);
+        width: 260px; z-index: 190;
+        transform: translateX(-100%);
+        transition: transform 0.22s ease-out;
+        box-shadow: 4px 0 20px rgba(11,37,69,0.18);
+      }
+      .sidebar.open { transform: translateX(0); }
+      .main { padding: 18px 14px 60px; }
+    }
     @media (max-width: 640px) {
-      .sidebar { display: none; }
       .field-row { grid-template-columns: 1fr; }
+      .main { padding: 14px 10px 60px; }
     }
 
     /* ── §1/§2 admin nav: clickable references + rows ── */
@@ -492,6 +532,9 @@
 <div id="app" style="display:none;">
   <header>
     <div style="display:flex;align-items:center;">
+      <button class="menu-toggle" id="menuToggle" onclick="toggleNav()" aria-label="Open navigation menu" aria-controls="adminSidebar" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="3" y1="6"  x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
       <span class="logo">Prime<span>Cool</span> Services</span>
       <span class="admin-tag">Admin</span>
     </div>
@@ -501,8 +544,11 @@
     </div>
   </header>
 
+  <!-- Mobile-nav backdrop — clicking it closes the drawer. -->
+  <div class="nav-backdrop" id="navBackdrop" onclick="closeNav()"></div>
+
   <div class="layout">
-    <nav class="sidebar">
+    <nav class="sidebar" id="adminSidebar">
       <div class="nav-item active" onclick="showPanel('customers')" id="nav-customers">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
         Customers
@@ -3840,7 +3886,30 @@
   }
 
   // ── Navigation ─────────────────────────────────────────────────────────────
+  // ── Mobile nav drawer ──────────────────────────────────────────────────
+  function openNav() {
+    document.getElementById('adminSidebar')?.classList.add('open');
+    document.getElementById('navBackdrop')?.classList.add('open');
+    document.getElementById('menuToggle')?.setAttribute('aria-expanded', 'true');
+  }
+  function closeNav() {
+    document.getElementById('adminSidebar')?.classList.remove('open');
+    document.getElementById('navBackdrop')?.classList.remove('open');
+    document.getElementById('menuToggle')?.setAttribute('aria-expanded', 'false');
+  }
+  function toggleNav() {
+    const open = document.getElementById('adminSidebar')?.classList.contains('open');
+    open ? closeNav() : openNav();
+  }
+  // Escape closes the drawer; ignored on desktop where the sidebar
+  // doesn't have .open in the first place.
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeNav();
+  });
+
   function showPanel(name) {
+    // Any panel switch on mobile also closes the drawer.
+    closeNav();
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
     document.getElementById(`panel-${name}`).classList.add('active');
