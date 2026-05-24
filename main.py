@@ -4169,6 +4169,37 @@ def admin_mfa_reauth(request: Request, body: MfaActivate):
     return {"ok": True, "fresh_for_seconds": MFA_FRESH_TTL_SEC}
 
 
+def _resolve_admin_enrolment_actor(request: Request) -> dict:
+    """The admin-side MFA enrol endpoints accept EITHER a full admin
+    session token OR the short-lived `admin_mfa_enrol` token returned
+    by /api/admin/login or /api/staff/login when the admin needs to
+    enrol. Mirrors _resolve_tech_enrolment_actor on the tech side.
+
+    Without this, the unified /staff portal couldn't drive admin
+    enrolment — the enrol token is what the user has at that point,
+    but _require_admin rejects everything except type='admin'."""
+    raw = _read_token(request, COOKIE_ADMIN) or ""
+    if not raw:
+        h = request.headers.get("authorization", "")
+        if h.lower().startswith("bearer "):
+            raw = h.split(" ", 1)[1].strip()
+    if not raw:
+        raise HTTPException(401, "Authentication required")
+    try:
+        data = jwt.decode(raw, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(401, "Enrolment token expired — sign in again")
+    except jwt.InvalidTokenError:
+        raise HTTPException(401, "Invalid token")
+    if data.get("type") not in ("admin", "admin_mfa_enrol"):
+        raise HTTPException(403, "Forbidden")
+    admin_id = int(data.get("sub", 0))
+    admin = get_admin_user_by_id(admin_id) if admin_id else None
+    if not admin or not admin.get("active"):
+        raise HTTPException(403, "Account inactive")
+    return admin
+
+
 @app.get("/api/admin/mfa/status")
 def admin_mfa_status(request: Request):
     admin = _require_admin(request)
@@ -4180,8 +4211,10 @@ def admin_mfa_status(request: Request):
 
 @app.post("/api/admin/mfa/setup")
 def admin_mfa_setup(request: Request):
-    """Generates a candidate secret + QR code. Does NOT enable MFA until /activate."""
-    admin = _require_admin(request)
+    """Generates a candidate secret + QR code. Does NOT enable MFA until /activate.
+    Accepts the enrolment token from /api/staff/login so a forced-MFA
+    admin (no full session yet) can complete enrolment."""
+    admin = _resolve_admin_enrolment_actor(request)
     if admin.get("mfa_enabled"):
         raise HTTPException(400, "MFA is already enabled. Disable it first to re-enroll.")
     secret = pyotp.random_base32()
@@ -4205,8 +4238,9 @@ def admin_mfa_setup(request: Request):
 @app.post("/api/admin/mfa/activate")
 def admin_mfa_activate(request: Request, body: MfaActivate):
     """Verifies the user can produce a code from the candidate secret,
-    then enables MFA and returns one-time backup codes."""
-    admin = _require_admin(request)
+    then enables MFA and returns one-time backup codes.
+    Accepts the enrolment token (see admin_mfa_setup)."""
+    admin = _resolve_admin_enrolment_actor(request)
     if admin.get("mfa_enabled"):
         raise HTTPException(400, "MFA is already enabled")
     if not admin.get("mfa_secret"):
