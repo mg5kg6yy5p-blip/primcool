@@ -7,22 +7,31 @@
   <title>PrimeCool — Staff Sign In</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <!-- PrimeCool brand fonts (shared). -->
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800;900&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&family=Barlow:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
     :root {
-      --navy:#0B2545; --navy-2:#143264; --teal:#22A08A; --teal-dark:#188672;
+      --navy:#0F2A4A; --navy-2:#11335A; --navy-deep:#0B1F38;
+      --teal:#22A08A; --teal-dark:#188672;
+      --ice:#7DD3E8; --lime:#B6E021; --mist:#F2F6FA;
       --orange:#F39722; --bg:#F4F6F9; --card:#fff; --border:#e5e7eb;
       --muted:#6b7280; --text:#0f172a; --danger:#dc2626; --success:#15803d;
       --warn:#b45309; --warn-bg:#fef3c7;
+      --font-display: 'Archivo','Barlow',system-ui,-apple-system,sans-serif;
+      --font-body:    'IBM Plex Sans','Barlow',system-ui,-apple-system,sans-serif;
+      --font-mono:    'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace;
     }
     *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
-    body{margin:0;background:linear-gradient(135deg,var(--navy) 0%,var(--navy-2) 100%);
+    body{margin:0;background:linear-gradient(135deg,var(--navy-2) 0%,var(--navy) 100%);
          color:var(--text);min-height:100vh;
-         font-family:'Barlow',-apple-system,system-ui,sans-serif;
+         font-family:var(--font-body);
+         -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
          display:flex;flex-direction:column;align-items:center;
          padding:24px;padding-top:max(24px,env(safe-area-inset-top));}
+    .pc-snowflake{display:inline-block;width:22px;height:22px;background:var(--lime);border-radius:6px;flex-shrink:0;position:relative;vertical-align:middle;}
+    .pc-snowflake::before{content:"";position:absolute;inset:4px;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230F2A4A' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><line x1='12' y1='2' x2='12' y2='22'/><line x1='2' y1='12' x2='22' y2='12'/><line x1='4.93' y1='4.93' x2='19.07' y2='19.07'/><line x1='19.07' y1='4.93' x2='4.93' y2='19.07'/></svg>");background-size:contain;background-repeat:no-repeat;}
     .hero{text-align:center;color:#fff;margin:48px 0 32px;max-width:520px;}
-    .hero .word{font-size:34px;font-weight:800;letter-spacing:.5px;}
+    .hero .word{font-family:var(--font-display);font-size:34px;font-weight:800;letter-spacing:-0.01em;display:inline-flex;align-items:center;gap:12px;justify-content:center;}
     .hero .word span{color:var(--teal);}
     .hero .tag{margin-top:8px;font-size:14px;opacity:.85;font-weight:500;letter-spacing:.4px;}
     .hero .welcome{margin-top:18px;font-size:18px;line-height:1.45;opacity:.95;}
@@ -62,7 +71,7 @@
 <body>
 
   <div class="hero">
-    <div class="word">Prime<span>Cool</span></div>
+    <div class="word"><span class="pc-snowflake" aria-hidden="true"></span><span style="display:inline-flex;align-items:baseline;color:#fff;">Prime<span style="color:var(--teal);">Cool</span></span></div>
     <div class="tag">PrimeCool Services Ltd.</div>
     <div class="welcome">Welcome to PrimeCool — <em>where you are everything.</em></div>
   </div>

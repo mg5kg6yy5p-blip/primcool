@@ -5,9 +5,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Admin — PrimeCool Services</title>
   <style>
+    /* PrimeCool brand fonts (matches the Workforce mobile prototype):
+       Archivo  → display (h1/h2/h3, brand wordmark, big numbers)
+       IBM Plex Sans → body / UI text
+       IBM Plex Mono → currency, IDs, durations, anything that should
+                        line up column-wise. */
+    @import url('https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800;900&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap');
     :root {
-      --navy: #0B2545;
-      --teal: #22A08A;
+      --navy: #0F2A4A;          /* brand navy (refreshed to match Workforce prototype) */
+      --navy-deep: #0B1F38;     /* phone-bezel / footer accents */
+      --teal: #22A08A;          /* primary CTA + active state (kept for continuity) */
+      --ice:  #7DD3E8;          /* accent text on navy surfaces */
+      --lime: #B6E021;          /* clock-in / approve / "Active" pop */
+      --mist: #F2F6FA;          /* page background tint */
       --light: #f0f4f8;
       --white: #ffffff;
       --text: #1a2533;
@@ -15,9 +25,118 @@
       --border: #dde3ea;
       --danger: #e53e3e;
       --danger-light: #fff5f5;
+      --font-display: 'Archivo', 'Segoe UI', system-ui, -apple-system, sans-serif;
+      --font-body:    'IBM Plex Sans', 'Segoe UI', system-ui, -apple-system, sans-serif;
+      --font-mono:    'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: var(--light); min-height: 100vh; color: var(--text); }
+    body {
+      font-family: var(--font-body);
+      background: var(--light); min-height: 100vh; color: var(--text);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      font-feature-settings: "tnum" 1, "kern" 1;
+    }
+    /* Display type — every panel <h2>, modal <h3>, brand wordmark. */
+    h1, h2, h3, .logo, .pc-display {
+      font-family: var(--font-display);
+      letter-spacing: -0.01em;
+    }
+    /* Tabular monospace for currency, IDs, durations, codes — uses
+       the .pc-mono utility OR an explicit element selector. */
+    .pc-mono, code, kbd, samp,
+    .code-pill, .badge[data-mono="1"] {
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ── Polish pass — shared elevation + motion tokens (PrimeCool brand)
+       Shadow shape matches the Workforce mobile prototype reference:
+       a tight 1-3px ambient + a longer, softer drop-shadow underneath. */
+    :root {
+      --shadow-sm: 0 1px 3px rgba(15,42,74,0.08), 0 8px 24px -16px rgba(15,42,74,0.25);
+      --shadow-md: 0 2px 4px rgba(15,42,74,0.08), 0 12px 28px -10px rgba(15,42,74,0.20);
+      --shadow-lg: 0 8px 24px rgba(15,42,74,0.14), 0 2px 6px rgba(15,42,74,0.06);
+      --shadow-xl: 0 30px 60px -20px rgba(15,42,74,0.40);
+      --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+      --motion-fast: 140ms var(--ease-out);
+      --motion-med:  220ms var(--ease-out);
+      /* Brand gradients — used by hero banners on net-pay, KPI totals,
+         5S safety banners, etc. */
+      --gradient-navy:  linear-gradient(135deg, #11335A, var(--navy));
+      --gradient-cool:  linear-gradient(90deg, var(--ice), var(--lime));
+    }
+    /* Every card-ish surface picks up the elevation tokens. */
+    .table-wrap, .card, .modal, .modal-card,
+    details.section, .pc-cmdk,
+    .panel > .top-bar + div, .panel > div[style*="background:#fff"],
+    .panel > div[style*="background: #fff"], .panel > div[style*="background:white"] {
+      box-shadow: var(--shadow-sm);
+    }
+    /* Hover lift + active-press feedback (matches reference "active:scale-[0.99]"). */
+    .nav-item, .filter-btn, .btn, .kpi-tile, [data-tile] {
+      transition: background var(--motion-fast), color var(--motion-fast),
+                  box-shadow var(--motion-fast), transform var(--motion-fast),
+                  border-color var(--motion-fast);
+    }
+    .nav-item:hover { transform: translateX(2px); }
+    .kpi-tile:hover, [data-tile]:hover {
+      transform: translateY(-1px);
+      box-shadow: var(--shadow-md);
+    }
+    .btn:active, .filter-btn:active, .kpi-tile:active, [data-tile]:active {
+      transform: scale(0.985);
+    }
+    /* Header sits above the page; subtle bottom shadow ties it to the layout. */
+    header { box-shadow: 0 1px 0 rgba(0,0,0,0.08), 0 6px 14px rgba(15,42,74,0.18); }
+
+    /* ── PrimeCool brand components ──────────────────────────────────────
+       Pulled from the Workforce reference: gradient banner, avatar disc,
+       accent strip. Drop-in utilities so any panel can adopt the look. */
+    .pc-banner {
+      background: var(--gradient-navy); color: #fff;
+      border-radius: 14px; padding: 16px 20px;
+      box-shadow: var(--shadow-md);
+      position: relative; overflow: hidden;
+    }
+    .pc-banner .label { font-size: 11px; font-weight: 700; letter-spacing: 1.5px;
+                        text-transform: uppercase; color: var(--ice); }
+    .pc-banner .value { font-family: var(--font-mono); font-weight: 700;
+                        font-size: 28px; line-height: 1.1; color: #fff; margin-top: 6px; }
+    .pc-banner .sub   { font-size: 12px; color: rgba(255,255,255,0.65); margin-top: 4px; }
+    .pc-accent-strip { height: 4px; background: var(--gradient-cool); border-radius: 999px; }
+    .pc-avatar {
+      width: 36px; height: 36px; border-radius: 50%;
+      display: inline-flex; align-items: center; justify-content: center;
+      font-family: var(--font-display); font-weight: 700; font-size: 13px;
+      background: var(--navy); color: var(--ice); flex-shrink: 0;
+    }
+    .pc-avatar.lg { width: 56px; height: 56px; font-size: 18px; }
+    /* Status pill palette (matches reference pStyle / sStyle). */
+    .pc-pill { display: inline-flex; align-items: center; gap: 4px;
+               padding: 3px 9px; border-radius: 999px;
+               font-size: 10.5px; font-weight: 700; letter-spacing: 0.5px;
+               text-transform: uppercase; white-space: nowrap; }
+    .pc-pill--urgent     { background: #FFE2E2; color: #B42318; }
+    .pc-pill--high       { background: #FFF1D6; color: #9A6700; }
+    .pc-pill--normal     { background: #E7F0F7; color: var(--navy); }
+    .pc-pill--inprogress { background: var(--lime); color: var(--navy); }
+    .pc-pill--dispatched { background: var(--ice);  color: var(--navy); }
+    .pc-pill--scheduled  { background: #E7EDF3; color: #5A6B7B; }
+    .pc-pill--active     { background: var(--lime); color: var(--navy); }
+    /* Brand snowflake mark — used in the header logo + anywhere we want
+       a tiny visual signature. Inline SVG via background, sized 16-24px. */
+    .pc-snowflake {
+      display: inline-block; width: 18px; height: 18px;
+      background: var(--lime); border-radius: 5px;
+      flex-shrink: 0;
+      position: relative;
+    }
+    .pc-snowflake::before {
+      content: ""; position: absolute; inset: 3px;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230F2A4A' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><line x1='12' y1='2' x2='12' y2='22'/><line x1='2' y1='12' x2='22' y2='12'/><line x1='4.93' y1='4.93' x2='19.07' y2='19.07'/><line x1='19.07' y1='4.93' x2='4.93' y2='19.07'/></svg>");
+      background-size: contain; background-repeat: no-repeat;
+    }
 
     /* ── Header ── */
     header {
@@ -26,16 +145,24 @@
       display: flex; align-items: center; justify-content: space-between;
       height: 56px; position: sticky; top: 0; z-index: 200;
     }
-    .logo { color: white; font-size: 17px; font-weight: 700; white-space: nowrap; }
-    .logo span { color: var(--teal); }
+    .logo { color: white; font-size: 16px; font-weight: 700; white-space: nowrap; font-family: var(--font-display); }
+    /* Note: previously `.logo span` cascaded color:teal onto every inner
+       span. The new logo lockup uses nested spans for stacked typography,
+       so colors are set inline per span instead of via this broad rule. */
     /* Below ~900px the wordmark + role badge + "Sign out" can wrap to
        two lines, which looks broken. Shrink the wordmark and tighten
        the header padding so everything stays one row down to the
        mobile breakpoint where the hamburger drawer takes over. */
     @media (max-width: 900px) {
-      .logo { font-size: 14px; }
+      .logo { font-size: 13px; gap: 6px; }
+      .pc-snowflake { width: 16px; height: 16px; }
       .admin-tag { font-size: 10px; padding: 2px 7px; margin-left: 6px; }
       .logout-btn { padding: 4px 10px; font-size: 11px; }
+    }
+    @media (max-width: 480px) {
+      /* Hide the stacked "Services" caption on phones — the snowflake +
+         PrimeCool wordmark + Admin pill is enough brand at this size. */
+      .logo > span > span:last-child { display: none; }
     }
     .admin-tag {
       background: rgba(34,160,138,0.25); color: var(--teal);
@@ -316,8 +443,13 @@
     .modal-overlay.open { display: flex; }
     .modal {
       background: var(--white); border-radius: 16px;
-      box-shadow: 0 8px 48px rgba(0,0,0,0.18);
+      box-shadow: var(--shadow-xl);
       width: 100%; max-width: 500px; max-height: 90vh; overflow-y: auto;
+      animation: pcModalIn var(--motion-med);
+    }
+    @keyframes pcModalIn {
+      from { opacity: 0; transform: translateY(8px) scale(0.985); }
+      to   { opacity: 1; transform: translateY(0) scale(1); }
     }
     .modal-header {
       padding: 20px 24px 16px; border-bottom: 1px solid var(--border);
@@ -654,7 +786,13 @@
       <button class="menu-toggle" id="menuToggle" onclick="toggleNav()" aria-label="Open navigation menu" aria-controls="adminSidebar" aria-expanded="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="3" y1="6"  x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
       </button>
-      <span class="logo">Prime<span>Cool</span> Services</span>
+      <span class="logo" style="display:flex;align-items:center;gap:8px;">
+        <span class="pc-snowflake" aria-hidden="true"></span>
+        <span style="display:flex;flex-direction:column;line-height:1;gap:2px;">
+          <span style="font-weight:800;letter-spacing:-0.01em;">Prime<span style="color:var(--teal);">Cool</span></span>
+          <span style="font-size:9px;letter-spacing:0.18em;text-transform:uppercase;font-weight:600;color:var(--ice);">Services</span>
+        </span>
+      </span>
       <span class="admin-tag">Admin</span>
     </div>
     <div style="display:flex;gap:8px;align-items:center;">

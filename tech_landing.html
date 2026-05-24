@@ -8,19 +8,44 @@
   <link rel="apple-touch-icon" href="/icons/tech-apple.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <!-- PrimeCool brand fonts (shared across admin, tech, portal, staff). -->
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800;900&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&family=Barlow:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
-      --navy:#0B2545; --navy-2:#143264; --teal:#22A08A; --teal-dark:#188672;
+      --navy:#0F2A4A; --navy-2:#11335A; --navy-deep:#0B1F38;
+      --teal:#22A08A; --teal-dark:#188672;
+      --ice:#7DD3E8; --lime:#B6E021; --mist:#F2F6FA;
       --orange:#F39722; --bg:#F4F6F9; --card:#fff; --border:#e5e7eb;
       --muted:#6b7280; --text:#0f172a; --danger:#dc2626; --success:#15803d;
       --warn:#b45309; --warn-bg:#fef3c7;
+      --font-display: 'Archivo','Barlow',system-ui,-apple-system,sans-serif;
+      --font-body:    'IBM Plex Sans','Barlow',system-ui,-apple-system,sans-serif;
+      --font-mono:    'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace;
+      --shadow-sm: 0 1px 3px rgba(15,42,74,0.08), 0 8px 24px -16px rgba(15,42,74,0.25);
+      --shadow-md: 0 2px 4px rgba(15,42,74,0.08), 0 12px 28px -10px rgba(15,42,74,0.20);
+      --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+      --motion-fast: 140ms var(--ease-out);
+      --gradient-navy: linear-gradient(135deg, var(--navy-2), var(--navy));
+      --gradient-cool: linear-gradient(90deg, var(--ice), var(--lime));
     }
     *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
     body{margin:0;background:var(--bg);color:var(--text);
-         font-family:'Barlow',-apple-system,system-ui,sans-serif;
+         font-family:var(--font-body);
          font-size:15px;line-height:1.45;
+         -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
+         font-feature-settings:"tnum" 1,"kern" 1;
          padding-bottom:env(safe-area-inset-bottom);}
+    h1,h2,h3,.pc-display{font-family:var(--font-display);letter-spacing:-0.01em;}
+    .pc-mono,code,kbd,samp{font-family:var(--font-mono);font-variant-numeric:tabular-nums;}
+    .pc-banner{background:var(--gradient-navy);color:#fff;border-radius:14px;padding:16px 20px;box-shadow:var(--shadow-md);position:relative;overflow:hidden;}
+    .pc-banner .label{font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--ice);}
+    .pc-banner .value{font-family:var(--font-mono);font-weight:700;font-size:28px;line-height:1.1;color:#fff;margin-top:6px;}
+    .pc-banner .sub{font-size:12px;color:rgba(255,255,255,0.65);margin-top:4px;}
+    .pc-accent-strip{height:4px;background:var(--gradient-cool);border-radius:999px;}
+    .pc-avatar{width:36px;height:36px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-family:var(--font-display);font-weight:700;font-size:13px;background:var(--navy);color:var(--ice);flex-shrink:0;}
+    .pc-avatar.lg{width:56px;height:56px;font-size:18px;}
+    .pc-snowflake{display:inline-block;width:18px;height:18px;background:var(--lime);border-radius:5px;flex-shrink:0;position:relative;}
+    .pc-snowflake::before{content:"";position:absolute;inset:3px;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230F2A4A' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><line x1='12' y1='2' x2='12' y2='22'/><line x1='2' y1='12' x2='22' y2='12'/><line x1='4.93' y1='4.93' x2='19.07' y2='19.07'/><line x1='19.07' y1='4.93' x2='4.93' y2='19.07'/></svg>");background-size:contain;background-repeat:no-repeat;}
     a{color:var(--navy);text-decoration:none;}
     button{font-family:inherit;cursor:pointer;}
     .hdr{background:linear-gradient(135deg,var(--navy) 0%,var(--navy-2) 100%);
@@ -158,10 +183,11 @@
          and the 5S audit screen all link back here so techs have a
          consistent way to return without needing a back button. -->
     <a href="/tech/home" style="text-decoration:none;color:inherit;display:flex;align-items:center;gap:12px;min-width:0;flex:1;">
-      <!-- PrimeCool wordmark — matches the convention used across
-           portal.html, admin.html, invoice_print.html (white "Prime"
-           with teal "Cool"). Never abbreviate to "PC". -->
-      <div style="font-size:18px;font-weight:700;letter-spacing:.3px;flex-shrink:0;">Prime<span style="color:var(--teal);">Cool</span></div>
+      <!-- PrimeCool wordmark — snowflake + lockup, matches the brand ID
+           used in admin.html and the Workforce mobile reference. Never
+           abbreviate to "PC". -->
+      <span class="pc-snowflake" aria-hidden="true"></span>
+      <div class="pc-display" style="font-size:18px;font-weight:800;letter-spacing:-0.01em;flex-shrink:0;">Prime<span style="color:var(--teal);">Cool</span></div>
       <div class="hdr-l" style="padding-left:10px;border-left:1px solid rgba(255,255,255,.18);">
         <div class="hdr-name" id="hdrName">…</div>
         <div class="hdr-sub" id="hdrSub">PrimeCool Services</div>
