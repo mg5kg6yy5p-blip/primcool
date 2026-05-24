@@ -1324,7 +1324,14 @@
         </div>
       </div>
 
-      <!-- ── Warehouse panel ── -->
+      <!-- ── Warehouse Ops panel ─────────────────────────────────────────
+           BUG FIX: the opening <div class="panel" id="panel-warehouse">
+           wrapper was missing for this panel, so its content was rendering
+           on EVERY admin page (Documents, KPI, 5S, etc.) and the "+ Add
+           staff" button was reachable from anywhere. Without the wrapper,
+           showPanel() also couldn't toggle visibility — the .panel.active
+           class never had a target. -->
+      <div class="panel" id="panel-warehouse">
         <div class="top-bar">
           <h2>Warehouse</h2>
           <div style="display:flex;gap:8px;">
@@ -1342,7 +1349,10 @@
           <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:18px;">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
               <h3 style="margin:0;color:var(--navy);font-size:16px;">Warehouse roster</h3>
-              <button class="btn btn-primary btn-sm" onclick="whOpenAddStaff()">+ Add staff</button>
+              <!-- Onboarding & position assignment: super_admin + hr_admin
+                   only. Button is hidden client-side AND the server
+                   double-checks in admin_create_tech (see main.py). -->
+              <button class="btn btn-primary btn-sm" id="whAddStaffBtn" onclick="whOpenAddStaff()" style="display:none;">+ Add staff</button>
             </div>
             <div class="muted" style="font-size:12px;margin-bottom:10px;">
               Three archetypes — <strong>warehouse manager</strong> oversees the floor,
@@ -3354,6 +3364,15 @@
     if (can('warehouse:view_queue')) {
       const nw = document.getElementById('nav-warehouse');
       if (nw) nw.style.display = 'flex';
+    }
+    // Warehouse onboarding & position assignment: super_admin + hr_admin only.
+    // "+ Add staff" stays hidden for every other role even if they can see
+    // the Warehouse Ops panel (e.g. supervisor_admin / inventory_manager
+    // need read-access but must not create staff).
+    const _role = currentAdmin && currentAdmin.role;
+    if (_role === 'super_admin' || _role === 'hr_admin') {
+      const ab = document.getElementById('whAddStaffBtn');
+      if (ab) ab.style.display = '';
     }
     // Delegations — super_admin OR admin with delegation power.
     if (currentAdmin && (currentAdmin.role === 'super_admin'

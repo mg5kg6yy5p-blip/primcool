@@ -8972,8 +8972,24 @@ def admin_create_tech(request: Request, body: TechCreate):
     if staff_type == "tech":
         if body.role not in ("lead_tech", "tech", "apprentice"):
             raise HTTPException(400, "Invalid tech role")
-    elif staff_type not in ("warehouse_floor", "parts_runner",
-                            "warehouse_manager"):
+    elif staff_type in ("warehouse_floor", "parts_runner",
+                        "warehouse_manager"):
+        # Operator policy: warehouse onboarding & position assignment is
+        # restricted to super_admin + hr_admin even if a role otherwise
+        # has tech:create (e.g. supervisor_admin can create field techs
+        # but must not create warehouse staff). UI hides the button;
+        # this is the defence-in-depth server gate.
+        if admin.get("role") not in ("super_admin", "hr_admin"):
+            _audit_from(admin, "warehouse.staff.create_denied", request,
+                        target_label=body.name,
+                        details={"reason": "role_not_authorized",
+                                 "staff_type": staff_type,
+                                 "actor_role": admin.get("role")})
+            raise HTTPException(
+                403,
+                "Warehouse staff onboarding is restricted to super_admin and hr_admin.",
+            )
+    else:
         raise HTTPException(400, f"Invalid staff_type: {staff_type}")
     try:
         tech_id, prid = create_tech(body.model_dump())
