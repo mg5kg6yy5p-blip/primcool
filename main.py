@@ -6880,10 +6880,11 @@ def admin_customer_update(request: Request, customer_id: int, body: CustomerProf
                     target_label=before.get("customer_code"),
                     before={"customer_type": before.get("customer_type")},
                     after={"customer_type": body.customer_type})
-        # TODO(mfa_required): No dedicated mfa_required flag on customers —
-        # commercial accounts are enforced to set up MFA at portal login by
-        # the existing portal flow. If a stricter pre-enforcement is needed,
-        # add a column and toggle it here.
+        # MFA is hard-required for ALL customers (residential + commercial)
+        # at portal_login since the pre-launch security review (Track B,
+        # commit 2e8ead0). No per-customer flag is needed — the login
+        # handler intercepts every account without mfa_enabled and routes
+        # them through enrolment before issuing a session.
 
     # Account-status transition → write a dedicated audit row with reason.
     if body.account_status:

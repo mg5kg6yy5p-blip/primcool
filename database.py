@@ -9319,30 +9319,24 @@ def create_5s_override(exception_id: int, tech_id: int, reason: str,
     return new_id
 
 
-# ── Certifications + payroll summary (dependency-aware) ────────────────────
+# ── Certifications + payroll summary ───────────────────────────────────────
 def get_technician_certifications(tech_id: int):
-    """Returns rows if a `certifications` table exists; else returns
-    {'available': False}.
-    FIXME(docs/FIXMES.md): certifications module pending — define schema
-    (cert name, issuing body, expiry) and wire it here when it ships."""
+    """Returns this tech's certifications. The certs module shipped in
+    TP-1b — backed by `tech_certifications` (id / tech_id / name /
+    issuer / issued_date / expiry_date / active / created_at /
+    created_by_admin_id). Active rows first, then inactive,
+    chronologically by expiry."""
     con = _con()
-    has = con.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='certifications'"
-    ).fetchone()
-    if not has:
-        con.close()
-        return {"available": False,
-                "message": "Certifications module not yet active"}
-    try:
-        rows = con.execute(
-            "SELECT * FROM certifications WHERE tech_id = ? ORDER BY expiry_date ASC",
-            (tech_id,),
-        ).fetchall()
-        out = [dict(r) for r in rows]
-    except Exception:
-        out = []
+    rows = con.execute(
+        "SELECT id, name, issuer, issued_date, expiry_date, active, "
+        "       created_at, created_by_admin_id "
+        "FROM tech_certifications "
+        "WHERE tech_id = ? "
+        "ORDER BY active DESC, expiry_date ASC, id ASC",
+        (tech_id,),
+    ).fetchall()
     con.close()
-    return {"available": True, "rows": out}
+    return {"available": True, "rows": [dict(r) for r in rows]}
 
 
 def get_technician_payroll_summary(tech_id: int, limit: int = 6):
