@@ -11350,6 +11350,19 @@
       const techCell = (_gateFS && e.tech_id)
         ? PC.gateLinkHtml('technician', e.tech_id, e.tech_name || ('tech '+e.tech_id), {})
         : (e.tech_name || (e.tech_id ? 'tech '+e.tech_id : ''));
+      // Resolution column — the resolution_note + who + when. Lives on
+      // fs_exceptions.resolution_note (encrypted at rest, decrypted by
+      // _enc_dict in database.py). Was previously invisible in the UI
+      // even though the API returned it.
+      const resolvedAt = (e.resolved_at || '').slice(0,16).replace('T',' ');
+      const resolverLabel = e.resolved_by_kind && e.resolved_by_id
+        ? `${esc(e.resolved_by_kind)}:${e.resolved_by_id}` : '';
+      const resolutionCell = e.status === 'resolved'
+        ? (_exVis
+            ? `<div style="font-size:12px;">${esc(e.resolution_note || '(no note)')}</div>
+               <div style="font-size:10px;color:var(--muted);margin-top:2px;">${resolvedAt}${resolverLabel ? ' · by ' + resolverLabel : ''}</div>`
+            : '<span style="color:var(--muted);">—</span>')
+        : '<span style="color:var(--muted);">—</span>';
       return `
       <tr data-pc-row-fsex="${e.id}">
         <td>#${e.id} <span style="font-size:10px;color:var(--muted);">audit ${auditCell} · ${assetCell}${techCell?' · '+techCell:''}</span></td>
@@ -11358,14 +11371,15 @@
         <td>${e.severity==='safety_loto'?'<span class="pc-stop-prop" style="background:#fee2e2;color:#991b1b;padding:2px 6px;border-radius:8px;font-size:11px;font-weight:700;">SAFETY</span>':'normal'}</td>
         <td>${esc(e.status)}</td>
         <td>${_exVis ? esc((e.description||'').slice(0,80)) : '<span style="color:var(--muted);">—</span>'}</td>
+        <td>${resolutionCell}</td>
         <td style="white-space:nowrap;">
-          ${can('fs:exception_resolve') ? `<button class="btn btn-edit btn-sm pc-stop-prop" onclick="event.stopPropagation();fsResolve(${e.id})">Resolve</button>` : ''}
-          ${can('fs:exception_escalate_director') ? `<button class="btn btn-danger btn-sm pc-stop-prop" style="margin-left:4px;" onclick="event.stopPropagation();fsEscalate(${e.id})">Escalate</button>` : ''}
+          ${e.status !== 'resolved' && can('fs:exception_resolve') ? `<button class="btn btn-edit btn-sm pc-stop-prop" onclick="event.stopPropagation();fsResolve(${e.id})">Resolve</button>` : ''}
+          ${e.status !== 'resolved' && can('fs:exception_escalate_director') ? `<button class="btn btn-danger btn-sm pc-stop-prop" style="margin-left:4px;" onclick="event.stopPropagation();fsEscalate(${e.id})">Escalate</button>` : ''}
         </td>
       </tr>`;
-    }).join('') : '<tr><td colspan="7" class="empty">No exceptions match the current filter.</td></tr>';
+    }).join('') : '<tr><td colspan="8" class="empty">No exceptions match the current filter.</td></tr>';
     body.innerHTML = filterBar + `<table>
-      <thead><tr><th>ID</th><th>Opened</th><th>Category</th><th>Severity</th><th>Status</th><th>Description</th><th>Actions</th></tr></thead>
+      <thead><tr><th>ID</th><th>Opened</th><th>Category</th><th>Severity</th><th>Status</th><th>Description</th><th>Resolution</th><th>Actions</th></tr></thead>
       <tbody>${esc2}</tbody></table>`;
     // FIXME: fs_exception has no dedicated detail route; leaving rows without
     //  a click handler (badges + buttons still actionable via stop-prop).

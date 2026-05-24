@@ -8480,11 +8480,17 @@ def resolve_exception(exception_id: int, resolved_by_id: int,
         "prior_chain_hash=?, chain_hash=? WHERE id=?",
         (resolved_by_id, resolved_by_kind, now, note_enc, prev, ch, exception_id),
     )
+    # Also persist the resolution note on the event row so the audit
+    # trail can reconstruct who closed the exception WITH what
+    # justification — previously this column was always NULL even
+    # though we had the note in hand.
+    evt_note_enc = _enc_dict("fs_exception_events",
+                             {"note": resolution_note or ""})["note"]
     con.execute(
         "INSERT INTO fs_exception_events (exception_id, event_type, actor_id, "
         "actor_kind, occurred_at, from_status, to_status, note) "
-        "VALUES (?, 'resolved', ?, ?, ?, ?, 'resolved', NULL)",
-        (exception_id, resolved_by_id, resolved_by_kind, now, cur["status"]),
+        "VALUES (?, 'resolved', ?, ?, ?, ?, 'resolved', ?)",
+        (exception_id, resolved_by_id, resolved_by_kind, now, cur["status"], evt_note_enc),
     )
     con.commit()
     con.close()
