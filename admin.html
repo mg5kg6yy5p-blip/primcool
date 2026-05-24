@@ -2001,9 +2001,17 @@
 
         <!-- ── Sub-panel: Scorecards ── -->
         <div id="kpiSubpanel-scorecard" style="display:none;">
-          <div style="display:flex;gap:10px;margin-bottom:14px;align-items:center;">
-            <input id="kpiScorecardPicker" type="text" list="kpiTechList" placeholder="Pick a technician…" oninput="kpiOnScorecardPick()" style="flex:1;padding:8px 12px;border-radius:6px;border:1px solid #ddd;">
-            <datalist id="kpiTechList"></datalist>
+          <!-- BUG FIX (R1): the previous picker was an <input list=...> +
+               <datalist>. Browsers handle datalist inconsistently — Safari
+               shows no suggestions on focus/click; users had to know a
+               name and start typing the right characters. Replaced with a
+               real <select> + a parallel text input that filters as you
+               type. Both write to the same picker state. -->
+          <div style="display:flex;gap:10px;margin-bottom:14px;align-items:center;flex-wrap:wrap;">
+            <select id="kpiScorecardSelect" onchange="kpiOnScorecardSelect()" style="flex:1;min-width:240px;padding:8px 12px;border-radius:6px;border:1px solid #ddd;">
+              <option value="">— pick a technician —</option>
+            </select>
+            <input id="kpiScorecardPicker" type="text" placeholder="…or type to filter the list" oninput="kpiOnScorecardTypeahead()" style="flex:1;min-width:200px;padding:8px 12px;border-radius:6px;border:1px solid #ddd;">
             <button class="btn btn-ghost" onclick="window.print()">🖨 Print</button>
           </div>
           <div id="kpiScorecardBody"><div style="padding:20px;color:#888;">Select a technician to view their scorecard.</div></div>
@@ -3998,10 +4006,37 @@
     if (res.status === 401) { adminLogout(); throw new Error('Unauthorized'); }
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      throw new Error(data.detail || 'Request failed');
+      throw new Error(_apiErrorMessage(data, res.status));
     }
     return res.json();
   }
+
+  // BUG FIX (R1): FastAPI returns ValidationError responses with
+  // detail as an ARRAY of objects: [{loc, msg, type}, ...]. The
+  // previous code did `new Error(data.detail || 'Request failed')`
+  // which coerced the array via toString → "[object Object],[object Object]"
+  // — what the auditor saw on the threshold-edit screen.
+  function _apiErrorMessage(data, status) {
+    if (!data) return 'HTTP ' + status;
+    const d = data.detail;
+    if (typeof d === 'string' && d.trim()) return d;
+    if (Array.isArray(d)) {
+      // Pydantic validation error shape: [{loc:[…], msg:"...", type:"..."}, …]
+      const lines = d.map(e => {
+        if (e && typeof e === 'object') {
+          const loc = Array.isArray(e.loc) ? e.loc.slice(-2).join('.') : '';
+          return (loc ? loc + ': ' : '') + (e.msg || JSON.stringify(e));
+        }
+        return String(e);
+      });
+      return lines.join('; ');
+    }
+    if (d && typeof d === 'object') {
+      return d.msg || d.error || JSON.stringify(d);
+    }
+    return 'HTTP ' + status;
+  }
+  window._apiErrorMessage = _apiErrorMessage;
 
   // ── Navigation ─────────────────────────────────────────────────────────────
   // ── Mobile nav drawer ──────────────────────────────────────────────────
@@ -11116,8 +11151,16 @@
   window.addEventListener('hashchange', _invHashRouter);
 
   async function openInvoiceEditView(invoiceId) {
-    if (!isSuperAdmin()) {
-      toast('Invoice editing requires super_admin', 'error');
+    // BUG FIX (R1): the gate used to be isSuperAdmin() which mismatched
+    // the button visibility (gated on invoice:create) AND the server's
+    // permission gate (also invoice:create / :update). supervisor_admin
+    // could see the button, click it, hash would change, and the modal
+    // would silently fail to open with a tiny toast.
+    // Real gate: invoice:create for new, invoice:update for edit — the
+    // same perms the server checks.
+    const needed = invoiceId ? 'invoice:update' : 'invoice:create';
+    if (typeof can === 'function' && !can(needed)) {
+      toast(`Invoice ${invoiceId ? 'editing' : 'creation'} requires the "${needed}" permission.`, 'error');
       location.hash = '';
       return;
     }
@@ -12428,15 +12471,35 @@
   async function kpiLoadScorecardPicker() {
     if (!kpiAllTechs.length) {
       try { kpiAllTechs = await api('GET', '/api/admin/techs'); } catch { kpiAllTechs = []; }
-      const dl = document.getElementById('kpiTechList');
-      dl.innerHTML = kpiAllTechs.map(t => `<option value="${esc(t.name)}">`).join('');
+    }
+    _kpiRenderScorecardOptions(kpiAllTechs);
+  }
+  function _kpiRenderScorecardOptions(list) {
+    const sel = document.getElementById('kpiScorecardSelect');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">— pick a technician —</option>' +
+      (list || []).map(t => `<option value="${t.id}">${esc(t.name || '')}${t.tech_code ? ' (' + esc(t.tech_code) + ')' : ''}</option>`).join('');
+  }
+  function kpiOnScorecardSelect() {
+    const v = document.getElementById('kpiScorecardSelect').value;
+    if (!v) return;
+    kpiOpenScorecard(parseInt(v, 10));
+  }
+  function kpiOnScorecardTypeahead() {
+    const q = (document.getElementById('kpiScorecardPicker').value || '').toLowerCase().trim();
+    const filtered = !q ? kpiAllTechs : kpiAllTechs.filter(t =>
+      (t.name || '').toLowerCase().includes(q) ||
+      (t.tech_code || '').toLowerCase().includes(q)
+    );
+    _kpiRenderScorecardOptions(filtered);
+    // Auto-open the dropdown if there's exactly one match.
+    if (filtered.length === 1) {
+      const sel = document.getElementById('kpiScorecardSelect');
+      sel.value = String(filtered[0].id);
     }
   }
-  function kpiOnScorecardPick() {
-    const v = document.getElementById('kpiScorecardPicker').value;
-    const t = kpiAllTechs.find(x => x.name === v);
-    if (t) kpiOpenScorecard(t.id);
-  }
+  // Back-compat: old onclick handlers in some sub-tabs still call this.
+  function kpiOnScorecardPick() { kpiOnScorecardSelect(); }
 
   async function kpiOpenScorecard(techId) {
     document.getElementById('kpiSubScorecard').click();
