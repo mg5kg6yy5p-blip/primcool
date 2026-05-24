@@ -2596,31 +2596,56 @@
 </div>
 
 <!-- Add Customer -->
+<!-- Add Customer modal. A11y wiring: role="dialog" + aria-modal +
+     aria-labelledby. Placeholders switched to JM (PrimeCool is a
+     Jamaica-only product; Trinidad +1 868 / Port of Spain copy was
+     misleading). Customer ID placeholder follows the actual RES-### /
+     COM-### convention so admins don't get a "PC-0001 doesn't match"
+     server error after typing the suggested format. -->
 <div class="modal-overlay" id="modal-addCustomer">
-  <div class="modal">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="addCustomerTitle">
     <div class="modal-header">
-      <h3>Add Customer</h3>
-      <button class="modal-close" onclick="closeModal('addCustomer')">×</button>
+      <h3 id="addCustomerTitle">Add Customer</h3>
+      <button class="modal-close" onclick="closeModal('addCustomer')" aria-label="Close Add Customer dialog">×</button>
     </div>
     <div class="modal-body">
       <div class="field-row">
-        <div class="field"><label>Customer ID *</label><input id="f-code" placeholder="PC-0001" style="text-transform:uppercase;letter-spacing:2px;font-family:'Courier New',monospace;"></div>
-        <div class="field"><label>Initial PIN (4–8 digits) *</label><input id="f-pin" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="••••" style="letter-spacing:6px;font-family:'Courier New',monospace;"></div>
+        <div class="field">
+          <label for="f-code">Customer ID *</label>
+          <input id="f-code" placeholder="RES-056" aria-describedby="f-code-hint" style="text-transform:uppercase;letter-spacing:2px;font-family:'Courier New',monospace;">
+          <div id="f-code-hint" style="font-size:11px;color:var(--muted);margin-top:3px;">Convention: <code>RES-###</code> for residential, <code>COM-###</code> for commercial.</div>
+          <div class="field-error" id="err-f-code" style="display:none;color:var(--danger);font-size:11px;margin-top:3px;"></div>
+        </div>
+        <div class="field">
+          <label for="f-pin">Initial PIN (4–8 digits) *</label>
+          <input id="f-pin" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="••••" style="letter-spacing:6px;font-family:'Courier New',monospace;">
+          <div class="field-error" id="err-f-pin" style="display:none;color:var(--danger);font-size:11px;margin-top:3px;"></div>
+        </div>
       </div>
-      <div class="field"><label>Full Name *</label><input id="f-name" placeholder="John Smith"></div>
+      <div class="field">
+        <label for="f-name">Full Name *</label>
+        <input id="f-name" placeholder="Andre Powell">
+        <div class="field-error" id="err-f-name" style="display:none;color:var(--danger);font-size:11px;margin-top:3px;"></div>
+      </div>
       <div class="field-row">
-        <div class="field"><label>Account Type</label>
-          <select id="f-customer-type">
+        <div class="field"><label for="f-customer-type">Account Type</label>
+          <select id="f-customer-type" onchange="_addCustomerToggleCompany()">
             <option value="residential">Residential</option>
             <option value="commercial">Commercial (MFA required at portal login)</option>
           </select>
         </div>
-        <div class="field"><label>Phone</label><input id="f-phone" placeholder="+1 868 123 4567"></div>
+        <div class="field"><label for="f-phone">Phone</label><input id="f-phone" placeholder="+1 876 234 5678"></div>
       </div>
-      <div class="field"><label>Company</label><input id="f-company" placeholder="ABC Ltd."></div>
-      <div class="field"><label>Email <span style="text-transform:none;font-weight:400;color:var(--muted);">(needed for customer self-service PIN reset)</span></label><input id="f-email" type="email" placeholder="john@example.com"></div>
-      <div class="field"><label>Address</label><input id="f-address" placeholder="123 Main St, Port of Spain"></div>
-      <div class="field"><label>Internal Notes</label><textarea id="f-notes" placeholder="Notes visible only to staff…"></textarea></div>
+      <!-- Company field hidden when Residential (residential customers
+           render as "—" in the customer list — empty company is the
+           right default). -->
+      <div class="field" id="f-company-wrap" style="display:none;">
+        <label for="f-company">Company</label>
+        <input id="f-company" placeholder="ABC Ltd.">
+      </div>
+      <div class="field"><label for="f-email">Email <span style="text-transform:none;font-weight:400;color:var(--muted);">(needed for customer self-service PIN reset)</span></label><input id="f-email" type="email" placeholder="andre@example.jm"></div>
+      <div class="field"><label for="f-address">Address</label><input id="f-address" placeholder="12 Old Hope Rd, Kingston 5"></div>
+      <div class="field"><label for="f-notes">Internal Notes</label><textarea id="f-notes" placeholder="Notes visible only to staff…"></textarea></div>
       <div class="form-error" id="err-addCustomer"></div>
       <p style="font-size:12px;color:var(--muted);margin-top:2px;line-height:1.5;">Share the Customer ID and PIN privately with the customer. They sign in at <strong>/portal</strong>.</p>
     </div>
@@ -3037,7 +3062,7 @@
       </div>
       <div class="field"><label>Full Name *</label><input id="t-name" placeholder="Marcus Reid"></div>
       <div class="field-row">
-        <div class="field"><label>Phone</label><input id="t-phone" placeholder="+1 868 ..."></div>
+        <div class="field"><label>Phone</label><input id="t-phone" placeholder="+1 876 234 5678"></div>
         <div class="field"><label>Email</label><input id="t-email" type="email" placeholder="marcus@primecool..."></div>
       </div>
       <div class="field-row">
@@ -3158,7 +3183,7 @@
       <div class="field"><label>Full Name *</label><input id="au-name" placeholder="Jane Doe"></div>
       <div class="field-row">
         <div class="field"><label>Email *</label><input id="au-email" type="email" placeholder="jane@primecoolservices.com"></div>
-        <div class="field"><label>Phone</label><input id="au-phone" placeholder="+1 868 ..."></div>
+        <div class="field"><label>Phone</label><input id="au-phone" placeholder="+1 876 234 5678"></div>
       </div>
       <div class="field">
         <label>Role *</label>
@@ -6898,9 +6923,49 @@
       </tr>`).join('');
   }
 
+  // Hide Company input when account type is Residential (their company
+  // column renders as "—" anyway, so showing the field is noise).
+  function _addCustomerToggleCompany() {
+    const type = document.getElementById('f-customer-type').value;
+    const wrap = document.getElementById('f-company-wrap');
+    if (wrap) wrap.style.display = (type === 'commercial') ? '' : 'none';
+  }
+
+  // Per-field inline error helper. Sets aria-invalid + red border +
+  // shows the field-error <div> beneath. Clears on next input.
+  function _setFieldErr(fieldId, msg) {
+    const inp = document.getElementById(fieldId);
+    const errEl = document.getElementById('err-' + fieldId);
+    if (!inp || !errEl) return;
+    if (msg) {
+      inp.setAttribute('aria-invalid', 'true');
+      inp.style.borderColor = 'var(--danger)';
+      inp.setAttribute('aria-describedby', 'err-' + fieldId);
+      errEl.textContent = msg;
+      errEl.style.display = '';
+      // First invalid field gets focus.
+      if (!document.querySelector('[aria-invalid="true"]:focus')) inp.focus();
+    } else {
+      inp.removeAttribute('aria-invalid');
+      inp.style.borderColor = '';
+      errEl.textContent = '';
+      errEl.style.display = 'none';
+    }
+  }
+  function _clearAddCustomerErrs() {
+    ['f-code','f-pin','f-name'].forEach(id => _setFieldErr(id, ''));
+    const banner = document.getElementById('err-addCustomer');
+    if (banner) { banner.style.display = 'none'; banner.textContent = ''; }
+  }
+  // Clear field-level error as soon as the user starts typing.
+  ['f-code','f-pin','f-name'].forEach(id => {
+    document.addEventListener('input', (e) => {
+      if (e.target && e.target.id === id) _setFieldErr(id, '');
+    });
+  });
+
   async function submitAddCustomer() {
-    const err = document.getElementById('err-addCustomer');
-    err.style.display = 'none';
+    _clearAddCustomerErrs();
     const body = {
       customer_code: document.getElementById('f-code').value.trim(),
       pin:           document.getElementById('f-pin').value.trim(),
@@ -6912,15 +6977,38 @@
       notes:         document.getElementById('f-notes').value.trim(),
       customer_type: document.getElementById('f-customer-type').value,
     };
-    if (!body.customer_code || !body.name) { showErr('err-addCustomer','Customer ID and name are required.'); return; }
-    if (!body.pin) { showErr('err-addCustomer','Initial PIN is required.'); return; }
-    if (!/^\d{4,8}$/.test(body.pin)) { showErr('err-addCustomer','PIN must be 4–8 digits.'); return; }
+    // Per-field validation. Collect all errors; aria-invalid + red
+    // border on each missing/bad field so the user can fix them in
+    // one pass instead of fix-submit-error-fix-submit-error.
+    let firstBad = null;
+    if (!body.customer_code)              { _setFieldErr('f-code', 'Customer ID is required.'); firstBad = firstBad || 'f-code'; }
+    else if (!/^(RES|COM)-\d{3,}$/i.test(body.customer_code)) {
+      _setFieldErr('f-code', 'Use RES-### (residential) or COM-### (commercial).');
+      firstBad = firstBad || 'f-code';
+    }
+    if (!body.name)                       { _setFieldErr('f-name', 'Full name is required.'); firstBad = firstBad || 'f-name'; }
+    if (!body.pin)                        { _setFieldErr('f-pin', 'Initial PIN is required.'); firstBad = firstBad || 'f-pin'; }
+    else if (!/^\d{4,8}$/.test(body.pin)) { _setFieldErr('f-pin', 'PIN must be 4–8 digits.');   firstBad = firstBad || 'f-pin'; }
+    if (firstBad) {
+      // Move focus to first invalid field so keyboard users land there.
+      document.getElementById(firstBad)?.focus();
+      return;
+    }
+    // Residential customers don't need a company name; ensure we
+    // don't accidentally send the placeholder text the user typed.
+    if (body.customer_type !== 'commercial') body.company = '';
     try {
       await api('POST', '/api/admin/customers', body);
       closeModal('addCustomer');
       clearForm(['f-code','f-pin','f-name','f-company','f-phone','f-email','f-address','f-notes']);
       await loadCustomers();
-    } catch(e) { showErr('err-addCustomer', e.message); }
+    } catch(e) {
+      // Map common server-side errors back to field-level when we can.
+      const m = (e.message || '').toLowerCase();
+      if (m.includes('customer_code')) _setFieldErr('f-code', e.message);
+      else if (m.includes('pin'))      _setFieldErr('f-pin',  e.message);
+      else                              showErr('err-addCustomer', e.message);
+    }
   }
 
   function openResetCustomerPin(id, name) {
