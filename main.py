@@ -5014,6 +5014,138 @@ def admin_mark_pay_period_paid(request: Request, period_id: int):
     return {"ok": True}
 
 
+# ── Printable-payslip enrichment (Jamaica-compliant) ────────────────────────
+# When the popup/print view opens, we enrich the raw payslip with:
+#   1. YTD totals scoped to the JM tax year (Apr 1 → Mar 31)
+#   2. Employer-side statutory contributions (NIS-ER, NHT-ER, Ed Tax-ER,
+#      HEART Trust) — computed at render time from gross_pay
+#   3. Bank / TRN / NIS# placeholders (real fields land later — see TODO)
+#   4. Company info block (TRN + NIS Employer # are placeholders for now)
+#
+# Rates below reflect JM statutory rates current at time of writing.
+# When the Ministry of Finance updates them, change the constants here.
+_JM_NIS_EE_RATE   = 0.03      # Employee NIS  3 %
+_JM_NIS_ER_RATE   = 0.03      # Employer NIS  3 %
+_JM_NIS_CEILING_MO = 125_000  # Insurable ceiling ~ J$1.5M / yr → 125k / mo
+_JM_NHT_EE_RATE   = 0.02      # Employee NHT  2 %
+_JM_NHT_ER_RATE   = 0.03      # Employer NHT  3 %
+_JM_EDTAX_EE_RATE = 0.0225    # Employee Ed-Tax  2.25 %
+_JM_EDTAX_ER_RATE = 0.035     # Employer Ed-Tax  3.5 %
+_JM_HEART_RATE    = 0.03      # HEART Trust  3 %  (employer)
+_JM_HEART_THRESHOLD_MO = 173_328  # only if monthly wage bill ≥ this
+# Company-level placeholders. TODO: replace with the real PrimeCool
+# TRN + NIS Employer # once the operator provides them — see Q2 in
+# the "make the printable payslip look like AstraZeneca" discussion.
+_PC_COMPANY = {
+    "name":     "PrimeCool Services Limited",
+    "address":  "Kingston, Jamaica",
+    "phone":    "",
+    "trn":      "TODO-COMPANY-TRN",
+    "nis_er":   "TODO-NIS-EMPLOYER-#",
+}
+
+
+def _jm_tax_year_bounds(period_end_iso: str):
+    """Return (start_iso, end_iso) of the JM tax year that contains
+    period_end. JM tax year runs Apr 1 → Mar 31."""
+    from datetime import date as _date
+    d = _date.fromisoformat(period_end_iso[:10])
+    if d.month >= 4:
+        start = _date(d.year, 4, 1)
+        end   = _date(d.year + 1, 3, 31)
+    else:
+        start = _date(d.year - 1, 4, 1)
+        end   = _date(d.year, 3, 31)
+    return start.isoformat(), end.isoformat(), f"{start.year}/{str(end.year)[-2:]}"
+
+
+def _payslip_ytd(subject_type: str, subject_id: int,
+                  tax_year_start: str, period_end: str) -> dict:
+    """Sum all payslips for this employee in the current tax year up to
+    and including the current period_end. Hidden draft periods are
+    excluded so YTD never leaks figures the employee hasn't seen."""
+    from database import _con as _db_con
+    con = _db_con()
+    row = con.execute(
+        """SELECT COALESCE(SUM(p.hours_regular),0)  AS hours_regular,
+                  COALESCE(SUM(p.hours_overtime),0) AS hours_overtime,
+                  COALESCE(SUM(p.fixed_salary),0)   AS fixed_salary,
+                  COALESCE(SUM(p.bonus),0)          AS bonus,
+                  COALESCE(SUM(p.gross_pay),0)      AS gross_pay,
+                  COALESCE(SUM(p.paye_tax),0)       AS paye_tax,
+                  COALESCE(SUM(p.nis),0)            AS nis,
+                  COALESCE(SUM(p.nht),0)            AS nht,
+                  COALESCE(SUM(p.education_tax),0)  AS education_tax,
+                  COALESCE(SUM(p.other_deductions),0) AS other_deductions,
+                  COALESCE(SUM(p.total_deductions),0) AS total_deductions,
+                  COALESCE(SUM(p.net_pay),0)        AS net_pay
+             FROM payslips p
+             JOIN pay_periods pp ON p.pay_period_id = pp.id
+            WHERE p.subject_type = ? AND p.subject_id = ?
+              AND pp.status IN ('approved','paid')
+              AND pp.period_end >= ?
+              AND pp.period_end <= ?""",
+        (subject_type, int(subject_id), tax_year_start, period_end),
+    ).fetchone()
+    con.close()
+    return dict(row) if row else {}
+
+
+def _payslip_employer_contribs(gross: float) -> dict:
+    """Employer-side JM statutory contributions, derived from gross_pay.
+    These aren't stored on the payslip (they're employer cost, not
+    employee net) so we recompute on demand for the printable view."""
+    g = float(gross or 0)
+    nis_base = min(g, _JM_NIS_CEILING_MO)
+    return {
+        "nis_er":    round(nis_base * _JM_NIS_ER_RATE, 2),
+        "nht_er":    round(g * _JM_NHT_ER_RATE, 2),
+        "edtax_er":  round(g * _JM_EDTAX_ER_RATE, 2),
+        "heart":     round(g * _JM_HEART_RATE, 2) if g >= _JM_HEART_THRESHOLD_MO else 0.0,
+        "_rates": {
+            "nis_er":   _JM_NIS_ER_RATE,
+            "nht_er":   _JM_NHT_ER_RATE,
+            "edtax_er": _JM_EDTAX_ER_RATE,
+            "heart":    _JM_HEART_RATE,
+            "heart_threshold_mo": _JM_HEART_THRESHOLD_MO,
+            "nis_ceiling_mo":     _JM_NIS_CEILING_MO,
+        },
+    }
+
+
+def _enrich_payslip_for_print(ps: dict) -> dict:
+    """Adds .ytd, .employer_contribs, .company, .bank, .tax_year to
+    a payslip dict. Non-destructive: existing keys are preserved.
+
+    Bank + TRN + NIS# per-employee fields aren't stored yet — see the
+    payslip schema in database.py. Until those columns exist, the
+    print view shows 'On file' rather than fail. The operator confirmed
+    in Q2/Q3 that these will be added later."""
+    out = dict(ps)
+    ty_start, ty_end, ty_label = _jm_tax_year_bounds(ps.get("period_end") or "")
+    out["tax_year"] = {"start": ty_start, "end": ty_end, "label": ty_label}
+    out["ytd"] = _payslip_ytd(ps["subject_type"], ps["subject_id"],
+                                ty_start, ps.get("period_end") or "")
+    out["employer_contribs"] = _payslip_employer_contribs(ps.get("gross_pay") or 0)
+    out["company"] = dict(_PC_COMPANY)
+    # Bank / TRN / NIS# placeholders. Mask last-4 once we have a real
+    # account number to mask (per Q3 — mask all but last 4 with *).
+    out["bank"] = {
+        "bank_name":      "On file",
+        "account_name":   ps.get("subject_name") or "",
+        "account_masked": "****",
+    }
+    out["employee_ids"] = {
+        "trn":   "On file",
+        "nis":   "On file",
+    }
+    out["_jm_compliance_note"] = (
+        "Calculated per Jamaica statutory rates "
+        "(PAYE / NIS / NHT / Education Tax / HEART Trust)."
+    )
+    return out
+
+
 @app.get("/api/admin/payslips/{payslip_id}")
 def admin_get_payslip(request: Request, payslip_id: int):
     """Director sees everyone's payslip. Any other admin who has
@@ -5056,7 +5188,7 @@ def admin_my_payslip(request: Request, payslip_id: int):
     _audit_from(admin, "payslip.viewed", request,
                 target_type="payslip", target_id=payslip_id,
                 target_label=f"self ({ps['period_label']})")
-    return ps
+    return _enrich_payslip_for_print(ps)
 
 
 @app.get("/api/tech/me/payslips")
@@ -5088,7 +5220,7 @@ def tech_my_payslip(request: Request, payslip_id: int):
               target_type="payslip", target_id=payslip_id,
               target_label=f"self ({ps['period_label']})",
               ip_address=_client_ip(request))
-    return ps
+    return _enrich_payslip_for_print(ps)
 
 
 # ── Inventory ────────────────────────────────────────────────────────────────

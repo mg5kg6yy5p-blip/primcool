@@ -905,9 +905,30 @@
       mode = (mode === 'save') ? 'save' : 'print';
       const prof = profile || {};
       const co = _PRIMECOOL_CO;
-      const ytd = _ytdSums(p);
-      const regular_pay = (Number(p.hours_regular) || 0) * (Number(p.hourly_rate) || 0);
+      // Prefer the server-computed YTD (JM tax year Apr→Mar), fall back
+      // to the client-side sum of visible payslips if the backend hasn't
+      // been redeployed yet. Both shapes carry the same field names.
+      const ytdServer = p && p.ytd ? p.ytd : null;
+      const ytdClient = _ytdSums(p);
+      const ytd = ytdServer ? Object.assign({}, ytdClient, ytdServer) : ytdClient;
+      const er  = (p && p.employer_contribs) || null;     // server-supplied
+      const company  = (p && p.company)      || {};
+      const empIds   = (p && p.employee_ids) || {};
+      const bank     = (p && p.bank)         || {};
+      const taxYr    = (p && p.tax_year)     || {};
+      const regular_pay  = (Number(p.hours_regular) || 0) * (Number(p.hourly_rate) || 0);
       const overtime_pay = (Number(p.hours_overtime) || 0) * (Number(p.overtime_rate) || 0);
+      // Compute pre/post-tax split. Schema currently lumps non-statutory
+      // into `other_deductions` — we surface that as "Post-Tax (Other)"
+      // until pension / health / loan columns land. Statutory taxes
+      // (PAYE / NIS / NHT / Ed-Tax) sit in their own column, matching
+      // the AstraZeneca "Employee Taxes" block.
+      const taxesCur = (Number(p.paye_tax)||0)+(Number(p.nis)||0)+(Number(p.nht)||0)+(Number(p.education_tax)||0);
+      const taxesYtd = (Number(ytd.paye_tax)||0)+(Number(ytd.nis)||0)+(Number(ytd.nht)||0)+(Number(ytd.education_tax)||0);
+      const preCur   = 0;   // reserved for future pre-tax deductions (pension, etc.)
+      const preYtd   = 0;
+      const postCur  = Number(p.other_deductions)||0;
+      const postYtd  = Number(ytd.other_deductions)||0;
       const period = esc(p.period_label || p.period_key || '');
       const today  = new Date().toISOString().slice(0, 10);
       const dateJoin = prof.hire_date || '';
@@ -1006,9 +1027,9 @@ ${mode === 'save' ? `<div class="no-print" style="background:#fef3c7;color:#9240
     <div>
       <div class="co-name">Prime<em>Cool</em> Services Ltd.</div>
       <div class="co-meta">
-        ${esc(co.address)}<br>
-        Tel: ${esc(co.phone)} &nbsp;·&nbsp; Email: ${esc(co.email)}<br>
-        TRN: ${esc(co.trn)} &nbsp;·&nbsp; NIS Employer #: ${esc(co.nis_employer)}
+        ${esc(company.address || co.address)}<br>
+        Tel: ${esc(company.phone || co.phone)} &nbsp;·&nbsp; Email: ${esc(co.email)}<br>
+        TRN: ${esc(company.trn || co.trn)} &nbsp;·&nbsp; NIS Employer #: ${esc(company.nis_er || co.nis_employer)}
       </div>
     </div>
     <div style="text-align:right;">
@@ -1017,10 +1038,42 @@ ${mode === 'save' ? `<div class="no-print" style="background:#fef3c7;color:#9240
         <div class="l">Pay Period:</div>     <div class="v">${esc(p.period_start || '')} – ${esc(p.period_end || '')}</div>
         <div class="l">Pay Date:</div>       <div class="v">${esc(p.generated_at ? String(p.generated_at).slice(0,10) : today)}</div>
         <div class="l">Pay Frequency:</div>  <div class="v">${esc(freq)}</div>
+        <div class="l">Tax Year:</div>       <div class="v">${esc(taxYr.label || '')}</div>
         <div class="l">Payslip No:</div>     <div class="v">PCL/PS/${esc(String(p.id).padStart(6,'0'))}</div>
       </div>
     </div>
   </div>
+
+  <!-- Workday-style top summary strip: Gross | Pre-Tax | Stat. Taxes | Post-Tax | Net,
+       with both Current and YTD rows side by side. Mirrors the AstraZeneca layout. -->
+  <table class="tbl" style="margin-top:0;">
+    <thead><tr>
+      <th></th>
+      <th style="text-align:right;">GROSS PAY</th>
+      <th style="text-align:right;">PRE-TAX DEDUCTIONS</th>
+      <th style="text-align:right;">STATUTORY TAXES</th>
+      <th style="text-align:right;">POST-TAX DEDUCTIONS</th>
+      <th style="text-align:right;background:#0B2545;color:#fff;">NET PAY</th>
+    </tr></thead>
+    <tbody>
+      <tr>
+        <td style="font-weight:700;">Current</td>
+        <td class="num">${_fmtN(p.gross_pay,2)}</td>
+        <td class="num">${_fmtN(preCur,2)}</td>
+        <td class="num">${_fmtN(taxesCur,2)}</td>
+        <td class="num">${_fmtN(postCur,2)}</td>
+        <td class="num" style="background:#22A08A;color:#fff;font-weight:700;">${_fmtN(p.net_pay,2)}</td>
+      </tr>
+      <tr>
+        <td style="font-weight:700;">YTD</td>
+        <td class="num">${_fmtN(ytd.gross_pay,2)}</td>
+        <td class="num">${_fmtN(preYtd,2)}</td>
+        <td class="num">${_fmtN(taxesYtd,2)}</td>
+        <td class="num">${_fmtN(postYtd,2)}</td>
+        <td class="num" style="background:#0B2545;color:#fff;font-weight:700;">${_fmtN(ytd.net_pay,2)}</td>
+      </tr>
+    </tbody>
+  </table>
 
   <div class="row">
     <div class="col box">
@@ -1072,61 +1125,107 @@ ${mode === 'save' ? `<div class="no-print" style="background:#fef3c7;color:#9240
     </tbody>
   </table>
 
+  <!-- Two side-by-side deduction tables — STATUTORY TAXES (PAYE/NIS/NHT/Ed-Tax)
+       vs OTHER (post-tax) — mirrors the AstraZeneca "Employee Taxes" /
+       "Post Tax Deductions" split. -->
+  <div class="row">
+    <table class="tbl col" style="margin-right:7px;">
+      <thead><tr>
+        <th colspan="3" style="background:#dde6f0;color:#0B2545;font-size:11px;">STATUTORY TAXES (EMPLOYEE)</th>
+      </tr><tr>
+        <th>DESCRIPTION</th>
+        <th style="text-align:right;">CURRENT (J$)</th>
+        <th style="text-align:right;">YTD (J$)</th>
+      </tr></thead>
+      <tbody>
+        <tr><td>PAYE Income Tax</td><td class="num">${_fmtN(p.paye_tax,2)}</td><td class="num">${_fmtN(ytd.paye_tax,2)}</td></tr>
+        <tr><td>NIS (Employee 3%)</td><td class="num">${_fmtN(p.nis,2)}</td><td class="num">${_fmtN(ytd.nis,2)}</td></tr>
+        <tr><td>NHT (Employee 2%)</td><td class="num">${_fmtN(p.nht,2)}</td><td class="num">${_fmtN(ytd.nht,2)}</td></tr>
+        <tr><td>Education Tax (2.25%)</td><td class="num">${_fmtN(p.education_tax,2)}</td><td class="num">${_fmtN(ytd.education_tax,2)}</td></tr>
+        <tr class="tot"><td>TOTAL TAXES</td><td class="num">${_fmtN(taxesCur,2)}</td><td class="num">${_fmtN(taxesYtd,2)}</td></tr>
+      </tbody>
+    </table>
+    <table class="tbl col" style="margin-left:7px;">
+      <thead><tr>
+        <th colspan="3" style="background:#dde6f0;color:#0B2545;font-size:11px;">OTHER DEDUCTIONS (POST-TAX)</th>
+      </tr><tr>
+        <th>DESCRIPTION</th>
+        <th style="text-align:right;">CURRENT (J$)</th>
+        <th style="text-align:right;">YTD (J$)</th>
+      </tr></thead>
+      <tbody>
+        <tr><td>Other Deductions</td><td class="num">${_fmtN(p.other_deductions,2)}</td><td class="num">${_fmtN(ytd.other_deductions,2)}</td></tr>
+        <tr class="tot"><td>TOTAL POST-TAX</td><td class="num">${_fmtN(postCur,2)}</td><td class="num">${_fmtN(postYtd,2)}</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Employer Contributions (computed from gross at render time; not paid
+       by the employee — shown for transparency, mirroring AstraZeneca). -->
+  ${er ? `
   <table class="tbl">
     <thead><tr>
-      <th colspan="3" style="background:#dde6f0;color:#0B2545;font-size:11px;">DEDUCTIONS</th>
+      <th colspan="3" style="background:#dde6f0;color:#0B2545;font-size:11px;">EMPLOYER CONTRIBUTIONS (NOT DEDUCTED FROM YOU)</th>
     </tr><tr>
       <th>DESCRIPTION</th>
       <th style="text-align:right;">CURRENT (J$)</th>
-      <th style="text-align:right;">YTD (J$)</th>
+      <th style="text-align:right;">RATE</th>
     </tr></thead>
     <tbody>
-      ${deductions.length ? deductions.map(d => `
-        <tr>
-          <td>${esc(d.desc)}</td>
-          <td class="num">${_fmtN(d.cur, 2)}</td>
-          <td class="num">${_fmtN(d.ytd, 2)}</td>
-        </tr>`).join('') : '<tr><td colspan="3" style="text-align:center;color:#888;">No deductions</td></tr>'}
-      <tr class="tot">
-        <td>TOTAL DEDUCTIONS</td>
-        <td class="num">${_fmtN(p.total_deductions || 0, 2)}</td>
-        <td class="num">${_fmtN(ytd.total_deductions || 0, 2)}</td>
-      </tr>
+      <tr><td>NIS — Employer</td><td class="num">${_fmtN(er.nis_er,2)}</td><td class="num">3.0%</td></tr>
+      <tr><td>NHT — Employer</td><td class="num">${_fmtN(er.nht_er,2)}</td><td class="num">3.0%</td></tr>
+      <tr><td>Education Tax — Employer</td><td class="num">${_fmtN(er.edtax_er,2)}</td><td class="num">3.5%</td></tr>
+      <tr><td>HEART Trust / NTA</td><td class="num">${_fmtN(er.heart,2)}</td><td class="num">3.0%${er.heart === 0 ? ' (under threshold)' : ''}</td></tr>
+      <tr class="tot"><td>TOTAL EMPLOYER COST</td><td class="num">${_fmtN((er.nis_er||0)+(er.nht_er||0)+(er.edtax_er||0)+(er.heart||0),2)}</td><td></td></tr>
     </tbody>
-  </table>
+  </table>` : ''}
 
+  <!-- JM Tax Info (replaces US Federal/State block) + Net Pay box -->
   <div class="row" style="margin-top:14px;">
-    <div class="col ytd-box">
-      <div style="font-weight:700;color:#0B2545;margin-bottom:6px;letter-spacing:.5px;">YEAR TO DATE SUMMARY</div>
-      <div class="row-y"><span>Gross Pay</span><span>${_fmtN(ytd.gross_pay, 2)}</span></div>
-      <div class="row-y"><span>Income Tax (PAYE)</span><span>${_fmtN(ytd.paye_tax, 2)}</span></div>
-      <div class="row-y"><span>NIS Contribution (Emp.)</span><span>${_fmtN(ytd.nis, 2)}</span></div>
-      <div class="row-y"><span>NHT Contribution (Emp.)</span><span>${_fmtN(ytd.nht, 2)}</span></div>
-      <div class="row-y"><span>Education Tax</span><span>${_fmtN(ytd.education_tax, 2)}</span></div>
-      <div class="row-y"><span>Other Deductions</span><span>${_fmtN(ytd.other_deductions, 2)}</span></div>
-      <div class="row-y tot"><span>NET PAY YTD</span><span>${_fmtN(ytd.net_pay, 2)}</span></div>
+    <div class="col box">
+      <div class="box-h">JAMAICA TAX INFORMATION</div>
+      <div class="box-body">
+        <div class="l">TRN:</div>                    <div class="v">${esc(empIds.trn || 'On file')}</div>
+        <div class="l">NIS #:</div>                  <div class="v">${esc(empIds.nis || 'On file')}</div>
+        <div class="l">Tax Code:</div>               <div class="v">Threshold applied</div>
+        <div class="l">Tax Year:</div>               <div class="v">${esc(taxYr.label || '')}  (${esc(taxYr.start||'')} → ${esc(taxYr.end||'')})</div>
+        <div class="l">Additional Withholding:</div> <div class="v">—</div>
+      </div>
     </div>
     <div class="col" style="display:flex;flex-direction:column;gap:10px;">
       <div class="net-pay-box">
         <div class="l">NET PAY (Current Period)</div>
         <div class="v">${_fmtJ(p.net_pay)}</div>
       </div>
-      <div class="box">
-        <div class="box-h">BANK DETAILS</div>
-        <div class="box-body">
-          <div class="l">Bank:</div>          <div class="v">${esc(prof.bank_name || 'On file')}</div>
-          <div class="l">Branch:</div>        <div class="v">${esc(prof.bank_branch || 'On file')}</div>
-          <div class="l">Account Name:</div>  <div class="v">${esc(p.subject_name || prof.name || '')}</div>
-          <div class="l">Account Number:</div><div class="v">${esc(prof.bank_account_last4 ? '••••' + prof.bank_account_last4 : 'On file')}</div>
-        </div>
-      </div>
     </div>
   </div>
 
+  <!-- Payment Information — masked account # per Q3 (last 4 visible). -->
+  <table class="tbl">
+    <thead><tr>
+      <th colspan="5" style="background:#dde6f0;color:#0B2545;font-size:11px;">PAYMENT INFORMATION</th>
+    </tr><tr>
+      <th>BANK</th><th>ACCOUNT NAME</th><th>ACCOUNT NUMBER</th>
+      <th style="text-align:right;">AMOUNT</th><th>CURRENCY</th>
+    </tr></thead>
+    <tbody>
+      <tr>
+        <td>${esc(bank.bank_name || prof.bank_name || 'On file')}</td>
+        <td>${esc(bank.account_name || p.subject_name || prof.name || '')}</td>
+        <td>${esc(bank.account_masked || (prof.bank_account_last4 ? '****' + prof.bank_account_last4 : '****'))}</td>
+        <td class="num">${_fmtN(p.net_pay,2)}</td>
+        <td>${esc(p.currency || 'JMD')}</td>
+      </tr>
+    </tbody>
+  </table>
+
   <div class="footer-note">
-    PAY ADVICE: This payslip is computer generated and does not require a signature.
+    <strong>PAY ADVICE</strong> — This payslip is computer-generated and does not require a signature.
     Generated by ${esc(p.generated_by_name || 'PrimeCool Payroll')} on ${esc(today)}.
-    Approved pay period — disputes within 14 days to payroll@primecool.example.jm.
+    Approved pay period — disputes within 14 days to payroll@primecool.example.jm.<br>
+    <strong>Jamaica statutory compliance:</strong> calculations apply current PAYE, NIS (employee 3% / employer 3%, capped at insurable ceiling),
+    NHT (employee 2% / employer 3%), Education Tax (employee 2.25% / employer 3.5%), and HEART Trust (employer 3% above monthly threshold) rates.
+    Rates change with the JM National Budget — confirm with PrimeCool payroll if disputed.
   </div>
   <div class="tagline">${esc(co.footer_tag)}</div>
 </div>
