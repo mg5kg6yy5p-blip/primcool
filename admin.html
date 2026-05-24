@@ -301,14 +301,25 @@
     }
     .top-bar h2 { font-size: 18px; color: var(--navy); font-weight: 700; }
 
-    /* ── Buttons ── */
+    /* ── Buttons (PrimeCool brand) ──
+       .btn-primary stays teal (continuity); .btn-lime is the new
+       brand CTA pulled from the Workforce reference — used for
+       Approve / Clock-in / "Active" affirm actions. */
     .btn {
-      padding: 9px 18px; border-radius: 8px; font-size: 13px; font-weight: 600;
-      cursor: pointer; border: none; transition: background 0.15s; display: inline-flex; align-items: center; gap: 6px;
+      padding: 9px 18px; border-radius: 10px; font-size: 13px; font-weight: 600;
+      cursor: pointer; border: none;
+      transition: background var(--motion-fast), box-shadow var(--motion-fast),
+                  transform var(--motion-fast), color var(--motion-fast);
+      display: inline-flex; align-items: center; gap: 6px;
     }
-    .btn-primary { background: var(--teal); color: white; }
-    .btn-primary:hover { background: #1b8f7a; }
-    .btn-sm { padding: 5px 12px; font-size: 12px; }
+    .btn:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+    .btn-primary { background: var(--teal); color: white; box-shadow: var(--shadow-sm); }
+    .btn-primary:hover { background: #1b8f7a; box-shadow: var(--shadow-md); }
+    .btn-lime { background: var(--lime); color: var(--navy); font-weight: 700; box-shadow: var(--shadow-sm); }
+    .btn-lime:hover { background: #a4ca1d; box-shadow: var(--shadow-md); }
+    .btn-navy { background: var(--navy); color: var(--ice); box-shadow: var(--shadow-sm); }
+    .btn-navy:hover { background: var(--navy-2); box-shadow: var(--shadow-md); }
+    .btn-sm { padding: 5px 12px; font-size: 12px; border-radius: 8px; }
     .btn-danger { background: var(--danger-light); color: var(--danger); border: 1px solid #fed7d7; }
     .btn-danger:hover { background: #fed7d7; }
     .btn-ghost { background: var(--light); color: var(--navy); border: 1px solid var(--border); }
@@ -1671,7 +1682,10 @@
           </div>
         </div>
 
-        <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-top:14px;">
+        <div style="background:#fff;border:1px solid var(--border);border-radius:14px;padding:0;margin-top:14px;overflow:hidden;">
+          <!-- Brand accent strip at top of every "My pay" card. -->
+          <div class="pc-accent-strip"></div>
+          <div style="padding:18px 20px;">
           <h3 style="margin:0 0 10px;color:var(--navy);font-size:15px;">My pay</h3>
           <!-- inner-scroll cap so an admin with many periods doesn't
                push the whole page off-screen. -->
@@ -8135,6 +8149,13 @@
     return fmtMoney(n, 'JMD');
   }
   window.fmtJMD = fmtJMD;
+
+  // Convenience: wrap a money value in the brand mono span so the
+  // digits line up column-wise. Use everywhere J$ appears in HTML.
+  function fmtJMDMono(n) {
+    return `<span class="pc-mono">${fmtJMD(n)}</span>`;
+  }
+  window.fmtJMDMono = fmtJMDMono;
 
   function isOverdue(inv) {
     if (inv.status !== 'sent') return false;
