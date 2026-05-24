@@ -384,6 +384,11 @@ ADMIN_PERMS["supervisor_admin"].update({
 })
 ADMIN_PERMS["inventory_manager"].update({
     "warehouse:view_queue",  # material visibility only — NO manage_assets
+    # Asset list needed to render the warehouse tab's selectors
+    # (per-asset checklist editor + checksheet upload). They can READ
+    # asset metadata; they cannot create/disable assets (no
+    # fs:asset_manage).
+    "fs:report_view",
 })
 ADMIN_PERMS["hr_admin"].update({
     "warehouse:view_queue",  # for staffing context — read-only

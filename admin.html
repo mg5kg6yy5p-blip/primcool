@@ -509,6 +509,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
         Company Messages
       </div>
+      <div class="nav-item" onclick="showPanel('warehouse')" id="nav-warehouse" style="display:none;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        Warehouse
+      </div>
       <div class="sidebar-reset" id="sidebarResetOrder" title="Restore the default sidebar order"
            onclick="resetSidebarOrder()" style="display:none;">
         ↺ Reset order
@@ -1189,6 +1193,141 @@
         <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;">
           <h3 style="margin:0 0 12px;color:var(--navy);font-size:16px;">Recent messages</h3>
           <div id="cm-list"><div class="empty" style="padding:14px;">Loading…</div></div>
+        </div>
+      </div>
+
+      <!-- ── Warehouse panel ── -->
+      <div class="panel" id="panel-warehouse">
+        <div class="top-bar">
+          <h2>Warehouse</h2>
+          <div style="display:flex;gap:8px;">
+            <button class="filter-btn" id="wh-tab-staff"     onclick="whSwitchTab('staff')">Staff</button>
+            <button class="filter-btn" id="wh-tab-checklist" onclick="whSwitchTab('checklist')">Checklists</button>
+            <button class="filter-btn" id="wh-tab-sheets"    onclick="whSwitchTab('sheets')">Month-end sheets</button>
+          </div>
+        </div>
+
+        <!-- ── Sub-tab: Staff roster ── -->
+        <div id="wh-pane-staff" style="display:none;">
+          <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:18px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+              <h3 style="margin:0;color:var(--navy);font-size:16px;">Warehouse roster</h3>
+              <button class="btn btn-primary btn-sm" onclick="whOpenAddStaff()">+ Add staff</button>
+            </div>
+            <div class="muted" style="font-size:12px;margin-bottom:10px;">
+              Three archetypes — <strong>warehouse manager</strong> oversees the floor,
+              <strong>warehouse floor</strong> staff handle inventory movement,
+              and the <strong>parts runner</strong> drives the company truck on deliveries.
+              All three sign in through <a href="/staff">/staff</a> the same way techs do.
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr>
+                  <th>Code</th><th>Name</th><th>Type</th><th>Department</th>
+                  <th>Phone</th><th>Status</th>
+                </tr></thead>
+                <tbody id="wh-staff-body"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Sub-tab: Checklists ── -->
+        <div id="wh-pane-checklist" style="display:none;">
+          <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:18px;">
+            <h3 style="margin:0 0 6px;color:var(--navy);font-size:16px;">Per-asset 5S checklists</h3>
+            <div class="muted" style="font-size:12px;margin-bottom:14px;">
+              By default each asset uses the built-in checklist for its
+              type (vehicle / toolkit / storage). Override the items here
+              per asset — handy when a forklift, PPE locker, or truck
+              needs items the default doesn't cover. Clearing all items
+              restores the default.
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;">
+              <label style="font-size:12px;font-weight:600;color:#374151;">Asset
+                <select id="wh-cl-asset" onchange="whLoadChecklist()" style="display:block;padding:7px 10px;border:1px solid var(--border);border-radius:6px;margin-top:3px;min-width:240px;">
+                  <option value="">Pick an asset…</option>
+                </select>
+              </label>
+              <label style="font-size:12px;font-weight:600;color:#374151;">Phase
+                <select id="wh-cl-phase" onchange="whLoadChecklist()" style="display:block;padding:7px 10px;border:1px solid var(--border);border-radius:6px;margin-top:3px;">
+                  <option value="start_shift">Start of shift</option>
+                  <option value="end_shift">End of shift</option>
+                  <option value="weekly_manager">Weekly manager</option>
+                </select>
+              </label>
+            </div>
+            <div id="wh-cl-editor"><div class="empty" style="padding:14px;">Choose an asset to view its checklist.</div></div>
+          </div>
+        </div>
+
+        <!-- ── Sub-tab: Month-end sheets ── -->
+        <div id="wh-pane-sheets" style="display:none;">
+          <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:18px;">
+            <h3 style="margin:0 0 6px;color:var(--navy);font-size:16px;">Upload a month-end checksheet</h3>
+            <div class="muted" style="font-size:12px;margin-bottom:14px;">
+              Per-use paper checksheets archived at month end. Up to 10 MB
+              per file (PDF / JPG / PNG / HEIC). The daily 5S audit chain
+              remains the live record; this is the compliance archive.
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+              <label style="font-size:12px;font-weight:600;color:#374151;">Asset
+                <select id="wh-ck-asset" style="display:block;padding:7px 10px;border:1px solid var(--border);border-radius:6px;margin-top:3px;width:100%;"><option value="">Pick…</option></select>
+              </label>
+              <label style="font-size:12px;font-weight:600;color:#374151;">Period (YYYY-MM)
+                <input id="wh-ck-period" type="month" style="display:block;padding:7px 10px;border:1px solid var(--border);border-radius:6px;margin-top:3px;width:100%;">
+              </label>
+            </div>
+            <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-top:10px;">Notes (optional)
+              <input id="wh-ck-notes" type="text" placeholder="e.g. one missing day signed off by floor lead" style="display:block;padding:7px 10px;border:1px solid var(--border);border-radius:6px;margin-top:3px;width:100%;">
+            </label>
+            <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-top:10px;">File
+              <input id="wh-ck-file" type="file" accept=".pdf,.jpg,.jpeg,.png,.heic" style="display:block;padding:7px 0;margin-top:3px;">
+            </label>
+            <div style="margin-top:12px;">
+              <button class="btn btn-primary" onclick="whUploadChecksheet()">Upload</button>
+            </div>
+          </div>
+          <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;">
+            <h3 style="margin:0 0 12px;color:var(--navy);font-size:16px;">Recent uploads</h3>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Period</th><th>Asset</th><th>File</th><th>Size</th><th>Uploaded</th><th></th></tr></thead>
+                <tbody id="wh-ck-list"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Add Staff modal (warehouse) -->
+      <div class="modal-overlay" id="modal-whAddStaff">
+        <div class="modal-card">
+          <div class="modal-header">
+            <h3>Add warehouse staff</h3>
+            <button class="modal-close" onclick="closeModal('whAddStaff')">×</button>
+          </div>
+          <div class="modal-body">
+            <label class="modal-label">Name</label>
+            <input id="whNew-name" class="modal-input" type="text">
+            <label class="modal-label">PIN (≥10 digits)</label>
+            <input id="whNew-pin" class="modal-input" type="text" inputmode="numeric">
+            <label class="modal-label">Phone</label>
+            <input id="whNew-phone" class="modal-input" type="text">
+            <label class="modal-label">Email</label>
+            <input id="whNew-email" class="modal-input" type="email">
+            <label class="modal-label">Type</label>
+            <select id="whNew-type" class="modal-input">
+              <option value="warehouse_floor">Warehouse floor staff</option>
+              <option value="parts_runner">Parts runner (gets a truck)</option>
+              <option value="warehouse_manager">Warehouse manager</option>
+            </select>
+            <div class="form-error" id="err-whAddStaff"></div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-ghost"   onclick="closeModal('whAddStaff')">Cancel</button>
+            <button class="btn btn-primary" onclick="whSubmitAddStaff()">Create</button>
+          </div>
         </div>
       </div>
 
@@ -2881,6 +3020,15 @@
       const ncm = document.getElementById('nav-companymsg');
       if (ncm) ncm.style.display = 'flex';
     }
+    // Warehouse — anyone with warehouse:view_queue can see the staff
+    // roster + checksheet archive. Editing per-asset checklists +
+    // creating staff requires warehouse:manage_assets / tech:create
+    // (the modal/buttons fail-safe-server-side; we just gate the nav
+    // visibility on read access).
+    if (can('warehouse:view_queue')) {
+      const nw = document.getElementById('nav-warehouse');
+      if (nw) nw.style.display = 'flex';
+    }
     // Delegations — super_admin OR admin with delegation power.
     if (currentAdmin && (currentAdmin.role === 'super_admin'
         || currentAdmin.has_delegation_power === 1
@@ -3297,6 +3445,7 @@
     if (name === 'fs') { fsLoadCurrentTab(); }
     if (name === 'delegations') { loadDelegationsPanel(); }
     if (name === 'companymsg') { cmLoad(); }
+    if (name === 'warehouse') { whInit(); }
   }
 
   // ── Customers ──────────────────────────────────────────────────────────────
@@ -5155,6 +5304,270 @@
       cmLoad();
     } catch (e) {
       toast('Hide failed: ' + e.message, 'error');
+    }
+  }
+
+  // ── Warehouse panel (Pass A) ──────────────────────────────────────
+  // Three sub-tabs: staff roster, per-asset 5S checklist editor, and
+  // the month-end equipment checksheet archive. All wired to the
+  // backend endpoints shipped in W2 + W3.
+  let _whCurrentTab = null;
+  let _whAssetsCache = null;        // [{id, asset_code, label, asset_type}]
+  let _whChecklistItems = null;     // current edited override (mutable)
+
+  function whInit() {
+    // Default to staff on first open.
+    if (!_whCurrentTab) whSwitchTab('staff');
+  }
+
+  function whSwitchTab(tab) {
+    _whCurrentTab = tab;
+    ['staff','checklist','sheets'].forEach(t => {
+      const pane = document.getElementById('wh-pane-' + t);
+      const btn  = document.getElementById('wh-tab-' + t);
+      if (pane) pane.style.display = (t === tab ? '' : 'none');
+      if (btn)  btn.classList.toggle('active', t === tab);
+    });
+    if (tab === 'staff')     whLoadStaff();
+    if (tab === 'checklist') whLoadAssetsThenChecklist();
+    if (tab === 'sheets')    { whLoadAssetsForChecksheet(); whLoadChecksheets(); }
+  }
+
+  // ── Sub-tab: staff roster ────────────────────────────────────────
+  async function whLoadStaff() {
+    const tbody = document.getElementById('wh-staff-body');
+    try {
+      const rows = await api('GET', '/api/admin/warehouse/staff');
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty">No warehouse staff yet — tap "+ Add staff" above.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = rows.map(s => `
+        <tr>
+          <td><strong>${escHtml(s.tech_code)}</strong></td>
+          <td>${escHtml(s.name)}</td>
+          <td>${escHtml((s.staff_type || '').replace(/_/g,' '))}</td>
+          <td>${escHtml(s.department || '')}</td>
+          <td>${escHtml(s.phone || '')}</td>
+          <td>${s.active ? '<span class="badge" style="background:#dcfce7;color:#166534;">Active</span>'
+                          : '<span class="badge" style="background:#fee2e2;color:#991b1b;">Inactive</span>'}</td>
+        </tr>`).join('');
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="6" class="empty">Could not load: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  function whOpenAddStaff() {
+    ['whNew-name','whNew-pin','whNew-phone','whNew-email'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.value = '';
+    });
+    document.getElementById('whNew-type').value = 'warehouse_floor';
+    document.getElementById('err-whAddStaff').style.display = 'none';
+    document.getElementById('modal-whAddStaff').classList.add('open');
+  }
+
+  async function whSubmitAddStaff() {
+    const body = {
+      name:        document.getElementById('whNew-name').value.trim(),
+      pin:         document.getElementById('whNew-pin').value.trim(),
+      phone:       document.getElementById('whNew-phone').value.trim(),
+      email:       document.getElementById('whNew-email').value.trim(),
+      staff_type:  document.getElementById('whNew-type').value,
+    };
+    const errEl = document.getElementById('err-whAddStaff');
+    errEl.style.display = 'none';
+    if (!body.name || !body.pin) {
+      errEl.textContent = 'Name and PIN are required.';
+      errEl.style.display = 'block';
+      return;
+    }
+    try {
+      await api('POST', '/api/admin/techs', body);
+      closeModal('whAddStaff');
+      toast('Warehouse staff created.', 'success');
+      whLoadStaff();
+    } catch (e) {
+      errEl.textContent = e.message || 'Create failed.';
+      errEl.style.display = 'block';
+    }
+  }
+
+  // ── Sub-tab: per-asset 5S checklist editor ──────────────────────
+  async function _whLoadAssetsCache() {
+    if (_whAssetsCache) return _whAssetsCache;
+    try {
+      // Existing 5S admin endpoint — gated by fs:report_view, which
+      // any role with warehouse:view_queue should already have
+      // (inventory_manager + supervisor + super_admin all pass).
+      const rows = await api('GET', '/api/admin/5s/assets');
+      _whAssetsCache = rows || [];
+    } catch (e) {
+      _whAssetsCache = [];
+    }
+    return _whAssetsCache;
+  }
+
+  async function whLoadAssetsThenChecklist() {
+    const sel = document.getElementById('wh-cl-asset');
+    sel.innerHTML = '<option value="">Pick an asset…</option>';
+    const assets = await _whLoadAssetsCache();
+    assets.forEach(a => {
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = `${a.asset_code} — ${a.label} (${a.asset_type})`;
+      sel.appendChild(opt);
+    });
+  }
+
+  async function whLoadChecklist() {
+    const assetId = document.getElementById('wh-cl-asset').value;
+    const phase   = document.getElementById('wh-cl-phase').value;
+    const editor  = document.getElementById('wh-cl-editor');
+    if (!assetId) {
+      editor.innerHTML = '<div class="empty" style="padding:14px;">Choose an asset to view its checklist.</div>';
+      return;
+    }
+    try {
+      const data = await api('GET', `/api/admin/fs/assets/${assetId}/checklist/${phase}`);
+      // Group items by section for the editor.
+      const sections = ['sort','set','shine','standardize','sustain'];
+      const grouped = {};
+      sections.forEach(s => grouped[s] = []);
+      (data.items || []).forEach(it => {
+        if (grouped[it.section]) grouped[it.section].push(it.item_key);
+      });
+      _whChecklistItems = grouped;
+      let html = `<div class="muted" style="font-size:12px;margin-bottom:8px;">Edit per-section. Save replaces the override; "Clear" removes it (back to default).</div>`;
+      sections.forEach(sec => {
+        html += `
+          <div style="margin-bottom:14px;border:1px solid var(--border);border-radius:8px;padding:10px 12px;">
+            <div style="font-weight:600;color:var(--navy);text-transform:capitalize;margin-bottom:6px;">${sec === 'set' ? 'Set in order' : sec}</div>
+            <textarea data-wh-sec="${sec}" rows="3" style="width:100%;padding:7px;border:1px solid var(--border);border-radius:6px;font-family:monospace;font-size:12px;" placeholder="one item_key per line">${escHtml(grouped[sec].join('\n'))}</textarea>
+          </div>`;
+      });
+      html += `<div style="display:flex;gap:8px;margin-top:14px;">
+        <button class="btn btn-primary" onclick="whSaveChecklist()">Save override</button>
+        <button class="btn btn-ghost"   onclick="whClearChecklist()">Clear override (use default)</button>
+      </div>`;
+      editor.innerHTML = html;
+    } catch (e) {
+      editor.innerHTML = `<div class="empty">Could not load: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  function _whCollectEditorItems() {
+    const out = {};
+    document.querySelectorAll('[data-wh-sec]').forEach(ta => {
+      const sec = ta.getAttribute('data-wh-sec');
+      out[sec] = (ta.value || '').split('\n')
+        .map(s => s.trim().replace(/\s+/g, '_').toLowerCase())
+        .filter(Boolean);
+    });
+    return out;
+  }
+
+  async function whSaveChecklist() {
+    const assetId = document.getElementById('wh-cl-asset').value;
+    const phase   = document.getElementById('wh-cl-phase').value;
+    const body    = { items_by_section: _whCollectEditorItems() };
+    try {
+      await api('POST', `/api/admin/fs/assets/${assetId}/checklist/${phase}`, body);
+      toast('Checklist saved.', 'success');
+      whLoadChecklist();
+    } catch (e) {
+      toast('Save failed: ' + e.message, 'error');
+    }
+  }
+
+  async function whClearChecklist() {
+    const assetId = document.getElementById('wh-cl-asset').value;
+    const phase   = document.getElementById('wh-cl-phase').value;
+    if (!confirm('Clear the override and revert to the default checklist for this asset/phase?')) return;
+    try {
+      await api('POST', `/api/admin/fs/assets/${assetId}/checklist/${phase}`,
+                { items_by_section: {} });
+      toast('Override cleared. Using default.', 'success');
+      whLoadChecklist();
+    } catch (e) {
+      toast('Clear failed: ' + e.message, 'error');
+    }
+  }
+
+  // ── Sub-tab: month-end checksheet archive ───────────────────────
+  async function whLoadAssetsForChecksheet() {
+    const sel = document.getElementById('wh-ck-asset');
+    sel.innerHTML = '<option value="">Pick…</option>';
+    const assets = await _whLoadAssetsCache();
+    assets.forEach(a => {
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = `${a.asset_code} — ${a.label}`;
+      sel.appendChild(opt);
+    });
+  }
+
+  async function whLoadChecksheets() {
+    const tbody = document.getElementById('wh-ck-list');
+    try {
+      const rows = await api('GET', '/api/admin/warehouse/checksheets');
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty">No checksheets uploaded yet.</td></tr>';
+        return;
+      }
+      const assets = await _whLoadAssetsCache();
+      const assetById = Object.fromEntries(assets.map(a => [a.id, a]));
+      tbody.innerHTML = rows.map(r => {
+        const a = assetById[r.asset_id] || {};
+        const kb = Math.round((r.size_bytes || 0) / 1024);
+        return `<tr>
+          <td><strong>${escHtml(r.period_yyyymm)}</strong></td>
+          <td>${escHtml(a.asset_code || ('asset#' + r.asset_id))} <span class="muted" style="font-size:11px;">${escHtml(a.label || '')}</span></td>
+          <td><span style="font-family:monospace;font-size:11px;">${escHtml(r.filename)}</span></td>
+          <td>${kb} KB</td>
+          <td><span class="muted" style="font-size:11px;">${escHtml(r.uploaded_at || '')}</span></td>
+          <td><a class="btn btn-ghost btn-sm" href="/api/admin/warehouse/checksheets/${r.id}/download" target="_blank">Download</a></td>
+        </tr>`;
+      }).join('');
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="6" class="empty">Could not load: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  async function whUploadChecksheet() {
+    const assetId   = document.getElementById('wh-ck-asset').value;
+    const period    = document.getElementById('wh-ck-period').value;
+    const notes     = document.getElementById('wh-ck-notes').value.trim();
+    const fileInput = document.getElementById('wh-ck-file');
+    const file      = fileInput.files && fileInput.files[0];
+    if (!assetId || !period || !file) {
+      toast('Asset, period, and file are required.', 'warning');
+      return;
+    }
+    const fd = new FormData();
+    fd.append('asset_id', assetId);
+    fd.append('period_yyyymm', period);
+    fd.append('notes', notes);
+    fd.append('file', file);
+    try {
+      // FormData → don't set Content-Type; browser/fetch chooses the boundary.
+      const r = await fetch('/api/admin/warehouse/checksheets', {
+        method: 'POST', credentials: 'include', body: fd,
+        headers: { 'Origin': window.location.origin,
+                   ...(adminToken ? { 'Authorization': `Bearer ${adminToken}` } : {}) },
+      });
+      if (!r.ok) {
+        let det = r.statusText;
+        try { det = (await r.json()).detail || det; } catch (_) {}
+        throw new Error(det);
+      }
+      toast('Uploaded.', 'success');
+      // Clear form
+      fileInput.value = '';
+      document.getElementById('wh-ck-notes').value = '';
+      whLoadChecksheets();
+    } catch (e) {
+      toast('Upload failed: ' + e.message, 'error');
     }
   }
 
