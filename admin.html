@@ -157,6 +157,21 @@
     .pc-empty-sub   { font-size: 12px; color: var(--muted); max-width: 360px;
                        margin: 0 auto; line-height: 1.5; }
 
+    /* ── Density toggle ──────────────────────────────────────────────────
+       Operator-selectable density. State persisted in localStorage so
+       the choice survives page reloads. The compact mode trims
+       padding on table cells, nav items, modal bodies, and reduces
+       row gap inside the My Pay / KPI lists. */
+    body[data-pc-density="compact"] th,
+    body[data-pc-density="compact"] td { padding: 7px 12px; font-size: 12.5px; }
+    body[data-pc-density="compact"] .nav-item { padding: 7px 12px; font-size: 13px; }
+    body[data-pc-density="compact"] .modal-body { padding: 14px 18px; gap: 10px; }
+    body[data-pc-density="compact"] .btn { padding: 6px 14px; font-size: 12.5px; }
+    body[data-pc-density="compact"] .filter-btn { padding: 4px 12px; font-size: 11.5px; }
+    body[data-pc-density="compact"] .main { padding: 18px 18px 40px; }
+    body[data-pc-density="compact"] details.section > summary { padding: 9px 14px; }
+    body[data-pc-density="compact"] .top-bar { margin-bottom: 12px; }
+
     /* Brand snowflake mark — used in the header logo + anywhere we want
        a tiny visual signature. Inline SVG via background, sized 16-24px. */
     .pc-snowflake {
@@ -855,6 +870,7 @@
     </div>
     <div style="display:flex;gap:8px;align-items:center;">
       <button class="logout-btn" onclick="pcCmdkOpen()" title="Search anything (Cmd/Ctrl-K)">🔎 Search</button>
+      <button class="logout-btn" id="pcDensityBtn" onclick="pcToggleDensity()" title="Toggle compact / comfortable density">▤ Density</button>
       <button class="logout-btn" id="securityBtn" onclick="openSecurityModal()" title="Account security">🔒 Security</button>
       <button class="logout-btn" onclick="adminLogout()">Sign out</button>
     </div>
@@ -4330,6 +4346,27 @@
       return `<a${onclick}>${label}</a><span class="sep">›</span>`;
     }).join(' ');
   }
+  // ── Density toggle ─────────────────────────────────────────────────────
+  // Persisted in localStorage so the operator's choice survives reloads.
+  // Two modes: 'comfortable' (default) and 'compact' (tighter padding).
+  function pcApplyDensity(mode) {
+    document.body.dataset.pcDensity = mode === 'compact' ? 'compact' : 'comfortable';
+    const btn = document.getElementById('pcDensityBtn');
+    if (btn) btn.title = (mode === 'compact'
+      ? 'Currently compact — click for comfortable'
+      : 'Currently comfortable — click for compact');
+  }
+  function pcToggleDensity() {
+    const cur = (document.body.dataset.pcDensity || 'comfortable');
+    const next = cur === 'compact' ? 'comfortable' : 'compact';
+    try { localStorage.setItem('pc_density', next); } catch (_) {}
+    pcApplyDensity(next);
+    if (window.PC && PC.toast) PC.toast('Density: ' + next, 'success');
+  }
+  window.pcToggleDensity = pcToggleDensity;
+  // Apply persisted choice at boot.
+  try { pcApplyDensity(localStorage.getItem('pc_density') || 'comfortable'); } catch (_) {}
+
   // ── Cmd/Ctrl-K command palette ─────────────────────────────────────────
   // Indexes from in-memory state — no extra server roundtrip. Picks
   // sidebar destinations PLUS whichever lists have already been loaded

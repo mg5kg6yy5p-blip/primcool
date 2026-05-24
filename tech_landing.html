@@ -147,12 +147,15 @@
     .row{display:flex;align-items:center;gap:10px;justify-content:space-between;}
     .row + .row{margin-top:8px;}
     .muted{color:var(--muted);font-size:13px;}
-    .pill{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;
-          border-radius:999px;font-size:12px;font-weight:600;
-          background:#eef2f7;color:var(--navy);}
-    .pill-success{background:rgba(34,160,138,.15);color:var(--teal-dark);}
-    .pill-warn{background:var(--warn-bg);color:var(--warn);}
-    .pill-danger{background:#fee2e2;color:var(--danger);}
+    /* Brand-aligned pill (matches admin .pc-pill family). */
+    .pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;
+          border-radius:999px;font-size:11px;font-weight:700;
+          letter-spacing:0.4px;text-transform:uppercase;
+          background:#E7F0F7;color:var(--navy);}
+    .pill-success{background:var(--lime);color:var(--navy);}
+    .pill-warn{background:#FFF1D6;color:#9A6700;}
+    .pill-danger{background:#FFE2E2;color:#B42318;}
+    .pill-info{background:var(--ice);color:var(--navy);}
     .clock-display{font-size:34px;font-weight:700;color:var(--navy);
                    letter-spacing:.5px;text-align:center;margin:6px 0 2px;}
     .date-display{text-align:center;color:var(--muted);font-size:13px;

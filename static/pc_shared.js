@@ -29,6 +29,47 @@
       '.pc-toast .ico{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;font-size:11px;font-weight:800;flex-shrink:0;}';
     document.head && document.head.appendChild(s);
   }
+  // ── Skeleton loader auto-swap ─────────────────────────────────────────
+  // Any element with class="empty" whose text is literally "Loading…"
+  // gets replaced with three shimmer bars. Idempotent + debounced via
+  // MutationObserver, so newly-rendered tables get the polish too.
+  // Requires the .pc-skeleton-line CSS to be present in the host page
+  // (already shipped on admin / tech / portal / staff).
+  PC.swapLoadingSkeletons = function (root) {
+    root = root || document;
+    const els = root.querySelectorAll('td.empty, .empty');
+    for (let i = 0; i < els.length; i++) {
+      const el = els[i];
+      if (el.dataset.pcSkeleton === '1') continue;
+      const t = (el.textContent || '').trim().toLowerCase();
+      if (t !== 'loading…' && t !== 'loading...') continue;
+      el.dataset.pcSkeleton = '1';
+      el.innerHTML =
+        '<div class="pc-skeleton-line" style="width:90%;"></div>' +
+        '<div class="pc-skeleton-line" style="width:70%;"></div>' +
+        '<div class="pc-skeleton-line" style="width:85%;"></div>';
+    }
+  };
+  let _pcSkelDebounce = null;
+  function _pcSkelScan() {
+    if (_pcSkelDebounce) return;
+    _pcSkelDebounce = setTimeout(function () {
+      _pcSkelDebounce = null;
+      try { PC.swapLoadingSkeletons(document); } catch (_) {}
+    }, 80);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _pcSkelScan);
+  } else {
+    setTimeout(_pcSkelScan, 0);
+  }
+  setTimeout(function () {
+    const root = document.getElementById('app') || document.body;
+    if (root && window.MutationObserver) {
+      new MutationObserver(_pcSkelScan).observe(root, { childList: true, subtree: true });
+    }
+  }, 500);
+
   PC.toast = function (message, kind) {
     kind = kind || 'info';
     let host = document.getElementById('pc-toast-host');

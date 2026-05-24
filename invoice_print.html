@@ -4,23 +4,38 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Invoice — PrimeCool Services</title>
+  <!-- PrimeCool brand fonts (shared with all surfaces). -->
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800;900&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
   <style>
     :root {
-      --navy: #0B2545;
+      --navy: #0F2A4A;
+      --navy-2: #11335A;
       --teal: #22A08A;
+      --ice:  #7DD3E8;
+      --lime: #B6E021;
       --muted: #5A6472;
       --border: #dde3ea;
       --text: #1a2533;
       --light: #f8fafc;
+      --font-display: 'Archivo', 'Segoe UI', system-ui, -apple-system, sans-serif;
+      --font-body:    'IBM Plex Sans', 'Segoe UI', system-ui, -apple-system, sans-serif;
+      --font-mono:    'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      font-family: var(--font-body);
       color: var(--text);
       background: #f0f4f8;
       padding: 24px;
       line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      font-feature-settings: "tnum" 1, "kern" 1;
     }
+    h1, h2, h3 { font-family: var(--font-display); letter-spacing: -0.01em; }
+    .mono, .amount, .qty, td.num, th.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+    .pc-snowflake { display:inline-block;width:18px;height:18px;background:var(--lime);border-radius:5px;flex-shrink:0;position:relative;vertical-align:middle; }
+    .pc-snowflake::before { content:"";position:absolute;inset:3px;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230F2A4A' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><line x1='12' y1='2' x2='12' y2='22'/><line x1='2' y1='12' x2='22' y2='12'/><line x1='4.93' y1='4.93' x2='19.07' y2='19.07'/><line x1='19.07' y1='4.93' x2='4.93' y2='19.07'/></svg>");background-size:contain;background-repeat:no-repeat; }
     .actions {
       max-width: 820px;
       margin: 0 auto 20px;
@@ -53,8 +68,11 @@
       margin-bottom: 32px;
     }
     .brand .name {
-      font-size: 24px; font-weight: 800; color: var(--navy); letter-spacing: 0.3px;
+      font-size: 24px; font-weight: 800; color: var(--navy); letter-spacing: -0.01em;
+      font-family: var(--font-display);
+      display: inline-flex; align-items: center; gap: 10px;
     }
+    .brand .name > em { font-style: normal; color: var(--teal); }
     .brand .name span { color: var(--teal); }
     .brand .tagline { font-size: 12px; color: var(--muted); margin-top: 4px; }
     .brand .address {
@@ -281,7 +299,7 @@
     document.getElementById('invoice').innerHTML = `
       <div class="head">
         <div class="brand">
-          <div class="name">Prime<span>Cool</span> Services</div>
+          <div class="name"><span class="pc-snowflake" aria-hidden="true"></span>Prime<span>Cool</span> Services</div>
           <div class="tagline">HVAC Preventive Maintenance · Service Contracts</div>
           <div class="address">
             Kingston · St. Andrew · Jamaica<br>
