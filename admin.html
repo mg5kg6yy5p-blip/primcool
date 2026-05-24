@@ -3599,7 +3599,12 @@
     if (can('invoice:export'))  document.getElementById('exportInvoicesBtn').style.display = '';
     if (can('inventory:export')) document.getElementById('exportInventoryBtn').style.display = '';
     if (can('payroll:view_all')) document.getElementById('nav-payroll').style.display = 'flex';
-    if (can('fs:report_view')) document.getElementById('nav-fs').style.display = 'flex';
+    if (can('fs:report_view')) {
+      document.getElementById('nav-fs').style.display = 'flex';
+      // Eagerly refresh the 5S sidebar badge so the user sees the
+      // open-exceptions count without opening the panel first.
+      refreshFsBadge();
+    }
     if (can('kpi:view_team') || can('kpi:view_definitions') || can('kpi:flag_view')) {
       document.getElementById('nav-kpi').style.display = 'flex';
       // Fire-and-forget refresh of the flag badge.
@@ -10078,6 +10083,87 @@
     el.addEventListener('click', e => { if (e.target === el) el.classList.remove('open'); });
   });
 
+  // ── Modal a11y bootstrap ────────────────────────────────────────────────
+  // Watches every .modal-overlay; when one opens we (1) annotate the
+  // inner .modal with role=dialog + aria-modal=true + aria-labelledby
+  // pointing at the first heading inside it, (2) move focus into the
+  // dialog, (3) trap Tab focus inside it, and (4) restore focus to
+  // the previously-focused element on close. Escape closes the modal.
+  // Applies to ALL modals in the app, not just the ones we touched
+  // by hand — no retrofit needed per-modal.
+  const _modalReturnFocus = new WeakMap();
+  function _focusables(root) {
+    return Array.from(root.querySelectorAll(
+      'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )).filter(el => el.offsetParent !== null || el.tagName === 'AREA');
+  }
+  function _wireModalOpen(overlay) {
+    const modal = overlay.querySelector('.modal, .modal-card');
+    if (!modal) return;
+    if (!modal.getAttribute('role'))      modal.setAttribute('role', 'dialog');
+    if (!modal.getAttribute('aria-modal')) modal.setAttribute('aria-modal', 'true');
+    if (!modal.getAttribute('aria-labelledby')) {
+      const heading = modal.querySelector('h1,h2,h3,h4');
+      if (heading) {
+        if (!heading.id) heading.id = 'modalTitle-' + Math.random().toString(36).slice(2, 9);
+        modal.setAttribute('aria-labelledby', heading.id);
+      }
+    }
+    _modalReturnFocus.set(overlay, document.activeElement);
+    // Defer one tick so any modal-specific open handlers (which often
+    // clear inputs) finish first.
+    setTimeout(() => {
+      const focusables = _focusables(modal);
+      const first = focusables.find(el => !el.classList.contains('modal-close')) || focusables[0];
+      if (first) first.focus();
+    }, 20);
+  }
+  function _wireModalClose(overlay) {
+    const ret = _modalReturnFocus.get(overlay);
+    if (ret && typeof ret.focus === 'function') {
+      try { ret.focus(); } catch(_){}
+    }
+    _modalReturnFocus.delete(overlay);
+  }
+  // Observe class changes on every overlay so opens/closes get hooked.
+  const _modalObserver = new MutationObserver((muts) => {
+    muts.forEach(m => {
+      if (m.type !== 'attributes' || m.attributeName !== 'class') return;
+      const el = m.target;
+      if (!el.classList || !el.classList.contains('modal-overlay')) return;
+      const isOpen = el.classList.contains('open');
+      const wasOpen = m.oldValue && m.oldValue.split(/\s+/).includes('open');
+      if (isOpen && !wasOpen) _wireModalOpen(el);
+      else if (!isOpen && wasOpen) _wireModalClose(el);
+    });
+  });
+  document.querySelectorAll('.modal-overlay').forEach(el => {
+    _modalObserver.observe(el, { attributes: true, attributeOldValue: true, attributeFilter: ['class'] });
+  });
+  // Tab-trap + Escape inside any open modal.
+  document.addEventListener('keydown', (e) => {
+    const openOverlay = document.querySelector('.modal-overlay.open');
+    if (!openOverlay) return;
+    if (e.key === 'Escape') {
+      // Find the modal name from the overlay id ("modal-foo" → "foo").
+      const id = openOverlay.id || '';
+      const name = id.startsWith('modal-') ? id.slice(6) : null;
+      if (name) { e.preventDefault(); closeModal(name); }
+      return;
+    }
+    if (e.key !== 'Tab') return;
+    const modal = openOverlay.querySelector('.modal, .modal-card');
+    if (!modal) return;
+    const focusables = _focusables(modal);
+    if (!focusables.length) return;
+    const first = focusables[0], last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault(); last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault(); first.focus();
+    }
+  });
+
   // Default hire date to today when onboarding modals open
   function defaultHireDate(id) {
     const el = document.getElementById(id);
@@ -10881,6 +10967,14 @@
       banner.style.display = 'block';
       banner.textContent = `⚠ ${d.safety_red_count} safety/LOTO exception(s) open — review immediately.`;
     } else { banner.style.display = 'none'; }
+    // Sidebar badge — mirrors the KPI flag badge pattern. Total count
+    // is open + escalated + director-tier (anything still actionable).
+    const fsBadge = document.getElementById('fsRedBadge');
+    if (fsBadge) {
+      const n = (d.open_exceptions || 0) + (d.escalated_exceptions || 0) + (d.director_exceptions || 0);
+      if (n > 0) { fsBadge.textContent = String(n); fsBadge.style.display = 'inline-block'; }
+      else        { fsBadge.style.display = 'none'; }
+    }
     const _gateFS = (typeof PC !== 'undefined' && PC.gateLinkHtml);
     const tilesHtml = (d.compliance || []).map(c => {
       const nameCell = (_gateFS && c.tech_id)
@@ -12279,6 +12373,22 @@
     else if (kpiSubtab === 'flash') { /* idle — generated on click */ }
   }
 
+  // Lightweight standalone refresher for the 5S sidebar badge.
+  // Same pattern as refreshKpiFlagBadge so the user sees pending
+  // exceptions before opening the 5S panel.
+  async function refreshFsBadge() {
+    if (typeof can === 'function' && !can('fs:report_view')) return;
+    try {
+      const d = await api('GET', '/api/admin/5s/dashboard');
+      const fsBadge = document.getElementById('fsRedBadge');
+      if (!fsBadge || !d) return;
+      const n = (d.open_exceptions || 0) + (d.escalated_exceptions || 0) + (d.director_exceptions || 0);
+      if (n > 0) { fsBadge.textContent = String(n); fsBadge.style.display = 'inline-block'; }
+      else        { fsBadge.style.display = 'none'; }
+    } catch (_) { /* silent — page works without the badge */ }
+  }
+  window.refreshFsBadge = refreshFsBadge;
+
   async function refreshKpiFlagBadge() {
     if (!can('kpi:flag_view')) return;
     try {
@@ -12395,7 +12505,9 @@
   }
 
   async function kpiRecomputeAll() {
-    if (!confirm('Recompute KPIs for all techs across open periods?')) return;
+    // Audit recommendation: be explicit that this is a heavy, write
+    // operation — same destructive-confirm pattern as Offboard.
+    if (!confirm('Recompute KPIs for ALL technicians across every open period?\n\nThis can take a minute and will overwrite the current scoreboard. Continue?')) return;
     try {
       await api('POST', '/api/admin/kpi/recompute', {});
       toast('Recompute triggered.');
