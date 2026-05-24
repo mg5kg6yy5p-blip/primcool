@@ -68,6 +68,8 @@ from database import (
     # Pass B warehouse movements
     record_part_movement, list_warehouse_movements, stock_by_location,
     VALID_MOVEMENT_REASONS, VALID_MOVEMENT_REFS,
+    # Pass C receiving queue
+    list_open_pos_for_receiving,
     delete_tech, set_tech_pin,
     get_tech_by_code_and_email, create_pin_reset_token, consume_pin_reset_token,
     create_photo, get_visit_photos, get_photo_by_id, delete_photo,
@@ -5168,6 +5170,11 @@ class GRNCreate(BaseModel):
     quantity:          float
     actual_unit_cost:  float
     notes:             str = ""
+    # Pass C: destination location for the warehouse stock grid.
+    # Optional for backward compat with legacy receive callers; when
+    # provided the receipt shows up in stock_by_location() and joins
+    # the warehouse audit chain.
+    to_location_id:    Optional[int] = None
 
 
 class POCloseOut(BaseModel):
@@ -5233,7 +5240,8 @@ def admin_receive_po_line(request: Request, po_id: int, body: GRNCreate):
         raise HTTPException(400, "quantity must be positive")
     grn_id = record_goods_received(po_id, body.po_line_id, line["part_id"],
                                     body.quantity, body.actual_unit_cost,
-                                    admin["id"], body.notes)
+                                    admin["id"], body.notes,
+                                    to_location_id=body.to_location_id)
     _audit_from(admin, "po.receive", request, target_type="goods_received",
                 target_id=grn_id,
                 target_label=f"PO {po['po_number']} part {line['sku']} qty {body.quantity}",
@@ -8910,6 +8918,18 @@ def admin_warehouse_stock_by_location(request: Request,
     location_id filter narrows to one bin / van / truck."""
     _require_perm(request, "warehouse:view_queue")
     return stock_by_location(location_id=location_id)
+
+
+@app.get("/api/admin/warehouse/receiving/queue")
+def admin_warehouse_receiving_queue(request: Request):
+    """Open POs awaiting delivery — every PO in status 'sent' or
+    'draft' with at least one line still pending receipt, with each
+    line's remaining qty. Drives the receiving sub-tab UI.
+
+    Gated by po:receive so only roles that can actually mark items
+    received see the queue."""
+    _require_perm(request, "po:receive")
+    return list_open_pos_for_receiving()
 
 
 @app.get("/warehouse")

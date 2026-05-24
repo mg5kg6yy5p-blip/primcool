@@ -6553,10 +6553,18 @@ def mark_po_sent(po_id: int):
 
 def record_goods_received(po_id: int, po_line_id: int, part_id: int,
                            quantity: float, actual_unit_cost: float,
-                           received_by: int, notes: str = "") -> int:
+                           received_by: int, notes: str = "",
+                           to_location_id: int = None) -> int:
     """Records a GRN row AND updates the PO line's received_qty + the part
     inventory quantity. Also writes a part_movement row so the existing
-    inventory dashboards reflect the receipt."""
+    inventory dashboards reflect the receipt.
+
+    to_location_id (Pass C): the warehouse bin / van / fs_asset where
+    the part landed. When provided, the mirrored part_movement gets
+    to_location_id + reference_kind='po' + reference_id=po_id set so
+    the receipt shows up in stock_by_location() at the right bin.
+    Older callers that don't pass to_location_id keep the legacy
+    behavior — the GRN still records but the location isn't tagged."""
     now = datetime.now(timezone.utc).isoformat()
     con = _con()
     # Update PO line
@@ -6579,14 +6587,51 @@ def record_goods_received(po_id: int, po_line_id: int, part_id: int,
          float(actual_unit_cost), received_by, now, notes or ""),
     )
     grn_id = cur.lastrowid
-    # Mirror as a part_movement so movement reports still show the receipt
-    con.execute(
-        """INSERT INTO part_movements
-            (part_id, movement_type, quantity_delta, reason, visit_id,
-             performed_by_type, performed_by_id, created_at)
-           VALUES (?, 'received', ?, ?, NULL, 'admin', ?, ?)""",
-        (part_id, float(quantity), f"PO {po_id} GRN #{grn_id}", received_by, now),
-    )
+    # Mirror as a part_movement so movement reports + the warehouse
+    # stock-by-location grid both reflect the receipt. When the caller
+    # provided a destination location, also stamp the chain-hash so
+    # this row participates in the warehouse audit chain.
+    if to_location_id:
+        # Compute the chain hash inline to match record_part_movement's
+        # format. Avoids re-entering _con() inside an open connection.
+        prior = con.execute(
+            "SELECT chain_hash FROM part_movements ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        prior_hash = (prior["chain_hash"] if prior else "") or ""
+        row_for_hash = {
+            "part_id": part_id, "quantity_delta": float(quantity),
+            "from_location_id": None, "to_location_id": int(to_location_id),
+            "reason": "receipt",
+            "reference_kind": "po", "reference_id": po_id,
+            "performed_by_type": "admin", "performed_by_id": received_by,
+            "created_at": now,
+        }
+        chash = _chain_hash_part_movement(prior_hash, row_for_hash)
+        con.execute(
+            """INSERT INTO part_movements
+                (part_id, movement_type, quantity_delta, reason, visit_id,
+                 from_location_id, to_location_id,
+                 reference_kind, reference_id,
+                 performed_by_type, performed_by_id,
+                 prior_chain_hash, chain_hash, created_at)
+               VALUES (?, 'received', ?, ?, NULL,
+                       NULL, ?, 'po', ?,
+                       'admin', ?, ?, ?, ?)""",
+            (part_id, float(quantity), "receipt",
+             int(to_location_id), po_id,
+             received_by, prior_hash, chash, now),
+        )
+    else:
+        # Legacy path — no location, no chain hash. Kept for callers
+        # that haven't migrated to the warehouse flow yet.
+        con.execute(
+            """INSERT INTO part_movements
+                (part_id, movement_type, quantity_delta, reason, visit_id,
+                 performed_by_type, performed_by_id, created_at)
+               VALUES (?, 'received', ?, ?, NULL, 'admin', ?, ?)""",
+            (part_id, float(quantity),
+             f"PO {po_id} GRN #{grn_id}", received_by, now),
+        )
     # If all lines fully received, flip PO to 'received'
     pending = con.execute(
         """SELECT COUNT(*) AS n FROM purchase_order_lines
@@ -6599,6 +6644,43 @@ def record_goods_received(po_id: int, po_line_id: int, part_id: int,
     con.commit()
     con.close()
     return grn_id
+
+
+def list_open_pos_for_receiving() -> list:
+    """Returns every PO in status='sent' or 'draft' with at least one
+    line still pending receipt, joined with its lines. Used by the
+    warehouse receiving queue UI to show "what's owed to us"."""
+    con = _con()
+    pos = con.execute(
+        """SELECT id, po_number, supplier, status, expected_total,
+                  sent_at, created_at, created_by
+           FROM purchase_orders
+           WHERE status IN ('sent', 'draft')
+           ORDER BY status DESC, COALESCE(sent_at, created_at) ASC"""
+    ).fetchall()
+    out = []
+    for po in pos:
+        po = dict(po)
+        lines = con.execute(
+            """SELECT pol.id, pol.part_id, p.sku, p.name AS part_name,
+                      p.unit, pol.quantity, pol.received_qty,
+                      pol.expected_unit_cost,
+                      (pol.quantity - pol.received_qty) AS remaining
+               FROM purchase_order_lines pol
+               JOIN parts p ON pol.part_id = p.id
+               WHERE pol.po_id = ?
+               ORDER BY pol.id""",
+            (po["id"],),
+        ).fetchall()
+        lines = [dict(l) for l in lines]
+        pending = [l for l in lines if l["remaining"] > 0]
+        if not pending:
+            continue
+        po["lines"] = lines
+        po["pending_count"] = len(pending)
+        out.append(po)
+    con.close()
+    return out
 
 
 def close_purchase_order(po_id: int, invoice_number: str, invoice_total: float,

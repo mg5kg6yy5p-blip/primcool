@@ -1202,6 +1202,8 @@
           <h2>Warehouse</h2>
           <div style="display:flex;gap:8px;">
             <button class="filter-btn" id="wh-tab-staff"     onclick="whSwitchTab('staff')">Staff</button>
+            <button class="filter-btn" id="wh-tab-receiving" onclick="whSwitchTab('receiving')">Receiving</button>
+            <button class="filter-btn" id="wh-tab-stock"     onclick="whSwitchTab('stock')">Stock</button>
             <button class="filter-btn" id="wh-tab-checklist" onclick="whSwitchTab('checklist')">Checklists</button>
             <button class="filter-btn" id="wh-tab-sheets"    onclick="whSwitchTab('sheets')">Month-end sheets</button>
           </div>
@@ -1228,6 +1230,98 @@
                 </tr></thead>
                 <tbody id="wh-staff-body"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
               </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Sub-tab: Receiving queue ── -->
+        <div id="wh-pane-receiving" style="display:none;">
+          <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:18px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+              <h3 style="margin:0;color:var(--navy);font-size:16px;">Open purchase orders</h3>
+              <button class="btn btn-ghost btn-sm" onclick="whLoadReceiving()">↻ Refresh</button>
+            </div>
+            <div class="muted" style="font-size:12px;margin-bottom:12px;">
+              POs in <strong>draft</strong> or <strong>sent</strong> status with at least
+              one line still pending. Mark line items received as they arrive on the dock —
+              specify the destination bin so stock-by-location stays accurate.
+            </div>
+            <div id="wh-receiving-list"><div class="empty" style="padding:14px;">Loading…</div></div>
+          </div>
+        </div>
+
+        <!-- ── Sub-tab: Stock-by-location ── -->
+        <div id="wh-pane-stock" style="display:none;">
+          <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:18px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+              <h3 style="margin:0;color:var(--navy);font-size:16px;">On-hand by location</h3>
+              <div style="display:flex;gap:8px;align-items:center;">
+                <select id="wh-stock-loc" onchange="whLoadStock()" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
+                  <option value="">All locations</option>
+                </select>
+                <button class="btn btn-ghost btn-sm" onclick="whLoadStock()">↻</button>
+              </div>
+            </div>
+            <div class="muted" style="font-size:12px;margin-bottom:12px;">
+              Computed from the movement chain. A row is rendered only when on-hand &gt; 0.
+              Use the <strong>Transfer</strong> button on any row to move stock between
+              locations.
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr>
+                  <th>Location</th><th>SKU</th><th>Part</th><th class="num">On hand</th><th class="num">Inflow</th><th class="num">Outflow</th><th></th>
+                </tr></thead>
+                <tbody id="wh-stock-body"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Transfer modal -->
+        <div class="modal-overlay" id="modal-whTransfer">
+          <div class="modal-card">
+            <div class="modal-header">
+              <h3>Transfer stock</h3>
+              <button class="modal-close" onclick="closeModal('whTransfer')">×</button>
+            </div>
+            <div class="modal-body">
+              <div id="wh-tx-summary" style="background:#f8fafc;border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:13px;"></div>
+              <label class="modal-label">Quantity to move</label>
+              <input id="wh-tx-qty" class="modal-input" type="number" min="0.01" step="0.01">
+              <label class="modal-label">Destination</label>
+              <select id="wh-tx-to" class="modal-input"></select>
+              <div class="form-error" id="err-whTransfer"></div>
+            </div>
+            <div class="modal-footer">
+              <button class="btn btn-ghost"   onclick="closeModal('whTransfer')">Cancel</button>
+              <button class="btn btn-primary" onclick="whSubmitTransfer()">Transfer</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Receive line modal -->
+        <div class="modal-overlay" id="modal-whReceive">
+          <div class="modal-card">
+            <div class="modal-header">
+              <h3>Receive line</h3>
+              <button class="modal-close" onclick="closeModal('whReceive')">×</button>
+            </div>
+            <div class="modal-body">
+              <div id="wh-rx-summary" style="background:#f8fafc;border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:13px;"></div>
+              <label class="modal-label">Quantity received</label>
+              <input id="wh-rx-qty" class="modal-input" type="number" min="0.01" step="0.01">
+              <label class="modal-label">Actual unit cost (J$)</label>
+              <input id="wh-rx-cost" class="modal-input" type="number" min="0" step="0.01">
+              <label class="modal-label">Destination location</label>
+              <select id="wh-rx-to" class="modal-input"></select>
+              <label class="modal-label">Notes (optional)</label>
+              <input id="wh-rx-notes" class="modal-input" type="text">
+              <div class="form-error" id="err-whReceive"></div>
+            </div>
+            <div class="modal-footer">
+              <button class="btn btn-ghost"   onclick="closeModal('whReceive')">Cancel</button>
+              <button class="btn btn-primary" onclick="whSubmitReceive()">Mark received</button>
             </div>
           </div>
         </div>
@@ -5329,6 +5423,8 @@
       if (btn)  btn.classList.toggle('active', t === tab);
     });
     if (tab === 'staff')     whLoadStaff();
+    if (tab === 'receiving') whLoadReceiving();
+    if (tab === 'stock')     { whLoadStockLocations(); whLoadStock(); }
     if (tab === 'checklist') whLoadAssetsThenChecklist();
     if (tab === 'sheets')    { whLoadAssetsForChecksheet(); whLoadChecksheets(); }
   }
@@ -5568,6 +5664,239 @@
       whLoadChecksheets();
     } catch (e) {
       toast('Upload failed: ' + e.message, 'error');
+    }
+  }
+
+  // ── Sub-tab: Receiving queue (Pass C) ────────────────────────────
+  let _whRxContext = null;  // {po, line} of the row being received
+
+  function _whAssetOptions(filter) {
+    // Returns asset rows usable as a storage destination (any vehicle,
+    // toolkit, or storage bin). filter is an optional predicate.
+    const assets = _whAssetsCache || [];
+    return assets.filter(a => filter ? filter(a) : true);
+  }
+
+  async function whLoadReceiving() {
+    const host = document.getElementById('wh-receiving-list');
+    try {
+      const pos = await api('GET', '/api/admin/warehouse/receiving/queue');
+      if (!pos.length) {
+        host.innerHTML = '<div class="empty" style="padding:14px;">No open POs awaiting delivery.</div>';
+        return;
+      }
+      host.innerHTML = pos.map(po => `
+        <div style="border:1px solid var(--border);border-radius:8px;margin-bottom:14px;background:#f8fafc;">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;padding:12px 14px;border-bottom:1px solid var(--border);background:#fff;border-radius:8px 8px 0 0;">
+            <div>
+              <strong style="color:var(--navy);">${escHtml(po.po_number)}</strong>
+              <span style="margin-left:8px;font-size:12px;color:var(--muted);">${escHtml(po.supplier)}</span>
+            </div>
+            <div style="font-size:11px;color:var(--muted);">
+              <span class="badge" style="background:${po.status === 'sent' ? '#dbeafe' : '#fef3c7'};color:${po.status === 'sent' ? '#1e40af' : '#92400e'};text-transform:uppercase;">${escHtml(po.status)}</span>
+              <span style="margin-left:8px;">${po.pending_count} pending</span>
+            </div>
+          </div>
+          <table style="width:100%;font-size:13px;">
+            <thead>
+              <tr style="text-align:left;color:var(--muted);background:#f3f4f6;">
+                <th style="padding:6px 12px;">SKU</th>
+                <th style="padding:6px 12px;">Part</th>
+                <th style="padding:6px 12px;text-align:right;">Ordered</th>
+                <th style="padding:6px 12px;text-align:right;">Received</th>
+                <th style="padding:6px 12px;text-align:right;">Remaining</th>
+                <th style="padding:6px 12px;text-align:right;">Unit cost</th>
+                <th style="padding:6px 12px;"></th>
+              </tr>
+            </thead>
+            <tbody>
+              ${po.lines.map(l => {
+                const fully = (l.remaining <= 0.0001);
+                return `<tr style="border-top:1px solid var(--border);${fully ? 'opacity:0.55;' : ''}">
+                  <td style="padding:6px 12px;font-family:monospace;font-size:11px;">${escHtml(l.sku)}</td>
+                  <td style="padding:6px 12px;">${escHtml(l.part_name)}</td>
+                  <td style="padding:6px 12px;text-align:right;">${l.quantity} ${escHtml(l.unit || '')}</td>
+                  <td style="padding:6px 12px;text-align:right;">${l.received_qty}</td>
+                  <td style="padding:6px 12px;text-align:right;font-weight:600;">${fully ? '<span style="color:var(--teal-dark);">complete</span>' : l.remaining}</td>
+                  <td style="padding:6px 12px;text-align:right;">J$ ${(l.expected_unit_cost || 0).toFixed(2)}</td>
+                  <td style="padding:6px 12px;text-align:right;">
+                    ${fully ? '' : `<button class="btn btn-primary btn-sm" onclick='whOpenReceive(${JSON.stringify({po_id: po.id, po_number: po.po_number, line: l}).replace(/'/g, "&apos;")})'>Receive</button>`}
+                  </td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      `).join('');
+    } catch (e) {
+      host.innerHTML = `<div class="empty">Could not load receiving queue: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  async function whOpenReceive(ctx) {
+    _whRxContext = ctx;
+    document.getElementById('wh-rx-summary').innerHTML =
+      `<strong>${escHtml(ctx.po_number)}</strong> · ${escHtml(ctx.line.sku)} ${escHtml(ctx.line.part_name)}
+       <br><span style="color:var(--muted);font-size:12px;">remaining ${ctx.line.remaining} ${escHtml(ctx.line.unit || '')}</span>`;
+    document.getElementById('wh-rx-qty').value  = ctx.line.remaining;
+    document.getElementById('wh-rx-cost').value = (ctx.line.expected_unit_cost || 0).toFixed(2);
+    document.getElementById('wh-rx-notes').value = '';
+    // Populate destination dropdown — prefer storage bins, then vans/toolkits.
+    await _whLoadAssetsCache();
+    const dst = document.getElementById('wh-rx-to');
+    dst.innerHTML = '<option value="">(no location — legacy receipt)</option>';
+    _whAssetOptions().forEach(a => {
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = `${a.asset_code} — ${a.label} (${a.asset_type})`;
+      if (a.asset_type === 'storage') opt.selected = true;  // default to a bin
+      dst.appendChild(opt);
+    });
+    document.getElementById('err-whReceive').style.display = 'none';
+    document.getElementById('modal-whReceive').classList.add('open');
+  }
+
+  async function whSubmitReceive() {
+    const ctx = _whRxContext;
+    if (!ctx) return;
+    const qty   = parseFloat(document.getElementById('wh-rx-qty').value) || 0;
+    const cost  = parseFloat(document.getElementById('wh-rx-cost').value) || 0;
+    const notes = document.getElementById('wh-rx-notes').value.trim();
+    const toLoc = document.getElementById('wh-rx-to').value || null;
+    const errEl = document.getElementById('err-whReceive');
+    errEl.style.display = 'none';
+    if (qty <= 0) {
+      errEl.textContent = 'Quantity must be positive.';
+      errEl.style.display = 'block';
+      return;
+    }
+    if (qty > ctx.line.remaining + 0.0001) {
+      errEl.textContent = `Over-receipt — only ${ctx.line.remaining} remaining on this line.`;
+      errEl.style.display = 'block';
+      return;
+    }
+    try {
+      await api('POST', `/api/admin/purchase-orders/${ctx.po_id}/receive`, {
+        po_line_id:       ctx.line.id,
+        quantity:         qty,
+        actual_unit_cost: cost,
+        notes:            notes,
+        to_location_id:   toLoc ? parseInt(toLoc, 10) : null,
+      });
+      closeModal('whReceive');
+      toast('Received.', 'success');
+      whLoadReceiving();
+    } catch (e) {
+      errEl.textContent = e.message || 'Receive failed.';
+      errEl.style.display = 'block';
+    }
+  }
+
+  // ── Sub-tab: Stock by location ───────────────────────────────────
+  let _whTxContext = null;  // {asset_code, label, part_id, sku, part_name, on_hand, location_id}
+
+  async function whLoadStockLocations() {
+    const sel = document.getElementById('wh-stock-loc');
+    sel.innerHTML = '<option value="">All locations</option>';
+    const assets = await _whLoadAssetsCache();
+    assets.forEach(a => {
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = `${a.asset_code} — ${a.label}`;
+      sel.appendChild(opt);
+    });
+  }
+
+  async function whLoadStock() {
+    const tbody = document.getElementById('wh-stock-body');
+    const locId = document.getElementById('wh-stock-loc').value;
+    try {
+      const q = locId ? `?location_id=${encodeURIComponent(locId)}` : '';
+      const rows = await api('GET', '/api/admin/warehouse/stock-by-location' + q);
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="7" class="empty">No on-hand stock at this location.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = rows.map(r => `
+        <tr>
+          <td><strong>${escHtml(r.asset_code)}</strong>
+              <div class="muted" style="font-size:11px;">${escHtml(r.label || '')}</div></td>
+          <td><span style="font-family:monospace;font-size:11px;">${escHtml(r.sku)}</span></td>
+          <td>${escHtml(r.part_name)}</td>
+          <td class="num"><strong>${r.on_hand}</strong> ${escHtml(r.unit || '')}</td>
+          <td class="num">${r.inflow}</td>
+          <td class="num">${r.outflow}</td>
+          <td><button class="btn btn-ghost btn-sm" onclick='whOpenTransfer(${JSON.stringify(r).replace(/'/g, "&apos;")})'>Transfer</button></td>
+        </tr>`).join('');
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="7" class="empty">Could not load stock: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  async function whOpenTransfer(row) {
+    _whTxContext = row;
+    document.getElementById('wh-tx-summary').innerHTML =
+      `<strong>${escHtml(row.sku)}</strong> ${escHtml(row.part_name)}
+       <br><span style="color:var(--muted);font-size:12px;">${row.on_hand} ${escHtml(row.unit || '')} on hand at ${escHtml(row.asset_code)}</span>`;
+    document.getElementById('wh-tx-qty').value = '';
+    await _whLoadAssetsCache();
+    const to = document.getElementById('wh-tx-to');
+    to.innerHTML = '';
+    _whAssetOptions().forEach(a => {
+      if (a.id === row.location_id) return;  // can't transfer to itself
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = `${a.asset_code} — ${a.label} (${a.asset_type})`;
+      to.appendChild(opt);
+    });
+    document.getElementById('err-whTransfer').style.display = 'none';
+    document.getElementById('modal-whTransfer').classList.add('open');
+  }
+
+  async function whSubmitTransfer() {
+    const ctx = _whTxContext;
+    if (!ctx) return;
+    const qty   = parseFloat(document.getElementById('wh-tx-qty').value) || 0;
+    const toLoc = parseInt(document.getElementById('wh-tx-to').value || '0', 10);
+    const errEl = document.getElementById('err-whTransfer');
+    errEl.style.display = 'none';
+    if (qty <= 0) {
+      errEl.textContent = 'Quantity must be positive.';
+      errEl.style.display = 'block';
+      return;
+    }
+    if (qty > ctx.on_hand + 0.0001) {
+      errEl.textContent = `Only ${ctx.on_hand} on hand at ${ctx.asset_code}.`;
+      errEl.style.display = 'block';
+      return;
+    }
+    if (!toLoc) {
+      errEl.textContent = 'Pick a destination.';
+      errEl.style.display = 'block';
+      return;
+    }
+    // A transfer is two atomic movements (OUT + IN). The server's
+    // record_transfer helper handles the chain hashing.
+    try {
+      // OUT row — quantity_delta < 0, from_location set
+      const out = await api('POST', '/api/admin/warehouse/movements', {
+        part_id: ctx.part_id, quantity_delta: -qty, reason: 'transfer',
+        from_location_id: ctx.location_id,
+        reference_kind: 'transfer',
+      });
+      // IN row — quantity_delta > 0, to_location set, references the OUT id
+      await api('POST', '/api/admin/warehouse/movements', {
+        part_id: ctx.part_id, quantity_delta: qty, reason: 'transfer',
+        to_location_id: toLoc,
+        reference_kind: 'transfer',
+        reference_id: out.id,
+      });
+      closeModal('whTransfer');
+      toast('Transferred.', 'success');
+      whLoadStock();
+    } catch (e) {
+      errEl.textContent = e.message || 'Transfer failed.';
+      errEl.style.display = 'block';
     }
   }
 
