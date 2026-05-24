@@ -6177,6 +6177,36 @@ def revoke_all_sessions_for(subject_type: str, subject_id: int) -> int:
     return n
 
 
+def revoke_admin_sessions_except(admin_id: int, keep_jti):
+    # keep_jti: Optional[str] — Py3.9 friendly signature.
+    """Revoke every live admin session for this user EXCEPT one jti.
+
+    Used by the self-service password-change flow: a stolen cookie
+    shouldn't outlive the password, but we also don't want to bounce
+    the very session that just performed the change.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    if keep_jti:
+        cur = con.execute(
+            "UPDATE sessions SET revoked_at = ? "
+            "WHERE subject_type = 'admin' AND subject_id = ? "
+            "AND revoked_at IS NULL AND jti != ?",
+            (now, int(admin_id), keep_jti),
+        )
+    else:
+        cur = con.execute(
+            "UPDATE sessions SET revoked_at = ? "
+            "WHERE subject_type = 'admin' AND subject_id = ? "
+            "AND revoked_at IS NULL",
+            (now, int(admin_id)),
+        )
+    n = cur.rowcount
+    con.commit()
+    con.close()
+    return n
+
+
 def mark_session_mfa_verified(jti: str):
     """Records that the session's holder has just passed an MFA check.
     Used to gate access to Tier-3 data — see _require_recent_mfa() in main.py."""

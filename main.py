@@ -1743,6 +1743,15 @@ class MfaDisable(BaseModel):
     code:     str    # current TOTP or backup code
 
 
+class AdminChangeOwnPassword(BaseModel):
+    # Self-service password change from the My Profile panel.
+    # Requires the current password so a hijacked session can't pivot
+    # to permanent account takeover without it.
+    current_password: str
+    new_password:     str
+    confirm_password: str
+
+
 class CustomerCreate(BaseModel):
     customer_code: str
     name:          str
@@ -4294,6 +4303,54 @@ def admin_mfa_disable(request: Request, body: MfaDisable):
     disable_admin_mfa(admin["id"])
     _audit_from(admin, "admin.mfa.disabled", request,
                 target_type="admin", target_id=admin["id"], target_label=admin["username"])
+    return {"ok": True}
+
+
+@app.post("/api/admin/me/password")
+def admin_change_own_password(request: Request, body: AdminChangeOwnPassword):
+    """Self-service password change from My Profile.
+
+    Requires the *current* password (re-auth) so a stolen session
+    token alone can't permanently take over the account. Validates
+    against the same strength rules as new-account creation, blocks
+    no-op changes, then issues a fresh password hash and logs the
+    event. The current session stays valid — the user explicitly
+    chose to keep working — but every other live session is revoked
+    so a previously-stolen cookie can't outlive the password.
+    """
+    admin = _require_admin(request)
+    from database import _verify_password, revoke_admin_sessions_except
+    if not _verify_password(body.current_password, admin["password_hash"]):
+        _audit_from(admin, "admin.password.change_failed", request,
+                    target_type="admin", target_id=admin["id"],
+                    target_label=admin["username"], details={"reason": "bad_current"})
+        raise HTTPException(401, "Current password is incorrect")
+    if body.new_password != body.confirm_password:
+        raise HTTPException(400, "New passwords do not match")
+    if body.new_password == body.current_password:
+        raise HTTPException(400, "New password must be different from current password")
+    _validate_password_strength(body.new_password)
+    set_admin_password(admin["id"], body.new_password)
+    # Revoke other sessions but keep the current one alive — the
+    # user is actively in the UI and shouldn't be bounced for
+    # changing their own password.
+    current_jti = None
+    try:
+        token = _read_token(request, COOKIE_ADMIN)
+        if token:
+            data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM],
+                              options={"verify_exp": False})
+            current_jti = data.get("jti")
+    except Exception:
+        pass
+    try:
+        revoke_admin_sessions_except(admin["id"], current_jti)
+    except Exception:
+        # Helper may not exist on older DBs; non-fatal.
+        pass
+    _audit_from(admin, "admin.password.changed", request,
+                target_type="admin", target_id=admin["id"],
+                target_label=admin["username"])
     return {"ok": True}
 
 

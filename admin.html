@@ -513,6 +513,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
         Warehouse
       </div>
+      <div class="nav-item" onclick="showPanel('myprofile')" id="nav-myprofile">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        My Profile
+      </div>
       <div class="sidebar-reset" id="sidebarResetOrder" title="Restore the default sidebar order"
            onclick="resetSidebarOrder()" style="display:none;">
         ↺ Reset order
@@ -1204,8 +1208,63 @@
         </div>
       </div>
 
+      <!-- ── My Profile panel (admin side) ── -->
+      <!-- Every PrimeCool staff (admin, tech, warehouse) gets a personal
+           profile area. This is the admin-side version. The tech side
+           lives in tech_landing.html and has more cards (schedule, KPI,
+           CV) — admins only need identity / pay / account-security. -->
+      <div class="panel" id="panel-myprofile">
+        <div class="top-bar"><h2>My Profile</h2></div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start;">
+          <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;">
+            <h3 style="margin:0 0 10px;color:var(--navy);font-size:15px;">Identity</h3>
+            <div id="mp-identity"><div class="empty" style="padding:14px;">Loading…</div></div>
+          </div>
+          <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;">
+            <h3 style="margin:0 0 10px;color:var(--navy);font-size:15px;">Account &amp; security</h3>
+            <div id="mp-account">
+              <div style="font-size:13px;color:var(--muted);line-height:1.5;margin-bottom:10px;">
+                Manage how you sign in and protect your account.
+              </div>
+              <div style="display:flex;flex-direction:column;gap:8px;">
+                <button class="btn btn-ghost" onclick="mpOpenChangePw()">Change password</button>
+                <button class="btn btn-ghost" onclick="openSecurityModal()">Manage two-factor (MFA)</button>
+                <button class="btn btn-danger" onclick="adminLogout()">Sign out</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-top:14px;">
+          <h3 style="margin:0 0 10px;color:var(--navy);font-size:15px;">My pay</h3>
+          <!-- inner-scroll cap so an admin with many periods doesn't
+               push the whole page off-screen. -->
+          <div id="mp-pay" style="max-height:360px;overflow-y:auto;"><div class="empty" style="padding:14px;">Loading…</div></div>
+          <div class="muted" style="font-size:12px;margin-top:8px;">
+            Tap a period to open the payslip. Print or Save as PDF from the modal.
+          </div>
+        </div>
+      </div>
+
+      <!-- Admin payslip detail modal — used by My Profile → My pay -->
+      <div class="modal-overlay" id="modal-adminPayslip">
+        <div class="modal-card" style="max-width:520px;">
+          <div class="modal-header" style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
+            <h3 id="ap-title">Payslip</h3>
+            <div style="display:flex;gap:6px;">
+              <button id="ap-save-btn" class="btn btn-ghost" style="display:none;padding:5px 12px;font-size:12px;" onclick="apPrint('save')">💾 Save (PDF)</button>
+              <button id="ap-print-btn" class="btn btn-primary" style="display:none;padding:5px 12px;font-size:12px;" onclick="apPrint('print')">🖨 Print</button>
+              <button class="modal-close" onclick="closeModal('adminPayslip')">×</button>
+            </div>
+          </div>
+          <div class="modal-body" id="ap-body" style="max-height:60vh;overflow-y:auto;">
+            <div class="empty" style="padding:14px;">Loading…</div>
+          </div>
+        </div>
+      </div>
+
       <!-- ── Warehouse panel ── -->
-      <div class="panel" id="panel-warehouse">
         <div class="top-bar">
           <h2>Warehouse</h2>
           <div style="display:flex;gap:8px;">
@@ -2720,6 +2779,39 @@
   </div>
 </div>
 
+<!-- Change own password (My Profile → Account & security) -->
+<div class="modal-overlay" id="modal-changePw">
+  <div class="modal" style="max-width:440px;">
+    <div class="modal-header">
+      <h3>Change Password</h3>
+      <button class="modal-close" onclick="closeModal('changePw')">×</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:13px;color:var(--muted);line-height:1.5;margin:0 0 14px;">
+        Enter your current password, then choose a new one. Other devices will be signed out — this device stays signed in.
+      </p>
+      <div class="field">
+        <label>Current password</label>
+        <input id="cpw-current" type="password" autocomplete="current-password">
+      </div>
+      <div class="field">
+        <label>New password</label>
+        <input id="cpw-new" type="password" autocomplete="new-password">
+        <div style="font-size:11px;color:var(--muted);margin-top:4px;">Minimum 8 characters.</div>
+      </div>
+      <div class="field">
+        <label>Confirm new password</label>
+        <input id="cpw-confirm" type="password" autocomplete="new-password">
+      </div>
+      <div class="form-error" id="err-changePw"></div>
+      <div style="display:flex;gap:10px;margin-top:14px;">
+        <button class="btn btn-ghost" style="flex:1;" onclick="closeModal('changePw')">Cancel</button>
+        <button class="btn btn-primary" style="flex:1;" id="cpw-submit-btn" onclick="submitChangePw()">Change password</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- MFA enrollment (QR + activation) -->
 <div class="modal-overlay" id="modal-mfaEnroll">
   <div class="modal" style="max-width:500px;">
@@ -3620,6 +3712,7 @@
     if (name === 'delegations') { loadDelegationsPanel(); }
     if (name === 'companymsg') { cmLoad(); }
     if (name === 'warehouse') { whInit(); }
+    if (name === 'myprofile') { loadMpProfile(); }
   }
 
   // ── Customers ──────────────────────────────────────────────────────────────
@@ -9671,6 +9764,231 @@
     } catch (e) {
       if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return;
       toast(e.message, 'error');
+    }
+  }
+
+  // ── My Profile (admin-side) ───────────────────────────────────────────────
+  // Every PrimeCool staff member sees a personal profile area. For admins
+  // we show identity (read-only), an Account & Security card (change
+  // password, manage MFA, sign out), and the same "My pay" list that
+  // the standalone My Payslips panel renders — so an admin who lives
+  // in My Profile never needs to leave it to see a payslip.
+  async function loadMpProfile() {
+    loadMpIdentity();
+    loadMpPay();
+  }
+
+  async function loadMpIdentity() {
+    const wrap = document.getElementById('mp-identity');
+    try {
+      const me = await api('GET', '/api/admin/me');
+      const fields = [
+        ['Name',        me.name || '—'],
+        ['Username',    me.username || '—'],
+        ['PRID',        me.prid || '—'],
+        ['Role',        (me.role || '—').replace(/_/g, ' ')],
+        ['Email',       me.email || '—'],
+        ['Phone',       me.phone || '—'],
+      ];
+      wrap.innerHTML = fields.map(([k, v]) => `
+        <div style="display:flex;justify-content:space-between;gap:14px;padding:6px 0;border-bottom:1px dashed var(--border);font-size:13px;">
+          <span style="color:var(--muted);">${k}</span>
+          <span style="color:var(--navy);font-weight:600;text-align:right;">${escHtml(String(v))}</span>
+        </div>`).join('');
+    } catch (e) {
+      wrap.innerHTML = `<div style="color:var(--danger);font-size:12px;">Could not load: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  async function loadMpPay() {
+    const wrap = document.getElementById('mp-pay');
+    try {
+      const rows = await api('GET', '/api/admin/me/payslips');
+      if (!rows.length) {
+        wrap.innerHTML = '<div class="empty" style="padding:14px;">No payslips yet.</div>';
+        return;
+      }
+      wrap.innerHTML = rows.map(p => {
+        const cur = p.currency || 'JMD';
+        return `<div onclick="apOpenModal(${p.id})" style="cursor:pointer;border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;background:#fff;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='#fff'">
+          <div>
+            <strong style="color:var(--navy);">${escHtml(p.period_label || '')}</strong>
+            <div style="font-size:11px;color:var(--muted);">${escHtml(p.period_start || '')} → ${escHtml(p.period_end || '')}</div>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:11px;color:var(--muted);">Net pay</div>
+            <div style="font-weight:700;color:var(--navy);">${_fmtMoney(p.net_pay, cur)}</div>
+          </div>
+        </div>`;
+      }).join('');
+    } catch (e) {
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return;
+      wrap.innerHTML = `<div style="color:var(--danger);font-size:12px;">Could not load: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  // ── Admin payslip modal (Print + Save as PDF) ─────────────────────────────
+  // Mirrors tech_landing.html's psPrint flow — opens an inline modal with
+  // the breakdown, then offers Print / Save-as-PDF via a popup window so
+  // the browser's native print dialog can route to a printer OR to a PDF.
+  let _apCurrent = null;
+  async function apOpenModal(id) {
+    document.getElementById('modal-adminPayslip').classList.add('open');
+    document.getElementById('ap-title').textContent = 'Payslip';
+    document.getElementById('ap-body').innerHTML = '<div class="empty" style="padding:14px;">Loading…</div>';
+    document.getElementById('ap-print-btn').style.display = 'none';
+    document.getElementById('ap-save-btn').style.display  = 'none';
+    try {
+      const p = await api('GET', `/api/admin/me/payslips/${id}`);
+      _apCurrent = p;
+      const cur = p.currency || 'JMD';
+      document.getElementById('ap-title').textContent = `Payslip — ${p.period_label || ''}`;
+      document.getElementById('ap-body').innerHTML = `
+        <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">
+          ${escHtml(p.period_start || '')} → ${escHtml(p.period_end || '')}
+        </div>
+        <h4 style="margin:14px 0 6px;color:var(--teal-dark);font-size:12px;text-transform:uppercase;letter-spacing:1px;">Earnings</h4>
+        <table style="width:100%;font-size:13px;border-collapse:collapse;">
+          <tr><td style="padding:5px 0;border-bottom:1px solid var(--border);">Regular hours</td><td style="text-align:right;padding:5px 0;border-bottom:1px solid var(--border);">${p.hours_regular} × ${_fmtMoney(p.hourly_rate, cur)}</td></tr>
+          <tr><td style="padding:5px 0;border-bottom:1px solid var(--border);">Overtime hours</td><td style="text-align:right;padding:5px 0;border-bottom:1px solid var(--border);">${p.hours_overtime} × ${_fmtMoney(p.overtime_rate, cur)}</td></tr>
+          <tr><td style="padding:5px 0;border-bottom:1px solid var(--border);">Fixed salary</td><td style="text-align:right;padding:5px 0;border-bottom:1px solid var(--border);">${_fmtMoney(p.fixed_salary, cur)}</td></tr>
+          <tr><td style="padding:5px 0;border-bottom:1px solid var(--border);">Bonus</td><td style="text-align:right;padding:5px 0;border-bottom:1px solid var(--border);">${_fmtMoney(p.bonus, cur)}</td></tr>
+          <tr style="font-weight:700;"><td style="padding:7px 0;">Gross pay</td><td style="text-align:right;padding:7px 0;">${_fmtMoney(p.gross_pay, cur)}</td></tr>
+        </table>
+        <h4 style="margin:14px 0 6px;color:#991b1b;font-size:12px;text-transform:uppercase;letter-spacing:1px;">Deductions</h4>
+        <table style="width:100%;font-size:13px;border-collapse:collapse;color:#991b1b;">
+          <tr><td style="padding:5px 0;border-bottom:1px solid var(--border);">PAYE income tax</td><td style="text-align:right;padding:5px 0;border-bottom:1px solid var(--border);">${_fmtMoney(p.paye_tax, cur)}</td></tr>
+          <tr><td style="padding:5px 0;border-bottom:1px solid var(--border);">NIS</td><td style="text-align:right;padding:5px 0;border-bottom:1px solid var(--border);">${_fmtMoney(p.nis, cur)}</td></tr>
+          <tr><td style="padding:5px 0;border-bottom:1px solid var(--border);">NHT</td><td style="text-align:right;padding:5px 0;border-bottom:1px solid var(--border);">${_fmtMoney(p.nht, cur)}</td></tr>
+          <tr><td style="padding:5px 0;border-bottom:1px solid var(--border);">Education Tax</td><td style="text-align:right;padding:5px 0;border-bottom:1px solid var(--border);">${_fmtMoney(p.education_tax, cur)}</td></tr>
+          <tr><td style="padding:5px 0;border-bottom:1px solid var(--border);">Other</td><td style="text-align:right;padding:5px 0;border-bottom:1px solid var(--border);">${_fmtMoney(p.other_deductions, cur)}</td></tr>
+          <tr style="font-weight:700;"><td style="padding:7px 0;">Total deductions</td><td style="text-align:right;padding:7px 0;">${_fmtMoney(p.total_deductions, cur)}</td></tr>
+        </table>
+        <div style="background:var(--navy);color:#fff;padding:12px 16px;border-radius:8px;font-weight:700;display:flex;justify-content:space-between;margin-top:14px;">
+          <span>Net pay</span><span>${_fmtMoney(p.net_pay, cur)}</span>
+        </div>
+        ${p.notes ? `<h4 style="margin:14px 0 6px;color:var(--navy);font-size:12px;text-transform:uppercase;letter-spacing:1px;">Notes</h4><p style="font-size:13px;line-height:1.6;">${escHtml(p.notes).replace(/\n/g,'<br>')}</p>` : ''}`;
+      document.getElementById('ap-print-btn').style.display = '';
+      document.getElementById('ap-save-btn').style.display  = '';
+    } catch (e) {
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return;
+      document.getElementById('ap-body').innerHTML =
+        `<div style="color:var(--danger);font-size:13px;">Could not load: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  function apPrint(mode) {
+    const p = _apCurrent;
+    if (!p) return;
+    const cur = p.currency || 'JMD';
+    const saveMode = (mode === 'save');
+    const w = window.open('', '_blank', 'width=820,height=1000');
+    // NOTE: any literal `</script>` inside this template literal would close
+    // the host page's <script> block at parse time — escape as `<\/script>`.
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8">
+      <title>Payslip — ${escHtml(p.period_label || '')}</title>
+      <style>
+        body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#0B2545;margin:0;padding:24px;max-width:780px;margin:0 auto;}
+        h1{margin:0;color:#0B2545;font-size:22px;}
+        h2{color:#22A08A;font-size:12px;text-transform:uppercase;letter-spacing:1.5px;margin:18px 0 6px;}
+        .hdr{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #0B2545;padding-bottom:12px;margin-bottom:14px;}
+        .meta{font-size:12px;color:#5A6472;line-height:1.6;}
+        table{width:100%;border-collapse:collapse;margin-top:4px;}
+        td{padding:6px 0;border-bottom:1px solid #e8ecf0;font-size:13px;}
+        td:last-child{text-align:right;font-weight:600;}
+        .net{background:#0B2545;color:#fff;padding:14px 18px;border-radius:8px;font-size:16px;font-weight:700;display:flex;justify-content:space-between;margin-top:16px;}
+        .ded td{color:#991b1b;}
+        .foot{margin-top:22px;font-size:11px;color:#5A6472;border-top:1px dashed #cbd5e1;padding-top:10px;line-height:1.6;}
+        .print-bar{position:sticky;top:0;background:#fff;padding:10px 0;display:flex;gap:8px;justify-content:flex-end;border-bottom:1px solid #e8ecf0;margin-bottom:14px;}
+        .print-bar button{padding:8px 18px;border-radius:6px;border:1px solid #22A08A;background:#22A08A;color:#fff;cursor:pointer;font-weight:600;font-size:13px;}
+        .print-bar button.alt{background:#fff;color:#22A08A;}
+        @media print{.print-bar,.no-print{display:none !important;}}
+      </style></head><body>
+      <div class="print-bar no-print">
+        <button onclick="window.print()" title="${saveMode ? 'Pick &quot;Save as PDF&quot; as the destination in the print dialog' : 'Pick your printer in the print dialog'}">${saveMode ? '💾 Save as PDF' : '🖨 Print'}</button>
+        <button class="alt" onclick="window.close()">Close</button>
+      </div>
+      ${saveMode ? `<div class="no-print" style="background:#fef3c7;color:#92400e;padding:8px 14px;border:1px solid #fde68a;border-radius:4px;font-size:12px;margin:0 0 12px;">💡 In the print dialog that just opened, pick <strong>Save as PDF</strong> from the destination dropdown to save this payslip to disk.</div>` : ''}
+      <div class="hdr">
+        <div>
+          <h1>PrimeCool Services Limited</h1>
+          <div class="meta">Payslip / Pay Advice</div>
+        </div>
+        <div class="meta" style="text-align:right;">
+          Period: <strong>${escHtml(p.period_label || '')}</strong><br>
+          ${escHtml(p.period_start || '')} → ${escHtml(p.period_end || '')}
+        </div>
+      </div>
+      <div class="meta" style="margin-bottom:10px;">
+        Employee: <strong>${escHtml(p.subject_name || '')}</strong> (${escHtml(p.subject_prid || '')})
+      </div>
+      <h2>Earnings</h2>
+      <table>
+        <tr><td>Regular hours</td><td>${p.hours_regular} × ${_fmtMoney(p.hourly_rate, cur)}</td></tr>
+        <tr><td>Overtime hours</td><td>${p.hours_overtime} × ${_fmtMoney(p.overtime_rate, cur)}</td></tr>
+        <tr><td>Fixed salary</td><td>${_fmtMoney(p.fixed_salary, cur)}</td></tr>
+        <tr><td>Bonus</td><td>${_fmtMoney(p.bonus, cur)}</td></tr>
+        <tr style="font-weight:700;"><td>Gross pay</td><td>${_fmtMoney(p.gross_pay, cur)}</td></tr>
+      </table>
+      <h2>Deductions</h2>
+      <table class="ded">
+        <tr><td>PAYE income tax</td><td>${_fmtMoney(p.paye_tax, cur)}</td></tr>
+        <tr><td>NIS</td><td>${_fmtMoney(p.nis, cur)}</td></tr>
+        <tr><td>NHT</td><td>${_fmtMoney(p.nht, cur)}</td></tr>
+        <tr><td>Education Tax</td><td>${_fmtMoney(p.education_tax, cur)}</td></tr>
+        <tr><td>Other</td><td>${_fmtMoney(p.other_deductions, cur)}</td></tr>
+        <tr style="font-weight:700;"><td>Total deductions</td><td>${_fmtMoney(p.total_deductions, cur)}</td></tr>
+      </table>
+      <div class="net"><span>Net pay</span><span>${_fmtMoney(p.net_pay, cur)}</span></div>
+      ${p.notes ? `<h2>Notes</h2><p style="font-size:13px;line-height:1.6;">${escHtml(p.notes).replace(/\n/g,'<br>')}</p>` : ''}
+      <div class="foot">
+        This payslip is a computer-generated document — a signature is not required.<br>
+        Questions about your pay? Contact PrimeCool payroll.
+      </div>
+      </body></html>`);
+    w.document.close();
+    // Auto-trigger print dialog for save mode (browser will offer
+    // "Save as PDF" as a destination). For print mode the user just
+    // hits the Print button manually after the new tab opens.
+    if (saveMode) {
+      try { setTimeout(() => { w.focus(); w.print(); }, 350); } catch (_) {}
+    }
+  }
+
+  // ── Change own password ──────────────────────────────────────────────────
+  function mpOpenChangePw() {
+    document.getElementById('cpw-current').value = '';
+    document.getElementById('cpw-new').value     = '';
+    document.getElementById('cpw-confirm').value = '';
+    const err = document.getElementById('err-changePw');
+    err.style.display = 'none';
+    err.textContent = '';
+    document.getElementById('modal-changePw').classList.add('open');
+    setTimeout(() => document.getElementById('cpw-current').focus(), 60);
+  }
+
+  async function submitChangePw() {
+    const cur = document.getElementById('cpw-current').value;
+    const nw  = document.getElementById('cpw-new').value;
+    const cf  = document.getElementById('cpw-confirm').value;
+    const err = document.getElementById('err-changePw');
+    err.style.display = 'none';
+    if (!cur || !nw || !cf) { showErr('err-changePw', 'All fields are required.'); return; }
+    if (nw.length < 8) { showErr('err-changePw', 'New password must be at least 8 characters.'); return; }
+    if (nw !== cf) { showErr('err-changePw', 'New passwords do not match.'); return; }
+    if (nw === cur) { showErr('err-changePw', 'New password must be different from current.'); return; }
+    const btn = document.getElementById('cpw-submit-btn');
+    btn.disabled = true;
+    try {
+      await api('POST', '/api/admin/me/password', {
+        current_password: cur, new_password: nw, confirm_password: cf,
+      });
+      closeModal('changePw');
+      toast('Password updated. Other devices have been signed out.', 'success');
+    } catch (e) {
+      showErr('err-changePw', e.message);
+    } finally {
+      btn.disabled = false;
     }
   }
 

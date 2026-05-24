@@ -73,6 +73,20 @@
     .clickrow{cursor:pointer;transition:background .12s;}
     .clickrow:hover{background:#eef2f7;}
     .clickrow .arrow{color:var(--muted);font-size:14px;margin-left:6px;}
+
+    /* Inner-scroll caps for cards whose lists can grow long (Pay,
+       Performance, Certifications, CV). Keeps the global page scroll
+       short — the user scrolls inside the card instead of past it. */
+    .scrollbox{max-height:240px;overflow-y:auto;}
+    .scrollbox::-webkit-scrollbar{width:8px;}
+    .scrollbox::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:4px;}
+    .scrollbox::-webkit-scrollbar-thumb:hover{background:#94a3b8;}
+    .scrollbox::-webkit-scrollbar-track{background:transparent;}
+
+    /* Collapsible CV card — flip the Show/Hide marker via :open. */
+    details.cv-collapse summary::-webkit-details-marker{display:none;}
+    details.cv-collapse[open] .cv-when-closed{display:none;}
+    details.cv-collapse[open] .cv-when-open  {display:inline !important;}
     .tabs{display:grid;grid-template-columns:1fr 1fr;background:var(--card);
           border:1px solid var(--border);border-radius:12px;overflow:hidden;
           margin-bottom:14px;}
@@ -218,10 +232,11 @@
           </div>
         </div>
 
-        <!-- Pay (clickable rows → modal) -->
+        <!-- Pay (clickable rows → modal) — cap inner list height so a
+             tech with many periods doesn't dominate the page scroll. -->
         <div class="card">
           <h2>Pay</h2>
-          <div id="payBody"><div class="empty">Loading…</div></div>
+          <div id="payBody" class="scrollbox"><div class="empty">Loading…</div></div>
           <div class="muted" style="font-size:12px;margin-top:8px;">
             Tap a period to open the payslip.
           </div>
@@ -230,7 +245,7 @@
         <!-- KPI / Performance -->
         <div class="card">
           <h2>Performance (KPI)</h2>
-          <div id="kpiBody"><div class="empty">Loading…</div></div>
+          <div id="kpiBody" class="scrollbox"><div class="empty">Loading…</div></div>
           <div class="muted" style="font-size:12px;margin-top:8px;">
             You see periods after your supervisor releases them.
           </div>
@@ -239,7 +254,7 @@
         <!-- Certifications -->
         <div class="card">
           <h2>Certifications</h2>
-          <div id="certsBody"><div class="empty">Loading…</div></div>
+          <div id="certsBody" class="scrollbox"><div class="empty">Loading…</div></div>
           <div class="muted" style="font-size:12px;margin-top:8px;">
             Certifications are added by your supervisor. If one is
             missing, ask them to add it.
@@ -262,14 +277,27 @@
           </div>
         </div>
 
-        <!-- CV / Work history (full width — entries can be long) -->
+        <!-- CV / Work history (full width — entries can be long).
+             Collapsed by default to keep the page scroll short; tap
+             the summary to expand. List body has its own inner scroll
+             so a long CV doesn't push everything else off-screen. -->
         <div class="card span-2">
-          <h2>CV / Work history</h2>
-          <div id="cvBody"><div class="empty">Loading…</div></div>
-          <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
-            <button class="btn-ghost" style="padding:8px 14px;border-radius:8px;font-size:13px;font-weight:600;border:1px solid var(--border);background:#f3f4f6;color:var(--navy);width:auto;cursor:pointer;"
-                    onclick="cvOpenNew()">+ Add entry</button>
-          </div>
+          <details class="cv-collapse">
+            <summary style="cursor:pointer;list-style:none;display:flex;justify-content:space-between;align-items:center;gap:10px;outline:none;">
+              <h2 style="margin:0;">CV / Work history</h2>
+              <span class="cv-chev" style="font-size:13px;color:var(--muted);font-weight:600;">
+                <span class="cv-when-closed">Show ▾</span>
+                <span class="cv-when-open" style="display:none;">Hide ▴</span>
+              </span>
+            </summary>
+            <div style="margin-top:14px;">
+              <div id="cvBody" class="scrollbox" style="max-height:340px;"><div class="empty">Loading…</div></div>
+              <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+                <button class="btn-ghost" style="padding:8px 14px;border-radius:8px;font-size:13px;font-weight:600;border:1px solid var(--border);background:#f3f4f6;color:var(--navy);width:auto;cursor:pointer;"
+                        onclick="cvOpenNew()">+ Add entry</button>
+              </div>
+            </div>
+          </details>
         </div>
       </div>
     </section>
@@ -280,9 +308,14 @@
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:14px;">
           <h3 id="psModalTitle" style="margin:0;color:var(--navy);font-size:17px;">Payslip</h3>
           <div style="display:flex;gap:6px;">
+            <button id="psSaveBtn"
+                    style="padding:5px 12px;border-radius:6px;font-size:12px;font-weight:600;border:1px solid var(--teal);background:#fff;color:var(--teal-dark);cursor:pointer;display:none;"
+                    onclick="psPrint('save')" title="Open the payslip in a new tab — choose 'Save as PDF' in the print dialog">
+              💾 Save (PDF)
+            </button>
             <button id="psPrintBtn" class="btn-primary"
                     style="padding:5px 12px;border-radius:6px;font-size:12px;font-weight:600;border:none;background:var(--teal);color:#fff;cursor:pointer;display:none;"
-                    onclick="psPrint()" title="Open a printer-friendly payslip in a new tab">
+                    onclick="psPrint('print')" title="Open a printer-friendly payslip in a new tab">
               🖨 Print
             </button>
             <button class="btn-ghost"
@@ -768,6 +801,7 @@
       t.textContent = 'Payslip · ' + (head ? (head.period_label || head.period_key || '') : '');
       b.innerHTML = '<div class="empty">Loading…</div>';
       document.getElementById('psPrintBtn').style.display = 'none';
+      document.getElementById('psSaveBtn').style.display = 'none';
       m.style.display = 'flex';
       try {
         const p = await api('GET', `/api/tech/me/payslips/${id}`);
@@ -797,6 +831,7 @@
           .filter(([_, v]) => v != null && v !== '')
           .map(([l, v]) => _fmtRow(l, v)).join('');
         document.getElementById('psPrintBtn').style.display = '';
+        document.getElementById('psSaveBtn').style.display = '';
       } catch (e) {
         b.innerHTML = `<div class="empty">Could not load payslip: ${esc(e.message)}</div>`;
       }
@@ -860,9 +895,14 @@
           a + ((Number(p.hours_overtime) || 0) * (Number(p.overtime_rate) || 0)), 0),
       };
     }
-    function psPrint() {
+    function psPrint(mode) {
+      // mode: 'print' (default) or 'save'. The popup is identical
+      // either way — both trigger the browser print dialog, where
+      // the destination dropdown lets the user pick a printer OR
+      // "Save as PDF". The popup's hint copy adapts to the intent.
       const p = _psCurrent;
       if (!p) return;
+      mode = (mode === 'save') ? 'save' : 'print';
       const prof = profile || {};
       const co = _PRIMECOOL_CO;
       const ytd = _ytdSums(p);
@@ -957,9 +997,10 @@
 </style>
 </head><body>
 <div class="print-bar no-print">
-  <button onclick="window.print()">🖨 Print</button>
+  <button onclick="window.print()" title="${mode === 'save' ? 'Pick &quot;Save as PDF&quot; as the destination in the print dialog' : 'Pick your printer in the print dialog'}">${mode === 'save' ? '💾 Save as PDF' : '🖨 Print'}</button>
   <button class="alt" onclick="window.close()">Close</button>
 </div>
+${mode === 'save' ? `<div class="no-print" style="background:#fef3c7;color:#92400e;padding:8px 14px;border:1px solid #fde68a;border-radius:4px;font-size:12px;margin:8px auto;max-width:780px;">💡 In the print dialog that just opened, pick <strong>Save as PDF</strong> from the destination dropdown to save this payslip to disk.</div>` : ''}
 <div class="sheet">
   <div class="hdr">
     <div>
