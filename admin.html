@@ -229,6 +229,23 @@
     /* Inner scroll wheel — used on long lists so they don't blow out the whole
        page scroll. Pair with <details> for a collapse-able section. */
     .scrollbox { max-height: 480px; overflow-y: auto; }
+    /* ── Sub-field auto-scroll ───────────────────────────────────────────
+       Operator directive: any nested list/table with more than 7 rows
+       gets its own scroll wheel so the parent panel doesn't run
+       arbitrarily long. ~40px per row × 7 rows + ~44px header = 324px.
+       Applied automatically via pcAutoScrollSubfields() to tables/lists
+       inside modals + details.section bodies, and explicitly via
+       class="subfield-scroll" or data-pc-subfield="1" on any container
+       that wants to opt in. Top-level panel tables stay uncapped — the
+       horizontal-overflow fix (B3) handles their width; vertical height
+       is the user's natural page scroll. */
+    .subfield-scroll { max-height: 324px; overflow-y: auto; overflow-x: auto; }
+    .subfield-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+    .subfield-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+    .subfield-scroll::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    /* Sticky table headers inside auto-scrolled sub-fields so the user
+       can still see column names while scrolling the body. */
+    .subfield-scroll table thead th { position: sticky; top: 0; z-index: 1; background: #f8fafc; }
     .scrollbox::-webkit-scrollbar { width: 8px; }
     .scrollbox::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
     .scrollbox::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
@@ -1811,7 +1828,7 @@
               <button class="btn btn-primary" onclick="whUploadChecksheet()">Upload</button>
             </div>
           </div>
-          <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;">
+          <div data-pc-subfield="1" style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;">
             <h3 style="margin:0 0 12px;color:var(--navy);font-size:16px;">Recent uploads</h3>
             <div class="table-wrap">
               <table>
@@ -10082,6 +10099,83 @@
   document.querySelectorAll('.modal-overlay').forEach(el => {
     el.addEventListener('click', e => { if (e.target === el) el.classList.remove('open'); });
   });
+
+  // ── Sub-field auto-scroll (>7 rows → own scroll wheel) ─────────────────
+  // Walks a root subtree, finds candidate "sub-field" containers
+  // (tables/ULs/OLs that sit inside modals, details.section bodies, or
+  // anything explicitly marked with class="subfield-scroll-host" or
+  // data-pc-subfield="1"), counts their rows, and applies the
+  // .subfield-scroll class to the wrapping element when the count
+  // exceeds 7. Idempotent — calling it twice is safe. Run after any
+  // list render so newly-loaded data is also bounded.
+  const _PC_SUBFIELD_ROW_LIMIT = 7;
+  function pcAutoScrollSubfields(root) {
+    root = root || document;
+    const candidates = [];
+    // (1) Tables inside modal bodies.
+    root.querySelectorAll('.modal-body table').forEach(t => candidates.push({ wrap: t.closest('.table-wrap') || t.parentElement, table: t, kind: 'table' }));
+    // (2) Tables inside details.section bodies (collapsible cards).
+    root.querySelectorAll('details.section table').forEach(t => candidates.push({ wrap: t.closest('.table-wrap') || t.parentElement, table: t, kind: 'table' }));
+    // (2b) Tables inside any Warehouse Ops sub-pane or KPI sub-panel —
+    //      these are by-definition sub-fields of the parent panel.
+    root.querySelectorAll('[id^="wh-pane-"] table, [id^="kpiSubpanel-"] table').forEach(t => candidates.push({ wrap: t.closest('.table-wrap') || t.parentElement, table: t, kind: 'table' }));
+    // (3) Explicit opt-in: any descendant of an element with the
+    //     data-pc-subfield="1" attribute OR class subfield-scroll-host.
+    root.querySelectorAll('[data-pc-subfield="1"] table, .subfield-scroll-host table').forEach(t => candidates.push({ wrap: t.closest('.table-wrap') || t.parentElement, table: t, kind: 'table' }));
+    // Same opt-in for non-table lists.
+    root.querySelectorAll('[data-pc-subfield="1"] > ul, [data-pc-subfield="1"] > ol, .subfield-scroll-host > ul, .subfield-scroll-host > ol').forEach(l => candidates.push({ wrap: l, table: l, kind: 'list' }));
+    candidates.forEach(c => {
+      const rows = c.kind === 'table'
+        ? c.table.querySelectorAll('tbody tr').length
+        : c.table.children.length;
+      if (!c.wrap) return;
+      // Skip if an ancestor already has its own scroll cap (we don't
+      // want to double-cap and shrink the operator's deliberate
+      // 560px Parts & Inventory pane down to 324px).
+      let p = c.wrap;
+      let alreadyCapped = false;
+      for (let i = 0; i < 4 && p; i++, p = p.parentElement) {
+        if (p === c.wrap) continue;
+        if (p.classList && (p.classList.contains('scrollbox') || p.classList.contains('subfield-scroll'))) {
+          alreadyCapped = true; break;
+        }
+      }
+      if (alreadyCapped) return;
+      // Skip if this table sits in a paginated card (sibling Prev/Next
+      // controls already bound the row count). Detected via a nearby
+      // button whose text includes "Prev" or "Next".
+      const card = c.wrap.parentElement;
+      if (card) {
+        const paginated = Array.from(card.querySelectorAll('button')).some(b => /Prev|Next/i.test(b.textContent || ''));
+        if (paginated) return;
+      }
+      if (rows > _PC_SUBFIELD_ROW_LIMIT) {
+        c.wrap.classList.add('subfield-scroll');
+      } else {
+        c.wrap.classList.remove('subfield-scroll');
+      }
+    });
+  }
+  window.pcAutoScrollSubfields = pcAutoScrollSubfields;
+  // Re-scan on any DOM mutation under .main (cheap because the observer
+  // is debounced and we only touch elements that match selector roots).
+  let _pcSubfieldDebounce = null;
+  function _pcSubfieldScheduleScan() {
+    if (_pcSubfieldDebounce) return;
+    _pcSubfieldDebounce = setTimeout(() => {
+      _pcSubfieldDebounce = null;
+      try { pcAutoScrollSubfields(document); } catch(_) {}
+    }, 120);
+  }
+  // Run once at boot and any time the app's content tree changes.
+  document.addEventListener('DOMContentLoaded', _pcSubfieldScheduleScan);
+  setTimeout(_pcSubfieldScheduleScan, 400);  // catch initial async loads
+  const _pcSubfieldObserver = new MutationObserver(_pcSubfieldScheduleScan);
+  // Defer observer attach until the body is ready.
+  setTimeout(() => {
+    const root = document.getElementById('app') || document.body;
+    if (root) _pcSubfieldObserver.observe(root, { childList: true, subtree: true });
+  }, 600);
 
   // ── Modal a11y bootstrap ────────────────────────────────────────────────
   // Watches every .modal-overlay; when one opens we (1) annotate the
