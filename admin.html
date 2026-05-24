@@ -10166,8 +10166,28 @@
       }
       if (rows > _PC_SUBFIELD_ROW_LIMIT) {
         c.wrap.classList.add('subfield-scroll');
+        // Per-table row-height measurement so the cap actually shows
+        // 7 rows. A fixed 324px clipped Customers to 5 because that
+        // table renders ~55px rows (stacked code/name/pill cells).
+        // Measure the first row + thead and size max-height to match.
+        if (c.kind === 'table') {
+          try {
+            const thead = c.table.querySelector('thead');
+            const firstRow = c.table.querySelector('tbody tr');
+            if (firstRow) {
+              const headH = thead ? thead.getBoundingClientRect().height : 44;
+              const rowH  = firstRow.getBoundingClientRect().height;
+              if (rowH > 0) {
+                // Add a couple px so the 7th row doesn't appear half-cut.
+                const target = Math.round(headH + (_PC_SUBFIELD_ROW_LIMIT * rowH) + 2);
+                c.wrap.style.maxHeight = target + 'px';
+              }
+            }
+          } catch (_) {}
+        }
       } else {
         c.wrap.classList.remove('subfield-scroll');
+        c.wrap.style.maxHeight = '';
       }
     });
   }
