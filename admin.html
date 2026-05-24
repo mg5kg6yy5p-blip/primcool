@@ -486,7 +486,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
         Payroll
       </div>
-      <div class="nav-item" onclick="showPanel('mypay')" id="nav-mypay">
+      <!-- "My Payslips" lives inside My Profile → My pay; the standalone
+           sidebar entry would just be a second door to the same room.
+           Hidden but kept in place for any code that still references it. -->
+      <div class="nav-item" onclick="showPanel('mypay')" id="nav-mypay" style="display:none;">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
         My Payslips
       </div>
