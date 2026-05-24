@@ -1712,19 +1712,19 @@
           </div>
           <div class="dashboard-tiles" style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px;">
             <div class="kpi-tile" data-sev="coaching_suggested" style="padding:14px;border-radius:8px;border:1px solid #fde68a;background:#fffbeb;cursor:pointer;" onclick="kpiSetSubtab('flags', document.getElementById('kpiSubFlags')); kpiFilterFlags({severity:'coaching_suggested'});">
-              <div style="font-size:11px;text-transform:uppercase;color:#92400e;font-weight:700;letter-spacing:.4px;">Coaching Suggested</div>
+              <div style="font-size:11px;text-transform:uppercase;color:#92400e;font-weight:700;letter-spacing:.4px;">Coaching Suggested <span style="font-weight:600;opacity:.7;">(open)</span></div>
               <div id="kpiTileCS" style="font-size:28px;font-weight:700;color:#92400e;margin-top:6px;">—</div>
             </div>
             <div class="kpi-tile" data-sev="coaching_required" style="padding:14px;border-radius:8px;border:1px solid #fdba74;background:#fff7ed;cursor:pointer;" onclick="kpiSetSubtab('flags', document.getElementById('kpiSubFlags')); kpiFilterFlags({severity:'coaching_required'});">
-              <div style="font-size:11px;text-transform:uppercase;color:#9a3412;font-weight:700;letter-spacing:.4px;">Coaching Required</div>
+              <div style="font-size:11px;text-transform:uppercase;color:#9a3412;font-weight:700;letter-spacing:.4px;">Coaching Required <span style="font-weight:600;opacity:.7;">(open)</span></div>
               <div id="kpiTileCR" style="font-size:28px;font-weight:700;color:#9a3412;margin-top:6px;">—</div>
             </div>
             <div class="kpi-tile" data-sev="written_warning_recommended" style="padding:14px;border-radius:8px;border:1px solid #fca5a5;background:#fef2f2;cursor:pointer;" onclick="kpiSetSubtab('flags', document.getElementById('kpiSubFlags')); kpiFilterFlags({severity:'written_warning_recommended'});">
-              <div style="font-size:11px;text-transform:uppercase;color:#991b1b;font-weight:700;letter-spacing:.4px;">Written Warning</div>
+              <div style="font-size:11px;text-transform:uppercase;color:#991b1b;font-weight:700;letter-spacing:.4px;">Written Warning <span style="font-weight:600;opacity:.7;">(open)</span></div>
               <div id="kpiTileWW" style="font-size:28px;font-weight:700;color:#991b1b;margin-top:6px;">—</div>
             </div>
             <div class="kpi-tile" data-sev="immediate_escalation" style="padding:14px;border-radius:8px;border:1px solid #b91c1c;background:#fecaca;cursor:pointer;" onclick="kpiSetSubtab('flags', document.getElementById('kpiSubFlags')); kpiFilterFlags({severity:'immediate_escalation'});">
-              <div style="font-size:11px;text-transform:uppercase;color:#7f1d1d;font-weight:700;letter-spacing:.4px;">Immediate Escalation</div>
+              <div style="font-size:11px;text-transform:uppercase;color:#7f1d1d;font-weight:700;letter-spacing:.4px;">Immediate Esc. <span style="font-weight:600;opacity:.7;">(open)</span></div>
               <div id="kpiTileIE" style="font-size:28px;font-weight:700;color:#7f1d1d;margin-top:6px;">—</div>
             </div>
           </div>
@@ -1756,9 +1756,11 @@
         <!-- ── Sub-panel: Flag Queue ── -->
         <div id="kpiSubpanel-flags" style="display:none;">
           <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+            <!-- Default to "open" so the Flag Queue group counts reconcile
+                 with the Dashboard tiles (which only count open flags). -->
             <select id="kpiFlagStatusFilter" onchange="kpiLoadFlagQueue()" style="padding:6px 10px;border-radius:6px;border:1px solid #ddd;">
-              <option value="">All statuses</option>
-              <option value="open">Open</option>
+              <option value="open" selected>Open only</option>
+              <option value="">All statuses (open + resolved)</option>
               <option value="acknowledged">Acknowledged</option>
               <option value="in_progress">In Progress</option>
               <option value="resolved">Resolved</option>
@@ -8582,9 +8584,14 @@
       </div>`;
     }
 
-    // Tech rows
-    if (!activeTechs.length) {
+    // Tech rows. Only show the "no active techs" banner when the WEEK is
+    // also empty — otherwise the message contradicts the visits the user
+    // can plainly see in the Unassigned row below.
+    const _hasAnyVisits = weekVisits.length > 0;
+    if (!activeTechs.length && !_hasAnyVisits) {
       html += '<div class="sch-empty-msg">No active technicians. Add one in the Technicians tab to schedule visits.</div>';
+    } else if (!activeTechs.length && _hasAnyVisits) {
+      html += '<div class="sch-empty-msg" style="background:#fef3c7;color:#92400e;border-color:#fde68a;">No active technicians on the roster — visits below are unassigned. Add a tech in the Technicians tab, then drag visits into the right swimlane.</div>';
     }
     const roleLabel = { lead_tech:'Lead', tech:'Tech', apprentice:'Apprentice' };
     const byTimeAsc = (a, b) => (a.scheduled_time || '99:99').localeCompare(b.scheduled_time || '99:99');
@@ -11907,14 +11914,36 @@
       body.innerHTML = '<div style="padding:20px;color:#888;">No flags match the current filters.</div>';
       return;
     }
-    // Group by severity (immediate first)
+    // Group by severity (immediate first). Sort each bucket so OPEN flags
+    // sit at the top and resolved/overridden sink to the bottom, then
+    // dim the resolved cards so they can't be misread as still-actionable.
     const order = ['immediate_escalation','written_warning_recommended','coaching_required','coaching_suggested'];
     const buckets = {};
     kpiFlagsCache.forEach(f => { (buckets[f.severity] = buckets[f.severity] || []).push(f); });
-    body.innerHTML = order.filter(s => (buckets[s] || []).length).map(s => `
-      <h3 style="margin:14px 0 8px 0;color:${KPI_SEV_COLORS[s]};">${KPI_SEV_LABELS[s]} <span style="color:#888;font-weight:400;font-size:13px;">(${buckets[s].length})</span></h3>
-      ${buckets[s].map(kpiFlagCard).join('')}
-    `).join('');
+    const isTerminal = (f) => f.status === 'resolved' || f.status === 'overridden';
+    body.innerHTML = order.filter(s => (buckets[s] || []).length).map(s => {
+      const all  = buckets[s];
+      const open = all.filter(f => !isTerminal(f));
+      const term = all.filter(isTerminal);
+      // Header reconciles with the Dashboard tile: open count headlines,
+      // resolved count appears as a secondary muted suffix so the two
+      // figures can never disagree at a glance.
+      const countLabel = term.length
+        ? `<span style="color:#444;font-weight:600;font-size:13px;">${open.length} open</span><span style="color:#9ca3af;font-weight:400;font-size:13px;">  ·  ${term.length} resolved</span>`
+        : `<span style="color:#444;font-weight:600;font-size:13px;">${open.length} open</span>`;
+      const sorted = open.concat(term);
+      return `
+        <h3 style="margin:14px 0 8px 0;color:${KPI_SEV_COLORS[s]};display:flex;align-items:baseline;gap:8px;">${KPI_SEV_LABELS[s]}
+          <span style="font-weight:400;font-size:13px;">(${countLabel})</span>
+        </h3>
+        ${sorted.map(f => {
+          const card = kpiFlagCard(f);
+          // De-emphasize terminal flags so they don't look actionable.
+          return isTerminal(f)
+            ? `<div style="opacity:.55;filter:grayscale(0.4);">${card}</div>`
+            : card;
+        }).join('')}`;
+    }).join('');
   }
 
   function kpiPromptNotes(title, label) {
