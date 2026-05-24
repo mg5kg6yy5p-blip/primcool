@@ -1278,6 +1278,11 @@ async def lifespan(app: FastAPI):
     # Dormant-account sweep. Surfaces inactive-but-still-credentialed
     # accounts so they can be reviewed for soft-close. Does NOT auto-suspend
     # — per spec, this flags, a human decides.
+    # De-duped on a 24-hour window: every server restart re-runs this
+    # sweep, but the fact "we have N dormant accounts" doesn't change
+    # often enough to warrant a fresh alert per boot. Without this
+    # guard, 50+ restarts/day during dev test runs filled the open
+    # alert queue with 180+ duplicate "77 dormant accounts" rows.
     dormant_days = int(os.environ.get("DORMANT_DAYS", "90"))
     try:
         dormant = find_dormant_accounts(days=dormant_days)
@@ -1287,14 +1292,17 @@ async def lifespan(app: FastAPI):
                            f"{len(dormant['admin'])} admin, {len(dormant['tech'])} tech, "
                            f"{len(dormant['customer'])} customer")
             try:
-                create_security_alert(
-                    kind="dormant_accounts", severity="medium",
-                    summary=f"{total} active accounts have not logged in for "
-                            f"{dormant_days}+ days",
-                    actor_type="system", actor_id=None,
-                    details={"counts": {k: len(v) for k, v in dormant.items()},
-                             "threshold_days": dormant_days},
-                )
+                if not recent_alert_exists("dormant_accounts",
+                                           actor_id=None,
+                                           within_minutes=24 * 60):
+                    create_security_alert(
+                        kind="dormant_accounts", severity="medium",
+                        summary=f"{total} active accounts have not logged in for "
+                                f"{dormant_days}+ days",
+                        actor_type="system", actor_id=None,
+                        details={"counts": {k: len(v) for k, v in dormant.items()},
+                                 "threshold_days": dormant_days},
+                    )
             except Exception: pass
             log_audit(actor_type="system", action="system.dormant_flagged",
                       target_label=f"{total} accounts >{dormant_days}d idle",
@@ -9887,16 +9895,29 @@ def admin_fs_compliance_tech(request: Request, tech_id: int,
 
 @app.get("/api/admin/5s/dashboard")
 def admin_fs_dashboard(request: Request, hub_id: Optional[int] = None):
+    """5S dashboard counters. `open_exceptions` previously counted ONLY
+    status='open' — once an exception got escalated it dropped out of
+    the tile, even though it's still un-resolved. The 5S banner uses
+    the union of open+escalated+escalated_director for safety_red,
+    which made the OPEN tile (0) disagree with the banner (8 safety/
+    LOTO open). Reconciled: OPEN tile now counts the UNION too, with
+    a sub-breakdown by status so the operator can see the escalation
+    flow. safety_red_count stays a strict subset of open_exceptions.
+    Field-reported May 2026."""
     _require_perm(request, "fs:report_view")
     overview = fs_list_compliance_overview(hub_id=hub_id, window_days=30)
-    open_excs  = fs_list_exceptions(status="open", hub_id=hub_id, limit=500)
-    esc_excs   = fs_list_exceptions(status="escalated", hub_id=hub_id, limit=500)
+    open_excs     = fs_list_exceptions(status="open", hub_id=hub_id, limit=500)
+    esc_excs      = fs_list_exceptions(status="escalated", hub_id=hub_id, limit=500)
     director_excs = fs_list_exceptions(status="escalated_director", hub_id=hub_id, limit=500)
-    safety_open = [e for e in (open_excs + esc_excs + director_excs)
-                   if e.get("severity") == "safety_loto"]
+    all_unresolved = open_excs + esc_excs + director_excs
+    safety_open    = [e for e in all_unresolved
+                      if e.get("severity") == "safety_loto"]
     return {
         "compliance":            overview,
-        "open_exceptions":       len(open_excs),
+        # Union of unresolved — matches the banner's denominator.
+        "open_exceptions":       len(all_unresolved),
+        # Per-status breakdown for any UI that wants to drill in.
+        "status_open":           len(open_excs),
         "escalated_exceptions":  len(esc_excs),
         "director_exceptions":   len(director_excs),
         "safety_red_count":      len(safety_open),

@@ -12021,9 +12021,18 @@ def list_kpi_flags(filters: dict = None) -> list:
 
 
 def count_open_flags_by_severity(hub_id: int = None) -> dict:
-    """Return open-flag counts grouped by severity (Ops Manager dashboard
-    tiles). 'Open' = status in (open, acknowledged, in_progress)."""
-    sql = ("SELECT f.severity, COUNT(*) AS n FROM kpi_flags f "
+    """Return open-flag counts grouped by severity, counted by DISTINCT
+    technician (Ops Manager dashboard tiles). 'Open' = status in
+    (open, acknowledged, in_progress).
+
+    Counts distinct techs, not raw flag rows — the dashboard tile
+    answers "how many techs need coaching", not "how many open flags
+    exist". The team-scoreboard view groups by tech, so reporting raw
+    flag counts on the tile produced "2 coaching required" while the
+    table showed 1 tech, which confused operators. Field-reported
+    May 2026."""
+    sql = ("SELECT f.severity, COUNT(DISTINCT f.tech_id) AS n "
+           "  FROM kpi_flags f "
            " LEFT JOIN technicians t ON t.id=f.tech_id "
            " WHERE f.status IN ('open','acknowledged','in_progress')")
     args = []

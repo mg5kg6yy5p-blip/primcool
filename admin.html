@@ -8084,8 +8084,8 @@
           <td>${escHtml(p.category) || '—'}</td>
           <td>${qtyCell}</td>
           <td>${formatQty(p.reorder_point)}</td>
-          <td>$${Number(p.unit_cost).toFixed(2)}</td>
-          <td>$${value}</td>
+          <td>J$${Number(p.unit_cost).toFixed(2)}</td>
+          <td>J$${value}</td>
           <td style="white-space:nowrap;">
             ${can('inventory:adjust') ? `<button class="btn btn-primary btn-sm pc-stop-prop" onclick="event.stopPropagation();openAdjustStock(${p.id})">Adjust</button>` : ''}
             ${can('inventory:update') ? `<button class="btn btn-edit btn-sm pc-stop-prop" onclick="event.stopPropagation();openEditPart(${p.id})" style="margin-left:4px;">Edit</button>` : ''}
