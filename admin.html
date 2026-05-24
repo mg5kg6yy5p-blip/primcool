@@ -650,8 +650,22 @@
 
     /* ── Filter bar ── */
     .filter-bar { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
-    .filter-btn { padding: 5px 14px; border-radius: 20px; font-size: 12px; font-weight: 600; border: 1px solid var(--border); background: var(--white); color: var(--muted); cursor: pointer; }
-    .filter-btn.active { background: var(--teal); color: white; border-color: var(--teal); }
+    .filter-btn {
+      padding: 6px 16px; border-radius: 999px;
+      font-size: 12px; font-weight: 600;
+      font-family: var(--font-body);
+      border: 1px solid var(--border); background: var(--white); color: var(--muted);
+      cursor: pointer;
+      transition: background var(--motion-fast), color var(--motion-fast),
+                  border-color var(--motion-fast), box-shadow var(--motion-fast),
+                  transform var(--motion-fast);
+    }
+    .filter-btn:hover { color: var(--navy); border-color: var(--teal); }
+    .filter-btn.active {
+      background: var(--navy); color: var(--ice);
+      border-color: var(--navy);
+      box-shadow: var(--shadow-sm);
+    }
 
     /* ── A11y: brand-coloured keyboard focus ring ────────────────────────
        Default browser focus rings vary by OS/browser; standardise on a
