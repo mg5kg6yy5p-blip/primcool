@@ -279,7 +279,16 @@
       <div style="background:#fff;border-radius:12px;padding:20px 22px;max-width:560px;width:100%;max-height:90vh;overflow:auto;">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:14px;">
           <h3 id="psModalTitle" style="margin:0;color:var(--navy);font-size:17px;">Payslip</h3>
-          <button class="btn-ghost" style="padding:5px 10px;border-radius:6px;font-size:12px;font-weight:600;border:1px solid var(--border);background:#fff;color:var(--muted);width:auto;cursor:pointer;" onclick="psCloseModal()">Close</button>
+          <div style="display:flex;gap:6px;">
+            <button id="psPrintBtn" class="btn-primary"
+                    style="padding:5px 12px;border-radius:6px;font-size:12px;font-weight:600;border:none;background:var(--teal);color:#fff;cursor:pointer;display:none;"
+                    onclick="psPrint()" title="Open a printer-friendly payslip in a new tab">
+              🖨 Print
+            </button>
+            <button class="btn-ghost"
+                    style="padding:5px 10px;border-radius:6px;font-size:12px;font-weight:600;border:1px solid var(--border);background:#fff;color:var(--muted);width:auto;cursor:pointer;"
+                    onclick="psCloseModal()">Close</button>
+          </div>
         </div>
         <div id="psModalBody"><div class="empty">Loading…</div></div>
       </div>
@@ -748,6 +757,9 @@
         el.innerHTML = '<div class="empty">No pay records available right now.</div>';
       }
     }
+    // Most recent payslip the user opened. Cached so the Print button
+    // doesn't have to re-fetch when it builds the printable view.
+    let _psCurrent = null;
     async function psOpenModal(id) {
       const m = document.getElementById('psModal');
       const t = document.getElementById('psModalTitle');
@@ -755,9 +767,11 @@
       const head = payCache.find(x => x.id === id);
       t.textContent = 'Payslip · ' + (head ? (head.period_label || head.period_key || '') : '');
       b.innerHTML = '<div class="empty">Loading…</div>';
+      document.getElementById('psPrintBtn').style.display = 'none';
       m.style.display = 'flex';
       try {
         const p = await api('GET', `/api/tech/me/payslips/${id}`);
+        _psCurrent = p;
         // Field names mirror the payslips schema (hours_regular,
         // gross_pay, net_pay, etc.) so the modal reads accurately.
         const rows = [
@@ -782,12 +796,315 @@
         b.innerHTML = rows
           .filter(([_, v]) => v != null && v !== '')
           .map(([l, v]) => _fmtRow(l, v)).join('');
+        document.getElementById('psPrintBtn').style.display = '';
       } catch (e) {
         b.innerHTML = `<div class="empty">Could not load payslip: ${esc(e.message)}</div>`;
       }
     }
     function psCloseModal() {
       document.getElementById('psModal').style.display = 'none';
+    }
+
+    // ── Print a payslip in the Jamaican payslip format ───────────────
+    // Opens a new tab with a self-contained, print-styled HTML payslip
+    // that matches the Jamaican payroll standard (company header with
+    // TRN + NIS Employer #, employee + employment detail boxes,
+    // earnings + deductions tables with YTD columns, big NET PAY box,
+    // bank detail block, payment-advice footer). Auto-fires
+    // window.print() once the page loads so the print dialog appears
+    // immediately. YTD totals are summed client-side from every cached
+    // payslip whose period_start year matches the current one.
+    const _PRIMECOOL_CO = {
+      name:       'PrimeCool Services Ltd.',
+      address:    '14 Half Way Tree Road, Kingston 10, Jamaica',
+      phone:      '(876) 555-0100',
+      email:      'payroll@primecool.example.jm',
+      trn:        '001-234-567',
+      nis_employer: '10-00001-1',
+      footer_tag: 'Comfort delivered, every time.',
+    };
+    function _fmtJ(v) {
+      if (v == null || v === '' || isNaN(Number(v))) return '';
+      return 'J$' + Number(v).toLocaleString('en-TT',
+        { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    function _fmtN(v, dec) {
+      if (v == null || v === '' || isNaN(Number(v))) return '';
+      return Number(v).toLocaleString('en-TT',
+        { minimumFractionDigits: dec || 0, maximumFractionDigits: dec || 0 });
+    }
+    function _ytdSums(currentPayslip) {
+      // Sum across every cached payslip whose period_start is in the
+      // same calendar year as the one we're printing.
+      const cur = currentPayslip;
+      if (!cur || !cur.period_start) return {};
+      const year = String(cur.period_start).slice(0, 4);
+      const matching = (payCache || []).filter(p =>
+        String(p.period_start || '').slice(0, 4) === year);
+      const sum = (k) => matching.reduce((a, p) => a + (Number(p[k]) || 0), 0);
+      return {
+        gross_pay:       sum('gross_pay'),
+        net_pay:         sum('net_pay'),
+        paye_tax:        sum('paye_tax'),
+        nis:             sum('nis'),
+        nht:             sum('nht'),
+        education_tax:   sum('education_tax'),
+        other_deductions:sum('other_deductions'),
+        total_deductions:sum('total_deductions'),
+        bonus:           sum('bonus'),
+        hours_regular:   sum('hours_regular'),
+        hours_overtime:  sum('hours_overtime'),
+        regular_pay:     matching.reduce((a, p) =>
+          a + ((Number(p.hours_regular) || 0) * (Number(p.hourly_rate) || 0)), 0),
+        overtime_pay:    matching.reduce((a, p) =>
+          a + ((Number(p.hours_overtime) || 0) * (Number(p.overtime_rate) || 0)), 0),
+      };
+    }
+    function psPrint() {
+      const p = _psCurrent;
+      if (!p) return;
+      const prof = profile || {};
+      const co = _PRIMECOOL_CO;
+      const ytd = _ytdSums(p);
+      const regular_pay = (Number(p.hours_regular) || 0) * (Number(p.hourly_rate) || 0);
+      const overtime_pay = (Number(p.hours_overtime) || 0) * (Number(p.overtime_rate) || 0);
+      const period = esc(p.period_label || p.period_key || '');
+      const today  = new Date().toISOString().slice(0, 10);
+      const dateJoin = prof.hire_date || '';
+      // Pay frequency — derive from period length if we have both dates.
+      let freq = 'Bi-Weekly';
+      try {
+        if (p.period_start && p.period_end) {
+          const d1 = new Date(p.period_start), d2 = new Date(p.period_end);
+          const days = Math.round((d2 - d1) / 86400000) + 1;
+          if (days <= 8) freq = 'Weekly';
+          else if (days <= 16) freq = 'Bi-Weekly';
+          else freq = 'Monthly';
+        }
+      } catch (_) {}
+      // Earnings rows — only include lines with positive current value.
+      const earnings = [];
+      if (regular_pay > 0)
+        earnings.push({ desc: 'Regular Pay', rate: _fmtN(p.hourly_rate, 2),
+                         hours: _fmtN(p.hours_regular, 2),
+                         cur: regular_pay,
+                         ytd: ytd.regular_pay });
+      if (overtime_pay > 0)
+        earnings.push({ desc: 'Overtime', rate: _fmtN(p.overtime_rate, 2),
+                         hours: _fmtN(p.hours_overtime, 2),
+                         cur: overtime_pay,
+                         ytd: ytd.overtime_pay });
+      if (Number(p.bonus) > 0)
+        earnings.push({ desc: 'Bonus', rate: '', hours: '',
+                         cur: Number(p.bonus), ytd: ytd.bonus });
+      if (Number(p.fixed_salary) > 0)
+        earnings.push({ desc: 'Basic Salary', rate: '', hours: '',
+                         cur: Number(p.fixed_salary),
+                         ytd: Number(p.fixed_salary) });
+      // Deductions
+      const deductions = [];
+      if (Number(p.paye_tax) > 0)
+        deductions.push({ desc: 'Income Tax (PAYE)',     cur: p.paye_tax,         ytd: ytd.paye_tax });
+      if (Number(p.nis) > 0)
+        deductions.push({ desc: 'NIS Contribution (Emp.)', cur: p.nis,             ytd: ytd.nis });
+      if (Number(p.nht) > 0)
+        deductions.push({ desc: 'NHT Contribution (Emp.)', cur: p.nht,             ytd: ytd.nht });
+      if (Number(p.education_tax) > 0)
+        deductions.push({ desc: 'Education Tax',           cur: p.education_tax,   ytd: ytd.education_tax });
+      if (Number(p.other_deductions) > 0)
+        deductions.push({ desc: 'Other Deductions',        cur: p.other_deductions,ytd: ytd.other_deductions });
+      // HTML — self-contained so the popup needs no external CSS.
+      const html = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>PrimeCool Payslip · ${esc(p.subject_name || prof.name || '')} · ${period}</title>
+<style>
+  @page { size: A4; margin: 14mm; }
+  * { box-sizing: border-box; }
+  body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1a2533; margin: 0; font-size: 11px; line-height: 1.35; background:#fff; }
+  .sheet { max-width: 780px; margin: 0 auto; padding: 18px 22px; }
+  .row { display: flex; gap: 14px; }
+  .col { flex: 1; }
+  .hdr { display:flex; justify-content:space-between; align-items:flex-start; border-bottom: 3px solid #0B2545; padding-bottom: 12px; margin-bottom: 14px; }
+  .co-name { font-size: 22px; font-weight: 800; color: #0B2545; letter-spacing: .3px; }
+  .co-name em { color: #22A08A; font-style: normal; }
+  .co-meta { font-size: 10.5px; color: #555; margin-top: 4px; line-height: 1.5; }
+  .ps-label { background: #22A08A; color: #fff; padding: 6px 14px; border-radius: 4px; font-weight: 800; letter-spacing: 1.2px; font-size: 12px; }
+  .meta-row { display: grid; grid-template-columns: 110px 1fr; row-gap: 3px; column-gap: 6px; font-size: 10.5px; margin-top: 8px; }
+  .meta-row .l { color: #555; }
+  .meta-row .v { font-weight: 600; color: #0B2545; }
+  .box { border: 1px solid #cdd5e0; border-radius: 4px; margin-top: 12px; overflow: hidden; }
+  .box-h { background: #eaf0f7; color: #0B2545; font-weight: 700; font-size: 11px; padding: 5px 10px; letter-spacing: .5px; }
+  .box-body { padding: 8px 10px; display: grid; grid-template-columns: 140px 1fr; row-gap: 3px; column-gap: 8px; font-size: 10.5px; }
+  .box-body .l { color: #555; }
+  .box-body .v { font-weight: 600; color: #0B2545; }
+  table.tbl { width:100%; border-collapse: collapse; font-size: 10.5px; margin-top: 12px; }
+  table.tbl th { background: #eaf0f7; color: #0B2545; text-align: left; padding: 6px 8px; font-weight: 700; border: 1px solid #cdd5e0; font-size: 10px; letter-spacing: .3px; }
+  table.tbl td { padding: 4px 8px; border: 1px solid #e0e6ee; }
+  table.tbl td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .tot { background: #f5f7fa; font-weight: 700; color: #0B2545; }
+  .ytd-box { border: 1px solid #cdd5e0; border-radius: 4px; padding: 10px 12px; font-size: 10.5px; }
+  .ytd-box .row-y { display:flex; justify-content:space-between; padding: 2px 0; }
+  .ytd-box .row-y.tot { border-top: 1px solid #cdd5e0; padding-top: 5px; margin-top: 4px; font-weight: 700; color: #0B2545; }
+  .net-pay-box { background: #22A08A; color: #fff; border-radius: 6px; padding: 14px; text-align: center; }
+  .net-pay-box .l { font-size: 11px; font-weight: 700; letter-spacing: 1.4px; opacity: .92; }
+  .net-pay-box .v { font-size: 24px; font-weight: 800; margin-top: 6px; letter-spacing: .3px; }
+  .footer-note { margin-top: 14px; background: #f5f7fa; border: 1px solid #cdd5e0; border-radius: 4px; padding: 7px 10px; font-size: 10px; color: #4a5566; }
+  .tagline { text-align: center; color: #22A08A; font-style: italic; margin-top: 10px; font-size: 11px; }
+  @media print { .no-print { display: none !important; } }
+  .print-bar { position: fixed; top: 8px; right: 8px; display:flex; gap: 6px; }
+  .print-bar button { background: #0B2545; color: #fff; border: none; padding: 7px 14px; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 12px; }
+  .print-bar button.alt { background: #6b7280; }
+</style>
+</head><body>
+<div class="print-bar no-print">
+  <button onclick="window.print()">🖨 Print</button>
+  <button class="alt" onclick="window.close()">Close</button>
+</div>
+<div class="sheet">
+  <div class="hdr">
+    <div>
+      <div class="co-name">Prime<em>Cool</em> Services Ltd.</div>
+      <div class="co-meta">
+        ${esc(co.address)}<br>
+        Tel: ${esc(co.phone)} &nbsp;·&nbsp; Email: ${esc(co.email)}<br>
+        TRN: ${esc(co.trn)} &nbsp;·&nbsp; NIS Employer #: ${esc(co.nis_employer)}
+      </div>
+    </div>
+    <div style="text-align:right;">
+      <div class="ps-label">PAYSLIP</div>
+      <div class="meta-row" style="margin-top:10px;">
+        <div class="l">Pay Period:</div>     <div class="v">${esc(p.period_start || '')} – ${esc(p.period_end || '')}</div>
+        <div class="l">Pay Date:</div>       <div class="v">${esc(p.generated_at ? String(p.generated_at).slice(0,10) : today)}</div>
+        <div class="l">Pay Frequency:</div>  <div class="v">${esc(freq)}</div>
+        <div class="l">Payslip No:</div>     <div class="v">PCL/PS/${esc(String(p.id).padStart(6,'0'))}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="col box">
+      <div class="box-h">EMPLOYEE DETAILS</div>
+      <div class="box-body">
+        <div class="l">Employee ID:</div>   <div class="v">${esc(prof.tech_code || p.subject_prid || '')}</div>
+        <div class="l">Name:</div>          <div class="v">${esc(p.subject_name || prof.name || '')}</div>
+        <div class="l">Job Title:</div>     <div class="v">${esc((prof.role || '').replace(/_/g,' ').replace(/\b\w/g, c => c.toUpperCase()))}</div>
+        <div class="l">Department:</div>    <div class="v">${esc((prof.department || 'Field') .replace(/\b\w/g, c => c.toUpperCase()))}</div>
+        <div class="l">Date Joined:</div>   <div class="v">${esc(dateJoin)}</div>
+        <div class="l">PRID:</div>          <div class="v">${esc(prof.prid || p.subject_prid || '')}</div>
+        <div class="l">Status:</div>        <div class="v">${esc((prof.employment_status || 'Active').replace(/\b\w/g, c => c.toUpperCase()))}</div>
+      </div>
+    </div>
+    <div class="col box">
+      <div class="box-h">EMPLOYMENT DETAILS</div>
+      <div class="box-body">
+        <div class="l">Pay Rate:</div>          <div class="v">${prof.hourly_rate != null ? _fmtJ(prof.hourly_rate) + '/hr' : ''}</div>
+        <div class="l">Pay Basis:</div>         <div class="v">Hourly</div>
+        <div class="l">Standard Hrs/Week:</div> <div class="v">40.00</div>
+        <div class="l">Tax Code:</div>          <div class="v">A</div>
+        <div class="l">Currency:</div>          <div class="v">${esc(p.currency || 'JMD')}</div>
+      </div>
+    </div>
+  </div>
+
+  <table class="tbl" style="margin-top:14px;">
+    <thead><tr>
+      <th colspan="5" style="background:#dde6f0;color:#0B2545;font-size:11px;">EARNINGS</th>
+    </tr><tr>
+      <th>DESCRIPTION</th><th>RATE</th><th>HOURS / UNITS</th>
+      <th style="text-align:right;">CURRENT (J$)</th>
+      <th style="text-align:right;">YTD (J$)</th>
+    </tr></thead>
+    <tbody>
+      ${earnings.length ? earnings.map(e => `
+        <tr>
+          <td>${esc(e.desc)}</td>
+          <td>${esc(e.rate)}</td>
+          <td>${esc(e.hours)}</td>
+          <td class="num">${_fmtN(e.cur, 2)}</td>
+          <td class="num">${_fmtN(e.ytd, 2)}</td>
+        </tr>`).join('') : '<tr><td colspan="5" style="text-align:center;color:#888;">No earnings</td></tr>'}
+      <tr class="tot">
+        <td colspan="3">TOTAL EARNINGS</td>
+        <td class="num">${_fmtN(p.gross_pay || 0, 2)}</td>
+        <td class="num">${_fmtN(ytd.gross_pay || 0, 2)}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <table class="tbl">
+    <thead><tr>
+      <th colspan="3" style="background:#dde6f0;color:#0B2545;font-size:11px;">DEDUCTIONS</th>
+    </tr><tr>
+      <th>DESCRIPTION</th>
+      <th style="text-align:right;">CURRENT (J$)</th>
+      <th style="text-align:right;">YTD (J$)</th>
+    </tr></thead>
+    <tbody>
+      ${deductions.length ? deductions.map(d => `
+        <tr>
+          <td>${esc(d.desc)}</td>
+          <td class="num">${_fmtN(d.cur, 2)}</td>
+          <td class="num">${_fmtN(d.ytd, 2)}</td>
+        </tr>`).join('') : '<tr><td colspan="3" style="text-align:center;color:#888;">No deductions</td></tr>'}
+      <tr class="tot">
+        <td>TOTAL DEDUCTIONS</td>
+        <td class="num">${_fmtN(p.total_deductions || 0, 2)}</td>
+        <td class="num">${_fmtN(ytd.total_deductions || 0, 2)}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="row" style="margin-top:14px;">
+    <div class="col ytd-box">
+      <div style="font-weight:700;color:#0B2545;margin-bottom:6px;letter-spacing:.5px;">YEAR TO DATE SUMMARY</div>
+      <div class="row-y"><span>Gross Pay</span><span>${_fmtN(ytd.gross_pay, 2)}</span></div>
+      <div class="row-y"><span>Income Tax (PAYE)</span><span>${_fmtN(ytd.paye_tax, 2)}</span></div>
+      <div class="row-y"><span>NIS Contribution (Emp.)</span><span>${_fmtN(ytd.nis, 2)}</span></div>
+      <div class="row-y"><span>NHT Contribution (Emp.)</span><span>${_fmtN(ytd.nht, 2)}</span></div>
+      <div class="row-y"><span>Education Tax</span><span>${_fmtN(ytd.education_tax, 2)}</span></div>
+      <div class="row-y"><span>Other Deductions</span><span>${_fmtN(ytd.other_deductions, 2)}</span></div>
+      <div class="row-y tot"><span>NET PAY YTD</span><span>${_fmtN(ytd.net_pay, 2)}</span></div>
+    </div>
+    <div class="col" style="display:flex;flex-direction:column;gap:10px;">
+      <div class="net-pay-box">
+        <div class="l">NET PAY (Current Period)</div>
+        <div class="v">${_fmtJ(p.net_pay)}</div>
+      </div>
+      <div class="box">
+        <div class="box-h">BANK DETAILS</div>
+        <div class="box-body">
+          <div class="l">Bank:</div>          <div class="v">${esc(prof.bank_name || 'On file')}</div>
+          <div class="l">Branch:</div>        <div class="v">${esc(prof.bank_branch || 'On file')}</div>
+          <div class="l">Account Name:</div>  <div class="v">${esc(p.subject_name || prof.name || '')}</div>
+          <div class="l">Account Number:</div><div class="v">${esc(prof.bank_account_last4 ? '••••' + prof.bank_account_last4 : 'On file')}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer-note">
+    PAY ADVICE: This payslip is computer generated and does not require a signature.
+    Generated by ${esc(p.generated_by_name || 'PrimeCool Payroll')} on ${esc(today)}.
+    Approved pay period — disputes within 14 days to payroll@primecool.example.jm.
+  </div>
+  <div class="tagline">${esc(co.footer_tag)}</div>
+</div>
+<script>
+  // Pop the print dialog as soon as the document settles. The user can
+  // still close the dialog and use the bar buttons (Print again / Close).
+  window.addEventListener('load', function () {
+    setTimeout(function () { window.print(); }, 250);
+  });
+</script>
+</body></html>`;
+      const w = window.open('', '_blank', 'width=900,height=1100');
+      if (!w) {
+        PC.toast('Pop-up blocked — allow pop-ups for this site and tap Print again.', 'warning');
+        return;
+      }
+      w.document.open();
+      w.document.write(html);
+      w.document.close();
     }
 
     // ── KPI / Performance ────────────────────────────────────────────
