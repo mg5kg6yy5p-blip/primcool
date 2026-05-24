@@ -558,6 +558,23 @@
       .data-table { overflow-x: auto; }
       .data-table table { min-width: 560px; }
     }
+
+    /* ═══ MAKEOVER — Workday-style shell on the customer dashboard ═══ */
+    body { background: var(--mist); padding-top: 3px; }
+    body::before {
+      content: ""; position: fixed; top: 0; left: 0; right: 0; height: 3px;
+      background: linear-gradient(90deg, var(--teal), var(--ice), var(--lime));
+      z-index: 1000;
+    }
+    header {
+      background: #ffffff !important;
+      color: var(--navy) !important;
+      box-shadow: 0 1px 0 #e6ecf1;
+    }
+    header .logo { color: var(--navy) !important; }
+    header .logo span:first-child { color: var(--navy) !important; }
+    header .logo span[style*="color:var(--ice)"] { color: var(--muted) !important; }
+    header .logo span[style*="color:var(--teal)"] { color: var(--teal) !important; }
   </style>
   <script src="/static/pc_shared.js"></script>
 </head>

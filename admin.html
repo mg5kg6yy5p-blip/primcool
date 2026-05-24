@@ -871,6 +871,201 @@
     .pc-aging-bucket-clickable { cursor: pointer; }
     .pc-aging-bucket-clickable:hover { background: #eef2f5; }
     .pc-aging-bucket-clickable:focus-visible { outline: 2px solid #22A08A; outline-offset: 1px; }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       MAKEOVER (M1-M4) — Workday-style shell, every layout existing
+       functionality preserved. Loaded LAST so it overrides earlier rules.
+       ═══════════════════════════════════════════════════════════════════ */
+
+    /* ── M1: Body + shell ─────────────────────────────────────────────── */
+    body { background: var(--mist); }
+    .main { padding: 26px 32px 80px; }
+    .layout { gap: 0; }
+
+    /* Sidebar — fully restructured: section-label dividers, smaller
+       icons, tighter rows, lime active indicator (already shipped),
+       hover slides slightly left so the lime bar pops. */
+    .sidebar {
+      background: #ffffff; border-right: 1px solid #e6ecf1;
+      padding: 14px 10px 24px;
+      width: 232px;
+    }
+    .sidebar .nav-item {
+      padding: 8px 12px;
+      margin: 1px 0;
+      font-size: 13.5px;
+      color: #4a5868;
+      border-radius: 6px;
+      gap: 11px;
+    }
+    .sidebar .nav-item svg { width: 16px; height: 16px; opacity: 0.85; }
+    .sidebar .nav-item:hover { background: #f1f5f9; color: var(--navy); }
+    .sidebar .nav-item.active { background: #eef4f8; color: var(--navy); font-weight: 700; }
+    .sidebar .nav-item.active svg { opacity: 1; color: var(--teal); }
+    /* Section labels between groups of nav items (added via JS later
+       if desired; CSS pattern available now). */
+    .sidebar .nav-section {
+      font-size: 10px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 1.4px;
+      color: #94a3b8;
+      padding: 16px 12px 6px;
+    }
+    .sidebar .nav-section:first-child { padding-top: 4px; }
+
+    /* ── M1: Header utility bar ───────────────────────────────────────── */
+    header {
+      background: #ffffff !important;
+      color: var(--navy);
+      box-shadow: 0 1px 0 #e6ecf1;
+      padding: 0 24px;
+    }
+    header::after { display: none; }  /* drop the lime bar — too loud here */
+    /* Wordmark colors invert: dark on white now. */
+    header .logo { color: var(--navy) !important; }
+    header .logo > span > span:first-child { color: var(--navy) !important; }
+    header .logo span[style*="color:var(--ice)"] { color: #6b7280 !important; }
+    .admin-tag {
+      background: #eef4f8 !important;
+      color: var(--teal) !important;
+    }
+    .logout-btn {
+      background: #f5f7fa !important;
+      color: var(--navy) !important;
+      border: 1px solid #e6ecf1 !important;
+    }
+    .logout-btn:hover { background: #e9eef3 !important; }
+    /* Brand strip moves to the very top edge (a single 3px ribbon
+       across the screen) — visible but quiet, not overwhelming. */
+    body::before {
+      content: "";
+      position: fixed; top: 0; left: 0; right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, var(--teal), var(--ice), var(--lime));
+      z-index: 1000;
+    }
+    body { padding-top: 3px; }
+
+    /* ── M2: Panel hero ───────────────────────────────────────────────── */
+    .panel > .top-bar {
+      background: #ffffff;
+      border: 1px solid #e6ecf1;
+      border-radius: 14px;
+      padding: 22px 26px;
+      margin-bottom: 18px;
+      box-shadow: 0 1px 2px rgba(15,42,74,0.04);
+      align-items: center;
+      gap: 14px;
+    }
+    .panel > .top-bar h2 {
+      font-size: 26px !important;
+      letter-spacing: -0.02em !important;
+    }
+    .panel > .top-bar h2::before {
+      width: 5px !important; height: 28px !important;
+    }
+
+    /* ── M3: Wrap content surfaces in soft cards ──────────────────────── */
+    .panel > .table-wrap,
+    .panel > .filter-bar,
+    .panel > div[id$="-summary"],
+    .panel > p {
+      background: transparent;
+    }
+    .panel > .filter-bar {
+      background: #ffffff;
+      border: 1px solid #e6ecf1;
+      border-radius: 12px;
+      padding: 12px 16px;
+      margin-bottom: 14px;
+    }
+    .panel > .table-wrap {
+      background: #ffffff !important;
+      border: 1px solid #e6ecf1 !important;
+      border-radius: 14px !important;
+      box-shadow: 0 1px 2px rgba(15,42,74,0.04);
+    }
+    .panel > p {
+      color: var(--muted);
+      font-size: 12.5px;
+      line-height: 1.55;
+      padding: 0 4px;
+      margin-top: 14px;
+    }
+    /* Table cells: generous padding (Workday signature). */
+    table th { padding: 13px 18px; }
+    table td { padding: 14px 18px; }
+    table th:first-child, table td:first-child { padding-left: 22px; }
+    table th:last-child, table td:last-child { padding-right: 22px; }
+
+    /* ── M4: KPI / summary card grid (replaces flat colored divs) ────── */
+    .panel > div[id$="-summary"] {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)) !important;
+      gap: 14px !important;
+      margin-bottom: 18px !important;
+    }
+    .summary-card {
+      background: #ffffff;
+      border: 1px solid #e6ecf1;
+      border-radius: 14px;
+      padding: 18px 20px;
+      box-shadow: 0 1px 2px rgba(15,42,74,0.04);
+      transition: transform var(--motion-fast), box-shadow var(--motion-fast);
+    }
+    .summary-card:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); }
+    .summary-card .label {
+      font-size: 10.5px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 1.2px;
+      color: var(--muted); margin-bottom: 8px;
+    }
+    .summary-card .value {
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+      font-size: 26px; font-weight: 700;
+      color: var(--navy); line-height: 1;
+    }
+    .summary-card .delta {
+      font-size: 11px; color: var(--muted);
+      margin-top: 6px;
+    }
+
+    /* ── Filter bar polish — chips align right, search left ──────────── */
+    .panel > .filter-bar .filter-btn { padding: 7px 14px; font-size: 12.5px; }
+    .panel > .filter-bar input[type="text"],
+    .panel > .filter-bar input[type="search"] {
+      background: #f5f7fa;
+      border: 1px solid transparent !important;
+      border-radius: 8px;
+      transition: background var(--motion-fast), border-color var(--motion-fast);
+    }
+    .panel > .filter-bar input[type="text"]:focus,
+    .panel > .filter-bar input[type="search"]:focus {
+      background: #ffffff;
+      border-color: var(--teal) !important;
+    }
+
+    /* ── Header logo: lockup tightens (no more loud snowflake/lime bar) */
+    header .pc-snowflake { width: 22px !important; height: 22px !important; border-radius: 6px !important; }
+    header .pc-snowflake::before { inset: 4px !important; }
+
+    /* Top-bar h2 bar uses brand teal solid (more confident than gradient). */
+    .panel > .top-bar h2::before {
+      background: var(--teal) !important;
+    }
+
+    /* Mobile: shell collapses naturally; hide nav-section labels on
+       mobile drawer to keep it compact. */
+    @media (max-width: 1024px) {
+      .main { padding: 18px 16px 60px; }
+      .panel > .top-bar { padding: 18px 18px; border-radius: 12px; }
+      .panel > .top-bar h2 { font-size: 22px !important; }
+    }
+
+    /* Modals on mist background read better with a subtle outline. */
+    .modal { border: 1px solid #e6ecf1; }
+
+    /* Login surface — keep light, but mist background is fine. */
+    #loginScreen { background: var(--mist); }
   </style>
   <script src="/static/pc_shared.js"></script>
 </head>
