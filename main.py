@@ -2584,15 +2584,15 @@ def staff_login(req: StaffLoginRequest, request: Request, response: Response):
     """Unified staff login. Tries the admin identity space first, then
     the tech space. Returns one of:
 
-      {"kind": "admin", "token": "...", "redirect_to": "/admin",
+      {"kind": "admin", "token": "...", "redirect_to": "/home",
        "name": "...", ...}                   — issued session
 
       {"kind": "admin", "requires_mfa": True,
-       "mfa_token": "...", "redirect_to": "/admin", ...}
+       "mfa_token": "...", "redirect_to": "/home", ...}
        (caller submits TOTP to /api/admin/mfa/verify)
 
       {"kind": "admin", "requires_mfa_setup": True,
-       "mfa_enrol_token": "...", "redirect_to": "/admin", ...}
+       "mfa_enrol_token": "...", "redirect_to": "/home", ...}
        (caller submits to /api/admin/mfa/setup + /activate)
 
       Same shapes for "tech" with redirect_to="/tech/home" and
@@ -2624,7 +2624,7 @@ def staff_login(req: StaffLoginRequest, request: Request, response: Response):
             _audit_from(admin, "admin.login.password_ok_mfa_enrol_required",
                         request)
             return {"kind": "admin", "name": admin["name"],
-                    "redirect_to": "/admin",
+                    "redirect_to": "/home",
                     "requires_mfa_setup": True,
                     "mfa_enrol_token": enrol_token}
         # Already enrolled — pre-MFA verify step.
@@ -2634,7 +2634,7 @@ def staff_login(req: StaffLoginRequest, request: Request, response: Response):
         )
         _audit_from(admin, "admin.login.password_ok", request)
         return {"kind": "admin", "name": admin["name"],
-                "redirect_to": "/admin",
+                "redirect_to": "/home",
                 "requires_mfa": True,
                 "mfa_token": mfa_token}
 
@@ -2648,7 +2648,7 @@ def staff_login(req: StaffLoginRequest, request: Request, response: Response):
             )
             return {"kind": "tech", "name": tech["name"],
                     "tech_code": tech["tech_code"],
-                    "redirect_to": "/tech/home",
+                    "redirect_to": "/home",
                     "requires_mfa_setup": True,
                     "mfa_enrol_token": enrol_token}
         mfa_token = _make_token(
@@ -2657,7 +2657,7 @@ def staff_login(req: StaffLoginRequest, request: Request, response: Response):
         )
         return {"kind": "tech", "name": tech["name"],
                 "tech_code": tech["tech_code"],
-                "redirect_to": "/tech/home",
+                "redirect_to": "/home",
                 "requires_mfa": True,
                 "mfa_token": mfa_token}
 
@@ -9560,6 +9560,144 @@ def portal_reset_page():
 @app.get("/admin")
 def admin_page():
     return FileResponse("admin.html")
+
+
+# ── Unified staff home (/home) ────────────────────────────────────────────
+# One landing page for ALL staff (admin + tech + warehouse). Looks like
+# the tech landing but adapts its quick-jump tiles to the viewer's role.
+# Sits in front of /admin and /tech as a "you are now signed in" shell.
+
+@app.get("/home")
+def staff_home_page():
+    return FileResponse("staff_home.html")
+
+
+def _resolve_any_staff(request: Request):
+    """Return (kind, record) for either signed-in admin or tech.
+    kind ∈ {'admin','tech'}. 401 if neither cookie validates."""
+    # Try admin first.
+    try:
+        admin = _require_admin(request)
+        return "admin", admin
+    except HTTPException:
+        pass
+    try:
+        tech_id = _require_tech(request)
+        from database import get_tech_by_id as _gt
+        tech = _gt(tech_id)
+        if tech:
+            return "tech", tech
+    except HTTPException:
+        pass
+    raise HTTPException(401, "Sign-in required")
+
+
+@app.get("/api/staff/me")
+def api_staff_me(request: Request):
+    """Lightweight identity payload for the unified home page. Returns
+    enough for the shell to render a hero + role-aware nav tiles
+    without any further round-trips."""
+    kind, who = _resolve_any_staff(request)
+    if kind == "admin":
+        return {
+            "kind": "admin",
+            "id": who["id"],
+            "name": who["name"],
+            "role": who.get("role"),
+            "role_label": (who.get("role") or "").replace("_", " ").title(),
+            "prid": who.get("prid"),
+            "email": who.get("email"),
+            "phone": who.get("phone"),
+            "department": who.get("department") or "Administration",
+        }
+    # tech (includes warehouse_floor / warehouse_manager / parts_runner
+    # — they live in the technicians table with a staff_type)
+    staff_type = who.get("staff_type") or "tech"
+    role_label_map = {
+        "tech": "Technician",
+        "warehouse_floor":   "Warehouse Floor",
+        "warehouse_manager": "Warehouse Manager",
+        "parts_runner":      "Parts Runner",
+    }
+    return {
+        "kind": "tech",
+        "id": who["id"],
+        "name": who["name"],
+        "tech_code": who.get("tech_code"),
+        "role": who.get("role"),
+        "staff_type": staff_type,
+        "role_label": role_label_map.get(staff_type, "Technician"),
+        "email": who.get("email"),
+        "phone": who.get("phone"),
+        "department": who.get("department") or (
+            "Warehouse" if staff_type.startswith(("warehouse_", "parts_")) else "Field Services"),
+    }
+
+
+@app.get("/api/staff/me/home")
+def api_staff_me_home(request: Request):
+    """Aggregated home-page payload. Tries each summary in a try-block
+    so a single dead datasource doesn't break the whole shell."""
+    kind, who = _resolve_any_staff(request)
+    out = {
+        "profile": api_staff_me(request),
+        "today": datetime.now(timezone.utc).strftime("%A, %B %d, %Y"),
+        "messages": [],
+        "recent_pay": [],
+        "tasks_summary": {},
+    }
+    # Recent company messages (universal — all staff see them).
+    try:
+        out["messages"] = (list_active_company_messages(limit=5) or [])
+    except Exception:
+        pass
+    # Recent payslips (last 3) — every staff member has a self-view.
+    try:
+        if kind == "admin":
+            rows = list_payslips_for_subject("admin", who["id"], limit=3)
+        else:
+            rows = list_payslips_for_subject("tech", who["id"], limit=3)
+        out["recent_pay"] = [
+            {"id": r["id"],
+             "period_label": r.get("period_label"),
+             "period_end":   r.get("period_end"),
+             "net_pay":      r.get("net_pay"),
+             "currency":     r.get("currency") or "JMD"}
+            for r in (rows or [])
+        ]
+    except Exception:
+        pass
+    # Tasks-summary — role-aware counts so the home page can show
+    # "you have 3 pending approvals" etc. Each block fails open.
+    tasks = {}
+    if kind == "admin":
+        role = (who.get("role") or "").lower()
+        try:
+            if _admin_can(role, "fs:report_view"):
+                tasks["open_5s_exceptions"] = len(fs_list_exceptions(status="open", limit=500) or [])
+        except Exception:
+            pass
+        try:
+            from database import count_open_security_alerts as _cosa
+            if _admin_can(role, "security:view_alerts"):
+                tasks["open_security_alerts"] = _cosa()
+        except Exception:
+            pass
+    else:
+        # Tech: open jobs + my open 5S exceptions.
+        try:
+            from database import get_tech_jobs as _gtj
+            jobs = _gtj(who["id"]) or []
+            tasks["open_jobs"] = sum(1 for j in jobs if (j.get("status") or "") in ("scheduled", "in_progress"))
+        except Exception:
+            pass
+        try:
+            mine = fs_list_exceptions(tech_id=who["id"], status="open", limit=100) or []
+            tasks["my_open_5s"] = len(mine)
+        except Exception:
+            pass
+    out["tasks_summary"] = tasks
+    return out
 
 
 @app.get("/admin/reset")

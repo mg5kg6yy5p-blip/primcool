@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Home — PrimeCool Services</title>
+  <meta name="theme-color" content="#0F2A4A">
+  <link rel="apple-touch-icon" href="/icons/admin-apple.png">
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800;900&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --navy:#0F2A4A; --navy-2:#11335A; --navy-deep:#0B1F38;
+      --teal:#22A08A; --teal-dark:#188672;
+      --ice:#7DD3E8; --lime:#B6E021; --mist:#F2F6FA;
+      --card:#fff; --border:#e6ecf1;
+      --muted:#5A6472; --text:#0f172a;
+      --font-display:'Archivo','Segoe UI',system-ui,sans-serif;
+      --font-body:'IBM Plex Sans','Segoe UI',system-ui,sans-serif;
+      --font-mono:'IBM Plex Mono',ui-monospace,'SFMono-Regular',monospace;
+      --shadow-sm:0 1px 3px rgba(15,42,74,.08),0 8px 24px -16px rgba(15,42,74,.25);
+      --shadow-md:0 2px 4px rgba(15,42,74,.08),0 12px 28px -10px rgba(15,42,74,.20);
+      --gradient-navy:linear-gradient(135deg,var(--navy-2),var(--navy));
+      --gradient-cool:linear-gradient(90deg,var(--ice),var(--lime));
+      --ease-out:cubic-bezier(0.16,1,0.3,1);
+    }
+    *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+    body{font-family:var(--font-body);background:var(--mist);color:var(--text);
+         min-height:100vh;padding-top:3px;-webkit-font-smoothing:antialiased;
+         font-feature-settings:"tnum" 1,"kern" 1;}
+    body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;
+                  background:var(--gradient-cool);z-index:1000;}
+    h1,h2,h3,.pc-display{font-family:var(--font-display);letter-spacing:-0.01em;}
+    .pc-mono,code{font-family:var(--font-mono);font-variant-numeric:tabular-nums;}
+    .pc-snowflake{display:inline-block;width:22px;height:22px;background:var(--lime);
+                   border-radius:6px;flex-shrink:0;position:relative;vertical-align:middle;}
+    .pc-snowflake::before{content:"";position:absolute;inset:4px;
+      background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230F2A4A' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><line x1='12' y1='2' x2='12' y2='22'/><line x1='2' y1='12' x2='22' y2='12'/><line x1='4.93' y1='4.93' x2='19.07' y2='19.07'/><line x1='19.07' y1='4.93' x2='4.93' y2='19.07'/></svg>");
+      background-size:contain;background-repeat:no-repeat;}
+
+    /* Header — white surface, navy text, brand ribbon already from body::before. */
+    header{background:#fff;box-shadow:0 1px 0 var(--border);padding:14px 20px;
+            display:flex;align-items:center;justify-content:space-between;gap:12px;
+            position:sticky;top:3px;z-index:100;}
+    header .lockup{display:flex;align-items:center;gap:10px;text-decoration:none;color:var(--navy);min-width:0;}
+    header .lockup .word{font-family:var(--font-display);font-size:17px;font-weight:800;letter-spacing:-0.01em;}
+    header .lockup .word span{color:var(--teal);}
+    header .lockup .divider{width:1px;height:24px;background:var(--border);margin:0 6px;}
+    header .lockup .who{min-width:0;}
+    header .lockup .who .name{font-weight:700;font-size:14px;color:var(--navy);
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:38vw;}
+    header .lockup .who .sub{font-size:11px;color:var(--muted);
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:38vw;}
+    .h-btn{background:#f5f7fa;color:var(--navy);border:1px solid var(--border);
+            border-radius:8px;padding:8px 14px;font:600 12px/1 var(--font-body);
+            cursor:pointer;transition:background .14s var(--ease-out);}
+    .h-btn:hover{background:#e9eef3;}
+    .h-btn.signout{color:#b42318;border-color:#fee2e2;background:#fff5f5;}
+
+    /* Container */
+    .wrap{max-width:1000px;margin:0 auto;padding:22px 18px 80px;}
+
+    /* Hero card */
+    .hero{
+      background:var(--gradient-navy);color:#fff;border-radius:20px;
+      padding:24px 26px;box-shadow:var(--shadow-md);
+      position:relative;overflow:hidden;margin-bottom:22px;
+    }
+    .hero::after{content:"";position:absolute;top:-40px;right:-40px;
+      width:200px;height:200px;border-radius:50%;
+      background:radial-gradient(circle,rgba(125,211,232,.18) 0%,transparent 70%);}
+    .hero .date{font-size:12px;font-weight:600;color:var(--ice);
+                letter-spacing:.5px;text-transform:uppercase;}
+    .hero h1{font-size:30px;font-weight:800;margin-top:6px;line-height:1.1;}
+    .hero .role-line{margin-top:8px;font-size:13px;color:rgba(255,255,255,.75);}
+    .hero .role-line strong{color:#fff;font-weight:600;}
+    .hero .clock-row{margin-top:18px;display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;}
+    .hero .clock{font-family:var(--font-mono);font-size:36px;font-weight:700;color:#fff;letter-spacing:.5px;}
+    .hero .clock-sub{font-size:12px;color:rgba(255,255,255,.65);}
+
+    /* Section heading */
+    .sec-title{font-family:var(--font-display);font-weight:700;font-size:13px;
+      text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);
+      margin:22px 4px 10px;}
+
+    /* Tile grid (worklets) */
+    .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;}
+    .tile{background:#fff;border:1px solid var(--border);border-radius:14px;
+          padding:16px 16px 18px;cursor:pointer;text-align:left;
+          transition:transform .14s var(--ease-out),box-shadow .14s var(--ease-out),border-color .14s var(--ease-out);
+          text-decoration:none;color:inherit;display:flex;flex-direction:column;gap:10px;
+          box-shadow:0 1px 2px rgba(15,42,74,.04);position:relative;overflow:hidden;}
+    .tile:hover{transform:translateY(-2px);box-shadow:var(--shadow-md);border-color:var(--teal);}
+    .tile .ico{width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+                background:#eef4f8;color:var(--teal);font-size:18px;}
+    .tile.tile--lime .ico{background:var(--lime);color:var(--navy);}
+    .tile.tile--ice  .ico{background:var(--ice);color:var(--navy);}
+    .tile.tile--navy .ico{background:var(--navy);color:var(--ice);}
+    .tile.tile--coral .ico{background:#fee2e2;color:#b42318;}
+    .tile .label{font-weight:700;color:var(--navy);font-size:14px;line-height:1.2;}
+    .tile .sub{font-size:11.5px;color:var(--muted);line-height:1.35;}
+    .tile .count{position:absolute;top:12px;right:12px;background:#b42318;color:#fff;
+                  font-size:11px;font-weight:700;min-width:20px;height:20px;border-radius:999px;
+                  padding:0 6px;display:inline-flex;align-items:center;justify-content:center;}
+
+    /* Cards section */
+    .cards{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:6px;}
+    @media (max-width:760px){.cards{grid-template-columns:1fr;}}
+    .card{background:#fff;border:1px solid var(--border);border-radius:14px;padding:18px 20px;
+          box-shadow:0 1px 2px rgba(15,42,74,.04);}
+    .card h3{font-size:13px;text-transform:uppercase;letter-spacing:1.2px;color:var(--muted);
+              font-weight:700;margin-bottom:12px;}
+    .row-li{display:flex;justify-content:space-between;align-items:center;gap:10px;
+            padding:9px 0;border-bottom:1px dashed var(--border);font-size:13px;}
+    .row-li:last-child{border-bottom:none;}
+    .row-li .l{color:var(--navy);font-weight:600;min-width:0;
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .row-li .r{font-family:var(--font-mono);color:var(--navy);font-weight:600;}
+    .row-li.link{cursor:pointer;}
+    .row-li.link:hover{background:#f8fbfd;}
+    .empty{color:var(--muted);font-size:13px;padding:14px 0;text-align:center;}
+
+    .pc-toast-host{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);
+                    z-index:99999;display:flex;flex-direction:column;gap:8px;}
+
+    /* Mobile tweaks */
+    @media (max-width:520px){
+      header{padding:11px 14px;}
+      .wrap{padding:16px 12px 80px;}
+      .hero{padding:18px 18px;border-radius:16px;}
+      .hero h1{font-size:24px;}
+      .hero .clock{font-size:30px;}
+      header .lockup .who .name,header .lockup .who .sub{max-width:42vw;}
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <a class="lockup" href="/home">
+      <span class="pc-snowflake" aria-hidden="true"></span>
+      <span class="word">Prime<span>Cool</span></span>
+      <span class="divider"></span>
+      <span class="who">
+        <span class="name" id="me-name">…</span>
+        <span class="sub"  id="me-sub">PrimeCool Services</span>
+      </span>
+    </a>
+    <div style="display:flex;gap:8px;">
+      <button class="h-btn"          id="myProfileBtn" onclick="goMyProfile()">My Profile</button>
+      <button class="h-btn signout"  onclick="doSignOut()">Sign out</button>
+    </div>
+  </header>
+
+  <div class="wrap">
+
+    <!-- HERO ------------------------------------------------------------- -->
+    <div class="hero">
+      <div class="date" id="hero-date">…</div>
+      <h1 id="hero-greeting">Welcome back</h1>
+      <div class="role-line" id="hero-role">…</div>
+      <div class="clock-row">
+        <div class="clock" id="hero-clock">--:--</div>
+        <div class="clock-sub" id="hero-clock-sub">Local time</div>
+      </div>
+    </div>
+
+    <!-- WORKLET TILES ---------------------------------------------------- -->
+    <div class="sec-title">Quick actions</div>
+    <div class="tiles" id="tiles"></div>
+
+    <!-- BOTTOM CARDS ----------------------------------------------------- -->
+    <div class="sec-title" style="margin-top:24px;">Today</div>
+    <div class="cards">
+      <div class="card">
+        <h3>Recent pay</h3>
+        <div id="pay-list"><div class="empty">Loading…</div></div>
+      </div>
+      <div class="card">
+        <h3>Company messages</h3>
+        <div id="msg-list"><div class="empty">Loading…</div></div>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="/static/pc_shared.js"></script>
+  <script>
+  // ── Utilities ─────────────────────────────────────────────────────────
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const fmtJMD = (n) => 'J$' + (Number(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  let _me = null;
+
+  async function api(path) {
+    const res = await fetch(path, { credentials:'include' });
+    if (res.status === 401) { location.replace('/staff'); throw new Error('not signed in'); }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  }
+
+  // ── Greeting + clock ──────────────────────────────────────────────────
+  function tickClock() {
+    const d = new Date();
+    const hh = String(d.getHours()).padStart(2,'0');
+    const mm = String(d.getMinutes()).padStart(2,'0');
+    const ss = String(d.getSeconds()).padStart(2,'0');
+    const el = document.getElementById('hero-clock');
+    if (el) el.textContent = hh + ':' + mm + ':' + ss;
+  }
+  function greetingFor(name) {
+    const h = new Date().getHours();
+    const part = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+    return part + ', ' + (name || 'there') + '.';
+  }
+
+  // ── Worklet tiles ─────────────────────────────────────────────────────
+  function renderTiles(me, tasks) {
+    const t = document.getElementById('tiles');
+    const tiles = [];
+    if (me.kind === 'admin') {
+      tiles.push({ico:'🏢', label:'Admin Dashboard',  sub:'Manage everything',         href:'/admin',                              cls:'tile--navy'});
+      const role = (me.role || '').toLowerCase();
+      if (role === 'super_admin' || role === 'supervisor_admin' || role === 'hr_admin') {
+        tiles.push({ico:'👷', label:'Warehouse Ops', sub:'Staff · receiving · shipping', onclick:"location.href='/admin#warehouse'",  cls:'tile--ice'});
+      }
+      tiles.push({ico:'📊', label:'Performance KPI', sub:'Flags + scoreboards',         onclick:"location.href='/admin'",            cls:''});
+      tiles.push({ico:'⚠', label:'5S Exceptions',    sub:'Safety + workplace',          onclick:"location.href='/admin'",            cls:'tile--coral', count: tasks.open_5s_exceptions});
+      tiles.push({ico:'💰', label:'My Pay',           sub:'Payslips + history',         onclick:"location.href='/admin'",            cls:'tile--lime'});
+      tiles.push({ico:'👤', label:'My Profile',       sub:'Identity + security',        onclick:"location.href='/admin'",            cls:''});
+    } else {
+      // tech / warehouse / parts runner — staff_type tells us which.
+      const st = me.staff_type || 'tech';
+      if (st === 'tech') {
+        tiles.push({ico:'🛠', label:"Today's Jobs",   sub:'Queue + visits',             href:'/tech',                                cls:'tile--lime',  count: tasks.open_jobs});
+        tiles.push({ico:'🕒', label:'Clock In',       sub:'Start your shift',           href:'/tech/home',                           cls:'tile--ice'});
+        tiles.push({ico:'⚠', label:'5S Audit',        sub:'Start / end-shift',          href:'/tech/home',                           cls:'tile--coral', count: tasks.my_open_5s});
+      } else if (st === 'parts_runner') {
+        tiles.push({ico:'🚚', label:'Deliveries',     sub:"Today's runs",               href:'/tech/home',                           cls:'tile--lime'});
+        tiles.push({ico:'🕒', label:'Clock In',       sub:'Start your shift',           href:'/tech/home',                           cls:'tile--ice'});
+      } else {
+        // warehouse_floor / warehouse_manager
+        tiles.push({ico:'📦', label:'Warehouse Floor', sub:'Inventory + stock',         href:'/tech/home',                           cls:'tile--lime'});
+        tiles.push({ico:'🕒', label:'Clock In',       sub:'Start your shift',           href:'/tech/home',                           cls:'tile--ice'});
+      }
+      tiles.push({ico:'💰', label:'My Pay',          sub:'Payslips + history',          href:'/tech/home',                           cls:''});
+      tiles.push({ico:'👤', label:'My Profile',      sub:'CV + certifications',         href:'/tech/home',                           cls:''});
+    }
+    t.innerHTML = tiles.map(x => {
+      const attr = x.href ? `href="${x.href}"` : `href="javascript:void(0)" onclick="${esc(x.onclick||'')}"`;
+      const cnt = x.count && x.count > 0 ? `<span class="count">${x.count}</span>` : '';
+      return `<a class="tile ${x.cls||''}" ${attr}>
+        <div class="ico">${x.ico}</div>
+        <div class="label">${esc(x.label)}</div>
+        <div class="sub">${esc(x.sub)}</div>
+        ${cnt}
+      </a>`;
+    }).join('');
+  }
+
+  // ── Pay + messages ────────────────────────────────────────────────────
+  function renderPay(rows) {
+    const el = document.getElementById('pay-list');
+    if (!rows || !rows.length) {
+      el.innerHTML = '<div class="empty">No payslips yet.</div>'; return;
+    }
+    el.innerHTML = rows.map(r =>
+      `<div class="row-li"><span class="l">${esc(r.period_label || '')}</span><span class="r">${fmtJMD(r.net_pay)}</span></div>`
+    ).join('');
+  }
+  function renderMsgs(rows) {
+    const el = document.getElementById('msg-list');
+    if (!rows || !rows.length) {
+      el.innerHTML = '<div class="empty">No new messages.</div>'; return;
+    }
+    el.innerHTML = rows.slice(0,4).map(m =>
+      `<div class="row-li"><span class="l">${esc(m.title || m.subject || 'Message')}</span><span class="r" style="font-family:var(--font-body);color:var(--muted);font-weight:500;font-size:11px;">${esc((m.created_at||'').slice(0,10))}</span></div>`
+    ).join('');
+  }
+
+  // ── Header actions ────────────────────────────────────────────────────
+  function goMyProfile() {
+    if (!_me) return;
+    location.href = _me.kind === 'admin' ? '/admin' : '/tech/home';
+  }
+  async function doSignOut() {
+    try {
+      const path = (_me && _me.kind === 'admin') ? '/api/admin/logout' : '/api/tech/logout';
+      await fetch(path, { method:'POST', credentials:'include' });
+    } catch (_) {}
+    location.replace('/staff');
+  }
+
+  // ── Boot ──────────────────────────────────────────────────────────────
+  async function boot() {
+    tickClock();
+    setInterval(tickClock, 1000);
+    try {
+      const data = await api('/api/staff/me/home');
+      _me = data.profile;
+      // Header lockup.
+      document.getElementById('me-name').textContent = _me.name || '…';
+      document.getElementById('me-sub').textContent  = _me.role_label + ' · ' + (_me.department || 'PrimeCool');
+      // Hero.
+      document.getElementById('hero-date').textContent     = data.today;
+      document.getElementById('hero-greeting').textContent = greetingFor(_me.name);
+      document.getElementById('hero-role').innerHTML       = `<strong>${esc(_me.role_label)}</strong> · ${esc(_me.department)} · ${esc(_me.tech_code || _me.prid || '')}`;
+      renderTiles(_me, data.tasks_summary || {});
+      renderPay(data.recent_pay || []);
+      renderMsgs(data.messages || []);
+    } catch (e) {
+      // 401 already redirected; surface other errors quietly.
+      console.warn(e);
+    }
+  }
+  boot();
+  </script>
+</body>
+</html>
