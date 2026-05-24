@@ -398,6 +398,46 @@
     .filter-btn { padding: 5px 14px; border-radius: 20px; font-size: 12px; font-weight: 600; border: 1px solid var(--border); background: var(--white); color: var(--muted); cursor: pointer; }
     .filter-btn.active { background: var(--teal); color: white; border-color: var(--teal); }
 
+    /* ── A11y: brand-coloured keyboard focus ring ────────────────────────
+       Default browser focus rings vary by OS/browser; standardise on a
+       2px teal halo with a 2px transparent offset so it shows up on
+       both light backgrounds (cards/forms) and dark (header buttons). */
+    *:focus { outline: none; }
+    *:focus-visible {
+      outline: 2px solid var(--teal);
+      outline-offset: 2px;
+      border-radius: 4px;
+    }
+    .btn:focus-visible, .filter-btn:focus-visible,
+    .nav-item:focus-visible, .logout-btn:focus-visible,
+    button:focus-visible, a:focus-visible,
+    input:focus-visible, select:focus-visible, textarea:focus-visible {
+      outline: 2px solid var(--teal);
+      outline-offset: 2px;
+    }
+    /* ── A11y: visually distinguish <select> from disabled inputs.
+       Native selects render flat across browsers; the auditor flagged
+       "All tiers" / "All statuses" / "Mutations (writes)" selects as
+       looking disabled. Custom chevron + clear border + hover state. */
+    select {
+      appearance: none;
+      -webkit-appearance: none;
+      background-color: var(--white);
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%230B2545' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+      background-repeat: no-repeat;
+      background-position: right 8px center;
+      padding-right: 28px !important;
+      cursor: pointer;
+    }
+    select:hover  { border-color: var(--teal); }
+    select:disabled {
+      background-color: #f3f4f6;
+      color: #9ca3af;
+      cursor: not-allowed;
+      background-image: none;
+      padding-right: 12px !important;
+    }
+
     /* ── Mobile nav (≤1024 px) ──────────────────────────────────────────
        Auditor flagged "no mobile navigation — at 768px the sidebar is
        removed entirely with no hamburger". The new behaviour:
@@ -11834,15 +11874,20 @@
   let kpiThresholdDefs = [];
 
   function kpiBandPill(band) {
-    if (!band) return '<span class="badge" style="background:#f3f4f6;color:#666;">—</span>';
-    const cmap = {
-      green: 'background:#d1fae5;color:#065f46;',
-      amber: 'background:#fef3c7;color:#92400e;',
-      red:   'background:#fee2e2;color:#991b1b;',
-      insufficient_data: 'background:#f3f4f6;color:#666;',
+    if (!band) return '<span class="badge" style="background:#f3f4f6;color:#666;" aria-label="No data">—</span>';
+    // A11y: color is no longer the sole signal. Each band carries
+    // BOTH a textual label (GREEN / AMBER / RED / N/A) AND a leading
+    // shape glyph (● / ▲ / ■ / —) so color-blind users can still
+    // tell the bands apart. Also adds aria-label so screen readers
+    // announce the band semantically.
+    const map = {
+      green: { bg:'#d1fae5', fg:'#065f46', glyph:'●', label:'GREEN', aria:'Green band' },
+      amber: { bg:'#fef3c7', fg:'#92400e', glyph:'▲', label:'AMBER', aria:'Amber band' },
+      red:   { bg:'#fee2e2', fg:'#991b1b', glyph:'■', label:'RED',   aria:'Red band' },
+      insufficient_data: { bg:'#f3f4f6', fg:'#666', glyph:'—', label:'N/A', aria:'Insufficient data' },
     };
-    const label = band === 'insufficient_data' ? 'N/A' : band.toUpperCase();
-    return `<span class="badge" style="${cmap[band] || cmap.insufficient_data}font-weight:700;">${label}</span>`;
+    const m = map[band] || map.insufficient_data;
+    return `<span class="badge" style="background:${m.bg};color:${m.fg};font-weight:700;" aria-label="${m.aria}"><span aria-hidden="true" style="margin-right:4px;">${m.glyph}</span>${m.label}</span>`;
   }
 
   function kpiSetSubtab(name, btn) {
