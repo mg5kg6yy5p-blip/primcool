@@ -30,10 +30,19 @@
     document.head && document.head.appendChild(s);
   }
   // ── Density (compact / comfortable) — shared across surfaces ──────────
+  // BUG FIX: previously crashed at boot when pc_shared.js loaded
+  // inside <head> before <body> existed. document.body was null,
+  // .dataset blew up, and the unhandled exception in this top-level
+  // IIFE silently halted later admin.html bootstrap (the user saw
+  // blank panels on 5S / Delegations / Performance KPI because
+  // dependent JS never ran after the throw).
   PC.applyDensity = function (mode) {
-    document.body.dataset.pcDensity = mode === 'compact' ? 'compact' : 'comfortable';
+    const b = document.body;
+    if (!b) return;                              // not parsed yet — see deferred apply below
+    b.dataset.pcDensity = mode === 'compact' ? 'compact' : 'comfortable';
   };
   PC.toggleDensity = function () {
+    if (!document.body) return 'comfortable';
     const cur = (document.body.dataset.pcDensity || 'comfortable');
     const next = cur === 'compact' ? 'comfortable' : 'compact';
     try { localStorage.setItem('pc_density', next); } catch (_) {}
@@ -41,8 +50,19 @@
     if (PC.toast) PC.toast('Density: ' + next, 'success');
     return next;
   };
-  try { PC.applyDensity(localStorage.getItem('pc_density') || 'comfortable'); }
-  catch (_) { PC.applyDensity('comfortable'); }
+  function _pcBootDensity() {
+    let mode = 'comfortable';
+    try { mode = localStorage.getItem('pc_density') || 'comfortable'; } catch (_) {}
+    PC.applyDensity(mode);
+  }
+  if (document.body) {
+    _pcBootDensity();
+  } else if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _pcBootDensity);
+  } else {
+    // Interactive / complete but no body yet? Belt-and-braces.
+    setTimeout(_pcBootDensity, 0);
+  }
 
   // ── Skeleton loader auto-swap ─────────────────────────────────────────
   // Any element with class="empty" whose text is literally "Loading…"
