@@ -29,7 +29,7 @@ if not logger.handlers:
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form, Response, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import jwt
@@ -10565,11 +10565,25 @@ async def _start_fs_escalation_loop():
 _LIFESPAN_STARTERS.append(_start_fs_escalation_loop)
 
 
-@app.get("/tech/home")
-def tech_landing():
-    # TP-2: new 2-tab landing (Sign In for Work / My Profile) + company
-    # message board. The existing /tech remains the jobs/5S/payslips PWA.
+@app.get("/me")
+def my_profile_page():
+    """Unified 'My Profile' surface for every staff member. Was the
+    /tech/home 2-tab landing; the Sign-In For Work flow has been
+    rolled into /home, so this URL is now the profile-only view (CV
+    / certifications / pay history / schedule, plus clock-in
+    retained as a tab for back-compat)."""
     return FileResponse("tech_landing.html")
+
+
+@app.get("/tech/home")
+def tech_home_redirect():
+    """Operator merged the tech landing into the unified /home as a
+    single staff dashboard. Anything that still deep-links to the old
+    URL (bookmarks, PWAs, push notifications) lands on /home instead.
+
+    A user looking specifically for their tech profile / payslips can
+    reach it via the 'My Profile' tile on /home (→ /me)."""
+    return RedirectResponse(url="/home", status_code=302)
 
 
 @app.get("/tech")

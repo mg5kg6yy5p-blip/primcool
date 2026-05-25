@@ -163,6 +163,31 @@
       </div>
     </div>
 
+    <!-- CLOCK-IN CARD (techs / warehouse / parts runner only) ----------- -->
+    <div id="clockin-card" style="display:none;background:#fff;border:1px solid var(--border);border-radius:14px;
+         padding:20px 22px;margin-bottom:18px;box-shadow:0 1px 2px rgba(15,42,74,.04);">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px;">
+        <div>
+          <div style="font-family:var(--font-display);font-weight:700;color:var(--navy);font-size:16px;">Sign In for Work</div>
+          <div id="clockin-status" style="font-size:12px;color:var(--muted);margin-top:2px;">Loading…</div>
+        </div>
+        <div id="clockin-jobcount" class="pc-mono" style="font-size:13px;color:var(--muted);"></div>
+      </div>
+      <div id="clockin-dayoff-banner" style="display:none;background:#eef4f8;border:1px solid #cfe2ee;color:#11335A;
+           border-radius:10px;padding:10px 12px;font-size:13px;line-height:1.4;margin-bottom:10px;">
+        Today is your scheduled day off. If you're signing in anyway, give us a brief reason — payroll and your supervisor will be notified.
+      </div>
+      <textarea id="clockin-dayoff-reason" placeholder="e.g. covering for Marcus, callout at Royal Plaza"
+                style="display:none;width:100%;min-height:54px;padding:9px 11px;border:1px solid var(--border);border-radius:8px;
+                       font:14px var(--font-body);margin-bottom:10px;"></textarea>
+      <button id="clockin-btn" onclick="doClockAction()"
+              style="background:var(--lime);color:var(--navy);border:none;border-radius:10px;padding:11px 18px;
+                     font:700 14px var(--font-body);cursor:pointer;display:inline-flex;align-items:center;gap:8px;
+                     transition:transform .14s var(--ease-out),box-shadow .14s var(--ease-out);">
+        Sign In
+      </button>
+    </div>
+
     <!-- WORKLET TILES ---------------------------------------------------- -->
     <div class="sec-title">Quick actions</div>
     <div class="tiles" id="tiles"></div>
@@ -237,21 +262,20 @@
       tiles.push({ico:'👤', label:'My Profile',       sub:'Identity + security',         href:'/admin#myprofile', cls:''});
     } else {
       // tech / warehouse / parts runner — staff_type tells us which.
+      // The Clock-In card is now a permanent fixture above the tiles,
+      // so we don't need a Clock-In tile anymore.
       const st = me.staff_type || 'tech';
       if (st === 'tech') {
         tiles.push({ico:'🛠', label:"Today's Jobs",   sub:'Queue + visits',             href:'/tech',                cls:'tile--lime',  count: tasks.open_jobs});
-        tiles.push({ico:'🕒', label:'Clock In',       sub:'Start your shift',           href:'/tech/home#signin',    cls:'tile--ice'});
         tiles.push({ico:'⚠', label:'5S Audit',        sub:'Start / end-shift',          href:'/tech/5s',             cls:'tile--coral', count: tasks.my_open_5s});
       } else if (st === 'parts_runner') {
         tiles.push({ico:'🚚', label:'Deliveries',     sub:"Today's runs",               href:'/tech',                cls:'tile--lime'});
-        tiles.push({ico:'🕒', label:'Clock In',       sub:'Start your shift',           href:'/tech/home#signin',    cls:'tile--ice'});
       } else {
         // warehouse_floor / warehouse_manager
-        tiles.push({ico:'📦', label:'Warehouse Floor', sub:'Inventory + stock',         href:'/tech/home#signin',    cls:'tile--lime'});
-        tiles.push({ico:'🕒', label:'Clock In',       sub:'Start your shift',           href:'/tech/home#signin',    cls:'tile--ice'});
+        tiles.push({ico:'📦', label:'Warehouse Floor', sub:'Inventory + stock',         href:'/admin#inventory',     cls:'tile--lime'});
       }
-      tiles.push({ico:'💰', label:'My Pay',          sub:'Payslips + history',          href:'/tech/home#profile',   cls:''});
-      tiles.push({ico:'👤', label:'My Profile',      sub:'CV + certifications',         href:'/tech/home#profile',   cls:''});
+      tiles.push({ico:'💰', label:'My Pay',          sub:'Payslips + history',          href:'/me#pay',              cls:''});
+      tiles.push({ico:'👤', label:'My Profile',      sub:'CV + certifications',         href:'/me',                  cls:''});
     }
     t.innerHTML = tiles.map(x => {
       const attr = x.href ? `href="${x.href}"` : `href="javascript:void(0)" onclick="${esc(x.onclick||'')}"`;
@@ -285,6 +309,97 @@
     ).join('');
   }
 
+  // ── Clock-in card (tech-only) ─────────────────────────────────────────
+  // Mirrors the /tech/home Sign-In For Work tab but lives inline on /home
+  // so techs don't have to bounce to a second landing. Uses the same
+  // backend endpoints (today-overview + sign-in + sign-out).
+  let _clockState = null;     // 'signed_in' | 'not_signed_in'
+  let _isDayOff = false;
+  async function loadClockCard(me) {
+    if (!me || me.kind !== 'tech') return;
+    const card = document.getElementById('clockin-card');
+    card.style.display = 'block';
+    try {
+      const ov = await api('/api/tech/me/today-overview');
+      _clockState = ov.sign_in_status;
+      _isDayOff   = !!ov.is_day_off;
+      const status = document.getElementById('clockin-status');
+      const banner = document.getElementById('clockin-dayoff-banner');
+      const reason = document.getElementById('clockin-dayoff-reason');
+      const btn    = document.getElementById('clockin-btn');
+      const jobs   = document.getElementById('clockin-jobcount');
+      // Job count chip.
+      const pm = ov.pm_today || 0, cm = ov.cm_today || 0;
+      jobs.textContent = (pm + cm) > 0 ? (pm + cm) + ' job' + ((pm+cm)===1?'':'s') + ' today  ·  PM ' + pm + ' / CM ' + cm : 'No jobs assigned today';
+      if (_clockState === 'signed_in') {
+        status.textContent = 'On the clock since ' + (ov.signed_in_at_local || 'today');
+        banner.style.display = 'none';
+        reason.style.display = 'none';
+        btn.textContent = 'Sign Out';
+        btn.style.background = '#fee2e2'; btn.style.color = '#b42318';
+        return;
+      }
+      if (_isDayOff) {
+        status.textContent = 'Today is your scheduled day off.';
+        banner.style.display = '';
+        reason.style.display = '';
+        btn.textContent = 'Sign In (day off)';
+        btn.style.background = 'var(--lime)'; btn.style.color = 'var(--navy)';
+      } else {
+        status.textContent = (ov.today_schedule_label || 'On schedule today.');
+        banner.style.display = 'none';
+        reason.style.display = 'none';
+        btn.textContent = 'Sign In for Work';
+        btn.style.background = 'var(--lime)'; btn.style.color = 'var(--navy)';
+      }
+    } catch (e) {
+      document.getElementById('clockin-status').textContent = 'Could not load clock status.';
+    }
+  }
+  async function doClockAction() {
+    const btn = document.getElementById('clockin-btn');
+    btn.disabled = true;
+    try {
+      if (_clockState === 'signed_in') {
+        const res = await fetch('/api/tech/me/sign-out', { method:'POST', credentials:'include' });
+        if (!res.ok) throw new Error('Sign-out failed (' + res.status + ')');
+        if (window.PC && PC.toast) PC.toast('Signed out for the day. Complete end-of-shift 5S.', 'success');
+        setTimeout(() => location.assign('/tech?view=5s&pending=signout'), 600);
+        return;
+      }
+      const body = {};
+      if (_isDayOff) {
+        const r = (document.getElementById('clockin-dayoff-reason').value || '').trim();
+        if (!r) { (window.PC && PC.toast) ? PC.toast('Day-off sign-in requires a reason.', 'warning') : alert('Day-off sign-in requires a reason.'); btn.disabled = false; return; }
+        body.dayoff_reason = r;
+      }
+      const res = await fetch('/api/tech/me/sign-in', {
+        method:'POST', credentials:'include',
+        headers:{'Content-Type':'application/json'}, body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        if (window.PC && PC.toast) PC.toast('Signed in.', 'success');
+        // Land them in the jobs queue — they tapped Sign In to start working.
+        setTimeout(() => location.assign('/tech?view=jobs'), 400);
+        return;
+      }
+      // 409 with 5s_start_shift_required → bounce to the 5S audit, then
+      // /tech?view=5s&pending=signin will retry the sign-in after audit.
+      const txt = await res.text().catch(() => '');
+      if (res.status === 409 && /5s_start_shift_required/i.test(txt)) {
+        if (body.dayoff_reason) localStorage.setItem('pc_pending_dayoff_reason', body.dayoff_reason);
+        location.assign('/tech?view=5s&pending=signin');
+        return;
+      }
+      throw new Error(txt || ('HTTP ' + res.status));
+    } catch (e) {
+      if (window.PC && PC.toast) PC.toast(e.message || 'Sign-in failed.', 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+  window.doClockAction = doClockAction;
+
   // ── Header actions ────────────────────────────────────────────────────
   function goMyProfile() {
     if (!_me) return;
@@ -315,6 +430,9 @@
       renderTiles(_me, data.tasks_summary || {});
       renderPay(data.recent_pay || []);
       renderMsgs(data.messages || []);
+      // Clock-in card only appears for tech-kind users; resolves silently
+      // for admins so the helper is safe to call unconditionally.
+      loadClockCard(_me);
     } catch (e) {
       // 401 already redirected; surface other errors quietly.
       console.warn(e);
