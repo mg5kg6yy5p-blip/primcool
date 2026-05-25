@@ -930,7 +930,7 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_visits_status_date ON maintenance_visits(status, scheduled_date)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_visits_date        ON maintenance_visits(scheduled_date)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_visits_equipment   ON maintenance_visits(equipment_id)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_equipment_customer ON equipment(customer_id, active)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_equipment_customer ON equipment(customer_id)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_customers_code     ON customers(customer_code)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_customers_active   ON customers(active, customer_type)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_tech_code          ON technicians(tech_code)")
