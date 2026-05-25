@@ -306,9 +306,24 @@
     if (!rows || !rows.length) {
       el.innerHTML = '<div class="empty">No new messages.</div>'; return;
     }
-    el.innerHTML = rows.slice(0,4).map(m =>
-      `<div class="row-li"><span class="l">${esc(m.title || m.subject || 'Message')}</span><span class="r" style="font-family:var(--font-body);color:var(--muted);font-weight:500;font-size:11px;">${esc((m.created_at||'').slice(0,10))}</span></div>`
-    ).join('');
+    // Render title + body + posted-at. Body is the actual message
+    // content (previously only the title showed). Date pulled from
+    // `posted_at` (the canonical column on company_messages) with a
+    // `created_at` fallback for older rows.
+    el.innerHTML = rows.slice(0, 4).map(m => {
+      const title = esc(m.title || m.subject || 'Message');
+      const body  = esc(m.body  || '').replace(/\n/g, '<br>');
+      const date  = esc((m.posted_at || m.created_at || '').slice(0, 10));
+      const author= esc(m.posted_by_name || m.author || '');
+      const meta  = [date, author].filter(Boolean).join(' · ');
+      return `<div style="padding:10px 0;border-bottom:1px dashed var(--border);">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;">
+          <div style="font-weight:700;color:var(--navy);font-size:13.5px;">${title}</div>
+          <div style="font-size:11px;color:var(--muted);white-space:nowrap;">${meta}</div>
+        </div>
+        ${body ? `<div style="margin-top:4px;font-size:12.5px;color:var(--text);line-height:1.5;">${body}</div>` : ''}
+      </div>`;
+    }).join('');
   }
 
   // ── Clock-in card (tech-only) ─────────────────────────────────────────
