@@ -2246,20 +2246,17 @@ def portal_login(req: PortalLoginRequest, request: Request, response: Response):
     if existing:
         reset_pin_failures(existing["id"])
 
-    # EVERY customer must have MFA enrolled (was: only commercial). Block
-    # login until they enrol — returning a one-shot enrolment token that
-    # the portal_dashboard's enrol-mode handler upgrades to a full
-    # session once MFA is confirmed. Pre-launch security review,
-    # 2026-05-23.
-    if not customer.get("mfa_enabled"):
-        enrol_token = _make_token(
-            {"sub": str(customer["id"]), "type": "customer_mfa_enrol"},
-            MFA_TOKEN_TTL,
-        )
-        return {"requires_mfa_setup": True, "mfa_enrol_token": enrol_token,
-                "name": customer["name"]}
-
-    # MFA verification step if already enrolled.
+    # Operator policy (2026-05-25): MFA is OPTIONAL on the customer
+    # portal. Previously every customer was force-marched into TOTP
+    # enrolment at first sign-in (pre-launch security review). Operator
+    # rolled that back because customers couldn't sign in and the
+    # tightened PIN floor + lockout is sufficient defence-in-depth at
+    # the customer tier. The staff portals (/staff) still hard-require
+    # MFA; only the customer-facing /portal flow is relaxed here.
+    #
+    # If a customer has *already* enrolled MFA via the self-serve
+    # security panel, we still demand the TOTP code on every sign-in —
+    # so opting in is honoured even though it's not forced.
     if customer.get("mfa_enabled"):
         if not req.mfa_code:
             mfa_token = _make_token(

@@ -1475,8 +1475,11 @@
       lines.push(`Account type: <strong>${esc(c.customer_type || 'residential')}</strong>`);
       lines.push(`Sign-in method: <strong>${c.auth_mode === 'password' ? 'Password' : 'PIN'}</strong>`);
       lines.push(`Two-factor authentication: <strong>${c.mfa_enabled ? '✓ Enabled' : '✗ Not enabled'}</strong>`);
+      // MFA on the customer portal is optional (per operator policy
+      // 2026-05-25). Encourage commercial customers to opt in but
+      // don't tell them they "must" — the next sign-in won't force it.
       if (c.customer_type === 'commercial' && !c.mfa_enabled) {
-        lines.push('<span style="color:#991b1b;">Commercial accounts must enable MFA at next login.</span>');
+        lines.push('<span style="color:#9a3412;">Optional but recommended for commercial accounts — enable below.</span>');
       }
       document.getElementById('acct-status').innerHTML = lines.join('<br>');
       document.getElementById('mfa-status-msg').textContent = c.mfa_enabled
