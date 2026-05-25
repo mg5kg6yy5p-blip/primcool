@@ -4819,12 +4819,36 @@
       { label: 'Admin', onClick: "showPanel('customers')" },
       { label: _PANEL_TITLES[name] || name },
     ]);
-    if (name === 'fs') { fsLoadCurrentTab(); }
-    if (name === 'delegations') { loadDelegationsPanel(); }
-    if (name === 'companymsg') { cmLoad(); }
-    if (name === 'warehouse') { whInit(); }
-    if (name === 'myprofile') { loadMpProfile(); }
-    if (name === 'inventory') { loadInventoryStaffCard(); }
+    // Each panel-specific loader gets a defensive try/catch so a thrown
+    // exception inside one of them never blocks the rest of showPanel
+    // (the user reported blank panel content; the cause was a loader
+    // throwing AFTER the panel-element was made active but BEFORE its
+    // body content rendered).
+    function _safeLoad(fnName, fn) {
+      try { fn(); }
+      catch (e) {
+        console.error('[showPanel] ' + fnName + ' threw:', e);
+        // Surface the error in the panel body so the user knows
+        // something broke instead of staring at a blank page.
+        try {
+          const slot = document.querySelector('#panel-' + name + ' [id$="Body"]')
+                    || document.querySelector('#panel-' + name + ' [id$="TableBody"]')
+                    || document.querySelector('#panel-' + name);
+          if (slot) {
+            slot.innerHTML = '<div style="padding:18px;background:#fee2e2;color:#991b1b;border-radius:8px;font-size:13px;border:1px solid #fca5a5;">'
+              + 'Loader <code>' + fnName + '()</code> failed: <strong>' + (e.message || e) + '</strong>'
+              + '<br><small style="color:#7f1d1d;">Open DevTools console for the stack trace.</small>'
+              + '</div>';
+          }
+        } catch(_) {}
+      }
+    }
+    if (name === 'fs') { _safeLoad('fsLoadCurrentTab', fsLoadCurrentTab); }
+    if (name === 'delegations') { _safeLoad('loadDelegationsPanel', loadDelegationsPanel); }
+    if (name === 'companymsg') { _safeLoad('cmLoad', cmLoad); }
+    if (name === 'warehouse') { _safeLoad('whInit', whInit); }
+    if (name === 'myprofile') { _safeLoad('loadMpProfile', loadMpProfile); }
+    if (name === 'inventory') { _safeLoad('loadInventoryStaffCard', loadInventoryStaffCard); }
     // Auto-hide the global security-alert banner when the user is already
     // looking at the Audit Log (where the alerts live). Reappears as soon
     // as they navigate to any other panel and the alert is still open.
@@ -13740,8 +13764,25 @@
   (function patchKpiShowPanel() {
     const orig = window.showPanel;
     window.showPanel = function(name) {
-      orig.apply(this, arguments);
-      if (name === 'kpi') { kpiInitPanel().then(() => kpiLoadCurrentSubtab()); }
+      try { orig.apply(this, arguments); }
+      catch (e) { console.error('[showPanel] orig threw:', e); }
+      if (name === 'kpi') {
+        try {
+          kpiInitPanel()
+            .then(() => kpiLoadCurrentSubtab())
+            .catch(e => {
+              console.error('[kpiPanel] init/load failed:', e);
+              const slot = document.getElementById('kpiSubpanel-dashboard') ||
+                           document.getElementById('panel-kpi');
+              if (slot) slot.innerHTML =
+                '<div style="padding:18px;background:#fee2e2;color:#991b1b;border-radius:8px;font-size:13px;border:1px solid #fca5a5;margin:14px 0;">'
+                + 'KPI panel failed to load: <strong>' + (e.message || e) + '</strong>'
+                + '<br><small style="color:#7f1d1d;">Open DevTools console for the stack trace.</small></div>';
+            });
+        } catch (e) {
+          console.error('[kpiPanel] sync throw:', e);
+        }
+      }
     };
   })();
 </script>
