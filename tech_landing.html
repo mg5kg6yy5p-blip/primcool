@@ -548,6 +548,17 @@
       document.getElementById('container').classList.toggle('wide', t === 'profile');
       if (t === 'profile') loadProfileTab();
     }
+    // Deep-link router — /tech/home#profile lands on Profile, #signin
+    // lands on Sign-in. Lets staff_home tiles route directly into the
+    // pane the tile is named for, instead of dropping the user on the
+    // default Sign-in tab every time.
+    function _maybeOpenTechTabFromHash() {
+      const h = (location.hash || '').replace(/^#/, '').trim();
+      if (h === 'profile') switchTab('profile');
+      else if (h === 'signin' || h === 'clockin' || h === 'clock-in') switchTab('signin');
+    }
+    window.addEventListener('hashchange', _maybeOpenTechTabFromHash);
+    setTimeout(_maybeOpenTechTabFromHash, 100);
 
     // ── Live clock ────────────────────────────────────────────────────
     function tickClock() {

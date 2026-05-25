@@ -216,32 +216,42 @@
     const t = document.getElementById('tiles');
     const tiles = [];
     if (me.kind === 'admin') {
-      tiles.push({ico:'🏢', label:'Admin Dashboard',  sub:'Manage everything',         href:'/admin',                              cls:'tile--navy'});
+      // Each tile points at the specific panel via the admin hash router
+      // (/admin#<panel>). The router opens that panel after role-visibility
+      // resolves so tiles only show what the viewer can actually reach.
+      tiles.push({ico:'🏢', label:'Admin Dashboard',  sub:'Customers + visits',          href:'/admin#customers',  cls:'tile--navy'});
       const role = (me.role || '').toLowerCase();
       if (role === 'super_admin' || role === 'supervisor_admin' || role === 'hr_admin') {
-        tiles.push({ico:'👷', label:'Warehouse Ops', sub:'Staff · receiving · shipping', onclick:"location.href='/admin#warehouse'",  cls:'tile--ice'});
+        tiles.push({ico:'👷', label:'Warehouse Ops',  sub:'Staff · receiving · shipping', href:'/admin#warehouse', cls:'tile--ice'});
       }
-      tiles.push({ico:'📊', label:'Performance KPI', sub:'Flags + scoreboards',         onclick:"location.href='/admin'",            cls:''});
-      tiles.push({ico:'⚠', label:'5S Exceptions',    sub:'Safety + workplace',          onclick:"location.href='/admin'",            cls:'tile--coral', count: tasks.open_5s_exceptions});
-      tiles.push({ico:'💰', label:'My Pay',           sub:'Payslips + history',         onclick:"location.href='/admin'",            cls:'tile--lime'});
-      tiles.push({ico:'👤', label:'My Profile',       sub:'Identity + security',        onclick:"location.href='/admin'",            cls:''});
+      tiles.push({ico:'📦', label:'Warehouse',        sub:'Parts & inventory',            href:'/admin#inventory', cls:''});
+      tiles.push({ico:'📊', label:'Performance KPI',  sub:'Flags + scoreboards',          href:'/admin#kpi',       cls:''});
+      tiles.push({ico:'⚠', label:'5S Exceptions',    sub:'Safety + workplace',           href:'/admin#fs',        cls:'tile--coral', count: tasks.open_5s_exceptions});
+      tiles.push({ico:'🗓', label:'Schedule',         sub:'Visit calendar',               href:'/admin#schedule',  cls:''});
+      tiles.push({ico:'⏱', label:'Timesheets',       sub:'Hours + approvals',            href:'/admin#timesheets',cls:''});
+      tiles.push({ico:'🧾', label:'Invoices',         sub:'AR + payments',                href:'/admin#invoices',  cls:''});
+      tiles.push({ico:'📄', label:'Documents',        sub:'Contracts + IDs',              href:'/admin#documents', cls:''});
+      tiles.push({ico:'⭐', label:'Reviews',          sub:'Customer feedback',            href:'/admin#reviews',   cls:''});
+      tiles.push({ico:'📜', label:'Audit Log',        sub:'Tamper-evident trail',         href:'/admin#audit',     cls:''});
+      tiles.push({ico:'💰', label:'My Pay',           sub:'Payslips + history',          href:'/admin#myprofile', cls:'tile--lime'});
+      tiles.push({ico:'👤', label:'My Profile',       sub:'Identity + security',         href:'/admin#myprofile', cls:''});
     } else {
       // tech / warehouse / parts runner — staff_type tells us which.
       const st = me.staff_type || 'tech';
       if (st === 'tech') {
-        tiles.push({ico:'🛠', label:"Today's Jobs",   sub:'Queue + visits',             href:'/tech',                                cls:'tile--lime',  count: tasks.open_jobs});
-        tiles.push({ico:'🕒', label:'Clock In',       sub:'Start your shift',           href:'/tech/home',                           cls:'tile--ice'});
-        tiles.push({ico:'⚠', label:'5S Audit',        sub:'Start / end-shift',          href:'/tech/home',                           cls:'tile--coral', count: tasks.my_open_5s});
+        tiles.push({ico:'🛠', label:"Today's Jobs",   sub:'Queue + visits',             href:'/tech',                cls:'tile--lime',  count: tasks.open_jobs});
+        tiles.push({ico:'🕒', label:'Clock In',       sub:'Start your shift',           href:'/tech/home#signin',    cls:'tile--ice'});
+        tiles.push({ico:'⚠', label:'5S Audit',        sub:'Start / end-shift',          href:'/tech/5s',             cls:'tile--coral', count: tasks.my_open_5s});
       } else if (st === 'parts_runner') {
-        tiles.push({ico:'🚚', label:'Deliveries',     sub:"Today's runs",               href:'/tech/home',                           cls:'tile--lime'});
-        tiles.push({ico:'🕒', label:'Clock In',       sub:'Start your shift',           href:'/tech/home',                           cls:'tile--ice'});
+        tiles.push({ico:'🚚', label:'Deliveries',     sub:"Today's runs",               href:'/tech',                cls:'tile--lime'});
+        tiles.push({ico:'🕒', label:'Clock In',       sub:'Start your shift',           href:'/tech/home#signin',    cls:'tile--ice'});
       } else {
         // warehouse_floor / warehouse_manager
-        tiles.push({ico:'📦', label:'Warehouse Floor', sub:'Inventory + stock',         href:'/tech/home',                           cls:'tile--lime'});
-        tiles.push({ico:'🕒', label:'Clock In',       sub:'Start your shift',           href:'/tech/home',                           cls:'tile--ice'});
+        tiles.push({ico:'📦', label:'Warehouse Floor', sub:'Inventory + stock',         href:'/tech/home#signin',    cls:'tile--lime'});
+        tiles.push({ico:'🕒', label:'Clock In',       sub:'Start your shift',           href:'/tech/home#signin',    cls:'tile--ice'});
       }
-      tiles.push({ico:'💰', label:'My Pay',          sub:'Payslips + history',          href:'/tech/home',                           cls:''});
-      tiles.push({ico:'👤', label:'My Profile',      sub:'CV + certifications',         href:'/tech/home',                           cls:''});
+      tiles.push({ico:'💰', label:'My Pay',          sub:'Payslips + history',          href:'/tech/home#profile',   cls:''});
+      tiles.push({ico:'👤', label:'My Profile',      sub:'CV + certifications',         href:'/tech/home#profile',   cls:''});
     }
     t.innerHTML = tiles.map(x => {
       const attr = x.href ? `href="${x.href}"` : `href="javascript:void(0)" onclick="${esc(x.onclick||'')}"`;
@@ -278,7 +288,7 @@
   // ── Header actions ────────────────────────────────────────────────────
   function goMyProfile() {
     if (!_me) return;
-    location.href = _me.kind === 'admin' ? '/admin' : '/tech/home';
+    location.href = _me.kind === 'admin' ? '/admin#myprofile' : '/tech/home#profile';
   }
   async function doSignOut() {
     try {

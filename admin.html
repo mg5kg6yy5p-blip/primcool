@@ -4062,6 +4062,11 @@
     setTimeout(_maybeOpenVisitFromHash, 60);
     // Honor /admin#technician/{id} deep-link for super_admin
     setTimeout(_maybeOpenTechnicianFromHash, 60);
+    // Honor /admin#<panel> deep-link from the unified /home worklet
+    // tiles (e.g. #kpi, #fs, #warehouse, #myprofile). Fires after the
+    // role-visibility pass so we don't try to open a panel the viewer
+    // can't see. 80ms beats the other deep-link timers by enough.
+    setTimeout(_maybeOpenPanelFromHash, 80);
     // ── Pattern A: re-render Tier A lists once the PC access-bundle resolves so
     //    PC.gateRow / PC.gateLinkHtml gating reflects actual permissions.
     if (typeof PC !== 'undefined' && PC.access) {
@@ -4779,6 +4784,29 @@
     ]);
   }
   window.pcPushCrumb = pcPushCrumb;
+
+  // ── Hash → panel router ─────────────────────────────────────────────
+  // Top-level panels can be deep-linked via /admin#<panel>, e.g.
+  // /admin#kpi opens Performance KPI. Lets the unified /home worklet
+  // tiles route a click straight to the correct admin panel instead
+  // of dumping every tile on the Customers list.
+  // Compound deep-links (#customer/123, #visit/456, #invoice/7/edit)
+  // are handled by their dedicated routers — we only catch the bare
+  // panel name here so we don't fight them.
+  const _PANEL_NAMES_FOR_HASH = new Set([
+    'customers','visits','techs','invoices','documents','inventory',
+    'schedule','timesheets','payroll','mypay','admins','audit','reviews',
+    'fs','delegations','kpi','companymsg','warehouse','myprofile',
+  ]);
+  function _maybeOpenPanelFromHash() {
+    const h = (location.hash || '').replace(/^#/, '').trim();
+    if (!h || h.indexOf('/') !== -1) return;            // compound route → leave alone
+    if (!_PANEL_NAMES_FOR_HASH.has(h))   return;        // unknown panel name
+    const nav = document.getElementById('nav-' + h);
+    if (!nav || nav.offsetParent === null) return;      // user lacks the perm to see it
+    try { showPanel(h); } catch (_) {}
+  }
+  window.addEventListener('hashchange', _maybeOpenPanelFromHash);
 
   function showPanel(name) {
     // Any panel switch on mobile also closes the drawer.
