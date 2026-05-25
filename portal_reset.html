@@ -99,10 +99,10 @@
 
       <div id="form">
         <label for="pin1">New PIN</label>
-        <input type="password" id="pin1" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="••••" autocomplete="off">
+        <input type="password" id="pin1" inputmode="numeric" pattern="[0-9]*" maxlength="16" placeholder="••••" autocomplete="off">
 
         <label for="pin2">Confirm PIN</label>
-        <input type="password" id="pin2" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="••••" autocomplete="off">
+        <input type="password" id="pin2" inputmode="numeric" pattern="[0-9]*" maxlength="16" placeholder="••••" autocomplete="off">
 
         <button class="btn" id="submitBtn" onclick="doReset()">Set New PIN</button>
       </div>
@@ -130,7 +130,7 @@
       const btn  = document.getElementById('submitBtn');
       hideAlerts();
 
-      if (!/^\d{4,8}$/.test(pin1)) { showErr('PIN must be 4–8 digits.'); return; }
+      if (!/^\d{6,16}$/.test(pin1)) { showErr('PIN must be 6–16 digits.'); return; }
       if (pin1 !== pin2) { showErr('PINs do not match.'); return; }
 
       btn.disabled = true; btn.textContent = 'Saving…';

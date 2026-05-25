@@ -2334,13 +2334,13 @@ def verify_customer(code: str, pin: str):
 # runs, no phone-number-on-file matches.
 # Lockout: 5 failed attempts → 30-minute auto-reset window.
 #
-# The 10-digit floor was raised from 6 → 10 per the pre-launch security
-# review (GAP-PIN-STRENGTH). Existing PINs continue to authenticate
-# until the user changes them — at which point the new rules apply.
-# Combined with the must_change_credentials flag from item #2, every
-# active customer / tech is funnelled into a forced reset on first
-# prod login, so the floor effectively becomes mandatory then.
-PIN_MIN_LEN              = 10
+# Operator decision (May 2026): roll the PIN floor back from 10 → 6
+# digits. The 10-digit raise from the GAP-PIN-STRENGTH review was too
+# aggressive for field-tech ergonomics — techs were memorising on
+# paper. Combined with the hard-required MFA gate across every portal
+# and the 5-attempt lockout below, 6 digits + TOTP is the agreed
+# defence-in-depth posture.
+PIN_MIN_LEN              = 6
 PIN_MAX_LEN              = 16
 PIN_LOCKOUT_THRESHOLD    = 5
 PIN_LOCKOUT_MINUTES      = 30

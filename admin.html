@@ -2346,7 +2346,7 @@
           <div class="modal-body">
             <label class="modal-label">Name</label>
             <input id="whNew-name" class="modal-input" type="text">
-            <label class="modal-label">PIN (≥10 digits)</label>
+            <label class="modal-label">PIN (6–16 digits)</label>
             <input id="whNew-pin" class="modal-input" type="text" inputmode="numeric">
             <label class="modal-label">Phone</label>
             <input id="whNew-phone" class="modal-input" type="text">
@@ -3130,8 +3130,8 @@
           <div class="field-error" id="err-f-code" style="display:none;color:var(--danger);font-size:11px;margin-top:3px;"></div>
         </div>
         <div class="field">
-          <label for="f-pin">Initial PIN (4–8 digits) *</label>
-          <input id="f-pin" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="••••" style="letter-spacing:6px;font-family:'Courier New',monospace;">
+          <label for="f-pin">Initial PIN (6–16 digits) *</label>
+          <input id="f-pin" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="16" placeholder="••••" style="letter-spacing:6px;font-family:'Courier New',monospace;">
           <div class="field-error" id="err-f-pin" style="display:none;color:var(--danger);font-size:11px;margin-top:3px;"></div>
         </div>
       </div>
@@ -3594,7 +3594,7 @@
       </div>
       <div class="field-row" id="t-onboard-row">
         <div class="field"><label>Hire Date *</label><input id="t-hire" type="date"></div>
-        <div class="field"><label>Initial PIN (4–8 digits) *</label><input id="t-pin" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="••••" style="letter-spacing:6px;font-family:'Courier New',monospace;"></div>
+        <div class="field"><label>Initial PIN (6–16 digits) *</label><input id="t-pin" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="16" placeholder="••••" style="letter-spacing:6px;font-family:'Courier New',monospace;"></div>
       </div>
       <div class="form-error" id="err-addTech"></div>
       <p id="t-onboard-hint" style="font-size:12px;color:var(--muted);">PRID is auto-generated from initials + hire date (e.g. <strong>PCMR200526</strong>) and used as their sign-in code at <strong>/tech</strong>.</p>
@@ -3771,7 +3771,7 @@
     </div>
     <div class="modal-body">
       <p style="font-size:13px;color:var(--muted);margin-bottom:10px;">Set a new PIN for <strong id="resetCustPinName"></strong>. Share the PIN privately with the customer — it cannot be retrieved later.</p>
-      <div class="field"><label>New PIN (4–8 digits)</label><input id="rcp-pin" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="8" style="letter-spacing:6px;font-family:'Courier New',monospace;"></div>
+      <div class="field"><label>New PIN (6–16 digits)</label><input id="rcp-pin" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="16" style="letter-spacing:6px;font-family:'Courier New',monospace;"></div>
       <div class="form-error" id="err-resetCustomerPin"></div>
     </div>
     <div class="modal-footer">
@@ -3790,7 +3790,7 @@
     </div>
     <div class="modal-body">
       <p style="font-size:13px;color:var(--muted);margin-bottom:10px;">Set a new PIN for <strong id="resetPinName"></strong>. Tell them the new PIN — it cannot be retrieved later.</p>
-      <div class="field"><label>New PIN (4–8 digits)</label><input id="rp-pin" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="8" style="letter-spacing:6px;font-family:'Courier New',monospace;"></div>
+      <div class="field"><label>New PIN (6–16 digits)</label><input id="rp-pin" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="16" style="letter-spacing:6px;font-family:'Courier New',monospace;"></div>
       <div class="form-error" id="err-resetPin"></div>
     </div>
     <div class="modal-footer">
@@ -7555,7 +7555,7 @@
     }
     if (!body.name)                       { _setFieldErr('f-name', 'Full name is required.'); firstBad = firstBad || 'f-name'; }
     if (!body.pin)                        { _setFieldErr('f-pin', 'Initial PIN is required.'); firstBad = firstBad || 'f-pin'; }
-    else if (!/^\d{4,8}$/.test(body.pin)) { _setFieldErr('f-pin', 'PIN must be 4–8 digits.');   firstBad = firstBad || 'f-pin'; }
+    else if (!/^\d{6,16}$/.test(body.pin)) { _setFieldErr('f-pin', 'PIN must be 6–16 digits.');   firstBad = firstBad || 'f-pin'; }
     if (firstBad) {
       // Move focus to first invalid field so keyboard users land there.
       document.getElementById(firstBad)?.focus();
@@ -7588,7 +7588,7 @@
 
   async function submitResetCustomerPin() {
     const pin = document.getElementById('rcp-pin').value.trim();
-    if (!/^\d{4,8}$/.test(pin)) { showErr('err-resetCustomerPin','PIN must be 4–8 digits.'); return; }
+    if (!/^\d{6,16}$/.test(pin)) { showErr('err-resetCustomerPin','PIN must be 6–16 digits.'); return; }
     try {
       await api('PUT', `/api/admin/customers/${resetPinCustomerId}/pin`, { pin });
       closeModal('resetCustomerPin');
@@ -10595,7 +10595,7 @@
       hourly_rate: parseFloat(document.getElementById('t-rate').value) || 0,
     };
     if (!body.pin || !body.name || !body.hire_date) { showErr('err-addTech','Name, PIN, and hire date are required.'); return; }
-    if (!/^\d{4,8}$/.test(body.pin)) { showErr('err-addTech','PIN must be 4–8 digits.'); return; }
+    if (!/^\d{6,16}$/.test(body.pin)) { showErr('err-addTech','PIN must be 6–16 digits.'); return; }
     try {
       const res = await api('POST', '/api/admin/techs', body);
       closeModal('addTech');
@@ -10615,7 +10615,7 @@
 
   async function submitResetPin() {
     const pin = document.getElementById('rp-pin').value.trim();
-    if (!/^\d{4,8}$/.test(pin)) { showErr('err-resetPin','PIN must be 4–8 digits.'); return; }
+    if (!/^\d{6,16}$/.test(pin)) { showErr('err-resetPin','PIN must be 6–16 digits.'); return; }
     try {
       await api('PUT', `/api/admin/techs/${resetPinTechId}/pin`, { pin });
       closeModal('resetPin');

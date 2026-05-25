@@ -214,12 +214,12 @@
       <input type="text" id="code" placeholder="PC-0001" maxlength="20" autocomplete="off" spellcheck="false" style="margin-bottom:14px;">
 
       <label for="pin">PIN <span id="pwToggle" style="float:right;font-weight:400;text-transform:none;font-size:11px;"><a href="#" onclick="event.preventDefault();usePassword()" style="color:var(--teal);">Use password instead →</a></span></label>
-      <input type="password" id="pin" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="••••" autocomplete="off" style="letter-spacing:12px;text-align:center;font-size:22px;">
+      <input type="password" id="pin" inputmode="numeric" pattern="[0-9]*" maxlength="16" placeholder="••••" autocomplete="off" style="letter-spacing:12px;text-align:center;font-size:22px;">
       <input type="password" id="password" placeholder="Password" autocomplete="current-password" style="display:none;font-size:16px;">
 
       <div id="mfaRow" style="display:none;">
         <label for="mfaCode" style="margin-top:14px;">Two-factor code</label>
-        <input type="text" id="mfaCode" inputmode="numeric" maxlength="8" placeholder="6-digit code or backup code" autocomplete="one-time-code" style="text-align:center;font-size:18px;">
+        <input type="text" id="mfaCode" inputmode="numeric" maxlength="16" placeholder="6-digit code or backup code" autocomplete="one-time-code" style="text-align:center;font-size:18px;">
       </div>
 
       <div class="error" id="error"></div>
