@@ -2825,13 +2825,26 @@ def _verify_tech_totp_or_backup(tech: dict, code: str) -> bool:
 def _resolve_tech_enrolment_actor(request: Request) -> dict:
     """The MFA enrol endpoints accept either a full tech session token
     OR the short-lived tech_mfa_enrol token from tech_login(). Returns
-    the technician row. Raises HTTPException on bad/expired token."""
-    raw = _read_token(request, COOKIE_TECH) or ""
+    the technician row. Raises HTTPException on bad/expired token.
+
+    BUG FIX (2026-05-25): the Bearer header is checked FIRST, the
+    pc_tech_session cookie second. Previously the cookie won
+    unconditionally — so a stale cookie from a deleted-then-recreated
+    tech would override the fresh mfa_enrol_token in the Authorization
+    header and surface as 'Account inactive' (because the deleted
+    tech id no longer existed in the technicians table). The enrol
+    flow's contract is "Bearer the short-lived enrol token"; this
+    matches that contract and falls back to the cookie only when no
+    Bearer is supplied (a tech who's already signed in calling /setup
+    via the My Profile UI). Stale cookie that points at a deleted
+    tech now triggers a clearer 401 message + tells the client to
+    clear stored credentials."""
+    h = request.headers.get("authorization", "")
+    raw = ""
+    if h.lower().startswith("bearer "):
+        raw = h.split(" ", 1)[1].strip()
     if not raw:
-        # Bearer
-        h = request.headers.get("authorization", "")
-        if h.lower().startswith("bearer "):
-            raw = h.split(" ", 1)[1].strip()
+        raw = _read_token(request, COOKIE_TECH) or ""
     if not raw:
         raise HTTPException(401, "Authentication required")
     try:
@@ -2844,7 +2857,13 @@ def _resolve_tech_enrolment_actor(request: Request) -> dict:
         raise HTTPException(403, "Forbidden")
     tech_id = int(data.get("sub", 0))
     tech = get_tech_by_id(tech_id) if tech_id else None
-    if not tech or not tech.get("active"):
+    if not tech:
+        # Either a stale cookie from a deleted tech, or a forged sub.
+        # Distinct error message so the client knows to clear stored
+        # creds + sign in again instead of getting the wrong "inactive"
+        # diagnostic.
+        raise HTTPException(401, "Stale session — clear cookies / use a private window and sign in again")
+    if not tech.get("active"):
         raise HTTPException(403, "Account inactive")
     return tech
 
@@ -4226,12 +4245,19 @@ def _resolve_admin_enrolment_actor(request: Request) -> dict:
 
     Without this, the unified /staff portal couldn't drive admin
     enrolment — the enrol token is what the user has at that point,
-    but _require_admin rejects everything except type='admin'."""
-    raw = _read_token(request, COOKIE_ADMIN) or ""
+    but _require_admin rejects everything except type='admin'.
+
+    BUG FIX (2026-05-25): Bearer header now wins over the cookie so
+    a stale pc_admin_session cookie from a deleted-then-recreated
+    admin doesn't sabotage the fresh enrol_token. Same symptom as
+    the tech side — see _resolve_tech_enrolment_actor for full
+    write-up."""
+    h = request.headers.get("authorization", "")
+    raw = ""
+    if h.lower().startswith("bearer "):
+        raw = h.split(" ", 1)[1].strip()
     if not raw:
-        h = request.headers.get("authorization", "")
-        if h.lower().startswith("bearer "):
-            raw = h.split(" ", 1)[1].strip()
+        raw = _read_token(request, COOKIE_ADMIN) or ""
     if not raw:
         raise HTTPException(401, "Authentication required")
     try:
@@ -4244,7 +4270,9 @@ def _resolve_admin_enrolment_actor(request: Request) -> dict:
         raise HTTPException(403, "Forbidden")
     admin_id = int(data.get("sub", 0))
     admin = get_admin_user_by_id(admin_id) if admin_id else None
-    if not admin or not admin.get("active"):
+    if not admin:
+        raise HTTPException(401, "Stale session — clear cookies / use a private window and sign in again")
+    if not admin.get("active"):
         raise HTTPException(403, "Account inactive")
     return admin
 
