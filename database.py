@@ -248,6 +248,12 @@ def _con():
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA synchronous=FULL")
     con.execute("PRAGMA foreign_keys=ON")
+    # R2 (30-staff scale): set a 5s busy_timeout so two writers (e.g.
+    # request handler + scheduled-task tick + bulk seed) wait for each
+    # other instead of failing immediately with SQLITE_BUSY. Without
+    # this any concurrency triggered "database is locked" errors on
+    # the larger working set.
+    con.execute("PRAGMA busy_timeout=5000")
     return con
 
 
@@ -915,6 +921,21 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_audit_action  ON audit_log(action, created_at)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_audit_target  ON audit_log(target_type, target_id)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at)")
+
+    # R2 (scale-up indexes for 30 staff + 200 customers). Hot-path
+    # queries that previously did sequential scans on the ~7k-visit /
+    # ~800-invoice working set.
+    con.execute("CREATE INDEX IF NOT EXISTS idx_visits_tech_date   ON maintenance_visits(assigned_tech_id, scheduled_date)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_visits_customer    ON maintenance_visits(customer_id, scheduled_date)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_visits_status_date ON maintenance_visits(status, scheduled_date)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_visits_date        ON maintenance_visits(scheduled_date)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_visits_equipment   ON maintenance_visits(equipment_id)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_equipment_customer ON equipment(customer_id, active)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_customers_code     ON customers(customer_code)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_customers_active   ON customers(active, customer_type)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_tech_code          ON technicians(tech_code)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_tech_active_type   ON technicians(active, staff_type)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_visit_photos_visit ON visit_photos(visit_id)")
 
     # Read-access trail — separate from audit_log so the hash chain stays
     # focused on mutations and security events. Reads are high-volume; this

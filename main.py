@@ -403,6 +403,41 @@ ADMIN_PERMS["hr_admin"].update({
     "warehouse:view_queue",  # for staffing context — read-only
 })
 
+# ── R5: 30-staff scale — dedicated dispatcher + warehouse_supervisor ────────
+# At 30 staff (18 techs + 4 warehouse + 3 dispatchers + 5 admins) the
+# admin_supervisor role started doing too many jobs. Split into two
+# tighter roles so the dispatcher seat doesn't need full supervisor
+# powers and the warehouse manager seat doesn't need full HR powers.
+#
+# dispatcher — schedules and re-assigns visits, marks call-outs,
+#              edits tech schedules + on-call. Cannot manage staff,
+#              cannot touch invoices, cannot view payroll.
+# warehouse_supervisor — runs the warehouse floor: onboards warehouse
+#              staff, approves count variances, manages assets, but
+#              has no field-tech or admin powers.
+ADMIN_PERMS["dispatcher"] = {
+    "tech:view",
+    "customer:view",
+    "visit:view", "visit:create", "visit:update",
+    "schedule:view", "schedule:edit",
+    "tech:manage_schedule", "tech:approve_overtime",
+    "audit:view_self",
+    "documents:view",
+    "kpi:view_team", "kpi:flag_view",
+    "company:read_messages",
+}
+ADMIN_PERMS["warehouse_supervisor"] = {
+    "tech:view",                     # roster context only
+    "warehouse:view_queue", "warehouse:manage_assets",
+    "inventory:view", "inventory:create", "inventory:update", "inventory:adjust",
+    "po:create", "po:send", "po:receive", "po:close_out",
+    "count:create", "count:approve",
+    "fs:asset_manage", "fs:report_view",
+    "audit:view_self",
+    "documents:view",
+    "company:read_messages",
+}
+
 
 def _admin_can(role: str, perm: str) -> bool:
     return perm in ADMIN_PERMS.get(role, set())

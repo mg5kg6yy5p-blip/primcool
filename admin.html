@@ -10122,7 +10122,9 @@
     const params = new URLSearchParams();
     if (since) params.set('since', since + 'T00:00:00Z');
     if (until) params.set('until', until + 'T23:59:59Z');
-    params.set('limit', '500');
+    // R4 scale-up: dropped 500 → 200 to match the server-side default
+    // and avoid hauling 5K rows back into the SPA every nav switch.
+    params.set('limit', '200');
     try {
       if (mode === 'reads') {
         if (ap) params.set('path_prefix', '/api/admin/' + ap);
