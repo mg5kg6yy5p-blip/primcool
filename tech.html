@@ -573,7 +573,7 @@
   window.__pcPendingAction = _pendingAction; // expose for fsSubmit post-hook
   if (token) {
     if (!_view) {
-      window.location.replace('/tech/home');
+      window.location.replace('/home');
     } else {
       showApp();
       if (_view === '5s') { setTimeout(() => { try { fsShowHome(); } catch(_){} }, 100); }
@@ -608,7 +608,7 @@
       token = data.token;
       localStorage.setItem('pc_tech_token', token);
       // TP-2: route into the 2-tab landing rather than straight to jobs.
-      window.location.replace('/tech/home');
+      window.location.replace('/home');
     } catch {
       showErr('Connection error. Try again.');
     } finally {
@@ -2267,7 +2267,7 @@
         try {
           await api('POST', '/api/tech/me/sign-out');
           toast('Signed out ✓', 'ok');
-          window.location.replace('/tech/home');
+          window.location.replace('/home');
           return;
         } catch (se) {
           // Fetch the freshest cycle status before deciding next step.
@@ -2285,7 +2285,7 @@
           // Most likely 409 not_clocked_in (EOD cron already signed
           // them out). Just bounce home — the landing will resolve.
           toast('Audit saved — returning to home', 'ok');
-          window.location.replace('/tech/home');
+          window.location.replace('/home');
           return;
         }
       }

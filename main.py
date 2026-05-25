@@ -10625,24 +10625,18 @@ async def _start_fs_escalation_loop():
 _LIFESPAN_STARTERS.append(_start_fs_escalation_loop)
 
 
+# /me + /tech/home — RETIRED (operator removed the page entirely
+# 2026-05-25). Both URLs now 302 to /home. The clock-in card on /home
+# replaces "Sign In for Work"; per-staff identity + recent pay live on
+# /home's hero + Recent pay card; payroll detail is in admin#myprofile
+# for admins (techs view their pay history on /home's Recent pay card).
 @app.get("/me")
-def my_profile_page():
-    """Unified 'My Profile' surface for every staff member. Was the
-    /tech/home 2-tab landing; the Sign-In For Work flow has been
-    rolled into /home, so this URL is now the profile-only view (CV
-    / certifications / pay history / schedule, plus clock-in
-    retained as a tab for back-compat)."""
-    return FileResponse("tech_landing.html")
+def my_profile_redirect():
+    return RedirectResponse(url="/home", status_code=302)
 
 
 @app.get("/tech/home")
 def tech_home_redirect():
-    """Operator merged the tech landing into the unified /home as a
-    single staff dashboard. Anything that still deep-links to the old
-    URL (bookmarks, PWAs, push notifications) lands on /home instead.
-
-    A user looking specifically for their tech profile / payslips can
-    reach it via the 'My Profile' tile on /home (→ /me)."""
     return RedirectResponse(url="/home", status_code=302)
 
 

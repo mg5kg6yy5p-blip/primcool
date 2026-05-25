@@ -274,8 +274,10 @@
         // warehouse_floor / warehouse_manager
         tiles.push({ico:'📦', label:'Warehouse Floor', sub:'Inventory + stock',         href:'/admin#inventory',     cls:'tile--lime'});
       }
-      tiles.push({ico:'💰', label:'My Pay',          sub:'Payslips + history',          href:'/me#pay',              cls:''});
-      tiles.push({ico:'👤', label:'My Profile',      sub:'CV + certifications',         href:'/me',                  cls:''});
+      // /me + /tech/home retired 2026-05-25. Tech recent pay shows
+      // in the "Recent pay" card below the tiles; identity + clock-in
+      // are on the hero above. No standalone My Profile / My Pay
+      // surface for techs at the moment — operator's call.
     }
     t.innerHTML = tiles.map(x => {
       const attr = x.href ? `href="${x.href}"` : `href="javascript:void(0)" onclick="${esc(x.onclick||'')}"`;
@@ -403,7 +405,9 @@
   // ── Header actions ────────────────────────────────────────────────────
   function goMyProfile() {
     if (!_me) return;
-    location.href = _me.kind === 'admin' ? '/admin#myprofile' : '/tech/home#profile';
+    // /tech/home + /me are retired — techs see their identity + recent
+    // pay on /home; admins have a dedicated profile panel.
+    location.href = _me.kind === 'admin' ? '/admin#myprofile' : '/home';
   }
   async function doSignOut() {
     try {
