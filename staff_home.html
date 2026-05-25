@@ -267,7 +267,7 @@
       const st = me.staff_type || 'tech';
       if (st === 'tech') {
         tiles.push({ico:'🛠', label:"Today's Jobs",   sub:'Queue + visits',             href:'/tech',                cls:'tile--lime',  count: tasks.open_jobs});
-        tiles.push({ico:'⚠', label:'5S Audit',        sub:'Start / end-shift',          href:'/tech/5s',             cls:'tile--coral', count: tasks.my_open_5s});
+        tiles.push({ico:'⚠', label:'5S Audit',        sub:'Start / end-shift',          href:'/tech?view=5s',        cls:'tile--coral', count: tasks.my_open_5s});
       } else if (st === 'parts_runner') {
         tiles.push({ico:'🚚', label:'Deliveries',     sub:"Today's runs",               href:'/tech',                cls:'tile--lime'});
       } else {
