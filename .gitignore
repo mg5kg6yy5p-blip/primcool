@@ -1,10 +1,16 @@
 # ─── Runtime data — never commit ───────────────────────────────────────────
 # Local databases — NEVER commit (contain encrypted-at-app-layer PII; chain-hash material)
+# Globs are intentionally broad: SQLite spawns -shm/-wal sidecars, and some tools
+# produce space-suffixed duplicates (e.g. "submissions.db-shm 2.db-shm") that a bare
+# "submissions.db-shm" rule would NOT match.
 submissions.db
-submissions.db-shm
-submissions.db-wal
+submissions.db-shm*
+submissions.db-wal*
 submissions.db.bak-*
 submissions.db.before-*
+
+# Editor / scratch backups — never source
+*.bak
 
 # Uploads — customer PII, photo evidence
 uploads/photos/*

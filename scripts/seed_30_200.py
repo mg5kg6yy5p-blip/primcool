@@ -33,10 +33,24 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
+# Field encryption keys must be in env BEFORE crypto/database import so
+# `create_customer` (which encrypts PII) doesn't raise "key not configured".
+if not os.environ.get("FIELD_ENCRYPTION_KEY"):
+    try:
+        with open(os.path.join(ROOT, ".dev.env")) as _f:
+            for _line in _f:
+                if _line.startswith("export "):
+                    _k, _v = _line[7:].strip().split("=", 1)
+                    os.environ.setdefault(_k, _v.strip('"'))
+    except FileNotFoundError:
+        pass
+
 from database import (  # type: ignore
     _con, _hash_pin, _hash_password,
     create_admin_user, create_tech, create_customer, create_equipment,
-    create_visit, create_invoice_with_lines,
+    create_visit, create_invoice_with_lines, record_invoice_payment_v2,
+    create_part, create_pay_period, upsert_payslip,
+    create_purchase_order,
 )
 
 random.seed(20260524)
@@ -171,6 +185,14 @@ def wipe_customers(con):
         ("DELETE FROM equipment",                                                                   "equipment"),
         ("DELETE FROM sessions WHERE subject_type='customer'",                                      "customer sessions"),
         ("DELETE FROM customers",                                                                   "customers"),
+        # Payroll wipe — periodic reseeds rebuild the full payslip stream.
+        ("DELETE FROM payslips",                                                                    "payslips"),
+        ("DELETE FROM pay_periods",                                                                 "pay_periods"),
+        # Inventory wipe — keeps the catalog fresh; PO history rebuilt below.
+        ("DELETE FROM purchase_order_lines",                                                        "po_lines"),
+        ("DELETE FROM purchase_orders",                                                             "purchase_orders"),
+        ("DELETE FROM part_movements",                                                              "part_movements"),
+        ("DELETE FROM parts",                                                                       "parts"),
     ]
     con.execute("PRAGMA defer_foreign_keys = ON")
     for sql, label in plan:
@@ -197,6 +219,7 @@ def seed_admins(con, creds):
             })
             uname = f"pc_{prid.lower()}"
             con.execute("UPDATE admin_users SET username = ? WHERE id = ?", (uname, admin_id))
+            con.commit()  # release the write lock so the next create_*() (own connection) isn't blocked
             creds.append(("ADMIN", prid, name, role, uname, pw))
             print(f"  + {name:<22} {role:<22} {uname:<24} {pw}")
         except Exception as e:
@@ -334,9 +357,15 @@ def seed_visits(con, customers, equipment, techs, days_back=180):
         eq_by_cust.setdefault(cid, []).append(eid)
     today = date.today()
     visits = []
-    # Average ~12 visits per customer over 180 days for residential,
-    # ~16 for commercial.
-    target_per_customer = {"residential": 12, "commercial": 16}
+    # Scale visit volume with horizon: original (~12 res / ~16 com per 180d)
+    # works out to roughly one residential visit every 15 days and one
+    # commercial visit every 11 days. Keep that cadence so a 365-day run
+    # produces a proportionally bigger workload (~24 / ~33 per customer).
+    scale = max(1.0, days_back / 180.0)
+    target_per_customer = {
+        "residential": max(1, int(round(12 * scale))),
+        "commercial":  max(1, int(round(16 * scale))),
+    }
     statuses = ["completed"] * 8 + ["in_progress"] * 1 + ["scheduled"] * 1
     for (cid, code, name, ctype) in customers:
         n = target_per_customer.get(ctype, 12)
@@ -365,7 +394,7 @@ def seed_visits(con, customers, equipment, techs, days_back=180):
     return visits
 
 # ── Step 6: invoices ─────────────────────────────────────────────────────
-def seed_invoices(con, customers, visits):
+def seed_invoices(con, customers, visits, days_back=180):
     print(f"\nSeeding invoices (one per ~3 completed visits)...")
     # Group completed visits by customer.
     by_cust = {}
@@ -374,11 +403,13 @@ def seed_invoices(con, customers, visits):
             by_cust.setdefault(cid, []).append(vid)
     today = date.today()
     invoices = []
+    # Spread issue dates across the same horizon as the visits.
+    issue_window = max(30, int(days_back * 0.85))
     for cid, vlist in by_cust.items():
         # ~1 invoice per 3 visits.
         n_inv = max(1, len(vlist) // 3)
         for i in range(n_inv):
-            issued = today - timedelta(days=random.randint(0, 150))
+            issued = today - timedelta(days=random.randint(0, issue_window))
             due    = issued + timedelta(days=30)
             line_count = random.randint(1, 4)
             lines = []
@@ -404,10 +435,17 @@ def seed_invoices(con, customers, visits):
                     "issue_date": issued.isoformat(),
                     "due_date":   due.isoformat(),
                     "currency":   "JMD",
-                    "status":     random.choices(["sent","paid","draft"], weights=[40,55,5])[0],
                     "line_items": lines,
                     "notes": "",
                 })
+                # create_invoice() always persists status='draft' (the real
+                # lifecycle promotes via a separate "send" action). Simulate that
+                # here so AR aging + the payments pass have realistic data. Commit
+                # each iteration so the next create_*() (own connection) isn't
+                # lock-blocked. seed_payments() then marks ~75% of 'sent' as paid.
+                if random.choices(["sent", "draft"], weights=[90, 10])[0] == "sent":
+                    con.execute("UPDATE invoices SET status='sent' WHERE id=?", (inv_id,))
+                    con.commit()
                 invoices.append(inv_id)
             except Exception as e:
                 pass
@@ -423,37 +461,250 @@ def seed_payments(con):
         "WHERE status IN ('sent','paid') AND issue_date < ? "
         "ORDER BY id", (today,)
     ).fetchall()
+    today_d = date.today()
     n_paid = 0
+    n_err = 0
     for r in rows:
         # Mark ~75% as paid in full.
         if random.random() > 0.75:
             continue
+        # Pay 3-28 days after issue, but never in the future.
+        pay_d = date.fromisoformat(r["issue_date"]) + timedelta(days=random.randint(3, 28))
+        if pay_d > today_d:
+            pay_d = today_d
         try:
-            con.execute(
-                "INSERT INTO invoice_payments "
-                "(invoice_id, paid_at, amount, method, reference, recorded_by) "
-                "VALUES (?, ?, ?, 'bank_transfer', ?, NULL)",
-                (r["id"], (date.fromisoformat(r["issue_date"]) + timedelta(days=random.randint(3, 28))).isoformat(),
-                 r["total"], f"REF-{random.randint(100000, 999999)}"),
+            # record_invoice_payment_v2 manages its own connection, computes the
+            # chain_hash, recomputes invoice totals, and auto-flips to 'paid'.
+            record_invoice_payment_v2(
+                r["id"],
+                {
+                    "amount":       r["total"],
+                    "payment_date": pay_d.isoformat(),
+                    "method":       "bank_transfer",
+                    "reference":    f"REF-{random.randint(100000, 999999)}",
+                },
+                recorded_by_label="seed",
             )
-            con.execute("UPDATE invoices SET status='paid' WHERE id = ?", (r["id"],))
             n_paid += 1
         except Exception as e:
+            n_err += 1
+            print(f"  ! payment for invoice {r['id']} failed: {e}")
+    print(f"  + {n_paid} payments recorded" + (f" ({n_err} errors)" if n_err else ""))
+
+# ── Step 8: inventory (parts catalog + initial stock + a few POs) ────────
+PARTS_CATALOG = [
+    # (sku, name, category, unit, cost, reorder, supplier)
+    ("REF-R410A-10",  "Refrigerant R-410A 10lb cylinder", "Refrigerant",  "cylinder", 18500, 8,  "Cool Supply Co"),
+    ("REF-R32-10",    "Refrigerant R-32 10lb cylinder",   "Refrigerant",  "cylinder", 16800, 6,  "Cool Supply Co"),
+    ("REF-R22-10",    "Refrigerant R-22 10lb cylinder",   "Refrigerant",  "cylinder", 32000, 3,  "Heritage Refrigerants"),
+    ("CAP-35-370",    "Run capacitor 35µF 370V",          "Capacitor",    "each",       1850, 20, "Caribbean HVAC Parts"),
+    ("CAP-45-440",    "Dual run capacitor 45/5µF 440V",   "Capacitor",    "each",       2250, 20, "Caribbean HVAC Parts"),
+    ("CAP-55-440",    "Dual run capacitor 55/5µF 440V",   "Capacitor",    "each",       2450, 15, "Caribbean HVAC Parts"),
+    ("CON-30A-2P",    "Contactor 30A 2-pole 24V coil",    "Contactor",    "each",       3200, 12, "Caribbean HVAC Parts"),
+    ("CON-40A-2P",    "Contactor 40A 2-pole 24V coil",    "Contactor",    "each",       3800, 10, "Caribbean HVAC Parts"),
+    ("MTR-FAN-1/4",   "Condenser fan motor 1/4 HP",       "Motor",        "each",      18500, 5,  "Caribbean HVAC Parts"),
+    ("MTR-FAN-1/3",   "Condenser fan motor 1/3 HP",       "Motor",        "each",      21200, 5,  "Caribbean HVAC Parts"),
+    ("MTR-BLW-1/2",   "Blower motor 1/2 HP",              "Motor",        "each",      27500, 4,  "Caribbean HVAC Parts"),
+    ("TUB-CU-3/8-50", "Copper tubing 3/8\" x 50ft roll",  "Tubing",       "roll",      14500, 6,  "Pan Carib Metals"),
+    ("TUB-CU-1/2-50", "Copper tubing 1/2\" x 50ft roll",  "Tubing",       "roll",      17500, 6,  "Pan Carib Metals"),
+    ("TUB-CU-5/8-50", "Copper tubing 5/8\" x 50ft roll",  "Tubing",       "roll",      21500, 4,  "Pan Carib Metals"),
+    ("INS-3/8-AC",    "Armaflex insulation 3/8\" x 6ft",  "Insulation",   "stick",      1200, 30, "Pan Carib Metals"),
+    ("INS-1/2-AC",    "Armaflex insulation 1/2\" x 6ft",  "Insulation",   "stick",      1450, 30, "Pan Carib Metals"),
+    ("FLT-16x20",     "Pleated filter 16x20x1",           "Filter",       "each",        450, 50, "Cool Supply Co"),
+    ("FLT-20x25",     "Pleated filter 20x25x1",           "Filter",       "each",        550, 50, "Cool Supply Co"),
+    ("FLT-16x25",     "Pleated filter 16x25x1",           "Filter",       "each",        500, 50, "Cool Supply Co"),
+    ("DRN-CLN-32",    "Drain line cleaner 32oz",          "Chemical",     "bottle",     1100, 18, "Cool Supply Co"),
+    ("COIL-CLN-1G",   "Evap/condenser coil cleaner 1gal", "Chemical",     "gallon",     2950, 12, "Cool Supply Co"),
+    ("LEAK-DET-8",    "UV leak detection dye 8oz",        "Chemical",     "bottle",     3200, 6,  "Heritage Refrigerants"),
+    ("DUC-TAPE-AL",   "Foil duct tape 2\" x 60yd",         "Tape",         "roll",        950, 20, "Pan Carib Metals"),
+    ("WIR-THM-18-5",  "Thermostat wire 18/5 x 250ft",     "Wiring",       "roll",       8500, 6,  "Caribbean HVAC Parts"),
+    ("WIR-THM-18-8",  "Thermostat wire 18/8 x 250ft",     "Wiring",       "roll",      11500, 4,  "Caribbean HVAC Parts"),
+    ("THM-DIG-PRG",   "Digital programmable thermostat",  "Thermostat",   "each",       5500, 10, "Caribbean HVAC Parts"),
+    ("THM-WIFI",      "WiFi smart thermostat",            "Thermostat",   "each",      14500, 5,  "Caribbean HVAC Parts"),
+    ("SEN-PRE-LOW",   "Low pressure sensor",              "Sensor",       "each",       4200, 4,  "Heritage Refrigerants"),
+    ("SEN-PRE-HI",    "High pressure sensor",             "Sensor",       "each",       4500, 4,  "Heritage Refrigerants"),
+    ("GAU-MANIFOLD",  "Manifold gauge set R-410A/R-32",   "Tool",         "set",       18500, 2,  "Heritage Refrigerants"),
+    ("VAC-PUMP-3CFM", "Vacuum pump 3 CFM",                "Tool",         "each",      28500, 1,  "Heritage Refrigerants"),
+    ("BLT-V-A38",     "V-belt A38",                       "Belt",         "each",        650, 15, "Pan Carib Metals"),
+    ("BLT-V-A42",     "V-belt A42",                       "Belt",         "each",        720, 15, "Pan Carib Metals"),
+    ("BLT-V-A46",     "V-belt A46",                       "Belt",         "each",        780, 12, "Pan Carib Metals"),
+    ("PAN-DRAIN-PVC", "PVC condensate drain pan 24\"",    "Drain",        "each",       3200, 6,  "Pan Carib Metals"),
+    ("PMP-CON-AUTO",  "Condensate pump auto-shutoff",     "Pump",         "each",       8900, 4,  "Caribbean HVAC Parts"),
+    ("SOL-VAL-1/4",   "Solenoid valve 1/4\" R-410A",      "Valve",        "each",       6200, 4,  "Heritage Refrigerants"),
+    ("TXV-2T-R410",   "TXV 2-ton R-410A",                 "Valve",        "each",      14500, 3,  "Heritage Refrigerants"),
+    ("TXV-3T-R410",   "TXV 3-ton R-410A",                 "Valve",        "each",      16500, 3,  "Heritage Refrigerants"),
+    ("FLR-DRYER",     "Filter dryer 1/4\" SAE",           "Filter",       "each",       2400, 10, "Heritage Refrigerants"),
+    ("REL-START-RB",  "Hard start kit / relay+capacitor", "Capacitor",    "kit",        4200, 8,  "Caribbean HVAC Parts"),
+    ("UV-LAMP-24V",   "UV germicidal lamp 24V",           "Air Quality",  "each",       6900, 4,  "Cool Supply Co"),
+    ("ION-AIR-CELL",  "Bipolar ionization air cell",      "Air Quality",  "each",      18500, 2,  "Cool Supply Co"),
+    ("NUT-FLR-1/4",   "Flare nut 1/4\" (pack of 10)",     "Fittings",     "pack",        450, 25, "Pan Carib Metals"),
+    ("NUT-FLR-3/8",   "Flare nut 3/8\" (pack of 10)",     "Fittings",     "pack",        550, 25, "Pan Carib Metals"),
+    ("BRZ-ROD-15",    "Brazing rod 15% silver 1lb",       "Consumable",   "lb",        12500, 4,  "Pan Carib Metals"),
+    ("NIT-CYL-80",    "Nitrogen cylinder 80 cu ft",       "Consumable",   "cylinder",   8500, 3,  "Heritage Refrigerants"),
+    ("CLN-RAG-25",    "Microfiber cleaning rags (25pk)",  "Consumable",   "pack",       1200, 20, "Cool Supply Co"),
+    ("PPE-GLV-NIT",   "Nitrile gloves (100 box)",         "PPE",          "box",        1800, 15, "Cool Supply Co"),
+    ("PPE-GLS-SFT",   "Safety glasses ANSI Z87",          "PPE",          "each",        650, 25, "Cool Supply Co"),
+    ("PPE-MSK-N95",   "N95 respirator (20 pack)",         "PPE",          "pack",       2400, 12, "Cool Supply Co"),
+    ("BOLT-LAG-3",    "Lag bolt 1/4\" x 3\" (50pk)",      "Fasteners",    "pack",       1100, 12, "Pan Carib Metals"),
+    ("PAD-NEO-18",    "Neoprene vibration pad 18\"x18\"", "Mount",        "each",       2200, 10, "Pan Carib Metals"),
+    ("BRK-WALL-AC",   "Wall bracket 18-24K BTU",          "Mount",        "each",       4800, 8,  "Caribbean HVAC Parts"),
+    ("BRK-WALL-AC-L", "Wall bracket 30-36K BTU",          "Mount",        "each",       6500, 6,  "Caribbean HVAC Parts"),
+    ("FUSE-30A",      "Disconnect fuse 30A (3pk)",        "Electrical",   "pack",       1450, 10, "Caribbean HVAC Parts"),
+    ("FUSE-60A",      "Disconnect fuse 60A (3pk)",        "Electrical",   "pack",       1850, 8,  "Caribbean HVAC Parts"),
+    ("WHL-CSTR-3",    "Caster wheel 3\" swivel",          "Hardware",     "each",        850, 12, "Pan Carib Metals"),
+    ("LBL-WARN-HV",   "Warning label HV (50pk)",          "Labels",       "pack",        650, 15, "Cool Supply Co"),
+]
+
+def seed_inventory(con, super_admin_id):
+    print(f"\nSeeding inventory ({len(PARTS_CATALOG)} parts)...")
+    existing_skus = _existing_codes(con, "parts", "sku")
+    n_created = 0
+    part_ids = []
+    for (sku, name, cat, unit, cost, reorder, supplier) in PARTS_CATALOG:
+        if sku in existing_skus:
+            r = con.execute("SELECT id FROM parts WHERE sku = ?", (sku,)).fetchone()
+            if r: part_ids.append((r["id"], cost))
+            continue
+        try:
+            # Initial on-hand: 1.5x to 4x reorder point so most parts are above
+            # threshold but a handful land low (creates reorder pressure).
+            qty = max(0, int(reorder * random.uniform(0.6, 3.5)))
+            pid = create_part({
+                "sku": sku, "name": name, "category": cat,
+                "unit": unit, "unit_cost": cost,
+                "quantity": qty, "reorder_point": reorder,
+                "supplier": supplier, "location": "Main Warehouse",
+            })
+            part_ids.append((pid, cost))
+            n_created += 1
+        except Exception as e:
+            print(f"  ! {sku}: {e}")
+    print(f"  + {n_created} new parts (total catalog: {len(part_ids)})")
+    # A handful of purchase orders for restock pressure.
+    n_po = 0
+    suppliers = list({p[6] for p in PARTS_CATALOG})
+    for sup in suppliers:
+        sup_parts = [p for p in PARTS_CATALOG if p[6] == sup]
+        if not sup_parts: continue
+        # Build 1-2 POs per supplier.
+        for _ in range(random.randint(1, 2)):
+            chosen = random.sample(sup_parts, min(len(sup_parts), random.randint(3, 6)))
+            lines = []
+            for (sku, _n, _c, _u, cost, reorder, _s) in chosen:
+                r = con.execute("SELECT id FROM parts WHERE sku = ?", (sku,)).fetchone()
+                if not r: continue
+                lines.append({"part_id": r["id"],
+                              "quantity": int(reorder * random.uniform(1.5, 3.0)),
+                              "expected_unit_cost": cost * random.uniform(0.95, 1.05)})
+            if not lines: continue
+            try:
+                create_purchase_order(sup, lines, super_admin_id)
+                n_po += 1
+            except Exception as e:
+                print(f"  ! PO {sup}: {e}")
+    print(f"  + {n_po} purchase orders drafted")
+
+
+# ── Step 9: payroll (fortnightly payslips across the horizon) ────────────
+def seed_payroll(con, days_back, generated_by):
+    """Generate fortnightly pay periods + payslips for every active staff
+    member across the operational horizon. Techs get hourly pay; admins get
+    fixed-salary pay; warehouse staff get hourly. All amounts in JMD."""
+    print(f"\nSeeding payroll over the last {days_back} days...")
+    # Build 14-day periods walking BACK from today.
+    today = date.today()
+    n_periods = max(1, days_back // 14)
+    periods = []
+    for i in range(n_periods):
+        end   = today - timedelta(days=i * 14)
+        start = end - timedelta(days=13)
+        label = f"PP {start.isoformat()} – {end.isoformat()}"
+        try:
+            pid = create_pay_period(start.isoformat(), end.isoformat(),
+                                    label, generated_by, "JMD")
+            periods.append(pid)
+        except Exception as e:
             pass
-    print(f"  + {n_paid} payments recorded")
+    print(f"  + {len(periods)} pay periods created")
+
+    # Admin salary table (per fortnight, JMD).
+    admin_salary = {
+        "super_admin":       180_000,
+        "supervisor_admin":  130_000,
+        "system_admin":      120_000,
+        "hr_admin":          120_000,
+        "ceo_assistant":     115_000,
+        "inventory_manager": 120_000,
+        "dispatcher":         85_000,
+        "warehouse_supervisor": 110_000,
+    }
+    admins = con.execute(
+        "SELECT id, name, prid, role FROM admin_users WHERE active = 1"
+    ).fetchall()
+    techs = con.execute(
+        "SELECT id, name, prid, role, hourly_rate, staff_type FROM technicians WHERE active = 1"
+    ).fetchall()
+
+    n_slips = 0
+    for pid in periods:
+        for a in admins:
+            salary = admin_salary.get(a["role"], 100_000)
+            bonus  = round(salary * random.uniform(0.0, 0.04), 2)
+            try:
+                upsert_payslip(pid, "admin", a["id"], a["name"], a["prid"],
+                               {"fixed_salary": salary, "bonus": bonus,
+                                "hours_regular": 0, "hours_overtime": 0,
+                                "hourly_rate": 0, "overtime_rate": 0,
+                                "other_deductions": 0,
+                                "pay_periods_per_year": 26}, generated_by)
+                n_slips += 1
+            except Exception as e:
+                pass
+        for t in techs:
+            rate = float(t["hourly_rate"] or 0)
+            ot_rate = rate * 1.5
+            # 80h base over 14 days + 0–18h overtime; apprentices fewer hours.
+            base_h = random.uniform(72, 88) if t["role"] != "apprentice" else random.uniform(60, 80)
+            ot_h   = random.uniform(0, 12) if t["role"] != "apprentice" else random.uniform(0, 4)
+            try:
+                upsert_payslip(pid, "tech", t["id"], t["name"], t["prid"],
+                               {"hours_regular": round(base_h, 2),
+                                "hours_overtime": round(ot_h, 2),
+                                "hourly_rate": rate, "overtime_rate": ot_rate,
+                                "fixed_salary": 0, "bonus": 0,
+                                "other_deductions": 0,
+                                "pay_periods_per_year": 26}, generated_by)
+                n_slips += 1
+            except Exception as e:
+                pass
+    print(f"  + {n_slips} payslips generated")
+
 
 # ── Main ─────────────────────────────────────────────────────────────────
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--apply", action="store_true",
                     help="Commit writes (without this, exits before any change).")
+    ap.add_argument("--residential", type=int, default=140,
+                    help="Number of residential customers (default 140).")
+    ap.add_argument("--commercial",  type=int, default=60,
+                    help="Number of commercial customers (default 60).")
+    ap.add_argument("--days", type=int, default=180,
+                    help="Operational horizon in days to backfill (default 180).")
     args = ap.parse_args()
 
+    total_customers = args.residential + args.commercial
+    # Rough estimates so the dry-run message stays accurate.
+    scale = max(1.0, args.days / 180.0)
+    est_visits   = int(args.residential * 12 * scale + args.commercial * 16 * scale)
+    est_invoices = est_visits // 3
     if not args.apply:
         print("DRY RUN — no writes. Re-run with --apply to commit.")
         print(f"Will create: {len(ADMIN_ROSTER)} admins, {len(TECH_ROSTER)} field techs,")
-        print(f"             {len(WAREHOUSE_ROSTER)} warehouse staff, 200 customers,")
-        print(f"             ~400 equipment, ~2,400 visits, ~800 invoices.")
+        print(f"             {len(WAREHOUSE_ROSTER)} warehouse staff, {total_customers} customers")
+        print(f"             ({args.residential} residential + {args.commercial} commercial),")
+        print(f"             ~{int(total_customers * 2.0)} equipment, ~{est_visits:,} visits "
+              f"over {args.days} days, ~{est_invoices:,} invoices.")
         return
 
     creds = []
@@ -471,19 +722,33 @@ def main():
             "SELECT id FROM technicians WHERE active=1 AND staff_type='tech' AND role IN ('lead_tech','tech','apprentice')"
         ).fetchall()]
 
-        customers = seed_customers(con, creds)
+        customers = seed_customers(con, creds,
+                                   n_residential=args.residential,
+                                   n_commercial=args.commercial)
         con.commit()
 
         equipment = seed_equipment(con, customers)
         con.commit()
 
-        visits = seed_visits(con, customers, equipment, techs)
+        visits = seed_visits(con, customers, equipment, techs, days_back=args.days)
         con.commit()
 
-        seed_invoices(con, customers, visits)
+        seed_invoices(con, customers, visits, days_back=args.days)
         con.commit()
 
         seed_payments(con)
+        con.commit()
+
+        # Use the first super_admin as the "generated_by" actor for
+        # inventory + payroll bootstrap rows.
+        sa = con.execute(
+            "SELECT id FROM admin_users WHERE role = 'super_admin' AND active = 1 "
+            "ORDER BY id LIMIT 1"
+        ).fetchone()
+        sa_id = sa["id"] if sa else 1
+        seed_inventory(con, sa_id)
+        con.commit()
+        seed_payroll(con, days_back=args.days, generated_by=sa_id)
         con.commit()
     finally:
         con.close()

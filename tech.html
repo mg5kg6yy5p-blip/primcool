@@ -20,7 +20,7 @@
       --teal: #22A08A;
       --teal-deep: #1A7A6A;
       --ice:  #7DD3E8;
-      --lime: #B6E021;
+      --lime: #22A08A;
       --mist: #F2F6FA;
       --amber: #f59e0b;
       --red: #dc2626;
@@ -35,7 +35,7 @@
       --font-body:    'IBM Plex Sans','Segoe UI',system-ui,-apple-system,sans-serif;
       --font-mono:    'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace;
       --shadow-sm: 0 1px 3px rgba(15,42,74,0.08), 0 8px 24px -16px rgba(15,42,74,0.25);
-      --gradient-cool: linear-gradient(90deg, var(--ice), var(--lime));
+      --gradient-cool: var(--navy);
     }
     * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
     body {
@@ -404,8 +404,150 @@
       border-radius: 8px;
       text-align: center;
     }
+
+    /* ── Equipment view + customer-equipment cards ───────────────────── */
+    .header-right .nav-pill {
+      background: rgba(255,255,255,0.10);
+      color: white;
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 14px;
+      padding: 5px 11px;
+      font-size: 12px;
+      cursor: pointer;
+      margin-right: 4px;
+    }
+    .header-right .nav-pill:hover { background: rgba(255,255,255,0.18); }
+    #equipView { padding: 14px 14px 80px; display: none; }
+    .eq-search {
+      display: flex; align-items: center; gap: 10px;
+      background: white; border: 1px solid var(--border);
+      border-radius: 12px; padding: 0 14px; height: 46px;
+      margin-bottom: 14px;
+    }
+    .eq-search input {
+      flex: 1; border: none; outline: none; background: transparent;
+      font-size: 15px; color: var(--text); font-family: inherit;
+    }
+    .eq-search .ico { color: var(--muted); }
+    .eq-section-title {
+      font-size: 11px; font-weight: 700; letter-spacing: 0.8px;
+      text-transform: uppercase; color: var(--muted);
+      margin: 6px 4px 8px;
+    }
+    .eq-customer-card {
+      background: white; border-radius: 12px;
+      padding: 14px; margin-bottom: 10px;
+      cursor: pointer;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+      transition: transform 0.1s, box-shadow 0.1s;
+    }
+    .eq-customer-card:active { transform: scale(0.99); }
+    .eq-customer-card .name { font-weight: 700; color: var(--navy); font-size: 15px; }
+    .eq-customer-card .sub  { font-size: 12px; color: var(--muted); margin-top: 3px; }
+    .eq-customer-header {
+      background: var(--navy); color: white;
+      border-radius: 12px; padding: 14px 16px; margin-bottom: 14px;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .eq-customer-header .name { font-weight: 700; font-size: 15px; }
+    .eq-customer-header .sub  { font-size: 12px; opacity: 0.8; margin-top: 3px; }
+    .eq-customer-header .switch-btn {
+      background: rgba(255,255,255,0.12); color: white;
+      border: 1px solid rgba(255,255,255,0.20);
+      border-radius: 10px; padding: 6px 12px;
+      font-size: 12px; cursor: pointer;
+    }
+    .eq-list { display: flex; flex-direction: column; gap: 10px; }
+    .eq-row {
+      background: white; border-radius: 12px;
+      padding: 14px 16px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+      border-left: 4px solid var(--teal);
+    }
+    .eq-row .name { font-weight: 700; color: var(--navy); font-size: 15px; margin-bottom: 4px; }
+    .eq-row .meta { font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+    .eq-row .meta strong { color: var(--text); font-weight: 600; }
+    .eq-row .actions { margin-top: 10px; display: flex; gap: 8px; }
+    .eq-row .actions button {
+      flex: 1; padding: 9px 12px;
+      background: var(--light); color: var(--navy);
+      border: 1px solid var(--border); border-radius: 8px;
+      font-size: 13px; font-weight: 600;
+      cursor: pointer;
+    }
+    .eq-row .actions button:hover { background: var(--bg); border-color: var(--teal); }
+    .eq-add-btn {
+      width: 100%; padding: 14px;
+      background: var(--teal); color: white;
+      border: none; border-radius: 12px;
+      font-size: 14px; font-weight: 700;
+      letter-spacing: 0.4px;
+      cursor: pointer;
+      margin-bottom: 14px;
+    }
+    .eq-add-btn:active { background: var(--teal-deep); }
+
+    /* Equipment add/edit modal (full-screen on mobile) */
+    .eq-modal-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.55); z-index: 600;
+      align-items: flex-end; justify-content: center;
+    }
+    .eq-modal-overlay.open { display: flex; }
+    .eq-modal {
+      background: white; width: 100%; max-width: 520px;
+      border-radius: 16px 16px 0 0;
+      max-height: 90vh; overflow-y: auto;
+      padding: 18px 18px calc(18px + env(safe-area-inset-bottom, 0px));
+    }
+    @media (min-width: 520px) {
+      .eq-modal-overlay { align-items: center; padding: 20px; }
+      .eq-modal { border-radius: 16px; }
+    }
+    .eq-modal h2 { color: var(--navy); font-size: 18px; margin-bottom: 4px; }
+    .eq-modal .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+    .eq-modal .field { margin-bottom: 12px; }
+    .eq-modal .field label {
+      display: block; font-size: 11px; font-weight: 700;
+      letter-spacing: 0.7px; text-transform: uppercase;
+      color: var(--navy); margin-bottom: 6px;
+    }
+    .eq-modal .field input,
+    .eq-modal .field textarea {
+      width: 100%; padding: 11px 13px;
+      border: 2px solid var(--border); border-radius: 10px;
+      font-size: 15px; color: var(--text);
+      outline: none; font-family: inherit;
+    }
+    .eq-modal .field input:focus,
+    .eq-modal .field textarea:focus { border-color: var(--teal); }
+    .eq-modal .field textarea { min-height: 70px; resize: vertical; }
+    .eq-modal .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .eq-modal .err {
+      background: #fff5f5; color: var(--red);
+      padding: 10px 12px; border-radius: 8px;
+      font-size: 13px; margin: 10px 0;
+      border: 1px solid #fed7d7;
+      display: none;
+    }
+    .eq-modal .footer {
+      display: flex; gap: 10px; margin-top: 16px;
+    }
+    .eq-modal .footer button {
+      flex: 1; padding: 13px;
+      border-radius: 10px; border: none;
+      font-size: 14px; font-weight: 600; cursor: pointer;
+    }
+    .eq-modal .footer .cancel {
+      background: var(--light); color: var(--navy);
+      border: 1px solid var(--border);
+    }
+    .eq-modal .footer .save {
+      background: var(--teal); color: white;
+    }
+    .eq-modal .footer .save:disabled { opacity: 0.6; }
   </style>
-  <script src="/static/pc_shared.js?v=1779707892"></script>
+  <script src="/static/pc_shared.js?v=1780700400"></script>
 </head>
 <body>
 
@@ -474,6 +616,7 @@
     </div>
     <div class="header-right">
       <span class="tech-name" id="hdrName"></span>
+      <button class="nav-pill" onclick="showEquipView()" title="Search customer equipment">Equipment</button>
       <button class="logout" onclick="doLogout()">Sign out</button>
     </div>
   </header>
@@ -519,6 +662,83 @@
 
   <!-- 5S VIEW -->
   <div id="fsView" style="display:none;padding:14px;font-family:'Barlow',-apple-system,system-ui,sans-serif;"></div>
+
+  <!-- EQUIPMENT VIEW (standalone — search → customer → equipment list) -->
+  <!-- Reached via the header "Equipment" pill OR via the Customer Equipment
+       card on the visit detail screen (which jumps straight to detail mode
+       for that visit's customer). Two modes:
+         search   — search bar + customer result cards
+         customer — header card + equipment list + Add Equipment button
+       _eqMode tracks which one is visible. -->
+  <div id="equipView">
+    <div id="eqSearchPane">
+      <div class="eq-search">
+        <span class="ico">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        </span>
+        <input id="eqSearchInput" type="search" autocomplete="off"
+               placeholder="Search customer name, code, phone…">
+      </div>
+      <div class="eq-section-title">Customers</div>
+      <div id="eqCustomerResults">
+        <div class="empty" style="padding:24px 12px;color:var(--muted);font-size:13px;text-align:center;">
+          Type to search, or browse all customers below.
+        </div>
+      </div>
+    </div>
+
+    <div id="eqCustomerPane" style="display:none;">
+      <div class="eq-customer-header" id="eqCustomerHeader"></div>
+      <button class="eq-add-btn" onclick="openTechEquipModal(null)">+ Add Equipment</button>
+      <div class="eq-section-title">Equipment on file</div>
+      <div class="eq-list" id="eqList">
+        <div class="empty" style="padding:24px 12px;color:var(--muted);font-size:13px;text-align:center;">
+          Loading…
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Tech-side Equipment add/edit modal (full-screen on mobile) -->
+<div class="eq-modal-overlay" id="techEquipModal">
+  <div class="eq-modal">
+    <h2 id="techEquipModalTitle">Add Equipment</h2>
+    <div class="subtitle" id="techEquipModalSub">For this customer</div>
+    <div class="field">
+      <label>Equipment Name *</label>
+      <input id="tem-name" placeholder="Server Room AC Unit">
+    </div>
+    <div class="row-2">
+      <div class="field">
+        <label>Type</label>
+        <input id="tem-type" placeholder="Split / Chiller">
+      </div>
+      <div class="field">
+        <label>Model</label>
+        <input id="tem-model" placeholder="LG S18ET">
+      </div>
+    </div>
+    <div class="row-2">
+      <div class="field">
+        <label>Serial Number</label>
+        <input id="tem-serial" placeholder="SN-XXXXXXXX">
+      </div>
+      <div class="field">
+        <label>Location</label>
+        <input id="tem-location" placeholder="3rd Floor, East Wing">
+      </div>
+    </div>
+    <div class="field">
+      <label>Notes</label>
+      <textarea id="tem-notes" placeholder="Additional notes…"></textarea>
+    </div>
+    <div class="err" id="tem-err"></div>
+    <div class="footer">
+      <button class="cancel" onclick="closeTechEquipModal()">Cancel</button>
+      <button class="save"   id="tem-save-btn" onclick="submitTechEquipForm()">Save</button>
+    </div>
+  </div>
 </div>
 
 <!-- Lightbox -->
@@ -643,6 +863,26 @@
     document.getElementById('app').style.display = 'block';
     await _refreshSignInState();
     await loadJobs();
+    // Deep-link from the staff landing's "Today's Jobs" tile. When ?focus=active
+    // (or ?job=<id>) is present, open the relevant job directly so the tech
+    // lands on what they're working on right now (or what's next today).
+    try {
+      const _focus = _qs.get('focus');
+      const _jobId = _qs.get('job');
+      if (_jobId) {
+        await openJob(Number(_jobId));
+      } else if (_focus === 'active') {
+        const inProg = (allJobs || []).find(j => j.status === 'in_progress');
+        let target = inProg;
+        if (!target) {
+          const todays = (allJobs || []).filter(j =>
+            isToday(j.scheduled_date) && j.status !== 'completed');
+          todays.sort((a, b) => (a.scheduled_time || '99:99').localeCompare(b.scheduled_time || '99:99'));
+          target = todays[0];
+        }
+        if (target) await openJob(target.id);
+      }
+    } catch (_) {}
     fsRefreshBadge();
     fsFlushQueue();
     // ── Pattern A: re-render once the PC access-bundle resolves so PC.gateRow /
@@ -834,6 +1074,12 @@
     document.getElementById('listView').style.display   = 'block';
     document.getElementById('detailView').style.display = 'none';
     document.getElementById('backBar').style.display    = 'none';
+    // The Equipment view + 5S view are siblings of listView — hide them too
+    // so the back-button never leaves the user on a stale screen.
+    const ev = document.getElementById('equipView');
+    if (ev) ev.style.display = 'none';
+    const fv = document.getElementById('fsView');
+    if (fv) fv.style.display = 'none';
     loadJobs();
   }
 
@@ -883,6 +1129,41 @@
           ${!isSignedInForWork ? `<div class="detail-row"><span class="l">Locked</span><span class="v" style="color:var(--muted);font-style:italic;">Sign in to view full customer details.</span></div>` : ''}
         </div>
 
+        ${(() => {
+          // Crew card — only render when there's more than one tech on the
+          // visit (lead + at least one crew member). techInfo.id is the
+          // signed-in tech; we compute their role relative to this job.
+          const allIds = j.all_tech_ids || (
+            j.assigned_tech_id ? [j.assigned_tech_id, ...(j.crew_tech_ids || [])] : (j.crew_tech_ids || [])
+          );
+          if (!allIds || allIds.length < 2) return '';
+          const myId = (typeof techInfo !== 'undefined' && techInfo) ? techInfo.id : null;
+          const iAmLead = (j.assigned_tech_id === myId);
+          const leadName = j.tech_name || '(lead unset)';
+          // Names of everyone EXCEPT the viewing tech, in lead-first order.
+          const others = [];
+          if (j.assigned_tech_id && j.assigned_tech_id !== myId && j.tech_name) {
+            others.push(esc(j.tech_name) + ' <span style="color:var(--muted);font-size:10px;font-weight:600;letter-spacing:0.3px;text-transform:uppercase;">Lead</span>');
+          }
+          (j.crew_tech_ids || []).forEach((cid, i) => {
+            if (cid === myId) return;
+            const cname = (j.crew_tech_names || [])[i] || ('Tech #' + cid);
+            others.push(esc(cname));
+          });
+          if (!others.length) return '';
+          const myRoleLabel = iAmLead
+            ? '<span style="background:var(--teal);color:white;padding:2px 8px;border-radius:10px;font-size:10.5px;font-weight:700;letter-spacing:0.4px;">YOU · LEAD</span>'
+            : '<span style="background:#eef2f7;color:#1d4ed8;padding:2px 8px;border-radius:10px;font-size:10.5px;font-weight:700;letter-spacing:0.4px;border:1px solid #c7d2e0;">YOU · CREW</span>';
+          return `
+          <div class="detail-card" style="border-left:4px solid var(--teal);">
+            <h3>On this job with you</h3>
+            <div style="margin-bottom:8px;">${myRoleLabel}</div>
+            <div style="display:flex;flex-direction:column;gap:6px;font-size:14px;">
+              ${others.map(o => `<div style="display:flex;align-items:center;gap:8px;"><span style="color:var(--muted);">👷</span><span>${o}</span></div>`).join('')}
+            </div>
+          </div>`;
+        })()}
+
         ${(j.contact_person_name || j.contact_person_phone) ? `
         <div class="detail-card">
           <h3>On-site Contact</h3>
@@ -911,7 +1192,7 @@
           </details>
         </div>` : ''}
 
-        <!-- Equipment card -->
+        <!-- Equipment card (visit's primary unit) -->
         ${j.equipment_name ? `
         <div class="detail-card">
           <h3>Equipment</h3>
@@ -919,6 +1200,25 @@
           ${j.equipment_type ? `<div class="detail-row"><span class="l">Type</span><span class="v">${esc(j.equipment_type)}</span></div>` : ''}
           ${j.equipment_model ? `<div class="detail-row"><span class="l">Model</span><span class="v">${esc(j.equipment_model)}</span></div>` : ''}
           ${j.equipment_location ? `<div class="detail-row"><span class="l">Location</span><span class="v">${esc(j.equipment_location)}</span></div>` : ''}
+        </div>` : ''}
+
+        <!-- Customer Equipment card — full register for j.customer_id, with
+             inline add/edit. Populated by loadVisitCustomerEquipment() after
+             renderDetail() paints the rest. -->
+        ${j.customer_id ? `
+        <div class="detail-card" id="visitEquipCard" data-customer-id="${j.customer_id}">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <h3 style="margin:0;">Customer Equipment</h3>
+            <button onclick="openTechEquipModal(null, ${j.customer_id}, ${esc(JSON.stringify(j.customer_name || '')).replace(/"/g,'&quot;')})"
+                    style="background:var(--teal);color:white;border:none;border-radius:8px;padding:7px 14px;font-size:12px;font-weight:700;cursor:pointer;">+ Add</button>
+          </div>
+          <div id="visitEquipList" style="display:flex;flex-direction:column;gap:8px;">
+            <div style="color:var(--muted);font-size:13px;padding:8px 0;">Loading…</div>
+          </div>
+          <button onclick="showEquipView(${j.customer_id}, ${esc(JSON.stringify(j.customer_name || '')).replace(/"/g,'&quot;')})"
+                  style="margin-top:10px;width:100%;padding:9px;background:var(--light);color:var(--navy);border:1px solid var(--border);border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;">
+            Open full equipment screen →
+          </button>
         </div>` : ''}
 
         <!-- Times card -->
@@ -1096,6 +1396,12 @@
       loadPartsCatalog();
       initSigPad();
     }
+
+    // Customer Equipment card on the visit detail screen is populated
+    // asynchronously so renderDetail doesn't block on the network. If the
+    // visit has no customer_id (rare) the card markup is omitted upstream
+    // and this becomes a no-op.
+    if (j.customer_id) loadVisitCustomerEquipment(j.customer_id);
   }
 
   // ── Parts catalog (tech-side) ──
@@ -1202,12 +1508,12 @@
   function photoTile(p, canDelete) {
     // Chain-of-custody chip: shows what the system actually captured for
     // this photo so the tech can confirm geo+timestamp made it through.
-    const cap = p.client_captured_at ? new Date(p.client_captured_at).toLocaleString() : null;
+    const cap = p.client_captured_at ? PC.fmtDateTime(p.client_captured_at) : null;
     const geo = (p.geo_lat != null && p.geo_lng != null)
       ? `📍 ${Number(p.geo_lat).toFixed(4)}, ${Number(p.geo_lng).toFixed(4)} (±${Math.round(p.geo_accuracy_m || 0)}m)`
       : null;
     const chips = [];
-    if (cap) chips.push(`<span title="captured ${esc(cap)}" style="background:rgba(0,0,0,0.55);color:white;font-size:9px;padding:1px 5px;border-radius:8px;">🕒 ${esc(new Date(p.client_captured_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}))}</span>`);
+    if (cap) chips.push(`<span title="captured ${esc(cap)}" style="background:rgba(0,0,0,0.55);color:white;font-size:9px;padding:1px 5px;border-radius:8px;">🕒 ${esc(PC.fmtTime(p.client_captured_at))}</span>`);
     if (geo) chips.push(`<span title="${esc(geo)}" style="background:rgba(0,0,0,0.55);color:white;font-size:9px;padding:1px 5px;border-radius:8px;">📍</span>`);
     return `
       <div class="photo-item" onclick="event.target.tagName==='BUTTON'||openLightbox('${p.url}')">
@@ -1450,8 +1756,7 @@
   }
   function fmtDate(d) {
     if (!d) return '';
-    const dt = new Date(d + (d.includes('T') ? '' : 'T00:00:00'));
-    return dt.toLocaleDateString('en-TT', { weekday: 'short', day: 'numeric', month: 'short' });
+    return PC.fmtDate(d);
   }
   function fmtTime12(t) {
     if (!t) return '';
@@ -1463,8 +1768,7 @@
   }
   function fmtTimeFull(iso) {
     if (!iso) return '';
-    const d = new Date(iso);
-    return d.toLocaleString('en-TT', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    return PC.fmtDateTime(iso);
   }
   function duration(startIso, endIso) {
     const ms = new Date(endIso) - new Date(startIso);
@@ -1598,7 +1902,7 @@
       const comp = (sc.current && sc.current.composite) || {};
       const kpis = (sc.current && sc.current.kpis) || {};
       const trend = sc.trend || [];
-      const updated = (comp.computed_at || '').slice(0,16).replace('T',' ');
+      const updated = PC.fmtDateTime(comp.computed_at);
       const trendStrip = trend.slice().reverse().map(t => {
         const b = t.band || 'insufficient_data';
         const c = b === 'green' ? '#10b981' : b === 'amber' ? '#f59e0b' : b === 'red' ? '#ef4444' : '#9ca3af';
@@ -1763,6 +2067,321 @@
       w.document.close();
     } catch (e) { toast(e.message, 'error'); }
   }
+
+  // ── Tech-side equipment management ──────────────────────────────────────
+  //
+  // Two access paths land here:
+  //   1) Header "Equipment" pill            → showEquipView() with no args
+  //      → search pane, then tap a customer → customer pane.
+  //   2) Visit detail "Customer Equipment"  → showEquipView(custId, custName)
+  //      → jumps straight to customer pane for the visit's customer.
+  // The same modal handles add (eqEditing=null) and edit (eqEditing=row).
+  let _eqMode    = 'search';   // 'search' | 'customer'
+  let _eqCustomer = null;       // {id, name, ...} when in customer mode
+  let _eqList    = [];          // last-loaded equipment for _eqCustomer
+  let _eqEditing = null;        // row currently being edited (or null = add)
+  let _eqSearchTimer = null;
+
+  async function showEquipView(customerId, customerName) {
+    // Hide siblings so we never stack views.
+    document.getElementById('listView').style.display    = 'none';
+    document.getElementById('detailView').style.display  = 'none';
+    const fv = document.getElementById('fsView');
+    if (fv) fv.style.display = 'none';
+    const bb = document.getElementById('backBar');
+    if (bb) {
+      bb.style.display = 'flex';
+      bb.textContent   = '← Back to Jobs';
+    }
+    document.getElementById('equipView').style.display = 'block';
+
+    if (customerId) {
+      // Direct-to-customer mode (from visit detail). Hydrate header from the
+      // arg first so the screen draws immediately, then refresh from the
+      // server to pick up anything richer.
+      _eqMode = 'customer';
+      _eqCustomer = { id: customerId, name: customerName || '' };
+      document.getElementById('eqSearchPane').style.display   = 'none';
+      document.getElementById('eqCustomerPane').style.display = 'block';
+      renderEqCustomerHeader();
+      try {
+        const c = await api('GET', `/api/tech/customers/${customerId}`);
+        _eqCustomer = c;
+        renderEqCustomerHeader();
+      } catch (e) { /* leave the stub header in place */ }
+      await loadEqList();
+      return;
+    }
+
+    // Search mode (header pill).
+    _eqMode = 'search';
+    _eqCustomer = null;
+    document.getElementById('eqSearchPane').style.display   = 'block';
+    document.getElementById('eqCustomerPane').style.display = 'none';
+    document.getElementById('eqSearchInput').value = '';
+    runEqCustomerSearch('');
+    // Focus the input on desktop; on mobile we don't, to avoid popping the
+    // keyboard before the user has even seen the screen.
+    if (window.matchMedia && !window.matchMedia('(pointer:coarse)').matches) {
+      setTimeout(() => document.getElementById('eqSearchInput').focus(), 50);
+    }
+  }
+  window.showEquipView = showEquipView;
+
+  function renderEqCustomerHeader() {
+    const el = document.getElementById('eqCustomerHeader');
+    if (!el || !_eqCustomer) return;
+    const sub = [
+      _eqCustomer.customer_code,
+      _eqCustomer.company,
+      _eqCustomer.address,
+      _eqCustomer.phone,
+    ].filter(Boolean).join(' · ');
+    el.innerHTML = `
+      <div>
+        <div class="name">${esc(_eqCustomer.name || '#' + _eqCustomer.id)}</div>
+        ${sub ? `<div class="sub">${esc(sub)}</div>` : ''}
+      </div>
+      <button class="switch-btn" onclick="eqSwitchCustomer()">Switch</button>`;
+  }
+
+  function eqSwitchCustomer() {
+    _eqMode = 'search';
+    _eqCustomer = null;
+    document.getElementById('eqSearchPane').style.display   = 'block';
+    document.getElementById('eqCustomerPane').style.display = 'none';
+    runEqCustomerSearch(document.getElementById('eqSearchInput').value || '');
+  }
+  window.eqSwitchCustomer = eqSwitchCustomer;
+
+  async function runEqCustomerSearch(q) {
+    const wrap = document.getElementById('eqCustomerResults');
+    wrap.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:18px;text-align:center;">Loading…</div>';
+    try {
+      const rows = await api('GET', `/api/tech/customers/search?q=${encodeURIComponent(q || '')}&limit=30`);
+      if (!rows || !rows.length) {
+        wrap.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:24px;text-align:center;">No customers matched “${esc(q || '')}”.</div>`;
+        return;
+      }
+      wrap.innerHTML = rows.map(c => {
+        const sub = [c.customer_code, c.company, c.phone].filter(Boolean).join(' · ');
+        return `<div class="eq-customer-card" onclick="pickEqCustomer(${c.id})">
+          <div class="name">${esc(c.name || '#' + c.id)}</div>
+          ${sub ? `<div class="sub">${esc(sub)}</div>` : ''}
+          ${c.address ? `<div class="sub">${esc(c.address)}</div>` : ''}
+        </div>`;
+      }).join('');
+    } catch (e) {
+      wrap.innerHTML = `<div style="color:var(--red);font-size:13px;padding:18px;text-align:center;">${esc(e.message || 'Search failed.')}</div>`;
+    }
+  }
+
+  async function pickEqCustomer(customerId) {
+    _eqMode = 'customer';
+    document.getElementById('eqSearchPane').style.display   = 'none';
+    document.getElementById('eqCustomerPane').style.display = 'block';
+    try {
+      _eqCustomer = await api('GET', `/api/tech/customers/${customerId}`);
+    } catch (e) {
+      _eqCustomer = { id: customerId, name: 'Customer #' + customerId };
+    }
+    renderEqCustomerHeader();
+    await loadEqList();
+  }
+  window.pickEqCustomer = pickEqCustomer;
+
+  async function loadEqList() {
+    const wrap = document.getElementById('eqList');
+    if (!_eqCustomer) return;
+    wrap.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:8px 0;">Loading…</div>';
+    try {
+      _eqList = await api('GET', `/api/tech/customers/${_eqCustomer.id}/equipment`) || [];
+      renderEqList(wrap, _eqList);
+    } catch (e) {
+      wrap.innerHTML = `<div style="color:var(--red);font-size:13px;padding:8px 0;">${esc(e.message || 'Could not load equipment.')}</div>`;
+    }
+  }
+
+  function renderEqList(wrap, rows) {
+    if (!rows || !rows.length) {
+      wrap.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:14px;text-align:center;background:white;border-radius:12px;">No equipment on file yet. Tap + Add Equipment to record the first unit.</div>`;
+      return;
+    }
+    wrap.innerHTML = rows.map((e, i) => {
+      const meta = [];
+      if (e.type)          meta.push(`<strong>${esc(e.type)}</strong>`);
+      if (e.model)         meta.push(esc(e.model));
+      if (e.serial_number) meta.push(`SN: ${esc(e.serial_number)}`);
+      if (e.location)      meta.push(esc(e.location));
+      const metaLine = meta.join(' · ');
+      const notes    = e.notes ? `<div class="meta" style="margin-top:6px;">${esc(e.notes).replace(/\n/g,'<br>')}</div>` : '';
+      return `<div class="eq-row" data-eq-id="${e.id}" data-eq-idx="${i}">
+        <div class="name">${esc(e.name)}</div>
+        ${metaLine ? `<div class="meta">${metaLine}</div>` : ''}
+        ${notes}
+        <div class="actions">
+          <button onclick="openTechEquipModal(${i})">Edit</button>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  // ── Visit-detail Customer Equipment card population ─────────────────────
+  async function loadVisitCustomerEquipment(customerId) {
+    const list = document.getElementById('visitEquipList');
+    if (!list) return;
+    try {
+      const rows = await api('GET', `/api/tech/customers/${customerId}/equipment`) || [];
+      if (!rows.length) {
+        list.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:6px 0;">No other equipment on file for this customer.</div>';
+        return;
+      }
+      // Compact rendering — this is a sub-section on the visit detail, not
+      // the full equipment screen. Tap any row to open the edit modal in
+      // place.
+      list.innerHTML = rows.map((e, i) => {
+        const tags = [e.type, e.model, e.location].filter(Boolean).join(' · ');
+        return `<div data-eq-id="${e.id}" data-customer-id="${customerId}"
+                     onclick="openTechEquipModal(${i}, ${customerId}, ${esc(JSON.stringify(e.customer_name || '')).replace(/"/g,'&quot;')}, true)"
+                     style="padding:10px 12px;background:var(--light);border:1px solid var(--border);border-radius:8px;cursor:pointer;">
+          <div style="font-weight:700;color:var(--navy);font-size:14px;">${esc(e.name)}</div>
+          ${tags ? `<div style="font-size:12px;color:var(--muted);margin-top:2px;">${esc(tags)}</div>` : ''}
+        </div>`;
+      }).join('');
+      // Cache so the modal can read by index without re-fetching.
+      list.dataset.cache = JSON.stringify(rows);
+    } catch (e) {
+      list.innerHTML = `<div style="color:var(--red);font-size:13px;padding:6px 0;">Could not load equipment: ${esc(e.message)}</div>`;
+    }
+  }
+  window.loadVisitCustomerEquipment = loadVisitCustomerEquipment;
+
+  // ── Add/Edit modal ──────────────────────────────────────────────────────
+  // openTechEquipModal can be called from three places:
+  //   (a) Equipment view's "+ Add" button         → openTechEquipModal(null)
+  //   (b) Equipment view row edit              → openTechEquipModal(idx)
+  //   (c) Visit detail Customer Equipment       → openTechEquipModal(idx, custId, custName, true)
+  //                                              or openTechEquipModal(null, custId, custName)
+  function openTechEquipModal(idx, customerId, customerName, fromVisitCache) {
+    _eqEditing = null;
+    const overlay = document.getElementById('techEquipModal');
+    const title   = document.getElementById('techEquipModalTitle');
+    const sub     = document.getElementById('techEquipModalSub');
+    const err     = document.getElementById('tem-err');
+
+    // Pick the cache to read from depending on the entry point.
+    let row = null;
+    let custLabel = customerName || (_eqCustomer && _eqCustomer.name) || '';
+    let custId    = customerId  || (_eqCustomer && _eqCustomer.id)   || null;
+    if (idx !== null && idx !== undefined) {
+      if (fromVisitCache) {
+        try {
+          const cache = JSON.parse(document.getElementById('visitEquipList').dataset.cache || '[]');
+          row = cache[idx] || null;
+        } catch { row = null; }
+      } else {
+        row = (_eqList || [])[idx] || null;
+      }
+      if (!row) {
+        toast('Could not load that equipment row. Reload and retry.', 'error');
+        return;
+      }
+      _eqEditing = row;
+      custId    = row.customer_id || custId;
+      title.textContent = 'Edit Equipment';
+      sub.textContent   = custLabel ? `For ${custLabel}` : 'Editing equipment';
+      document.getElementById('tem-name').value     = row.name          || '';
+      document.getElementById('tem-type').value     = row.type          || '';
+      document.getElementById('tem-model').value    = row.model         || '';
+      document.getElementById('tem-serial').value   = row.serial_number || '';
+      document.getElementById('tem-location').value = row.location      || '';
+      document.getElementById('tem-notes').value    = row.notes         || '';
+    } else {
+      if (!custId) {
+        toast('Pick a customer first.', 'error');
+        return;
+      }
+      title.textContent = 'Add Equipment';
+      sub.textContent   = custLabel ? `For ${custLabel}` : 'New equipment record';
+      ['tem-name','tem-type','tem-model','tem-serial','tem-location','tem-notes']
+        .forEach(id => { document.getElementById(id).value = ''; });
+    }
+    // Stash the customer id on the overlay so the submit handler doesn't
+    // have to walk state again.
+    overlay.dataset.customerId = String(custId || '');
+    overlay.dataset.fromVisit  = fromVisitCache ? '1' : '';
+    err.style.display = 'none';
+    err.textContent   = '';
+    overlay.classList.add('open');
+    setTimeout(() => document.getElementById('tem-name').focus(), 80);
+  }
+  window.openTechEquipModal = openTechEquipModal;
+
+  function closeTechEquipModal() {
+    document.getElementById('techEquipModal').classList.remove('open');
+    _eqEditing = null;
+  }
+  window.closeTechEquipModal = closeTechEquipModal;
+
+  async function submitTechEquipForm() {
+    const overlay = document.getElementById('techEquipModal');
+    const err     = document.getElementById('tem-err');
+    const btn     = document.getElementById('tem-save-btn');
+    err.style.display = 'none';
+    err.textContent   = '';
+    const body = {
+      name:          document.getElementById('tem-name').value.trim(),
+      type:          document.getElementById('tem-type').value.trim(),
+      model:         document.getElementById('tem-model').value.trim(),
+      serial_number: document.getElementById('tem-serial').value.trim(),
+      location:      document.getElementById('tem-location').value.trim(),
+      notes:         document.getElementById('tem-notes').value.trim(),
+    };
+    if (!body.name) {
+      err.textContent = 'Equipment name is required.';
+      err.style.display = 'block';
+      return;
+    }
+    btn.disabled = true;
+    const fromVisit = overlay.dataset.fromVisit === '1';
+    try {
+      if (_eqEditing) {
+        await api('PATCH', `/api/tech/equipment/${_eqEditing.id}`, body);
+        toast('Equipment updated', 'success');
+      } else {
+        body.customer_id = parseInt(overlay.dataset.customerId || '0', 10);
+        if (!body.customer_id) throw new Error('Missing customer id');
+        await api('POST', '/api/tech/equipment', body);
+        toast('Equipment added', 'success');
+      }
+      closeTechEquipModal();
+      // Refresh whichever surface we came from.
+      if (fromVisit && currentJob && currentJob.customer_id) {
+        loadVisitCustomerEquipment(currentJob.customer_id);
+      }
+      if (_eqMode === 'customer' && _eqCustomer) {
+        loadEqList();
+      }
+    } catch (e) {
+      err.textContent = e.message || 'Save failed.';
+      err.style.display = 'block';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+  window.submitTechEquipForm = submitTechEquipForm;
+
+  // Debounced search-as-you-type wiring (runs after DOM is parsed because
+  // the input lives in the markup added above).
+  document.addEventListener('DOMContentLoaded', () => {
+    const inp = document.getElementById('eqSearchInput');
+    if (!inp) return;
+    inp.addEventListener('input', () => {
+      const q = inp.value || '';
+      if (_eqSearchTimer) clearTimeout(_eqSearchTimer);
+      _eqSearchTimer = setTimeout(() => runEqCustomerSearch(q), 220);
+    });
+  });
 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -1996,7 +2615,7 @@
         const sev = e.severity === 'safety_loto' ? '<span style="background:#dc2626;color:#fff;border-radius:8px;padding:2px 8px;font-size:11px;margin-right:6px;">SAFETY</span>' : '';
         const _g = (typeof PC !== 'undefined' && PC.gateLinkHtml);
         const auditRef = (e.audit_id && _g) ? ' · ' + PC.gateLinkHtml('fs_audit', e.audit_id, 'audit #' + e.audit_id, {}) : '';
-        html += `<div data-pc-row-exc="${e.id}" style="border-top:1px solid var(--border);padding:8px 0;font-size:13px;">${sev}<strong>${esc(e.category)}</strong> · ${esc(e.status)}${auditRef}<div style="color:var(--muted);font-size:12px;">${esc(e.opened_at).slice(0,16).replace('T',' ')}</div></div>`;
+        html += `<div data-pc-row-exc="${e.id}" style="border-top:1px solid var(--border);padding:8px 0;font-size:13px;">${sev}<strong>${esc(e.category)}</strong> · ${esc(e.status)}${auditRef}<div style="color:var(--muted);font-size:12px;">${esc(PC.fmtDateTime(e.opened_at))}</div></div>`;
       }
       html += '</div>';
       const pendingPhotos = fsPendingPhotoCount();

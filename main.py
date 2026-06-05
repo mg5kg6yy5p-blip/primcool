@@ -27,7 +27,7 @@ if not logger.handlers:
     logger.addHandler(_h)
     logger.setLevel(logging.INFO)
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form, Response, Query
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form, Response, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -39,6 +39,7 @@ import resend as resend_lib
 
 from database import (
     init_db, save_submission, bootstrap_super_admin,
+    get_user_settings, set_user_settings,
     get_customer_by_code, get_customer_by_id, get_all_customers,
     create_customer, delete_customer, verify_customer, set_customer_pin,
     validate_pin_policy, record_pin_failure, reset_pin_failures,
@@ -122,6 +123,7 @@ from database import (
     resolve_security_alerts_bulk, detect_anomalies_for_actor,
     create_session, get_session_by_jti, is_session_active,
     revoke_session, revoke_all_sessions_for, get_active_sessions_for,
+    get_recent_sessions_for, revoke_other_sessions_for,
     mark_session_mfa_verified,
     # 5S workplace-discipline module
     create_asset as fs_create_asset, list_assets as fs_list_assets,
@@ -274,7 +276,10 @@ ADMIN_PERMS = {
         "kpi:flag_view", "kpi:flag_resolve",
     },
     "system_admin": {
-        "tech:view", "tech:create", "tech:update", "tech:reset_pin",
+        # Note: onboarding (tech:create / admin:create) is reserved for HR +
+        # super_admin per the unified Onboarding flow. system_admin can view
+        # and update existing staff but not create new hires.
+        "tech:view", "tech:update", "tech:reset_pin",
         "customer:view", "customer:create", "customer:update",
         "visit:view", "visit:create", "visit:update",
         "review:view",
@@ -291,7 +296,13 @@ ADMIN_PERMS = {
         "kpi:flag_view",
     },
     "hr_admin": {
-        "tech:view", "tech:create", "tech:update", "tech:reset_pin",
+        # Onboarding partner — HR owns onboarding for every employee type
+        # (office admin, field tech, parts runner, warehouse staff). Mirrors
+        # super_admin's onboarding scope without granting any other
+        # super-admin powers.
+        "admin:create", "admin:update", "admin:set_role", "admin:set_active",
+        "admin:reset_password", "admin:view_all",
+        "tech:view", "tech:create", "tech:update", "tech:reset_pin", "tech:delete",
         "audit:view_self",
         "timesheet:view_all",
         "invoice:view",
@@ -438,6 +449,135 @@ ADMIN_PERMS["warehouse_supervisor"] = {
     "company:read_messages",
 }
 
+# ── R6: 50+ staff scale — future-proofing org roles ─────────────────────────
+# Added ahead of need so the seats exist in the dropdown the moment the
+# operator hires for them. Each role is dormant until someone is onboarded
+# into it. Scoped tightly: no role here can delete admins, change roles, or
+# approve payroll — those stay super_admin-only (with HR generating payroll).
+#
+# operations_manager — COO/GM tier. Broad operational oversight just below
+#     the CEO: manages staff (not delete/role-change), full ops on visits,
+#     inventory, invoices, POs; views payroll but cannot approve it.
+ADMIN_PERMS["operations_manager"] = {
+    "admin:view_all", "admin:update", "admin:set_active",
+    "tech:view", "tech:create", "tech:update", "tech:reset_pin", "tech:export",
+    "tech:approve_overtime", "tech:manage_schedule", "tech:manage_certifications",
+    "tech:release_kpi_period",
+    "customer:view", "customer:create", "customer:update", "customer:export",
+    "visit:view", "visit:create", "visit:update", "visit:export",
+    "visit:view_photos", "visit:flag",
+    "review:view", "review:approve", "review:reject",
+    "timesheet:view_all",
+    "schedule:view", "schedule:edit",
+    "inventory:view", "inventory:create", "inventory:update", "inventory:adjust",
+    "inventory:export",
+    "po:create", "po:send", "po:receive", "po:close_out", "po:approve_variance",
+    "count:create", "count:approve",
+    "invoice:view", "invoice:create", "invoice:update", "invoice:record_payment",
+    "invoice:export",
+    "payroll:view_all",              # view only — generate=HR, approve=CEO
+    "security:view_alerts",
+    "audit:view_all",
+    "documents:upload", "documents:view", "documents:view_highly_sensitive",
+    "fs:audit_any", "fs:exception_resolve", "fs:exception_escalate_director",
+    "fs:asset_manage", "fs:report_view", "fs:coaching_manage",
+    "kpi:view_team", "kpi:recompute", "kpi:view_definitions",
+    "kpi:flag_view", "kpi:flag_resolve",
+    "kpi:note_write_coaching", "kpi:note_write_recognition", "kpi:note_view",
+    "kpi:goal_create", "kpi:goal_close", "kpi:goal_view",
+    "company:post_message", "company:read_messages",
+    "warehouse:view_queue", "warehouse:manage_assets",
+}
+# accountant — Finance / bookkeeping. Owns the invoice lifecycle and
+#     generates payroll, but cannot approve/mark-paid payroll (separation of
+#     duties — CEO approves). No staff management.
+ADMIN_PERMS["accountant"] = {
+    "customer:view",
+    "visit:view",
+    "invoice:view", "invoice:create", "invoice:update", "invoice:delete",
+    "invoice:record_payment", "invoice:export",
+    "inventory:view", "inventory:export",
+    "payroll:generate", "payroll:view_all",
+    "documents:upload", "documents:view", "documents:view_highly_sensitive",
+    "audit:view_self",
+    "company:read_messages",
+}
+# account_manager — Sales / commercial accounts. Owns the customer
+#     relationship; read-only on money, no scheduling, no staff.
+ADMIN_PERMS["account_manager"] = {
+    "customer:view", "customer:create", "customer:update", "customer:export",
+    "visit:view", "visit:export",
+    "invoice:view",
+    "documents:view",
+    "audit:view_self",
+    "company:read_messages",
+}
+# csr — Customer Service Rep / front desk. Books jobs and logs customers;
+#     no tech-schedule editing, no OT approval, no money.
+ADMIN_PERMS["csr"] = {
+    "customer:view", "customer:create", "customer:update",
+    "visit:view", "visit:create",
+    "schedule:view",
+    "documents:view",
+    "audit:view_self",
+    "company:read_messages",
+}
+# master_tech — Field supervisor (operator's name for the service-crew lead
+#     who logs into the console). Reviews/flags work, approves OT, manages
+#     tech schedules + certs, sees team KPI. No money, no inventory, no
+#     onboarding.
+ADMIN_PERMS["master_tech"] = {
+    "tech:view", "tech:approve_overtime", "tech:manage_schedule",
+    "tech:manage_certifications", "tech:release_kpi_period",
+    "customer:view",
+    "visit:view", "visit:create", "visit:update", "visit:view_photos", "visit:flag",
+    "review:view",
+    "schedule:view", "schedule:edit",
+    "timesheet:view_all",
+    "documents:view",
+    "audit:view_self",
+    "kpi:view_team", "kpi:flag_view",
+    "kpi:note_write_coaching", "kpi:note_write_recognition", "kpi:note_view",
+    "kpi:goal_view",
+    "fs:audit_any", "fs:report_view",
+    "company:read_messages",
+}
+# safety_officer — Safety & Compliance (EPA/OSHA, 5S program owner). Full 5S
+#     authority + certification tracking + compliance docs. No money, no
+#     hiring.
+ADMIN_PERMS["safety_officer"] = {
+    "tech:view", "tech:manage_certifications",
+    "visit:view", "visit:view_photos", "visit:flag",
+    "documents:upload", "documents:view", "documents:view_highly_sensitive",
+    "fs:audit_any", "fs:exception_resolve", "fs:exception_escalate_director",
+    "fs:asset_manage", "fs:report_view", "fs:audit_override", "fs:coaching_manage",
+    "audit:view_self",
+    "kpi:view_team", "kpi:flag_view",
+    "company:read_messages", "company:post_message",
+}
+# quality_manager — QA over completed jobs. Owns the reviews queue and KPI
+#     flags; no money, no staff, no scheduling.
+ADMIN_PERMS["quality_manager"] = {
+    "customer:view",
+    "visit:view", "visit:view_photos", "visit:flag",
+    "review:view", "review:approve", "review:reject", "review:delete",
+    "kpi:view_team", "kpi:flag_view", "kpi:flag_resolve",
+    "kpi:note_write_coaching", "kpi:note_view",
+    "fs:report_view",
+    "documents:view",
+    "audit:view_self",
+    "company:read_messages",
+}
+# marketing — Marketing / comms. Read-only ops visibility + can post to the
+#     company message board.
+ADMIN_PERMS["marketing"] = {
+    "customer:view",
+    "review:view",
+    "documents:view",
+    "company:post_message", "company:read_messages",
+    "audit:view_self",
+}
+
 
 def _admin_can(role: str, perm: str) -> bool:
     return perm in ADMIN_PERMS.get(role, set())
@@ -446,6 +586,15 @@ PHOTOS_DIR = Path(os.environ.get("PHOTOS_DIR", "uploads/photos"))
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 MAX_PHOTO_SIZE = 12 * 1024 * 1024  # 12 MB
 ALLOWED_PHOTO_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
+
+# Profile-photo (avatar) settings — uploads are re-encoded via Pillow to a
+# fixed-size JPEG. That gives us three things at once:
+#   1) EXIF is stripped (privacy + any embedded location).
+#   2) Any payload hidden in image metadata is destroyed by re-encode.
+#   3) Output size is bounded, so signed URLs hit a small/cacheable file.
+AVATAR_MAX_BYTES = 5 * 1024 * 1024  # 5 MB pre-resize
+AVATAR_SIZE_PX   = 512
+AVATAR_JPEG_QUALITY = 85
 
 # ── Document Management System ────────────────────────────────────────────────
 DOCUMENTS_DIR = Path(os.environ.get("DOCUMENTS_DIR", "uploads/documents"))
@@ -953,6 +1102,55 @@ def _enrich_photos(photos: list) -> list:
             p["url"] = _sign_photo_url(p["filename"])
         out.append(p)
     return out
+
+
+def _process_avatar(body: bytes) -> bytes:
+    """Validate, center-crop-square, resize to AVATAR_SIZE_PX, re-encode as
+    JPEG. Strips EXIF and any embedded payload via the re-encode. Raises
+    HTTPException(400) on anything that doesn't decode as a real raster image.
+
+    Pillow's verify() is called before we touch the pixels — it walks the
+    container far enough to reject truncated / malformed files (including the
+    classic 'PNG-looking gzip bomb' shape) without allocating the bitmap.
+    Then we re-open (verify() leaves the file unusable for actual decoding)
+    and do the cover-crop + resize."""
+    from PIL import Image, UnidentifiedImageError  # local import: only loaded when an avatar is uploaded
+    try:
+        Image.open(io.BytesIO(body)).verify()
+    except (UnidentifiedImageError, Exception):
+        raise HTTPException(400, "Not a valid image file")
+    try:
+        img = Image.open(io.BytesIO(body))
+        # Apply EXIF orientation BEFORE we discard EXIF, otherwise iPhone
+        # portraits land sideways. ImageOps.exif_transpose is a no-op when
+        # the file has no orientation tag.
+        from PIL import ImageOps
+        img = ImageOps.exif_transpose(img)
+        # Cover-crop to a centred square so the avatar circle never shows
+        # background fill.
+        w, h = img.size
+        side = min(w, h)
+        left = (w - side) // 2
+        top  = (h - side) // 2
+        img = img.crop((left, top, left + side, top + side))
+        img = img.resize((AVATAR_SIZE_PX, AVATAR_SIZE_PX), Image.LANCZOS)
+        if img.mode in ("RGBA", "LA", "P"):
+            # JPEG has no alpha — composite onto white so transparent PNGs
+            # don't render as black blobs.
+            bg = Image.new("RGB", img.size, (255, 255, 255))
+            if img.mode == "P":
+                img = img.convert("RGBA")
+            bg.paste(img, mask=img.split()[-1] if img.mode in ("RGBA", "LA") else None)
+            img = bg
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=AVATAR_JPEG_QUALITY, optimize=True)
+        return buf.getvalue()
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(400, "Could not process image")
 
 
 def _make_token(payload: dict, expires: timedelta) -> str:
@@ -1880,6 +2078,19 @@ class EquipmentCreate(BaseModel):
     notes:         str = ""
 
 
+class EquipmentUpdate(BaseModel):
+    """PATCH body — every field optional so the client can send only what
+    changed. The DB helper update_equipment ignores any keys it doesn't
+    recognise, and customer_id is intentionally NOT editable here (re-
+    parenting equipment between customers is a separate, riskier action)."""
+    name:          Optional[str] = None
+    type:          Optional[str] = None
+    model:         Optional[str] = None
+    serial_number: Optional[str] = None
+    location:      Optional[str] = None
+    notes:         Optional[str] = None
+
+
 class VisitCreate(BaseModel):
     customer_id:      int
     equipment_id:     Optional[int] = None
@@ -1900,6 +2111,10 @@ class VisitCreate(BaseModel):
     contact_person_phone:    str = ""
     hazards:                 str = ""
     access_codes:            str = ""
+    # Multi-tech crew (extras beyond the lead in assigned_tech_id). Empty list
+    # = no extras. The lead is filtered out of this list server-side if it
+    # accidentally sneaks in.
+    crew_tech_ids:    List[int] = []
 
 
 class VisitUpdate(BaseModel):
@@ -1920,6 +2135,10 @@ class VisitUpdate(BaseModel):
     contact_person_phone:    str = ""
     hazards:                 str = ""
     access_codes:            str = ""
+    # None = "don't touch the crew"; [] = "replace crew with empty list".
+    # This split lets the existing edit modal (which doesn't yet send a
+    # crew array) keep working without wiping prior assignments.
+    crew_tech_ids:    Optional[List[int]] = None
 
 
 class TechLogin(BaseModel):
@@ -3099,7 +3318,11 @@ def _tech_redact_visit(visit: dict) -> dict:
 def tech_get_job(request: Request, visit_id: int):
     tech_id = _require_tech(request)
     visit   = get_visit_by_id(visit_id, with_parts=True)
-    if not visit or visit.get("assigned_tech_id") != tech_id:
+    # Accept the lead OR any crew member. all_tech_ids is attached by
+    # get_visit_by_id and merges assigned_tech_id with the visit_techs
+    # crew. A 404 here means the tech is neither on the job — we surface
+    # it as not-found rather than 403 so we don't leak existence.
+    if not visit or tech_id not in (visit.get("all_tech_ids") or []):
         raise HTTPException(404, "Job not found")
     visit["photos"]    = _enrich_photos(get_visit_photos(visit_id))
     visit["readings"]  = get_visit_readings(visit_id)
@@ -3134,7 +3357,8 @@ def tech_parts_catalog(request: Request):
 def tech_add_part(request: Request, visit_id: int, body: TechAddPart):
     tech_id = _require_tech(request)
     visit = get_visit_by_id(visit_id)
-    if not visit or visit.get("assigned_tech_id") != tech_id:
+    # Lead OR crew: all_tech_ids is the merged set computed by get_visit_by_id.
+    if not visit or tech_id not in (visit.get("all_tech_ids") or []):
         raise HTTPException(404, "Job not found")
     if visit["status"] == "completed":
         raise HTTPException(400, "Cannot add parts after job is completed")
@@ -3156,7 +3380,8 @@ def tech_add_part(request: Request, visit_id: int, body: TechAddPart):
 def tech_remove_part(request: Request, visit_id: int, vp_id: int):
     tech_id = _require_tech(request)
     visit = get_visit_by_id(visit_id)
-    if not visit or visit.get("assigned_tech_id") != tech_id:
+    # Lead OR crew: all_tech_ids is the merged set computed by get_visit_by_id.
+    if not visit or tech_id not in (visit.get("all_tech_ids") or []):
         raise HTTPException(404, "Job not found")
     vp = get_visit_part_by_id(vp_id)
     if not vp or vp["visit_id"] != visit_id:
@@ -3175,7 +3400,8 @@ def tech_remove_part(request: Request, visit_id: int, vp_id: int):
 def tech_start_job(request: Request, visit_id: int):
     tech_id = _require_tech(request)
     visit   = get_visit_by_id(visit_id)
-    if not visit or visit.get("assigned_tech_id") != tech_id:
+    # Lead OR crew: all_tech_ids is the merged set computed by get_visit_by_id.
+    if not visit or tech_id not in (visit.get("all_tech_ids") or []):
         raise HTTPException(404, "Job not found")
     if visit["status"] == "completed":
         raise HTTPException(400, "Job already completed")
@@ -3195,7 +3421,8 @@ def tech_start_job(request: Request, visit_id: int):
 def tech_complete_job(request: Request, visit_id: int, body: TechCompleteVisit):
     tech_id = _require_tech(request)
     visit   = get_visit_by_id(visit_id)
-    if not visit or visit.get("assigned_tech_id") != tech_id:
+    # Lead OR crew: all_tech_ids is the merged set computed by get_visit_by_id.
+    if not visit or tech_id not in (visit.get("all_tech_ids") or []):
         raise HTTPException(404, "Job not found")
     # Submission lock — once submitted_at is set, the tech can't re-submit.
     # Manager can flag-for-review (separate endpoint) but no edits from here.
@@ -3233,7 +3460,8 @@ def tech_complete_job(request: Request, visit_id: int, body: TechCompleteVisit):
 def tech_add_reading(request: Request, visit_id: int, body: TechReadingCreate):
     tech_id = _require_tech(request)
     visit = get_visit_by_id(visit_id)
-    if not visit or visit.get("assigned_tech_id") != tech_id:
+    # Lead OR crew: all_tech_ids is the merged set computed by get_visit_by_id.
+    if not visit or tech_id not in (visit.get("all_tech_ids") or []):
         raise HTTPException(404, "Job not found")
     if visit.get("submitted_at"):
         raise HTTPException(409, "Job locked — cannot add readings after submission")
@@ -3245,7 +3473,8 @@ def tech_add_reading(request: Request, visit_id: int, body: TechReadingCreate):
 def tech_capture_signature(request: Request, visit_id: int, body: TechSignatureCreate):
     tech_id = _require_tech(request)
     visit = get_visit_by_id(visit_id)
-    if not visit or visit.get("assigned_tech_id") != tech_id:
+    # Lead OR crew: all_tech_ids is the merged set computed by get_visit_by_id.
+    if not visit or tech_id not in (visit.get("all_tech_ids") or []):
         raise HTTPException(404, "Job not found")
     if visit.get("submitted_at"):
         raise HTTPException(409, "Job locked — signature cannot be replaced")
@@ -3265,7 +3494,8 @@ def tech_capture_signature(request: Request, visit_id: int, body: TechSignatureC
 def tech_set_checklist(request: Request, visit_id: int, body: TechChecklistSet):
     tech_id = _require_tech(request)
     visit = get_visit_by_id(visit_id)
-    if not visit or visit.get("assigned_tech_id") != tech_id:
+    # Lead OR crew: all_tech_ids is the merged set computed by get_visit_by_id.
+    if not visit or tech_id not in (visit.get("all_tech_ids") or []):
         raise HTTPException(404, "Job not found")
     if visit.get("submitted_at"):
         raise HTTPException(409, "Job locked")
@@ -3287,7 +3517,8 @@ async def tech_upload_photo(
 ):
     tech_id = _require_tech(request)
     visit   = get_visit_by_id(visit_id)
-    if not visit or visit.get("assigned_tech_id") != tech_id:
+    # Lead OR crew: all_tech_ids is the merged set computed by get_visit_by_id.
+    if not visit or tech_id not in (visit.get("all_tech_ids") or []):
         raise HTTPException(404, "Job not found")
 
     if category not in ("before", "after"):
@@ -3596,6 +3827,7 @@ def _all_audits_done_for_today(tech_id: int, phase: str,
 @app.post("/api/tech/me/sign-in")
 def tp1_tech_sign_in(request: Request, body: TechSignInBody):
     from datetime import datetime as _dt, timezone as _tz
+    from database import _biweekly_period_for, get_or_create_timesheet
     tech_id = _require_tech(request)
     today_iso = _dt.now(_tz.utc).date().isoformat()
     if not _all_audits_done_for_today(tech_id, "start_shift", today_iso):
@@ -3608,6 +3840,15 @@ def tp1_tech_sign_in(request: Request, body: TechSignInBody):
         raise HTTPException(409, "dayoff_reason_required")
     notes = (body.dayoff_reason or "").strip() or None
     eid = record_clock_in(tech_id, source="manual", notes=notes)
+    # Auto-create the current biweekly timesheet if one doesn't already
+    # exist. Idempotent — re-signing in within the same period just returns
+    # the existing draft. Fail-soft because timesheet creation must never
+    # block the actual clock-in.
+    try:
+        period_start, period_end = _biweekly_period_for(today_iso)
+        get_or_create_timesheet(tech_id, period_start, period_end)
+    except Exception as _e:
+        logger.warning("timesheet auto-create failed for tech %s: %s", tech_id, _e)
     if not scheduled and not on_call:
         _tp1_raise_security_alert(
             kind="tech_dayoff_signin", severity="medium",
@@ -4810,6 +5051,68 @@ def admin_reinstate_tech(request: Request, tech_id: int):
     return {"ok": True}
 
 
+class PromoteTechBody(BaseModel):
+    role: str
+    password: str
+    username: str = ""
+
+
+@app.post("/api/admin/techs/{tech_id}/promote")
+def admin_promote_tech(request: Request, tech_id: int, body: PromoteTechBody):
+    """Promote-from-within: lift a field tech into an office/admin role.
+
+    The two identity systems don't share a table — field staff live in
+    `technicians`, office/admin staff in `admin_users` — so a promotion is a
+    *hop*, not an in-place edit: we mint a brand-new admin account in the target
+    role (carrying over name / contact / hire date), then terminate the old tech
+    record. PRID is unique across BOTH tables, so the new admin gets a freshly
+    generated PRID — the old one can't be reused. Job history stays attached to
+    the archived tech record; the audit entry stitches old→new together so the
+    lineage is traceable.
+
+    Gated on admin:create (super_admin / hr_admin) — same bar as onboarding a
+    fresh admin, which is exactly what this is."""
+    admin = _require_perm(request, "admin:create")
+    target = get_tech_by_id(tech_id)
+    if not target:
+        raise HTTPException(404, "Tech not found")
+    if target.get("staff_type") not in (None, "tech"):
+        raise HTTPException(400, "Only field technicians can be promoted to an office role")
+    if not target.get("active"):
+        raise HTTPException(400, "Cannot promote an inactive or terminated tech")
+    if body.role not in ADMIN_PERMS:
+        raise HTTPException(400, "Unknown role")
+    if body.role == "super_admin" and not _admin_can(admin["role"], "admin:set_role"):
+        raise HTTPException(403, "You cannot promote directly into super_admin")
+    if len(body.password or "") < 8:
+        raise HTTPException(400, "Initial password must be at least 8 characters")
+
+    data = {
+        "name":      target.get("name") or "",
+        "email":     target.get("email") or "",
+        "phone":     target.get("phone") or "",
+        "role":      body.role,
+        "password":  body.password,
+        "username":  (body.username or "").strip(),
+        "hire_date": target.get("hire_date") or "",
+    }
+    new_admin_id, new_prid = create_admin_user(data, created_by=admin["id"])
+    # Archive the field record last — if admin creation failed above we never
+    # get here, so we never strand a tech with no destination account.
+    term = terminate_account("tech", tech_id)
+    _audit_from(admin, "account.promoted", request,
+                target_type="tech", target_id=tech_id,
+                target_label=target.get("name") or target.get("prid"),
+                after={"from_role": target.get("role"),
+                       "to_role": body.role,
+                       "new_admin_id": new_admin_id,
+                       "new_prid": new_prid,
+                       "old_tech_terminated_at": term.get("terminated_at"),
+                       "sessions_revoked": term.get("sessions_revoked")})
+    return {"ok": True, "admin_id": new_admin_id, "prid": new_prid,
+            "username": (data["username"] or new_prid).lower()}
+
+
 @app.post("/api/admin/customers/{customer_id}/close", response_model=OkResponse)
 def admin_close_customer(request: Request, customer_id: int, body: TerminateBody):
     """Soft-close at contract end (Scenario 4). active=0 + sessions revoked,
@@ -4923,6 +5226,755 @@ def admin_timesheets(request: Request,
         else:
             r["duration_minutes"] = None
     return rows
+
+
+# ── Biweekly timesheet workflow ──────────────────────────────────────────────
+#
+# Auto-created on first sign-in of a pay period, edited by the tech (and
+# optionally by the supervisor), submitted for a 2-stage approval that
+# ends with super_admin_approved. Routes both for techs (under
+# /api/tech/me/timesheets/*) and admins (under /api/admin/timesheets/*).
+# State transitions live in database.transition_timesheet which enforces
+# nothing — the caller is responsible for verifying the move is legal.
+
+class TimesheetDayOverride(BaseModel):
+    work_date:            str
+    manual_start_time:    Optional[str] = None
+    manual_end_time:      Optional[str] = None
+    manual_break_minutes: Optional[int] = None
+    note:                 Optional[str] = None
+
+class TimesheetNotes(BaseModel):
+    tech_notes: str = ""
+
+class TimesheetReject(BaseModel):
+    reason: str
+
+class TimesheetForceApprove(BaseModel):
+    reason: str
+
+
+def _ts_or_404(timesheet_id):
+    from database import aggregate_timesheet
+    agg = aggregate_timesheet(timesheet_id)
+    if not agg:
+        raise HTTPException(404, "Timesheet not found")
+    return agg
+
+
+def _admin_is_super(admin):
+    return (admin.get("role") or "").lower() == "super_admin"
+
+
+def _admin_supervises_tech(admin, tech_id):
+    """True if `admin` is the supervisor of `tech_id` per technicians.supervisor_id.
+    Falls back to True for any supervisor_admin when the tech has no
+    supervisor set (so submissions don't get stranded)."""
+    from database import get_tech_by_id
+    t = get_tech_by_id(int(tech_id))
+    if not t:
+        return False
+    if t.get("supervisor_id") == admin["id"]:
+        return True
+    if t.get("supervisor_id") is None and (admin.get("role") or "").lower() == "supervisor_admin":
+        return True
+    return False
+
+
+# ── Tech-facing endpoints ────────────────────────────────────────────────────
+
+@app.get("/api/tech/me/timesheets")
+def tech_list_timesheets(request: Request):
+    from database import list_timesheets_for_tech
+    tech_id = _require_tech(request)
+    return list_timesheets_for_tech(tech_id, limit=12)
+
+
+@app.get("/api/tech/me/timesheets/current")
+def tech_current_timesheet(request: Request):
+    """Returns the tech's current-period timesheet with daily aggregation.
+    Auto-creates a draft if none exists yet — even if the tech hasn't
+    signed in for the period (so they can record retroactive overrides).
+    Also lazily accrues vacation hours up through the most recent completed
+    pay period, so the balance shown beside the timesheet is always live."""
+    from database import (_biweekly_period_for, get_or_create_timesheet,
+                          aggregate_timesheet, get_or_init_pto)
+    tech_id = _require_tech(request)
+    today_iso = datetime.now(timezone.utc).date().isoformat()
+    period_start, period_end = _biweekly_period_for(today_iso)
+    ts = get_or_create_timesheet(tech_id, period_start, period_end)
+    agg = aggregate_timesheet(ts["id"])
+    # Self-healing accrual: credit any biweekly periods that ended on/
+    # before today and haven't been credited yet for this year.
+    try:
+        year = int(today_iso[:4])
+        bal = get_or_init_pto(tech_id, year, accrue_through_period_end=today_iso)
+        agg["pto_balance"] = bal
+    except Exception as _e:
+        agg["pto_balance"] = None
+    return agg
+
+
+@app.get("/api/tech/me/pto-balance")
+def tech_pto_balance(request: Request, year: int = None):
+    """Stand-alone PTO balance — used by the My Pay hub to show
+    Floating Holidays and Vacation tallies. Now also reports the
+    carryover line so the user can see how the year's seed was built."""
+    from database import (get_or_init_pto, _vacation_carryover_from,
+                          VACATION_STARTING_HOURS)
+    tech_id = _require_tech(request)
+    today_iso = datetime.now(timezone.utc).date().isoformat()
+    y = int(year) if year else int(today_iso[:4])
+    bal = get_or_init_pto(tech_id, y, accrue_through_period_end=today_iso)
+    # Compute carryover from the prior year (if any) for the breakdown
+    # line shown in the UI. This is purely informational — the carryover
+    # was already baked into bal.vacation_balance at seed time.
+    carryover = 0.0; carry_cap = 0.0; eoy_remaining = 0.0
+    if bal:
+        try:
+            carryover, carry_cap, eoy_remaining = _vacation_carryover_from(y - 1, tech_id)
+        except Exception:
+            pass
+    return {
+        "year": y,
+        "balance": bal,
+        "carryover_from_prior_year": {
+            "applied":     round(carryover, 2),
+            "cap_nov_dec": round(carry_cap, 2),
+            "eoy_balance": round(eoy_remaining, 2),
+        },
+        "starting_seed": VACATION_STARTING_HOURS,
+    }
+
+
+class PtoRequestBody(BaseModel):
+    kind: str            # 'vacation' | 'floating' | 'sick'
+    start_date: str      # YYYY-MM-DD
+    end_date: str        # YYYY-MM-DD
+    hours: float
+    reason: Optional[str] = ""
+
+
+class PtoDecisionBody(BaseModel):
+    note: Optional[str] = ""
+
+
+@app.get("/api/tech/me/pto-projection")
+def tech_pto_projection(request: Request, month: str = None):
+    """Return per-day projected vacation balance for a calendar month, so
+    the request-time-off calendar can show "you'd still have X hours on
+    this date" beneath each selectable cell.
+
+    Projection algorithm:
+      • For each date D in the requested month:
+          base = current vacation balance (today)
+          + accrual: count biweekly periods whose period_end is > today
+            AND <= D, multiply by VACATION_PER_PERIOD (3.6h)
+          − approved PTO with start_date in (today, D]
+      • Past dates (D < today) report the current balance unchanged
+        (purely informational; the UI disables selection on past days).
+
+    Returns a list with one entry per day in the month, plus metadata."""
+    from database import (get_or_init_pto, jamaican_holidays, _biweekly_period_for,
+                          VACATION_PER_PERIOD, VACATION_STARTING_HOURS,
+                          list_pto_requests, _vacation_carryover_from)
+    from datetime import date as _date, timedelta as _td
+    tech_id = _require_tech(request)
+    today_iso = datetime.now(timezone.utc).date().isoformat()
+    today_d   = _date.fromisoformat(today_iso)
+    today_yr  = today_d.year
+    # Default to current month if none supplied
+    if month and len(month) >= 7:
+        view_yr = int(month[:4]); view_mo = int(month[5:7])
+    else:
+        view_yr = today_yr; view_mo = today_d.month
+    # Always grab THIS year's balance for the status strip.
+    bal_now = get_or_init_pto(tech_id, today_yr, accrue_through_period_end=today_iso) or {}
+    current_balance = float(bal_now.get("vacation_balance") or 0)
+    floating_avail  = float(bal_now.get("floating_total") or 0) - float(bal_now.get("floating_used") or 0)
+    sick_avail      = float(bal_now.get("sick_total") or 0)    - float(bal_now.get("sick_used") or 0)
+    # All approved future PTO (we'll filter per-date below).
+    upcoming = [r for r in list_pto_requests(tech_id=tech_id, status="approved")
+                if r["start_date"] > today_iso]
+
+    # ── Helper: collect every biweekly period_end in a [start, end] range
+    def _period_ends_in(d_from, d_to):
+        out = []
+        if d_from > d_to: return out
+        probe = d_from
+        while probe <= d_to:
+            ps, pe = _biweekly_period_for(probe.isoformat())
+            pe_d = _date.fromisoformat(pe)
+            if d_from <= pe_d <= d_to and (not out or pe_d > out[-1]):
+                out.append(pe_d)
+            probe = pe_d + _td(days=1)
+        return out
+
+    # ── Helper: project balance for a specific date D, year-aware.
+    # Approved PTO between two ISO strings (start, end) inclusive of end.
+    def _approved_used(s_iso, e_iso):
+        return sum(float(r["hours"]) for r in upcoming
+                   if s_iso < r["start_date"] <= e_iso)
+
+    # Pre-compute, for any year y in {today_yr .. view_yr+1}, the cached
+    # "year start balance" so we don't reseed it for every date.
+    year_seeds = {}
+    def _year_start_balance(y):
+        """Effective vacation balance on Jan 1 of year `y` (carryover
+        already applied for years after current; for current year it's
+        whatever vacation_balance was at year-start — but we don't need
+        that, only future years use this)."""
+        if y in year_seeds: return year_seeds[y]
+        if y <= today_yr:
+            year_seeds[y] = current_balance
+            return current_balance
+        # For future years, simulate the rollover from y-1 → y:
+        #   eoy_remaining = projection on Dec 31 of (y-1)
+        #   carryover     = min(eoy_remaining, Nov+Dec accruals in (y-1))
+        #   seed          = 40 + carryover (Oct 31 hire rule already
+        #                   inherent in get_or_init_pto — but for future
+        #                   years past the hire year, every tech gets 40)
+        prev = _year_start_balance(y - 1)
+        # Accruals across all of (y-1) — for y-1 == today_yr we count
+        # only the part AFTER today (because `prev` already incorporates
+        # everything up to today). For earlier years, count the full year.
+        if (y - 1) == today_yr:
+            from_d = today_d + _td(days=1)
+        else:
+            from_d = _date(y - 1, 1, 1)
+        to_d = _date(y - 1, 12, 31)
+        accrued_count = len(_period_ends_in(from_d, to_d))
+        accrued_hours = round(accrued_count * VACATION_PER_PERIOD, 2)
+        # Approved PTO in (y-1) on or before Dec 31 of (y-1) but after
+        # the "from" anchor — same window as accruals.
+        used = sum(float(r["hours"]) for r in upcoming
+                   if from_d.isoformat() <= r["start_date"] <= to_d.isoformat())
+        eoy_remaining = max(0.0, prev + accrued_hours - used)
+        # Carryover cap = Nov+Dec accruals only.
+        nov_dec_start = _date(y - 1, 11, 1)
+        nd_count = len(_period_ends_in(nov_dec_start, to_d))
+        carryover = min(eoy_remaining, round(nd_count * VACATION_PER_PERIOD, 2))
+        seed = round(VACATION_STARTING_HOURS + carryover, 2)
+        year_seeds[y] = seed
+        return seed
+
+    holidays = jamaican_holidays(view_yr)
+    # First / last day of the requested month.
+    first = _date(view_yr, view_mo, 1)
+    next_m_first = _date(view_yr + (1 if view_mo == 12 else 0),
+                         1 if view_mo == 12 else view_mo + 1, 1)
+    last = next_m_first - _td(days=1)
+
+    days = []
+    cur = first
+    while cur <= last:
+        ds = cur.isoformat()
+        if cur < today_d:
+            projected = current_balance  # past, informational
+        elif cur.year == today_yr:
+            # Same year: today's balance + accruals (today, D] − approved PTO in same window
+            accrued_count = len(_period_ends_in(today_d + _td(days=1), cur))
+            accrual = round(accrued_count * VACATION_PER_PERIOD, 2)
+            used = _approved_used(today_iso, ds)
+            projected = round(current_balance + accrual - used, 2)
+        else:
+            # Future year: start from THAT year's seed (which already
+            # includes carryover from the prior year), then add accruals
+            # that occurred in (Jan 1, D] of that year.
+            seed = _year_start_balance(cur.year)
+            jan1 = _date(cur.year, 1, 1)
+            accrued_count = len(_period_ends_in(jan1, cur))
+            accrual = round(accrued_count * VACATION_PER_PERIOD, 2)
+            used = sum(float(r["hours"]) for r in upcoming
+                       if jan1.isoformat() <= r["start_date"] <= ds)
+            projected = round(seed + accrual - used, 2)
+        days.append({
+            "date":              ds,
+            "weekday":           cur.strftime("%a"),
+            "is_today":          (cur == today_d),
+            "is_past":           (cur <  today_d),
+            "is_weekend":        (cur.weekday() >= 5),
+            "is_holiday":        ds in holidays,
+            "holiday_name":      holidays.get(ds),
+            "projected_balance": projected,
+        })
+        cur += _td(days=1)
+    return {
+        "month":               f"{view_yr:04d}-{view_mo:02d}",
+        "today":               today_iso,
+        "current_balance":     current_balance,
+        "floating_available":  floating_avail,
+        "sick_available":      sick_avail,
+        "sick_cap":            float(bal_now.get("sick_total") or 0),
+        "per_period_accrual":  VACATION_PER_PERIOD,
+        "year_seed_after_carryover": year_seeds.get(view_yr) if view_yr > today_yr else None,
+        "days":                days,
+    }
+
+
+@app.post("/api/tech/me/pto-requests")
+def tech_create_pto_request(request: Request, body: PtoRequestBody):
+    """Tech submits a time-off request for supervisor approval. We do a
+    balance preview here so the tech sees an immediate warning if they
+    don't have enough — but the request is still accepted (supervisor
+    decides). Approval-time deduction is enforced in decide_pto_request."""
+    from database import create_pto_request, get_or_init_pto
+    tech_id = _require_tech(request)
+    if body.kind not in ("vacation", "floating", "sick"):
+        raise HTTPException(422, "kind must be 'vacation', 'floating', or 'sick'")
+    if body.hours <= 0:
+        raise HTTPException(422, "hours must be positive")
+    if body.end_date < body.start_date:
+        raise HTTPException(422, "end_date must be on or after start_date")
+    year = int(body.start_date[:4])
+    bal = get_or_init_pto(tech_id, year,
+                          accrue_through_period_end=datetime.now(timezone.utc).date().isoformat())
+    warn = None
+    if body.kind == "vacation" and body.hours > (bal["vacation_balance"] or 0) + 1e-6:
+        warn = (f"Heads-up: you only have {bal['vacation_balance']:.2f}h vacation "
+                f"available; supervisor may decline.")
+    if body.kind == "floating":
+        days_avail = (bal["floating_total"] or 0) - (bal["floating_used"] or 0)
+        if (body.hours / 8.0) > days_avail + 1e-6:
+            warn = (f"Heads-up: you only have {days_avail:.2f} floating-holiday "
+                    f"day(s); supervisor may decline.")
+    if body.kind == "sick":
+        sick_avail = (bal.get("sick_total") or 0) - (bal.get("sick_used") or 0)
+        if body.hours > sick_avail + 1e-6:
+            warn = (f"Heads-up: you only have {sick_avail:.2f}h sick/family time "
+                    f"available (40h annual cap). Doctor's note required to exceed.")
+    rid = create_pto_request(tech_id, body.kind, body.start_date, body.end_date,
+                             float(body.hours), body.reason)
+    _audit_from({"id": tech_id, "kind": "tech"}, "pto.request_created", request,
+                target_type="pto_request", target_id=rid,
+                after={"kind": body.kind, "start": body.start_date,
+                       "end": body.end_date, "hours": body.hours})
+    return {"id": rid, "ok": True, "balance_warning": warn}
+
+
+@app.get("/api/tech/me/pto-requests")
+def tech_list_pto_requests(request: Request):
+    """Tech's own request history (most recent first)."""
+    from database import list_pto_requests
+    tech_id = _require_tech(request)
+    return {"requests": list_pto_requests(tech_id=tech_id)}
+
+
+@app.post("/api/tech/me/pto-requests/{request_id}/cancel")
+def tech_cancel_pto_request(request: Request, request_id: int):
+    """Tech withdraws a still-pending request. Refuses if already decided."""
+    from database import get_pto_request, decide_pto_request
+    tech_id = _require_tech(request)
+    req = get_pto_request(request_id)
+    if not req or req["tech_id"] != tech_id:
+        raise HTTPException(404, "Request not found")
+    try:
+        decide_pto_request(request_id, "cancelled", actor_kind="tech",
+                           actor_id=tech_id, note="Cancelled by employee")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    _audit_from({"id": tech_id, "kind": "tech"}, "pto.request_cancelled", request,
+                target_type="pto_request", target_id=request_id)
+    return {"ok": True}
+
+
+@app.get("/api/admin/pto-requests")
+def admin_list_pto_requests(request: Request, status: str = "pending"):
+    """Supervisor / admin review queue. Defaults to pending; pass
+    ?status=approved|denied|cancelled|all to filter otherwise."""
+    admin = _require_admin(request)
+    from database import list_pto_requests
+    s = None if status == "all" else status
+    return {"requests": list_pto_requests(status=s)}
+
+
+@app.post("/api/admin/pto-requests/{request_id}/approve")
+def admin_approve_pto_request(request: Request, request_id: int, body: PtoDecisionBody):
+    admin = _require_admin(request)
+    from database import decide_pto_request
+    try:
+        out = decide_pto_request(request_id, "approved",
+                                 actor_kind="admin", actor_id=admin["id"],
+                                 note=body.note)
+    except ValueError as e:
+        # Balance-insufficient errors land here.
+        raise HTTPException(422, str(e))
+    _audit_from(admin, "pto.request_approved", request,
+                target_type="pto_request", target_id=request_id,
+                after={"note": body.note})
+    return {"ok": True, "request": out}
+
+
+@app.post("/api/admin/pto-requests/{request_id}/deny")
+def admin_deny_pto_request(request: Request, request_id: int, body: PtoDecisionBody):
+    admin = _require_admin(request)
+    from database import decide_pto_request
+    try:
+        out = decide_pto_request(request_id, "denied",
+                                 actor_kind="admin", actor_id=admin["id"],
+                                 note=body.note)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    _audit_from(admin, "pto.request_denied", request,
+                target_type="pto_request", target_id=request_id,
+                after={"note": body.note})
+    return {"ok": True, "request": out}
+
+
+@app.get("/api/tech/me/timesheets/{timesheet_id}")
+def tech_get_timesheet(request: Request, timesheet_id: int):
+    tech_id = _require_tech(request)
+    agg = _ts_or_404(timesheet_id)
+    if agg["timesheet"]["tech_id"] != tech_id:
+        raise HTTPException(404, "Timesheet not found")
+    return agg
+
+
+@app.patch("/api/tech/me/timesheets/{timesheet_id}/notes")
+def tech_update_timesheet_notes(request: Request, timesheet_id: int, body: TimesheetNotes):
+    from database import update_timesheet_notes
+    tech_id = _require_tech(request)
+    agg = _ts_or_404(timesheet_id)
+    ts  = agg["timesheet"]
+    if ts["tech_id"] != tech_id:
+        raise HTTPException(404, "Timesheet not found")
+    if ts["status"] != "draft":
+        raise HTTPException(409, "Only draft timesheets can be edited by the tech")
+    update_timesheet_notes(timesheet_id, body.tech_notes)
+    log_audit(actor_type="tech", actor_id=tech_id,
+              actor_label=None, action="timesheet.notes_update",
+              target_type="timesheet", target_id=timesheet_id,
+              after_value={"tech_notes": body.tech_notes},
+              ip_address=request.client.host if request.client else None)
+    return {"ok": True}
+
+
+@app.put("/api/tech/me/timesheets/{timesheet_id}/day")
+def tech_upsert_timesheet_day(request: Request, timesheet_id: int, body: TimesheetDayOverride):
+    """Set or replace the per-day override (correct a missed clock-in/out,
+    record a manual break). Only allowed while the timesheet is a draft."""
+    from database import upsert_timesheet_override
+    tech_id = _require_tech(request)
+    agg = _ts_or_404(timesheet_id)
+    ts  = agg["timesheet"]
+    if ts["tech_id"] != tech_id:
+        raise HTTPException(404, "Timesheet not found")
+    # Tech can self-correct only while the supervisor hasn't approved yet.
+    # 'submitted' rewinds to draft so the supervisor re-reviews the updated
+    # numbers. Once supervisor_approved or super_admin_approved, the sheet
+    # is locked — only a supervisor reopen unlocks it. Defense-in-depth for
+    # the payroll-integrity gap flagged in the May 2026 security audit.
+    if body.work_date < ts["period_start"] or body.work_date > ts["period_end"]:
+        raise HTTPException(400, "work_date is outside this timesheet's period")
+    if ts["status"] not in ("draft", "submitted"):
+        raise HTTPException(409,
+            f"Timesheet is {ts['status']} — ask your supervisor to reopen it before editing.")
+    if ts["status"] == "submitted":
+        try:
+            from database import _con as _dbcon
+            con = _dbcon()
+            con.execute(
+                "UPDATE tech_timesheets SET status='draft', "
+                "submitted_at=NULL, submitted_by_kind=NULL, submitted_by_id=NULL, "
+                "week1_submitted_at=NULL, week1_submitted_by_kind=NULL, week1_submitted_by_id=NULL, "
+                "week2_submitted_at=NULL, week2_submitted_by_kind=NULL, week2_submitted_by_id=NULL "
+                "WHERE id = ?", (timesheet_id,))
+            con.commit(); con.close()
+        except Exception:
+            pass
+        log_audit(actor_type="tech", actor_id=tech_id, actor_label=None,
+                  action="timesheet.reopened_by_tech_edit",
+                  target_type="timesheet", target_id=timesheet_id,
+                  target_label=body.work_date,
+                  after_value={"prior_status": "submitted", "new_status": "draft"},
+                  ip_address=request.client.host if request.client else None)
+    upsert_timesheet_override(
+        timesheet_id, body.work_date,
+        manual_start_time=body.manual_start_time,
+        manual_end_time=body.manual_end_time,
+        manual_break_minutes=body.manual_break_minutes,
+        note=body.note,
+        edited_by_kind="tech", edited_by_id=tech_id,
+    )
+    log_audit(actor_type="tech", actor_id=tech_id,
+              actor_label=None, action="timesheet.day_override",
+              target_type="timesheet", target_id=timesheet_id,
+              target_label=body.work_date,
+              after_value=body.model_dump(),
+              ip_address=request.client.host if request.client else None)
+    return {"ok": True}
+
+
+@app.delete("/api/tech/me/timesheets/{timesheet_id}/day")
+def tech_delete_timesheet_day(request: Request, timesheet_id: int, work_date: str):
+    """Tech removes their manual override for a given day. Underlying
+    clock events (if any) remain; the day falls back to whatever the raw
+    sign-in / sign-out events show. Same rewind-to-draft policy as PUT:
+    deleting on an approved sheet kicks it back into the review queue."""
+    from database import delete_timesheet_override
+    tech_id = _require_tech(request)
+    agg = _ts_or_404(timesheet_id)
+    ts  = agg["timesheet"]
+    if ts["tech_id"] != tech_id:
+        raise HTTPException(404, "Timesheet not found")
+    if work_date < ts["period_start"] or work_date > ts["period_end"]:
+        raise HTTPException(400, "work_date is outside this timesheet's period")
+    # Same lock policy as the PUT: no tech mutations once supervisor approved.
+    if ts["status"] not in ("draft", "submitted"):
+        raise HTTPException(409,
+            f"Timesheet is {ts['status']} — ask your supervisor to reopen it before editing.")
+    if ts["status"] == "submitted":
+        try:
+            from database import _con as _dbcon
+            con = _dbcon()
+            con.execute(
+                "UPDATE tech_timesheets SET status='draft', "
+                "submitted_at=NULL, submitted_by_kind=NULL, submitted_by_id=NULL, "
+                "week1_submitted_at=NULL, week1_submitted_by_kind=NULL, week1_submitted_by_id=NULL, "
+                "week2_submitted_at=NULL, week2_submitted_by_kind=NULL, week2_submitted_by_id=NULL "
+                "WHERE id = ?", (timesheet_id,))
+            con.commit(); con.close()
+        except Exception:
+            pass
+        log_audit(actor_type="tech", actor_id=tech_id, actor_label=None,
+                  action="timesheet.reopened_by_tech_edit",
+                  target_type="timesheet", target_id=timesheet_id,
+                  target_label=work_date,
+                  after_value={"prior_status": "submitted", "new_status": "draft",
+                               "via": "day_delete"},
+                  ip_address=request.client.host if request.client else None)
+    delete_timesheet_override(timesheet_id, work_date)
+    log_audit(actor_type="tech", actor_id=tech_id,
+              actor_label=None, action="timesheet.day_override_cleared",
+              target_type="timesheet", target_id=timesheet_id,
+              target_label=work_date,
+              ip_address=request.client.host if request.client else None)
+    return {"ok": True}
+
+
+@app.post("/api/tech/me/timesheets/{timesheet_id}/submit")
+def tech_submit_timesheet(request: Request, timesheet_id: int, week: int = None):
+    """Submit a timesheet for supervisor review. Supports per-week
+    submission via the optional `?week=1` or `?week=2` query param —
+    techs can submit Week 1 mid-period without waiting for Week 2 to
+    finish. When both weeks are submitted, overall status flips from
+    'draft' to 'submitted' so the supervisor queue picks it up.
+    Omit `week` to submit the full biweekly timesheet at once (legacy)."""
+    from database import transition_timesheet, submit_timesheet_week
+    tech_id = _require_tech(request)
+    agg = _ts_or_404(timesheet_id)
+    ts  = agg["timesheet"]
+    if ts["tech_id"] != tech_id:
+        raise HTTPException(404, "Timesheet not found")
+    if ts["status"] != "draft":
+        raise HTTPException(409, f"Cannot submit from status='{ts['status']}'")
+    if week in (1, 2):
+        try:
+            outcome = submit_timesheet_week(timesheet_id, int(week),
+                                            submitted_by_kind="tech",
+                                            submitted_by_id=tech_id)
+        except ValueError as e:
+            raise HTTPException(409, str(e))
+        log_audit(actor_type="tech", actor_id=tech_id, actor_label=None,
+                  action=f"timesheet.submit_week_{week}",
+                  target_type="timesheet", target_id=timesheet_id,
+                  after_value={"outcome": outcome},
+                  ip_address=request.client.host if request.client else None)
+        return {"ok": True, "week": week, "outcome": outcome}
+    # Legacy: submit both weeks at once.
+    transition_timesheet(timesheet_id, "submitted",
+                         submitted_by_kind="tech", submitted_by_id=tech_id)
+    # Backfill the per-week flags so the UI shows both as submitted.
+    from datetime import datetime as _dt
+    now = _dt.now(timezone.utc).isoformat()
+    from database import _con
+    con = _con()
+    con.execute(
+        "UPDATE tech_timesheets SET "
+        "week1_submitted_at = COALESCE(week1_submitted_at, ?), "
+        "week1_submitted_by_kind = COALESCE(week1_submitted_by_kind, 'tech'), "
+        "week1_submitted_by_id   = COALESCE(week1_submitted_by_id, ?), "
+        "week2_submitted_at = COALESCE(week2_submitted_at, ?), "
+        "week2_submitted_by_kind = COALESCE(week2_submitted_by_kind, 'tech'), "
+        "week2_submitted_by_id   = COALESCE(week2_submitted_by_id, ?) "
+        "WHERE id = ?",
+        (now, tech_id, now, tech_id, int(timesheet_id)),
+    )
+    con.commit(); con.close()
+    log_audit(actor_type="tech", actor_id=tech_id,
+              actor_label=None, action="timesheet.submit",
+              target_type="timesheet", target_id=timesheet_id,
+              ip_address=request.client.host if request.client else None)
+    return {"ok": True, "outcome": "submitted"}
+
+
+# ── Admin-facing endpoints (supervisor + super_admin) ────────────────────────
+
+@app.get("/api/admin/timesheets/pending")
+def admin_pending_timesheets(request: Request):
+    """Role-scoped queue. supervisor_admin: their own techs' submissions.
+    super_admin: everything currently waiting for the final pass + any
+    stranded submissions from techs with no supervisor."""
+    from database import (
+        list_pending_timesheets_for_supervisor,
+        list_pending_timesheets_for_super_admin,
+    )
+    admin = _require_perm(request, "timesheet:view_all")
+    if _admin_is_super(admin):
+        return list_pending_timesheets_for_super_admin()
+    return list_pending_timesheets_for_supervisor(admin["id"])
+
+
+@app.get("/api/admin/timesheets/{timesheet_id}")
+def admin_get_timesheet(request: Request, timesheet_id: int):
+    """Full detail. Supervisor can read their assigned techs' timesheets;
+    super_admin can read any."""
+    admin = _require_perm(request, "timesheet:view_all")
+    agg = _ts_or_404(timesheet_id)
+    if not _admin_is_super(admin) and not _admin_supervises_tech(admin, agg["timesheet"]["tech_id"]):
+        raise HTTPException(403, "Not the supervisor for this tech")
+    return agg
+
+
+@app.patch("/api/admin/timesheets/{timesheet_id}/notes")
+def admin_update_timesheet_notes(request: Request, timesheet_id: int, body: TimesheetNotes):
+    from database import update_timesheet_notes
+    admin = _require_perm(request, "timesheet:view_all")
+    agg = _ts_or_404(timesheet_id)
+    ts  = agg["timesheet"]
+    if not _admin_is_super(admin) and not _admin_supervises_tech(admin, ts["tech_id"]):
+        raise HTTPException(403, "Not the supervisor for this tech")
+    if ts["status"] == "super_admin_approved":
+        raise HTTPException(409, "Cannot edit a fully-approved timesheet")
+    update_timesheet_notes(timesheet_id, body.tech_notes)
+    _audit_from(admin, "timesheet.notes_update", request,
+                target_type="timesheet", target_id=timesheet_id,
+                after={"tech_notes": body.tech_notes})
+    return {"ok": True}
+
+
+@app.put("/api/admin/timesheets/{timesheet_id}/day")
+def admin_upsert_timesheet_day(request: Request, timesheet_id: int, body: TimesheetDayOverride):
+    from database import upsert_timesheet_override
+    admin = _require_perm(request, "timesheet:view_all")
+    agg = _ts_or_404(timesheet_id)
+    ts  = agg["timesheet"]
+    if not _admin_is_super(admin) and not _admin_supervises_tech(admin, ts["tech_id"]):
+        raise HTTPException(403, "Not the supervisor for this tech")
+    if ts["status"] == "super_admin_approved":
+        raise HTTPException(409, "Cannot edit a fully-approved timesheet")
+    if body.work_date < ts["period_start"] or body.work_date > ts["period_end"]:
+        raise HTTPException(400, "work_date is outside this timesheet's period")
+    upsert_timesheet_override(
+        timesheet_id, body.work_date,
+        manual_start_time=body.manual_start_time,
+        manual_end_time=body.manual_end_time,
+        manual_break_minutes=body.manual_break_minutes,
+        note=body.note,
+        edited_by_kind="admin", edited_by_id=admin["id"],
+    )
+    _audit_from(admin, "timesheet.day_override", request,
+                target_type="timesheet", target_id=timesheet_id,
+                target_label=body.work_date,
+                after=body.model_dump())
+    return {"ok": True}
+
+
+@app.post("/api/admin/timesheets/{timesheet_id}/submit-as-tech")
+def admin_submit_timesheet_as_tech(request: Request, timesheet_id: int):
+    """Supervisor submits on the tech's behalf (tech is in the field /
+    forgot)."""
+    from database import transition_timesheet
+    admin = _require_perm(request, "timesheet:view_all")
+    agg = _ts_or_404(timesheet_id)
+    ts  = agg["timesheet"]
+    if not _admin_is_super(admin) and not _admin_supervises_tech(admin, ts["tech_id"]):
+        raise HTTPException(403, "Not the supervisor for this tech")
+    if ts["status"] != "draft":
+        raise HTTPException(409, f"Cannot submit from status='{ts['status']}'")
+    transition_timesheet(timesheet_id, "submitted",
+                         submitted_by_kind="admin", submitted_by_id=admin["id"])
+    _audit_from(admin, "timesheet.submit_as_tech", request,
+                target_type="timesheet", target_id=timesheet_id,
+                target_label=f"tech_id={ts['tech_id']}")
+    return {"ok": True}
+
+
+@app.post("/api/admin/timesheets/{timesheet_id}/approve")
+def admin_approve_timesheet(request: Request, timesheet_id: int):
+    """Role-driven approval. supervisor: submitted → supervisor_approved.
+    super_admin: supervisor_approved → super_admin_approved (final, locks
+    the timesheet for payroll consumption)."""
+    from database import transition_timesheet
+    admin = _require_perm(request, "timesheet:view_all")
+    agg = _ts_or_404(timesheet_id)
+    ts  = agg["timesheet"]
+    if _admin_is_super(admin):
+        if ts["status"] != "supervisor_approved":
+            raise HTTPException(409, "Super admin can only approve a supervisor-approved timesheet (use force-approve to bypass)")
+        transition_timesheet(timesheet_id, "super_admin_approved",
+                             super_admin_id=admin["id"])
+        _audit_from(admin, "timesheet.super_admin_approve", request,
+                    target_type="timesheet", target_id=timesheet_id,
+                    target_label=f"tech_id={ts['tech_id']}")
+        return {"ok": True, "status": "super_admin_approved"}
+    if not _admin_supervises_tech(admin, ts["tech_id"]):
+        raise HTTPException(403, "Not the supervisor for this tech")
+    if ts["status"] != "submitted":
+        raise HTTPException(409, f"Cannot supervisor-approve from status='{ts['status']}'")
+    transition_timesheet(timesheet_id, "supervisor_approved",
+                         supervisor_id=admin["id"])
+    _audit_from(admin, "timesheet.supervisor_approve", request,
+                target_type="timesheet", target_id=timesheet_id,
+                target_label=f"tech_id={ts['tech_id']}")
+    return {"ok": True, "status": "supervisor_approved"}
+
+
+@app.post("/api/admin/timesheets/{timesheet_id}/reject")
+def admin_reject_timesheet(request: Request, timesheet_id: int, body: TimesheetReject):
+    """Sends the timesheet all the way back to draft with a required reason.
+    Tech sees the reason and revises before resubmitting."""
+    from database import transition_timesheet
+    admin = _require_perm(request, "timesheet:view_all")
+    if not (body.reason or "").strip():
+        raise HTTPException(400, "Rejection reason is required")
+    agg = _ts_or_404(timesheet_id)
+    ts  = agg["timesheet"]
+    if ts["status"] not in ("submitted", "supervisor_approved"):
+        raise HTTPException(409, f"Cannot reject from status='{ts['status']}'")
+    if not _admin_is_super(admin) and not _admin_supervises_tech(admin, ts["tech_id"]):
+        raise HTTPException(403, "Not the supervisor for this tech")
+    transition_timesheet(timesheet_id, "draft", reject_reason=body.reason.strip())
+    _audit_from(admin, "timesheet.reject", request,
+                target_type="timesheet", target_id=timesheet_id,
+                target_label=f"tech_id={ts['tech_id']}",
+                after={"reason": body.reason.strip()})
+    return {"ok": True}
+
+
+@app.post("/api/admin/timesheets/{timesheet_id}/force-approve")
+def admin_force_approve_timesheet(request: Request, timesheet_id: int, body: TimesheetForceApprove):
+    """super_admin escape hatch — jump straight to super_admin_approved with
+    a required reason audit-logged loudly. Use when the supervisor is
+    unavailable and payroll cannot wait."""
+    from database import transition_timesheet
+    admin = _require_perm(request, "timesheet:view_all")
+    if not _admin_is_super(admin):
+        raise HTTPException(403, "Only super_admin can force-approve")
+    if not (body.reason or "").strip():
+        raise HTTPException(400, "Force-approve reason is required")
+    agg = _ts_or_404(timesheet_id)
+    ts  = agg["timesheet"]
+    if ts["status"] == "super_admin_approved":
+        raise HTTPException(409, "Already fully approved")
+    transition_timesheet(timesheet_id, "super_admin_approved",
+                         super_admin_id=admin["id"],
+                         force_reason=body.reason.strip())
+    _audit_from(admin, "timesheet.force_approve", request,
+                target_type="timesheet", target_id=timesheet_id,
+                target_label=f"tech_id={ts['tech_id']}",
+                after={"reason": body.reason.strip(), "prior_status": ts["status"]})
+    return {"ok": True, "status": "super_admin_approved", "force_approved": True}
 
 
 # ── Payroll (pay periods + payslips) ─────────────────────────────────────────
@@ -5047,16 +6099,56 @@ def admin_approve_pay_period(request: Request, period_id: int):
     pp = get_pay_period(period_id)
     if not pp:
         raise HTTPException(404, "Pay period not found")
-    if pp.get("created_by") == admin["id"]:
+    # Defense-in-depth separation of duties: whoever HR'd this batch can't
+    # also approve it. Super-admins bypass — they sit above the org chart
+    # and own both functions in single-operator deployments, and the audit
+    # log still captures the self-approval for traceability.
+    is_super = (admin.get("role") or "").lower() == "super_admin"
+    if pp.get("created_by") == admin["id"] and not is_super:
         raise HTTPException(403, "You cannot approve a pay period you yourself created.")
     try:
-        result = approve_pay_period(period_id, admin["id"])
+        result = approve_pay_period(period_id, admin["id"],
+                                    allow_self_approval=is_super)
     except ValueError as e:
         raise HTTPException(400, str(e))
     _audit_from(admin, "payroll.period_approve", request,
                 target_type="pay_period", target_id=period_id,
                 target_label=pp["label"], after=result)
     return result
+
+
+@app.delete("/api/admin/payroll/periods/{period_id}")
+def admin_delete_pay_period(request: Request, period_id: int):
+    """Delete a pay period. Super-admin only. Allowed while the period is
+    still in draft; deleting an approved or paid period requires explicit
+    ?force=1 because it permanently removes the period row and cascades to
+    its payslips. Captured in the audit log."""
+    from database import _con as _dbcon
+    admin = _require_perm(request, "payroll:approve")
+    if (admin.get("role") or "").lower() != "super_admin":
+        raise HTTPException(403, "Only super-admin can delete a pay period.")
+    pp = get_pay_period(period_id)
+    if not pp:
+        raise HTTPException(404, "Pay period not found")
+    force = (request.query_params.get("force") or "").lower() in ("1","true","yes")
+    if pp["status"] != "draft" and not force:
+        raise HTTPException(409,
+            f"Period is {pp['status']}. Pass ?force=1 to delete a non-draft period.")
+    con = _dbcon()
+    try:
+        con.execute("DELETE FROM payslips WHERE pay_period_id = ?", (period_id,))
+        con.execute("DELETE FROM pay_periods WHERE id = ?", (period_id,))
+        con.commit()
+    finally:
+        con.close()
+    _audit_from(admin, "payroll.period_delete", request,
+                target_type="pay_period", target_id=period_id,
+                target_label=pp.get("label"),
+                before={"status": pp.get("status"),
+                        "created_by": pp.get("created_by"),
+                        "period_start": pp.get("period_start"),
+                        "period_end": pp.get("period_end")})
+    return {"ok": True, "deleted": period_id}
 
 
 @app.put("/api/admin/payroll/periods/{period_id}/paid")
@@ -7417,13 +8509,21 @@ _TECH_REVIEW_PII_FIELDS  = ("summary", "action_items")
 _TECH_KPI_OV_PII_FIELDS  = ("reason",)
 _TECH_5S_OV_PII_FIELDS   = ("reason",)
 
-# Existing role values in the technicians table are 'tech' | 'lead_tech' |
-# 'apprentice'. The product spec asks for level_1/level_2/level_3/lead, but
-# changing the enum mid-flight would break the existing tech-management UI
-# and the verify_tech / get_all_techs surface. We accept the legacy enum
-# here and surface the spec labels in the UI dropdown.
-# FIXME(docs/FIXMES.md): role-rename migration (legacy tech/lead_tech/apprentice → level_1/2/3/lead) pending HR sign-off.
-_TECH_ROLE_VALUES         = ("tech", "lead_tech", "apprentice")
+# DECISION: the tech ladder is stored as stable internal enum values and
+# rendered through display labels in the UI — we intentionally do NOT rename
+# the stored strings. Rationale:
+#   * Nothing gates on these values: a field grade grants zero permissions,
+#     it only drives a display label (_ROLE_LABEL) and an org-rank sort key
+#     (_ORG_RANK). So the stored string is a key, not behaviour.
+#   * Renaming the enum would churn the verify_tech / get_all_techs surface
+#     and ~20 references for no functional gain.
+#   * The old spec's level_1/level_2/level_3/lead scheme has been superseded
+#     by the richer ladder below (Apprentice / Technician / Senior / Journeyman
+#     / Installation / Commercial), so migrating TO it would be backwards.
+# If HR ever wants different *labels*, change _ROLE_LABEL + the dropdowns; the
+# stored enum stays put. (Supersedes the former level_1/2/3/lead rename FIXME.)
+_TECH_ROLE_VALUES         = ("tech", "lead_tech", "apprentice",
+                             "senior_tech", "install_tech", "commercial_tech")
 _TECH_EMPLOYMENT_VALUES   = ("active", "on_leave", "terminated")
 
 
@@ -8920,6 +10020,194 @@ def admin_delete_equipment(request: Request, equipment_id: int):
     return {"ok": True}
 
 
+@app.patch("/api/admin/equipment/{equipment_id}")
+def admin_update_equipment(request: Request, equipment_id: int, body: EquipmentUpdate):
+    """Edit an equipment row's editable fields (name/type/model + encrypted
+    serial/location/notes). customer_id is intentionally not changeable
+    here. before/after diffs are written to the audit log so reviewers can
+    see what was changed."""
+    from database import update_equipment
+    admin = _require_perm(request, "customer:update")
+    before = get_equipment_by_id(equipment_id)
+    if not before:
+        raise HTTPException(404, "Equipment not found")
+    updates = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
+    if not updates:
+        return {"ok": True, "id": equipment_id, "no_changes": True}
+    update_equipment(equipment_id, updates,
+                     updated_by_kind="admin", updated_by_id=admin["id"])
+    after = get_equipment_by_id(equipment_id)
+    _audit_from(admin, "equipment.update", request,
+                target_type="equipment", target_id=equipment_id,
+                target_label=after.get("name") if after else before.get("name"),
+                before=before, after=after)
+    return {"ok": True, "id": equipment_id, "equipment": after}
+
+
+@app.post("/api/admin/equipment/{equipment_id}/deactivate")
+def admin_deactivate_equipment(request: Request, equipment_id: int):
+    """Soft-delete: hides the equipment from the everyday list (techs can no
+    longer pick it for new visits) while preserving the visit_id →
+    equipment_id history. Hard delete remains a separate, more dangerous
+    endpoint."""
+    from database import deactivate_equipment
+    admin = _require_perm(request, "customer:update")
+    eq = get_equipment_by_id(equipment_id)
+    if not eq:
+        raise HTTPException(404, "Equipment not found")
+    deactivate_equipment(equipment_id,
+                         updated_by_kind="admin", updated_by_id=admin["id"])
+    _audit_from(admin, "equipment.deactivate", request,
+                target_type="equipment", target_id=equipment_id,
+                target_label=eq.get("name"))
+    return {"ok": True}
+
+
+# ── Tech-side equipment endpoints ────────────────────────────────────────────
+#
+# Techs can read, create, and update equipment for ANY customer — the field
+# reality is that the tech is standing in front of a unit and needs to be
+# able to record it without bouncing back to the office. The audit log
+# captures who did what; abuse is enforced after-the-fact rather than via
+# heavy per-customer ACLs.
+
+def _audit_tech(tech, action, request, target_type=None, target_id=None,
+                target_label=None, before=None, after=None):
+    """Tech-side wrapper around log_audit. tech is the dict returned by
+    get_tech_by_id (so we have name + tech_code for the audit row)."""
+    log_audit(
+        actor_type="tech",
+        actor_id=tech["id"],
+        actor_prid=tech.get("prid") or tech.get("tech_code"),
+        actor_label=tech.get("name"),
+        actor_role=tech.get("role"),
+        action=action,
+        target_type=target_type,
+        target_id=target_id,
+        target_label=target_label,
+        before_value=before,
+        after_value=after,
+        ip_address=request.client.host if request.client else None,
+    )
+
+
+def _tech_or_404(request):
+    """Returns the tech's full row (not just the id) so we can pass it to
+    _audit_tech and reuse name/tech_code in responses."""
+    tech_id = _require_tech(request)
+    from database import get_tech_by_id
+    tech = get_tech_by_id(tech_id)
+    if not tech:
+        raise HTTPException(404, "Tech profile not found")
+    return tech
+
+
+@app.get("/api/tech/customers/search")
+def tech_search_customers(request: Request, q: str = "", limit: int = 25):
+    """Lightweight customer search for the tech's standalone Equipment
+    screen. Returns enough to build a chip row + tap-through (id, name,
+    customer_code, address, phone). Filters on name / customer_code /
+    company / phone, case-insensitive, active customers only."""
+    _require_tech(request)
+    needle = (q or "").strip().lower()
+    rows = get_all_customers() or []
+    if needle:
+        def hit(c):
+            for k in ("name", "company", "customer_code", "phone", "email"):
+                v = (c.get(k) or "").lower()
+                if needle in v:
+                    return True
+            return False
+        rows = [c for c in rows if hit(c)]
+    # Active customers only — terminated accounts aren't relevant for new
+    # field work.
+    rows = [c for c in rows if (c.get("active") in (1, True, None))]
+    out = []
+    for c in rows[: max(1, min(int(limit), 100))]:
+        out.append({
+            "id":            c["id"],
+            "name":          c.get("name"),
+            "company":       c.get("company"),
+            "customer_code": c.get("customer_code"),
+            "address":       c.get("address"),
+            "phone":         c.get("phone"),
+        })
+    return out
+
+
+@app.get("/api/tech/customers/{customer_id}")
+def tech_get_customer(request: Request, customer_id: int):
+    """Minimal customer header for the tech equipment screen. Strips out
+    anything the tech doesn't need on this surface (billing terms, etc.)."""
+    _require_tech(request)
+    c = get_customer_by_id(customer_id)
+    if not c:
+        raise HTTPException(404, "Customer not found")
+    return {
+        "id":            c["id"],
+        "name":          c.get("name"),
+        "company":       c.get("company"),
+        "customer_code": c.get("customer_code"),
+        "address":       c.get("address"),
+        "phone":         c.get("phone"),
+        "email":         c.get("email"),
+        "customer_type": c.get("customer_type"),
+    }
+
+
+@app.get("/api/tech/customers/{customer_id}/equipment")
+def tech_list_customer_equipment(request: Request, customer_id: int):
+    """List the customer's active equipment for the tech UI. Hides
+    deactivated rows by default — those are admin-only via the
+    `/api/admin/customers/{id}/equipment` view."""
+    _require_tech(request)
+    if not get_customer_by_id(customer_id):
+        raise HTTPException(404, "Customer not found")
+    return get_customer_equipment(customer_id)
+
+
+@app.post("/api/tech/equipment")
+def tech_create_equipment(request: Request, body: EquipmentCreate):
+    """Tech adds a new piece of equipment in the field. Same shape as the
+    admin endpoint; the audit row carries actor_type=tech."""
+    tech = _tech_or_404(request)
+    if not get_customer_by_id(body.customer_id):
+        raise HTTPException(404, "Customer not found")
+    equipment_id = create_equipment(body.model_dump())
+    # Stamp updated_by_* on creation too, so we always know who touched it
+    # last (avoids a NULL period until the first edit).
+    from database import update_equipment as _upd
+    _upd(equipment_id, {}, updated_by_kind="tech", updated_by_id=tech["id"])
+    _audit_tech(tech, "equipment.create", request,
+                target_type="equipment", target_id=equipment_id,
+                target_label=body.name, after=body.model_dump())
+    return {"id": equipment_id, "equipment": get_equipment_by_id(equipment_id)}
+
+
+@app.patch("/api/tech/equipment/{equipment_id}")
+def tech_update_equipment(request: Request, equipment_id: int, body: EquipmentUpdate):
+    """Tech edits an existing equipment row. Same constraints as the admin
+    endpoint (customer_id not editable, encryption applied to PII columns)."""
+    from database import update_equipment
+    tech = _tech_or_404(request)
+    before = get_equipment_by_id(equipment_id)
+    if not before:
+        raise HTTPException(404, "Equipment not found")
+    if not before.get("active", 1):
+        raise HTTPException(409, "Equipment is deactivated and cannot be edited")
+    updates = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
+    if not updates:
+        return {"ok": True, "id": equipment_id, "no_changes": True}
+    update_equipment(equipment_id, updates,
+                     updated_by_kind="tech", updated_by_id=tech["id"])
+    after = get_equipment_by_id(equipment_id)
+    _audit_tech(tech, "equipment.update", request,
+                target_type="equipment", target_id=equipment_id,
+                target_label=after.get("name") if after else before.get("name"),
+                before=before, after=after)
+    return {"ok": True, "id": equipment_id, "equipment": after}
+
+
 @app.get("/api/admin/visits")
 def admin_list_visits(request: Request):
     _require_perm(request, "visit:view")
@@ -8929,7 +10217,15 @@ def admin_list_visits(request: Request):
 @app.post("/api/admin/visits")
 def admin_create_visit(request: Request, body: VisitCreate):
     admin = _require_perm(request, "visit:create")
-    visit_id = create_visit(body.model_dump())
+    from database import set_visit_crew
+    payload = body.model_dump()
+    # crew_tech_ids isn't a column on maintenance_visits — it's handled
+    # separately via the visit_techs table after the visit row is inserted.
+    crew_ids = payload.pop("crew_tech_ids", []) or []
+    visit_id = create_visit(payload)
+    if crew_ids:
+        set_visit_crew(visit_id, crew_ids,
+                       by_kind="admin", by_id=admin["id"])
     _audit_from(admin, "visit.create", request,
                 target_type="visit", target_id=visit_id,
                 target_label=f"{body.visit_type} for cust {body.customer_id}",
@@ -8940,13 +10236,71 @@ def admin_create_visit(request: Request, body: VisitCreate):
 @app.put("/api/admin/visits/{visit_id}", response_model=Dict[str, Any])
 def admin_update_visit(request: Request, visit_id: int, body: VisitUpdate):
     admin = _require_record_access(request, "visit", visit_id, write=True)
+    from database import set_visit_crew
     before = get_visit_by_id(visit_id)
-    update_visit(visit_id, body.model_dump())
+    payload = body.model_dump()
+    # `crew_tech_ids` is None when the caller doesn't want to touch the
+    # crew (legacy edit modals); only update when it's an actual list.
+    crew_ids = payload.pop("crew_tech_ids", None)
+    update_visit(visit_id, payload)
+    if crew_ids is not None:
+        set_visit_crew(visit_id, crew_ids,
+                       by_kind="admin", by_id=admin["id"])
     _audit_from(admin, "visit.update", request,
                 target_type="visit", target_id=visit_id,
                 target_label=f"{body.visit_type} #{visit_id}",
                 before=before, after=body.model_dump())
     return {"ok": True}
+
+
+@app.get("/api/admin/visits/{visit_id}/crew")
+def admin_get_visit_crew(request: Request, visit_id: int):
+    """Lightweight crew query for the Visit edit modal — returns the lead
+    AND the extras as one list with a `lead` flag so the picker can show
+    them all with the lead marked."""
+    from database import get_visit_crew
+    _require_perm(request, "visit:view")
+    v = get_visit_by_id(visit_id)
+    if not v:
+        raise HTTPException(404, "Visit not found")
+    out = []
+    if v.get("assigned_tech_id"):
+        out.append({"id": v["assigned_tech_id"], "name": v.get("tech_name"), "lead": True})
+    for c in get_visit_crew(visit_id):
+        out.append({"id": c["id"], "name": c["name"], "lead": False})
+    return out
+
+
+@app.post("/api/admin/visits/{visit_id}/crew/{tech_id}")
+def admin_add_visit_crew(request: Request, visit_id: int, tech_id: int):
+    """Incrementally add ONE extra crew member without touching the rest of
+    the crew. Used by the chip-picker's '+ add' control."""
+    from database import add_visit_crew
+    admin = _require_record_access(request, "visit", visit_id, write=True)
+    if not get_visit_by_id(visit_id):
+        raise HTTPException(404, "Visit not found")
+    added = add_visit_crew(visit_id, tech_id, by_kind="admin", by_id=admin["id"])
+    _audit_from(admin, "visit.crew_add", request,
+                target_type="visit", target_id=visit_id,
+                target_label=f"tech_id={tech_id}",
+                after={"added": added})
+    return {"ok": True, "added": added}
+
+
+@app.delete("/api/admin/visits/{visit_id}/crew/{tech_id}")
+def admin_remove_visit_crew(request: Request, visit_id: int, tech_id: int):
+    """Incrementally remove ONE extra crew member. Cannot remove the lead
+    via this path — change `assigned_tech_id` through the PUT endpoint."""
+    from database import remove_visit_crew
+    admin = _require_record_access(request, "visit", visit_id, write=True)
+    if not get_visit_by_id(visit_id):
+        raise HTTPException(404, "Visit not found")
+    removed = remove_visit_crew(visit_id, tech_id)
+    _audit_from(admin, "visit.crew_remove", request,
+                target_type="visit", target_id=visit_id,
+                target_label=f"tech_id={tech_id}",
+                after={"removed": removed})
+    return {"ok": True, "removed": removed}
 
 
 @app.delete("/api/admin/visits/{visit_id}", response_model=OkResponse)
@@ -9015,6 +10369,13 @@ def admin_list_techs(request: Request):
 @app.post("/api/admin/techs")
 def admin_create_tech(request: Request, body: TechCreate):
     admin = _require_perm(request, "tech:create")
+    # Unified onboarding policy: only super_admin and hr_admin can onboard
+    # any employee (field tech, parts runner, warehouse staff). Defense-in-
+    # depth — the client-side Onboarding panel is gated the same way, but
+    # this catches anyone hitting the endpoint directly.
+    if (admin.get("role") or "").lower() not in ("super_admin", "hr_admin"):
+        raise HTTPException(
+            403, "Onboarding is restricted to super_admin and hr_admin.")
     # New tech, so phone-on-file is whatever the admin entered in this
     # same request. Phone-as-PIN check still applies — refuse to even
     # create the row if the admin tries to set the new tech's PIN to
@@ -9030,10 +10391,10 @@ def admin_create_tech(request: Request, body: TechCreate):
     # added later if needed).
     staff_type = (body.staff_type or "tech").strip()
     if staff_type == "tech":
-        if body.role not in ("lead_tech", "tech", "apprentice"):
+        if body.role not in _TECH_ROLE_VALUES:
             raise HTTPException(400, "Invalid tech role")
     elif staff_type in ("warehouse_floor", "parts_runner",
-                        "warehouse_manager"):
+                        "warehouse_manager", "driver"):
         # Operator policy: warehouse onboarding & position assignment is
         # restricted to super_admin + hr_admin even if a role otherwise
         # has tech:create (e.g. supervisor_admin can create field techs
@@ -9070,7 +10431,7 @@ def admin_create_tech(request: Request, body: TechCreate):
 @app.put("/api/admin/techs/{tech_id}")
 def admin_update_tech(request: Request, tech_id: int, body: TechUpdate):
     admin = _require_perm(request, "tech:update")
-    if body.role not in ("lead_tech", "tech", "apprentice"):
+    if body.role not in _TECH_ROLE_VALUES:
         raise HTTPException(400, "Invalid tech role")
     tech = get_tech_by_id(tech_id)
     update_tech(tech_id, body.model_dump())
@@ -9652,12 +11013,318 @@ def _resolve_any_staff(request: Request):
     raise HTTPException(401, "Sign-in required")
 
 
+# ── Position-based ranking used by the org-chart endpoint ──────────────
+# Lower rank = higher in the org. Drives sorting and Above/Peers/Below
+# bucketing when a direct supervisor_id link isn't enough on its own.
+_ORG_RANK = {
+    "super_admin":          0,
+    "operations_manager":   1,
+    "ceo_assistant":        1,
+    "supervisor_admin":     2,
+    "hr_admin":             2,
+    "system_admin":         2,
+    "inventory_manager":    2,
+    "accountant":           2,
+    "account_manager":      2,
+    "safety_officer":       2,
+    "quality_manager":      2,
+    "warehouse_supervisor": 3,
+    "dispatcher":           3,
+    "master_tech":          3,
+    "csr":                  3,
+    "marketing":            3,
+    "warehouse_manager":    4,
+    "lead_tech":            5,
+    "senior_tech":          5,
+    "tech":                 6,
+    "install_tech":         6,
+    "commercial_tech":      6,
+    "warehouse_floor":      6,
+    "parts_runner":         6,
+    "driver":               6,
+    "apprentice":           7,
+}
+_ROLE_LABEL = {
+    "super_admin":          "Super Admin",
+    "operations_manager":   "Operations Manager",
+    "ceo_assistant":        "CEO Assistant",
+    "supervisor_admin":     "Supervisor",
+    "hr_admin":             "HR Admin",
+    "system_admin":         "System Admin",
+    "inventory_manager":    "Inventory Manager",
+    "accountant":           "Accountant",
+    "account_manager":      "Account Manager",
+    "safety_officer":       "Safety Officer",
+    "quality_manager":      "Quality Manager",
+    "warehouse_supervisor": "Warehouse Supervisor",
+    "dispatcher":           "Dispatcher",
+    "master_tech":          "Master Tech",
+    "csr":                  "Customer Service Rep",
+    "marketing":            "Marketing",
+    "warehouse_manager":    "Warehouse Manager",
+    "lead_tech":            "Journeyman",
+    "senior_tech":          "Senior Technician",
+    "tech":                 "Technician",
+    "install_tech":         "Installation Technician",
+    "commercial_tech":      "Commercial Technician",
+    "warehouse_floor":      "Warehouse Floor",
+    "parts_runner":         "Parts Runner",
+    "driver":               "Delivery Driver",
+    "apprentice":           "Apprentice",
+}
+
+
+class OrgAssignBody(BaseModel):
+    supervisor_id: Optional[int] = None   # null = remove supervisor
+    reason: Optional[str] = ""
+
+
+def _supervisor_chain_admin_ids(con, start_admin_id: int) -> set:
+    """Walk UP the admin reporting chain starting from start_admin_id and
+    return the set of admin_ids in the chain. Used to prevent cycles
+    when reassigning supervisors."""
+    seen = set()
+    cur = int(start_admin_id)
+    while cur and cur not in seen:
+        seen.add(cur)
+        row = con.execute(
+            "SELECT supervisor_id FROM admin_users WHERE id = ?", (cur,)
+        ).fetchone()
+        if not row or not row["supervisor_id"]: break
+        cur = int(row["supervisor_id"])
+    return seen
+
+
+@app.get("/api/admin/org/eligible-supervisors")
+def admin_org_eligible_supervisors(request: Request):
+    """Returns the full list of active admins that can be assigned as a
+    supervisor. Gated on admin:view_all so HR + super_admin can populate
+    the picker; the actual ASSIGN action is gated separately on admin:update."""
+    admin = _require_perm(request, "admin:view_all")
+    from database import _con
+    con = _con(); con.row_factory = __import__('sqlite3').Row
+    rows = con.execute(
+        "SELECT id, name, prid, role FROM admin_users "
+        "WHERE active = 1 ORDER BY name"
+    ).fetchall()
+    con.close()
+    return {
+        "admins": [
+            {"id": r["id"], "name": r["name"], "prid": r["prid"],
+             "role": r["role"],
+             "role_label": _ROLE_LABEL.get(r["role"], (r["role"] or '').replace('_',' ').title())}
+            for r in rows
+        ]
+    }
+
+
+@app.post("/api/admin/org/people/{kind}/{person_id}/supervisor")
+def admin_org_set_supervisor(request: Request, kind: str, person_id: int,
+                              body: OrgAssignBody):
+    """Assign (or clear) the supervisor for ANY person in the org. Caller
+    needs admin:update (super_admin + hr_admin in the default matrix).
+    Cycle-safe: refuses to assign someone to a supervisor whose own chain
+    passes through this person. Full audit trail with PRID + before/after."""
+    admin = _require_perm(request, "admin:update")
+    if kind not in ("admin", "tech"):
+        raise HTTPException(422, "kind must be 'admin' or 'tech'")
+    from database import _con, set_admin_supervisor, set_tech_supervisor
+    con = _con(); con.row_factory = __import__('sqlite3').Row
+    tbl = "admin_users" if kind == "admin" else "technicians"
+    person = con.execute(
+        f"SELECT id, name, role, supervisor_id, active FROM {tbl} WHERE id = ?",
+        (int(person_id),),
+    ).fetchone()
+    if not person:
+        con.close(); raise HTTPException(404, "Person not found")
+    if not person["active"]:
+        con.close(); raise HTTPException(409, "Cannot reassign an inactive employee")
+    new_sup_id = body.supervisor_id
+    if new_sup_id is not None:
+        try:
+            new_sup_id = int(new_sup_id)
+        except (TypeError, ValueError):
+            con.close(); raise HTTPException(422, "supervisor_id must be an integer or null")
+        sup = con.execute(
+            "SELECT id, name, role FROM admin_users WHERE id = ? AND active = 1",
+            (new_sup_id,)
+        ).fetchone()
+        if not sup:
+            con.close(); raise HTTPException(404, "Supervisor not found or inactive")
+        if kind == "admin" and new_sup_id == person_id:
+            con.close(); raise HTTPException(422, "Cannot assign someone as their own supervisor")
+        if kind == "admin":
+            chain = _supervisor_chain_admin_ids(con, new_sup_id)
+            if person_id in chain:
+                con.close()
+                raise HTTPException(
+                    409,
+                    "Cycle detected — that supervisor already reports to this person.",
+                )
+    before = {"supervisor_id": person["supervisor_id"]}
+    con.close()
+    if kind == "admin":
+        set_admin_supervisor(person_id, new_sup_id)
+    else:
+        set_tech_supervisor(person_id, new_sup_id)
+    _audit_from(admin, "org.supervisor_assigned", request,
+                target_type=("admin_user" if kind == "admin" else "technician"),
+                target_id=person_id, target_label=person["name"],
+                before=before,
+                after={"supervisor_id": new_sup_id,
+                       "reason": (body.reason or "")[:300]})
+    return {"ok": True, "person": {"id": person_id, "kind": kind,
+                                    "name": person["name"]},
+            "supervisor_id": new_sup_id}
+
+
+@app.get("/api/me/org-chart")
+def me_org_chart(request: Request, as_kind: str = None, as_id: int = None):
+    """Returns the org context for the signed-in user: who they report to,
+    who reports to them, and their peers. Works for both admins and techs.
+
+    Super-admins (or anyone with admin:view_all) may pass ?as_kind=
+    {admin|tech}&as_id=<id> to see the org chart as if they were that
+    person — useful for the "view another employee's position" picker."""
+    from database import _con
+    kind, me = _resolve_any_staff(request)
+    # Optional "view as someone else" — used by the org-chart drill-down on
+    # every staff surface (admin + tech). The payload is purely structural
+    # (name / role / PRID / avatar), so any signed-in staff may navigate it.
+    if as_kind and as_id:
+        if as_kind not in ('admin', 'tech'):
+            raise HTTPException(422, "as_kind must be 'admin' or 'tech'")
+        c = _con(); c.row_factory = __import__('sqlite3').Row
+        tbl = 'admin_users' if as_kind == 'admin' else 'technicians'
+        row = c.execute(f"SELECT * FROM {tbl} WHERE id = ?", (int(as_id),)).fetchone()
+        c.close()
+        if not row:
+            raise HTTPException(404, "Person not found")
+        kind = as_kind
+        me = dict(row)
+    me_id   = me.get("id")
+    me_role = (me.get("role") or "").lower()
+    me_sup_id = me.get("supervisor_id")
+    rank_me = _ORG_RANK.get(me_role, 99)
+
+    def _norm(row, k):
+        """Normalize an admin_users or technicians row into the chart-card shape."""
+        if not row: return None
+        role = (row.get("role") or "").lower()
+        return {
+            "id":          row.get("id"),
+            "kind":        k,                       # 'admin' | 'tech'
+            "name":        row.get("name") or "",
+            "prid":        row.get("prid") or row.get("tech_code") or "",
+            "role":        role,
+            "role_label":  _ROLE_LABEL.get(role, role.replace('_',' ').title()),
+            "department":  row.get("department") or "",
+            "avatar_url":  _sign_photo_url(row.get("avatar_filename")) if row.get("avatar_filename") else None,
+            "rank":        _ORG_RANK.get(role, 99),
+        }
+
+    con = _con()
+    con.row_factory = __import__('sqlite3').Row
+
+    # Manager — supervisor is always an admin_users row in this schema.
+    manager = None
+    if me_sup_id:
+        r = con.execute(
+            "SELECT id, name, prid, role, avatar_filename, supervisor_id "
+            "FROM admin_users WHERE id = ? AND active = 1", (me_sup_id,)
+        ).fetchone()
+        if r: manager = _norm(dict(r), "admin")
+
+    # If no explicit supervisor, treat the lowest-ranked active super_admin
+    # as the implicit top-of-chain (so org chart never feels orphaned).
+    if not manager and rank_me > 0:
+        r = con.execute(
+            "SELECT id, name, prid, role, avatar_filename, supervisor_id "
+            "FROM admin_users WHERE role='super_admin' AND active=1 ORDER BY id LIMIT 1"
+        ).fetchone()
+        if r and r["id"] != me_id:
+            manager = _norm(dict(r), "admin")
+            manager["implicit"] = True
+
+    # Direct reports — admins + techs whose supervisor_id == me.id.
+    # (Only admins can be a supervisor in this schema.)
+    reports = []
+    if kind == "admin":
+        for r in con.execute(
+            "SELECT id, name, prid, role, avatar_filename, supervisor_id "
+            "FROM admin_users WHERE supervisor_id = ? AND active = 1 ORDER BY name",
+            (me_id,)
+        ):
+            reports.append(_norm(dict(r), "admin"))
+        for r in con.execute(
+            "SELECT id, name, prid, tech_code, role, department, avatar_filename, supervisor_id "
+            "FROM technicians WHERE supervisor_id = ? AND active = 1 ORDER BY name",
+            (me_id,)
+        ):
+            reports.append(_norm(dict(r), "tech"))
+
+    # Peers — same supervisor as me (sibling under same manager). If I have
+    # no supervisor, my peers are anyone at the same rank in either table.
+    peers = []
+    seen = {(me_id, kind)}
+    if me_sup_id:
+        for r in con.execute(
+            "SELECT id, name, prid, role, avatar_filename, supervisor_id "
+            "FROM admin_users WHERE supervisor_id = ? AND active = 1 ORDER BY name",
+            (me_sup_id,)
+        ):
+            key = (r["id"], "admin")
+            if key in seen: continue
+            seen.add(key); peers.append(_norm(dict(r), "admin"))
+        for r in con.execute(
+            "SELECT id, name, prid, tech_code, role, department, avatar_filename, supervisor_id "
+            "FROM technicians WHERE supervisor_id = ? AND active = 1 ORDER BY name",
+            (me_sup_id,)
+        ):
+            key = (r["id"], "tech")
+            if key in seen: continue
+            seen.add(key); peers.append(_norm(dict(r), "tech"))
+    else:
+        # No supervisor recorded — fall back to same-rank peers org-wide.
+        same_rank_roles = [k for k, v in _ORG_RANK.items() if v == rank_me]
+        if same_rank_roles:
+            placeholders = ",".join(["?"] * len(same_rank_roles))
+            for r in con.execute(
+                f"SELECT id, name, prid, role, avatar_filename, supervisor_id "
+                f"FROM admin_users WHERE role IN ({placeholders}) AND active=1 AND id != ? ORDER BY name",
+                (*same_rank_roles, me_id if kind == 'admin' else -1)
+            ):
+                key = (r["id"], "admin")
+                if key in seen: continue
+                seen.add(key); peers.append(_norm(dict(r), "admin"))
+            for r in con.execute(
+                f"SELECT id, name, prid, tech_code, role, department, avatar_filename, supervisor_id "
+                f"FROM technicians WHERE role IN ({placeholders}) AND active=1 AND id != ? ORDER BY name",
+                (*same_rank_roles, me_id if kind == 'tech' else -1)
+            ):
+                key = (r["id"], "tech")
+                if key in seen: continue
+                seen.add(key); peers.append(_norm(dict(r), "tech"))
+    con.close()
+
+    return {
+        "me":      _norm({**me, "id": me_id, "role": me_role,
+                          "supervisor_id": me_sup_id,
+                          "avatar_filename": me.get("avatar_filename")}, kind),
+        "manager": manager,
+        "peers":   peers,
+        "reports": reports,
+    }
+
+
 @app.get("/api/staff/me")
 def api_staff_me(request: Request):
     """Lightweight identity payload for the unified home page. Returns
     enough for the shell to render a hero + role-aware nav tiles
     without any further round-trips."""
     kind, who = _resolve_any_staff(request)
+    avatar_fn = who.get("avatar_filename")
+    avatar_url = _sign_photo_url(avatar_fn) if avatar_fn else None
     if kind == "admin":
         return {
             "kind": "admin",
@@ -9669,6 +11336,15 @@ def api_staff_me(request: Request):
             "email": who.get("email"),
             "phone": who.get("phone"),
             "department": who.get("department") or "Administration",
+            "avatar_url": avatar_url,
+            # Effective permission set for this admin's role. The unified /home
+            # Menu uses this to decide which Admin-Console destinations to show,
+            # so we never duplicate the ADMIN_PERMS map on the client (it would
+            # drift). Mirrors admin.html applyRoleVisibility() gating exactly.
+            "perms": sorted(ADMIN_PERMS.get(who.get("role") or "", set())),
+            # Delegations nav is gated on role==super_admin OR delegation power,
+            # not a single perm — surface the flag so the Menu can match.
+            "has_delegation_power": 1 if who.get("has_delegation_power") in (1, True) else 0,
         }
     # tech (includes warehouse_floor / warehouse_manager / parts_runner
     # — they live in the technicians table with a staff_type)
@@ -9678,6 +11354,7 @@ def api_staff_me(request: Request):
         "warehouse_floor":   "Warehouse Floor",
         "warehouse_manager": "Warehouse Manager",
         "parts_runner":      "Parts Runner",
+        "driver":            "Delivery Driver",
     }
     return {
         "kind": "tech",
@@ -9691,7 +11368,48 @@ def api_staff_me(request: Request):
         "phone": who.get("phone"),
         "department": who.get("department") or (
             "Warehouse" if staff_type.startswith(("warehouse_", "parts_")) else "Field Services"),
+        "avatar_url": avatar_url,
     }
+
+
+@app.post("/api/staff/me/avatar")
+async def api_staff_me_avatar_upload(request: Request, file: UploadFile = File(...)):
+    """Upload or replace the signed-in staff member's profile photo. Works
+    for both admins and techs — the subject's kind comes from the cookie,
+    not the request body, so a user can only ever update their own avatar.
+
+    The upload is re-encoded via Pillow (see _process_avatar): EXIF is
+    stripped, the output is a 512x512 JPEG, anything that isn't a real
+    image is rejected. Stored under uploads/photos/ with a deterministic
+    filename, so re-uploading overwrites the previous file."""
+    from database import set_subject_avatar
+    kind, who = _resolve_any_staff(request)
+    body = await file.read()
+    if not body:
+        raise HTTPException(400, "empty upload")
+    if len(body) > AVATAR_MAX_BYTES:
+        raise HTTPException(413, f"file too large (max {AVATAR_MAX_BYTES // (1024*1024)} MB)")
+    out = _process_avatar(body)
+    filename = f"avatar-{kind}-{int(who['id'])}.jpg"
+    (PHOTOS_DIR / filename).write_bytes(out)
+    set_subject_avatar(kind, who["id"], filename)
+    return {"ok": True, "avatar_url": _sign_photo_url(filename)}
+
+
+@app.delete("/api/staff/me/avatar")
+def api_staff_me_avatar_delete(request: Request):
+    """Remove the signed-in staff member's profile photo (DB row cleared
+    + file unlinked). UI then falls back to coloured initials."""
+    from database import set_subject_avatar, get_subject_avatar
+    kind, who = _resolve_any_staff(request)
+    fn = get_subject_avatar(kind, who["id"])
+    if fn:
+        try:
+            (PHOTOS_DIR / fn).unlink(missing_ok=True)
+        except Exception:
+            pass
+        set_subject_avatar(kind, who["id"], None)
+    return {"ok": True}
 
 
 @app.get("/api/staff/me/home")
@@ -9760,6 +11478,192 @@ def api_staff_me_home(request: Request):
     return out
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# In-app user settings (per-user preferences) — shared by staff + customers
+# ─────────────────────────────────────────────────────────────────────────
+# One small whitelisted JSON object per user, persisted server-side so a
+# user's preferences follow them across devices. The DB layer
+# (get_user_settings / set_user_settings in database.py) is a dumb key/value
+# store; ALL defaults and validation live here so there is a single source of
+# truth. Every key below maps to a real, wired-up effect on the client — no
+# decorative toggles.
+_SETTINGS_DEFAULTS = {
+    "time_format":         "24h",          # PC.fmtTime + clocks (12h/24h)
+    "date_format":         "dmy",          # PC.fmtDate (dmy=04/Jun/2026, iso=2026-06-04, mdy=Jun/04/2026)
+    "density":             "comfortable",  # body[data-pc-density] (comfortable/compact)
+    # NOTE: a dark "theme" key is intentionally NOT shipped yet — a correct
+    # dark mode needs a file-wide color-token refactor (the staff SPA has ~150
+    # literal light colors, many semantic like danger-bg). Groundwork (the
+    # --ink text token) is in place; ship it as a dedicated pass, not a half
+    # toggle that leaves white patches.
+    "font_scale":          "normal",       # body[data-pc-fontscale] (normal/large)
+    "reduce_motion":       False,          # body[data-pc-motion="reduce"] — disables animations/transitions
+    "default_landing":     "auto",         # which panel/tab opens on load
+    "language":            "en",           # only English shipped today
+    "start_of_week":       "monday",       # staff schedule/timesheet week anchor (monday/sunday)
+    "announcement_alerts": True,           # staff: company-message bell dot/awaiting card
+}
+_SETTINGS_ENUMS = {
+    "time_format":   {"12h", "24h"},
+    "date_format":   {"dmy", "iso", "mdy"},
+    "density":       {"comfortable", "compact"},
+    "font_scale":    {"normal", "large"},
+    "start_of_week": {"monday", "sunday"},
+    "language":      {"en"},
+}
+# Keys coerced to a plain bool (no enum).
+_SETTINGS_BOOLS = {"reduce_motion", "announcement_alerts"}
+# Valid default-landing targets per identity. "auto" = the app's normal
+# default (Home for staff, Overview for customers).
+_LANDING_BY_SUBJECT = {
+    "admin":    {"auto", "dashboard", "jobs", "schedule", "pay", "messages"},
+    "tech":     {"auto", "dashboard", "jobs", "schedule", "pay", "messages"},
+    "customer": {"auto", "overview", "account"},
+}
+
+
+def _settings_keys_for(subject_type: str):
+    """Which setting keys apply to a given identity. announcement_alerts and
+    start_of_week are staff-only (customers have no company bell or schedule)."""
+    keys = ["time_format", "date_format", "density", "font_scale",
+            "reduce_motion", "default_landing", "language"]
+    if subject_type in ("admin", "tech"):
+        keys.extend(["start_of_week", "announcement_alerts"])
+    return keys
+
+
+def _sanitize_settings(subject_type: str, incoming: dict) -> dict:
+    """Return only valid, applicable keys from `incoming`, coerced to safe
+    values. Unknown keys and invalid values are dropped silently."""
+    out = {}
+    if not isinstance(incoming, dict):
+        return out
+    allowed = _settings_keys_for(subject_type)
+    for key in allowed:
+        if key not in incoming:
+            continue
+        val = incoming[key]
+        if key in _SETTINGS_ENUMS:
+            if isinstance(val, str) and val in _SETTINGS_ENUMS[key]:
+                out[key] = val
+        elif key == "default_landing":
+            if isinstance(val, str) and val in _LANDING_BY_SUBJECT.get(subject_type, {"auto"}):
+                out[key] = val
+        elif key in _SETTINGS_BOOLS:
+            out[key] = bool(val)
+    return out
+
+
+def _effective_settings(subject_type: str, subject_id: int) -> dict:
+    """Defaults (filtered to applicable keys) overlaid with the user's saved,
+    re-sanitized preferences."""
+    base = {k: _SETTINGS_DEFAULTS[k] for k in _settings_keys_for(subject_type)}
+    stored = _sanitize_settings(subject_type, get_user_settings(subject_type, subject_id))
+    base.update(stored)
+    return base
+
+
+@app.get("/api/staff/me/settings")
+def api_staff_settings_get(request: Request):
+    kind, who = _resolve_any_staff(request)
+    return {"settings": _effective_settings(kind, int(who["id"]))}
+
+
+@app.put("/api/staff/me/settings")
+def api_staff_settings_put(request: Request, body: dict = Body(default={})):
+    kind, who = _resolve_any_staff(request)
+    current = _sanitize_settings(kind, get_user_settings(kind, int(who["id"])))
+    current.update(_sanitize_settings(kind, body))
+    set_user_settings(kind, int(who["id"]), current)
+    return {"settings": _effective_settings(kind, int(who["id"]))}
+
+
+@app.get("/api/portal/me/settings")
+def api_portal_settings_get(request: Request):
+    customer_id = _require_customer(request)
+    return {"settings": _effective_settings("customer", customer_id)}
+
+
+@app.put("/api/portal/me/settings")
+def api_portal_settings_put(request: Request, body: dict = Body(default={})):
+    customer_id = _require_customer(request)
+    current = _sanitize_settings("customer", get_user_settings("customer", customer_id))
+    current.update(_sanitize_settings("customer", body))
+    set_user_settings("customer", customer_id, current)
+    return {"settings": _effective_settings("customer", customer_id)}
+
+
+# ── Sessions / sign-in history (Settings → Security) ──────────────────────
+# Read-only "recent sign-ins" plus "sign out of all other devices". Sourced
+# from the sessions table (each row is one login); login is a POST so it never
+# reaches access_log. Every device row maps to a real revocable session — no
+# decorative entries.
+_COOKIE_BY_KIND = {
+    "admin":    COOKIE_ADMIN,
+    "tech":     COOKIE_TECH,
+    "customer": COOKIE_CUSTOMER,
+}
+
+
+def _serialize_sessions(rows, current_jti):
+    """Shape session rows for the client: drop the raw jti, flag the current
+    device and whether each session is still live."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    out = []
+    for r in rows:
+        active = (not r.get("revoked_at")) and (r.get("expires_at") or "") > now_iso
+        out.append({
+            "created_at":   r.get("created_at"),
+            "last_seen_at": r.get("last_seen_at"),
+            "expires_at":   r.get("expires_at"),
+            "ip_address":   r.get("ip_address"),
+            "user_agent":   r.get("user_agent"),
+            "active":       bool(active),
+            "revoked":      bool(r.get("revoked_at")),
+            "current":      bool(current_jti and r.get("jti") == current_jti),
+        })
+    return out
+
+
+def _sessions_payload(kind: str, subject_id: int, request: Request):
+    cookie = _COOKIE_BY_KIND.get(kind)
+    current_jti = _current_session_jti(request, cookie) if cookie else None
+    rows = get_recent_sessions_for(kind, int(subject_id), limit=20)
+    active = get_active_sessions_for(kind, int(subject_id))
+    return {
+        "sessions": _serialize_sessions(rows, current_jti),
+        "active_count": len(active),
+    }
+
+
+@app.get("/api/staff/me/sessions")
+def api_staff_sessions_get(request: Request):
+    kind, who = _resolve_any_staff(request)
+    return _sessions_payload(kind, int(who["id"]), request)
+
+
+@app.post("/api/staff/me/sessions/revoke-others")
+def api_staff_sessions_revoke_others(request: Request):
+    kind, who = _resolve_any_staff(request)
+    current_jti = _current_session_jti(request, _COOKIE_BY_KIND.get(kind))
+    n = revoke_other_sessions_for(kind, int(who["id"]), current_jti)
+    return {"revoked": n, **_sessions_payload(kind, int(who["id"]), request)}
+
+
+@app.get("/api/portal/me/sessions")
+def api_portal_sessions_get(request: Request):
+    customer_id = _require_customer(request)
+    return _sessions_payload("customer", customer_id, request)
+
+
+@app.post("/api/portal/me/sessions/revoke-others")
+def api_portal_sessions_revoke_others(request: Request):
+    customer_id = _require_customer(request)
+    current_jti = _current_session_jti(request, COOKIE_CUSTOMER)
+    n = revoke_other_sessions_for("customer", customer_id, current_jti)
+    return {"revoked": n, **_sessions_payload("customer", customer_id, request)}
+
+
 @app.get("/admin/reset")
 def admin_reset_page():
     return FileResponse("admin_reset.html")
@@ -9826,15 +11730,36 @@ def tech_fs_submit_audit(request: Request, body: TechFSAuditSubmit):
     except ValueError as e:
         raise HTTPException(400, str(e))
     tech = get_tech_by_id(tech_id)
+    item_summary = []
+    for it in (body.items or []):
+        if not isinstance(it, dict): continue
+        item_summary.append({
+            "item_id":  it.get("item_id") or it.get("id"),
+            "label":    (it.get("item_label") or it.get("label") or '')[:80],
+            "category": it.get("category"),
+            "pass":     bool(it.get("pass")) if "pass" in it else None,
+            "score":    it.get("score"),
+            "note":     (it.get("note") or '')[:120] if it.get("note") else None,
+        })
     log_audit(
         actor_type="tech", actor_id=tech_id,
         actor_prid=tech.get("prid") if tech else None,
         actor_label=tech.get("name") if tech else None,
+        actor_role=tech.get("role") if tech else None,
         action="fs.audit.submit",
         target_type="fs_audit", target_id=out["audit_id"],
         target_label=f"{asset['asset_code']}/{body.phase}",
-        after_value={"overall_pass": out["overall_pass"],
-                     "exception_count": len(out["exception_ids"])},
+        after_value={
+            "asset_id":         body.asset_id,
+            "asset_code":       asset.get("asset_code"),
+            "phase":            body.phase,
+            "auditor_kind":     "tech",
+            "overall_pass":     out.get("overall_pass"),
+            "exception_count":  len(out.get("exception_ids", [])),
+            "exception_ids":    out.get("exception_ids", [])[:20],
+            "item_count":       len(item_summary),
+            "items":            item_summary[:40],
+        },
         ip_address=_client_ip(request),
     )
     return out
@@ -10077,7 +12002,15 @@ def admin_fs_create_asset(request: Request, body: AdminFSAssetCreate):
     _audit_from(admin, "fs.asset.create", request,
                 target_type="fs_asset", target_id=aid,
                 target_label=body.asset_code,
-                after={"asset_code": body.asset_code, "asset_type": body.asset_type})
+                after={
+                    "asset_code":       body.asset_code,
+                    "asset_type":       body.asset_type,
+                    "label":            body.label,
+                    "hub_id":           body.hub_id,
+                    "assigned_tech_id": body.assigned_tech_id,
+                    "static_location":  body.static_location,
+                    "notes":            (body.notes or "")[:200],
+                })
     return {"id": aid}
 
 
@@ -10099,10 +12032,13 @@ def admin_fs_update_asset(request: Request, asset_id: int, body: AdminFSAssetUpd
     if not fields:
         return {"ok": True, "noop": True}
     fs_update_asset(asset_id, **fields)
+    # Scope `before` to only the fields that actually changed so the diff
+    # is readable in the audit log (full asset record can be 20+ fields).
+    before_scoped = {k: before.get(k) for k in fields.keys()}
     _audit_from(admin, "fs.asset.update", request,
                 target_type="fs_asset", target_id=asset_id,
                 target_label=before["asset_code"],
-                before=before, after=fields)
+                before=before_scoped, after=fields)
     return {"ok": True}
 
 
@@ -10134,7 +12070,16 @@ def admin_fs_add_asset_item(request: Request, asset_id: int,
     _audit_from(admin, "fs.asset_item.add", request,
                 target_type="fs_asset_item", target_id=iid,
                 target_label=body.item_label,
-                after={"asset_id": asset_id, "item_type": body.item_type})
+                after={
+                    "asset_id":      asset_id,
+                    "asset_code":    asset.get("asset_code"),
+                    "item_type":     body.item_type,
+                    "item_label":    body.item_label,
+                    "sop_required":  body.sop_required,
+                    "location_code": body.location_code,
+                    "expiry_date":   body.expiry_date,
+                    "part_id":       body.part_id,
+                })
     return {"id": iid}
 
 
@@ -10147,9 +12092,25 @@ def admin_fs_list_asset_items(request: Request, asset_id: int):
 @app.delete("/api/admin/5s/assets/{asset_id}/items/{item_id}")
 def admin_fs_remove_asset_item(request: Request, asset_id: int, item_id: int):
     admin = _require_perm(request, "fs:asset_manage")
+    # Snapshot the item BEFORE deletion so the audit log records exactly
+    # what was removed (label, type, expiry, etc.) — otherwise after the
+    # delete there's no way to reconstruct what disappeared.
+    before_items = fs_list_asset_items(asset_id) or []
+    before_item = next((i for i in before_items if (i.get("id") == item_id)), None) or {}
     fs_remove_asset_item(item_id)
     _audit_from(admin, "fs.asset_item.remove", request,
-                target_type="fs_asset_item", target_id=item_id)
+                target_type="fs_asset_item", target_id=item_id,
+                target_label=before_item.get("item_label"),
+                before={
+                    "asset_id":      asset_id,
+                    "item_type":     before_item.get("item_type"),
+                    "item_label":    before_item.get("item_label"),
+                    "sop_required":  before_item.get("sop_required"),
+                    "location_code": before_item.get("location_code"),
+                    "expiry_date":   before_item.get("expiry_date"),
+                    "part_id":       before_item.get("part_id"),
+                },
+                after=None)
     return {"ok": True}
 
 
@@ -10176,11 +12137,33 @@ def admin_fs_submit_audit(request: Request, body: AdminFSAuditSubmit):
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
+    # Compact per-item summary so the audit log records WHAT failed (not
+    # just "n exceptions"). Each item entry: {label, pass, score?, note?}.
+    item_summary = []
+    for it in (body.items or []):
+        if not isinstance(it, dict): continue
+        item_summary.append({
+            "item_id":    it.get("item_id") or it.get("id"),
+            "label":      (it.get("item_label") or it.get("label") or '')[:80],
+            "category":   it.get("category"),
+            "pass":       bool(it.get("pass")) if "pass" in it else None,
+            "score":      it.get("score"),
+            "note":       (it.get("note") or '')[:120] if it.get("note") else None,
+        })
     _audit_from(admin, "fs.audit.submit", request,
                 target_type="fs_audit", target_id=out["audit_id"],
                 target_label=f"{asset['asset_code']}/{body.phase}",
-                after={"overall_pass": out["overall_pass"],
-                       "exception_count": len(out["exception_ids"])})
+                after={
+                    "asset_id":         body.asset_id,
+                    "asset_code":       asset.get("asset_code"),
+                    "phase":            body.phase,
+                    "auditor_role":     admin.get("role"),
+                    "overall_pass":     out.get("overall_pass"),
+                    "exception_count":  len(out.get("exception_ids", [])),
+                    "exception_ids":    out.get("exception_ids", [])[:20],
+                    "item_count":       len(item_summary),
+                    "items":            item_summary[:40],
+                })
     return out
 
 
@@ -10249,11 +12232,32 @@ def admin_fs_resolve_exception(request: Request, exception_id: int,
                              resolution_note=body.resolution_note or "")
     except ValueError as e:
         raise HTTPException(400, str(e))
+    # Pull the post-state so the audit row shows what the resolution
+    # note actually committed as + when. before/after are full snapshots
+    # so the forensic trail is complete (who, when, what changed, from-to).
+    after_row = fs_get_exception(exception_id) or {}
     _audit_from(admin, "fs.exception.resolve", request,
                 target_type="fs_exception", target_id=exception_id,
-                target_label=before["category"],
-                before={"status": before["status"]},
-                after={"status": "resolved"})
+                target_label=f"{before.get('category','')} · {before.get('asset_code') or before.get('asset_id') or ''}",
+                before={
+                    "status":           before.get("status"),
+                    "severity":         before.get("severity"),
+                    "category":         before.get("category"),
+                    "description":      (before.get("description") or "")[:200],
+                    "asset_id":         before.get("asset_id"),
+                    "asset_code":       before.get("asset_code"),
+                    "tech_id":          before.get("tech_id"),
+                    "opened_at":        before.get("opened_at"),
+                    "audit_id":         before.get("audit_id"),
+                },
+                after={
+                    "status":           "resolved",
+                    "resolution_note":  (body.resolution_note or "")[:500],
+                    "resolved_at":      after_row.get("resolved_at"),
+                    "resolved_by_id":   admin.get("id"),
+                    "resolved_by_prid": admin.get("prid"),
+                    "resolved_by_role": admin.get("role"),
+                })
     return {"ok": True}
 
 
@@ -10273,11 +12277,29 @@ def admin_fs_escalate_exception(request: Request, exception_id: int):
                               target_status="escalated_director")
     except ValueError as e:
         raise HTTPException(400, str(e))
+    after_row = fs_get_exception(exception_id) or {}
     _audit_from(admin, "fs.exception.escalate_director", request,
                 target_type="fs_exception", target_id=exception_id,
-                target_label=before["category"],
-                before={"status": before["status"]},
-                after={"status": "escalated_director"})
+                target_label=f"{before.get('category','')} · {before.get('asset_code') or before.get('asset_id') or ''}",
+                before={
+                    "status":           before.get("status"),
+                    "severity":         before.get("severity"),
+                    "category":         before.get("category"),
+                    "description":      (before.get("description") or "")[:200],
+                    "asset_id":         before.get("asset_id"),
+                    "asset_code":       before.get("asset_code"),
+                    "tech_id":          before.get("tech_id"),
+                    "opened_at":        before.get("opened_at"),
+                    "audit_id":         before.get("audit_id"),
+                    "escalated_to_id":  before.get("escalated_to_id"),
+                },
+                after={
+                    "status":             "escalated_director",
+                    "escalated_to_id":    admin.get("id"),
+                    "escalated_to_prid":  admin.get("prid"),
+                    "escalated_to_role":  admin.get("role"),
+                    "escalated_at":       after_row.get("escalated_at"),
+                })
     return {"ok": True}
 
 
@@ -10717,6 +12739,7 @@ _VALID_SCOPE_TYPES = {"customer", "visit", "invoice", "technician"}
 
 class DelegationGrantRequest(BaseModel):
     recipient_id: int
+    recipient_kind: Optional[str] = "admin"  # 'admin' | 'tech' (techs allowed in v2)
     delegation_type: str          # 'record' | 'record_type' | 'power'
     scope_record_id: Optional[int] = None
     scope_record_type: Optional[str] = None
@@ -10755,15 +12778,31 @@ def admin_delegation_grant(request: Request, body: DelegationGrantRequest):
         raise HTTPException(403, "Only super_admin may grant delegation power")
     if body.delegation_type not in ("record", "record_type", "power"):
         raise HTTPException(422, "delegation_type must be record, record_type, or power")
-    # Locked rule 4 — no self-grants (including super_admin → self).
-    if int(body.recipient_id) == int(admin["id"]):
+    # Locked rule 4 — no self-grants. Now namespace-aware: an admin and a
+    # tech may legitimately share a numeric id (different identity spaces),
+    # so the self-check has to consider recipient_kind. We do it inside the
+    # per-kind block below.
+    # v2: any active employee (admin OR tech) can be a recipient. The
+    # `recipient_kind` field disambiguates which identity space to look in.
+    # Power delegations are still admin-only (techs don't have admin
+    # delegation authority to wield even if granted).
+    rkind = (body.recipient_kind or "admin").lower()
+    if rkind not in ("admin", "tech"):
+        raise HTTPException(422, "recipient_kind must be 'admin' or 'tech'")
+    if rkind == "admin":
+        recipient = _get_admin_for_deleg(int(body.recipient_id))
+        if not recipient:
+            raise HTTPException(422, "Recipient admin not found")
+    else:
+        from database import get_tech_by_id as _get_tech_for_deleg
+        recipient = _get_tech_for_deleg(int(body.recipient_id))
+        if not recipient or not recipient.get("active"):
+            raise HTTPException(422, "Recipient employee not found or inactive")
+        if body.delegation_type == "power":
+            raise HTTPException(422, "Power delegations are admin-only")
+    # Self-grant guard still applies — but only within the same identity space.
+    if rkind == "admin" and int(body.recipient_id) == int(admin["id"]):
         raise HTTPException(422, "Self-grants are not allowed")
-    # Locked rule 3 — tech recipients rejected. The recipient must exist as an admin.
-    recipient = _get_admin_for_deleg(int(body.recipient_id))
-    if not recipient:
-        raise HTTPException(422, "Recipient must be an existing admin user (tech recipients are rejected in v1)")
-    if recipient.get("role", "").startswith("tech"):
-        raise HTTPException(422, "Tech recipients are not allowed in v1")
     # Scope validation per type
     if body.delegation_type in ("record", "record_type"):
         if not body.scope_record_type or body.scope_record_type not in _VALID_SCOPE_TYPES:
@@ -10775,7 +12814,7 @@ def admin_delegation_grant(request: Request, body: DelegationGrantRequest):
     perm_level = body.permission_level if body.delegation_type != "power" else None
     new_id = _create_delegation(
         grantor_id=admin["id"], grantor_role=admin.get("role", ""),
-        recipient_id=body.recipient_id, recipient_kind="admin",
+        recipient_id=body.recipient_id, recipient_kind=rkind,
         delegation_type=body.delegation_type,
         scope_record_id=body.scope_record_id,
         scope_record_type=body.scope_record_type,

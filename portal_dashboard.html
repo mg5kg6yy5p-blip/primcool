@@ -15,10 +15,11 @@
   <style>
     :root {
       --navy: #0F2A4A;
+      --ink: #0F2A4A; /* primary text color (was var(--navy)); a future dark theme remaps this */
       --navy-2: #11335A;
       --teal: #22A08A;
       --ice:  #7DD3E8;
-      --lime: #B6E021;
+      --lime: #22A08A;
       --mist: #F2F6FA;
       --light: #f0f4f8;
       --white: #ffffff;
@@ -29,7 +30,7 @@
       --font-body:    'IBM Plex Sans','Segoe UI',system-ui,-apple-system,sans-serif;
       --font-mono:    'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace;
       --shadow-sm: 0 1px 3px rgba(15,42,74,0.08), 0 8px 24px -16px rgba(15,42,74,0.25);
-      --gradient-cool: linear-gradient(90deg, var(--ice), var(--lime));
+      --gradient-cool: var(--navy);
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -50,7 +51,7 @@
     @keyframes pcShimmer{0%{background-position:100% 0;}100%{background-position:-100% 0;}}
     .pc-empty{padding:32px 20px;text-align:center;color:var(--muted);font-size:13px;}
     .pc-empty-glyph{font-size:28px;margin-bottom:8px;opacity:0.7;}
-    .pc-empty-title{font-family:var(--font-display);font-weight:700;color:var(--navy);font-size:15px;margin-bottom:4px;}
+    .pc-empty-title{font-family:var(--font-display);font-weight:700;color:var(--ink);font-size:15px;margin-bottom:4px;}
     .pc-empty-sub{font-size:12px;color:var(--muted);max-width:360px;margin:0 auto;line-height:1.5;}
     header {
       background: var(--navy);
@@ -82,7 +83,7 @@
     .page-title {
       font-size: 22px;
       font-weight: 700;
-      color: var(--navy);
+      color: var(--ink);
       margin-bottom: 4px;
     }
     .page-sub { color: var(--muted); font-size: 14px; margin-bottom: 28px; }
@@ -121,7 +122,7 @@
     .summary-card .date-val {
       font-size: 17px;
       font-weight: 700;
-      color: var(--navy);
+      color: var(--ink);
       margin-bottom: 6px;
     }
     .summary-card .date-val.none { color: var(--muted); font-weight: 400; font-size: 14px; }
@@ -148,7 +149,7 @@
     .section-title {
       font-size: 15px;
       font-weight: 700;
-      color: var(--navy);
+      color: var(--ink);
       margin-bottom: 12px;
       padding-bottom: 10px;
       border-bottom: 2px solid var(--border);
@@ -174,7 +175,7 @@
     }
     .eq-icon svg { width: 20px; height: 20px; color: var(--teal); }
     .eq-info { flex: 1; }
-    .eq-name { font-weight: 600; font-size: 14px; color: var(--navy); }
+    .eq-name { font-weight: 600; font-size: 14px; color: var(--ink); }
     .eq-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
 
     /* Visit cards */
@@ -208,7 +209,7 @@
     .pill-pm { background: #eff6ff; color: #1d4ed8; }
     .pill-cm { background: #fffbeb; color: #b45309; }
     .visit-info { min-width: 0; }
-    .visit-date { font-size: 14px; font-weight: 600; color: var(--navy); }
+    .visit-date { font-size: 14px; font-weight: 600; color: var(--ink); }
     .visit-sub  { font-size: 12px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .visit-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
     .chevron {
@@ -344,7 +345,7 @@
       width: 100%; max-width: 460px; max-height: 90vh; overflow-y: auto;
     }
     .modal-h { padding: 20px 24px 14px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
-    .modal-h h3 { font-size: 16px; color: var(--navy); }
+    .modal-h h3 { font-size: 16px; color: var(--ink); }
     .modal-close { background: none; border: none; font-size: 24px; cursor: pointer; color: var(--muted); line-height: 1; padding: 0 4px; }
     .modal-b { padding: 18px 24px; }
     .modal-f { padding: 14px 24px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 10px; }
@@ -356,7 +357,7 @@
     }
     .star-input button:hover { transform: scale(1.1); }
     .star-input button.active { color: #f59e0b; }
-    .modal-label { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--navy); margin-bottom: 6px; }
+    .modal-label { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--ink); margin-bottom: 6px; }
     .modal-input, .modal-textarea {
       width: 100%; padding: 10px 13px; border: 2px solid var(--border); border-radius: 8px;
       font-size: 14px; color: var(--text); outline: none; font-family: inherit;
@@ -367,7 +368,7 @@
     .modal-error { color: #e53e3e; font-size: 13px; margin-top: 10px; display: none; }
 
     .btn-ghost {
-      background: var(--light); color: var(--navy); border: 1px solid var(--border);
+      background: var(--light); color: var(--ink); border: 1px solid var(--border);
       padding: 9px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer;
     }
     .btn-primary {
@@ -405,7 +406,7 @@
       transition: background 0.15s, color 0.15s;
       font-family: inherit;
     }
-    .view-tab:hover { color: var(--navy); }
+    .view-tab:hover { color: var(--ink); }
     .view-tab.active { background: var(--navy); color: white; }
 
     /* Profile card */
@@ -429,7 +430,7 @@
       font-weight: 700; font-size: 20px; flex-shrink: 0;
     }
     .profile-id { flex: 1; min-width: 0; }
-    .profile-name { font-size: 17px; font-weight: 700; color: var(--navy); }
+    .profile-name { font-size: 17px; font-weight: 700; color: var(--ink); }
     .profile-code { font-family: 'Courier New', monospace; font-size: 12px; color: var(--muted); margin-top: 2px; }
     .badge-acct-res  { background: #dbeafe; color: #1e40af; }
     .badge-acct-com  { background: #ccfbf1; color: #115e59; }
@@ -501,7 +502,7 @@
     .pager button {
       background: white; border: 1px solid var(--border);
       padding: 5px 12px; border-radius: 6px; font-size: 12px;
-      font-weight: 600; cursor: pointer; color: var(--navy);
+      font-weight: 600; cursor: pointer; color: var(--ink);
     }
     .pager button:disabled { opacity: 0.4; cursor: not-allowed; }
 
@@ -528,7 +529,7 @@
     .inv-actions a, .inv-actions button {
       background: white; border: 1px solid var(--border);
       padding: 4px 10px; border-radius: 6px; font-size: 12px;
-      color: var(--navy); cursor: pointer; text-decoration: none; font-weight: 600;
+      color: var(--ink); cursor: pointer; text-decoration: none; font-weight: 600;
       font-family: inherit;
     }
     .inv-actions a:hover, .inv-actions button:hover { background: var(--light); }
@@ -563,20 +564,71 @@
     body { background: var(--mist); padding-top: 3px; }
     body::before {
       content: ""; position: fixed; top: 0; left: 0; right: 0; height: 3px;
-      background: linear-gradient(90deg, var(--teal), var(--ice), var(--lime));
+      background: var(--navy);
       z-index: 1000;
     }
     header {
       background: #ffffff !important;
-      color: var(--navy) !important;
+      color: var(--ink) !important;
       box-shadow: 0 1px 0 #e6ecf1;
     }
-    header .logo { color: var(--navy) !important; }
-    header .logo span:first-child { color: var(--navy) !important; }
+    header .logo { color: var(--ink) !important; }
+    header .logo span:first-child { color: var(--ink) !important; }
     header .logo span[style*="color:var(--ice)"] { color: var(--muted) !important; }
     header .logo span[style*="color:var(--teal)"] { color: var(--teal) !important; }
+
+    /* ── Settings view ──────────────────────────────────────────── */
+    .set-intro{color:var(--muted);font-size:13.5px;margin:0 0 16px;max-width:640px;}
+    .set-card{background:#fff;border:1px solid var(--border);border-radius:14px;padding:18px 20px;margin-bottom:16px;}
+    .set-h{font-weight:700;color:var(--ink);font-size:13px;margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em;}
+    .set-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 0;border-top:1px solid var(--border);}
+    .set-card .set-h + .set-row{border-top:none;}
+    .set-meta{min-width:0;}
+    .set-label{font-weight:600;font-size:14px;color:var(--ink);}
+    .set-sub{font-size:12.5px;color:var(--muted);margin-top:2px;max-width:440px;}
+    .set-input{font-weight:600;font-size:13px;color:var(--ink);background:#fff;border:1px solid var(--border);border-radius:10px;padding:8px 12px;min-width:190px;cursor:pointer;}
+    .set-input:focus{outline:2px solid var(--teal);outline-offset:1px;}
+    .set-status{font-size:12.5px;color:var(--teal);min-height:18px;padding:4px 2px;}
+    /* Toggle switch (reduce motion) */
+    .set-switch{position:relative;display:inline-block;width:46px;height:26px;flex:0 0 auto;}
+    .set-switch input{opacity:0;width:0;height:0;}
+    .set-slider{position:absolute;inset:0;background:#cbd5e1;border-radius:999px;transition:background .15s;cursor:pointer;}
+    .set-slider::before{content:"";position:absolute;height:20px;width:20px;left:3px;top:3px;background:#fff;border-radius:50%;transition:transform .15s;box-shadow:0 1px 3px rgba(0,0,0,.2);}
+    .set-switch input:checked + .set-slider{background:var(--teal);}
+    .set-switch input:checked + .set-slider::before{transform:translateX(20px);}
+    .set-switch input:focus + .set-slider{outline:2px solid var(--teal);outline-offset:2px;}
+    /* Security & sign-in */
+    .set-btn{font:600 13px var(--font-body,inherit);color:#fff;background:var(--navy);border:1px solid var(--navy);border-radius:10px;padding:8px 16px;cursor:pointer;white-space:nowrap;}
+    .set-btn:hover{background:var(--navy-2,#1B4F82);}
+    .set-btn:disabled{opacity:.5;cursor:default;}
+    .set-btn--danger{background:#fff;color:#B42318;border-color:#e6b4ad;}
+    .set-btn--danger:hover{background:#FEF3F2;}
+    .set-btn--ghost{background:#fff;color:var(--navy);border-color:var(--border);}
+    .set-btn--ghost:hover{background:var(--bg,#F2F6FA);}
+    .set-row--block{flex-direction:column;align-items:stretch;}
+    .set-row--block .set-btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;}
+    .sec-sessions{width:100%;display:flex;flex-direction:column;gap:8px;margin-top:10px;}
+    .sec-session-row{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg,#F2F6FA);}
+    .sec-session-row .ss-main{min-width:0;flex:1;}
+    .sec-session-dev{font-weight:600;font-size:13px;color:var(--ink);}
+    .sec-session-meta{font-size:12px;color:var(--muted);margin-top:2px;line-height:1.5;word-break:break-word;}
+    .sec-session-badge{font-weight:700;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;padding:3px 8px;border-radius:999px;flex:0 0 auto;}
+    .sec-session-badge.is-current{background:var(--teal);color:#fff;}
+    .sec-session-badge.is-revoked{background:#eef2f6;color:#8892A0;}
+    @media (max-width:560px){
+      .set-row{flex-direction:column;align-items:stretch;}
+      .set-input{width:100%;}
+      .set-switch{align-self:flex-start;}
+    }
+
+    /* ── Compact density (Settings → Appearance) ────────────────── */
+    body[data-pc-density="compact"] .summary-card,
+    body[data-pc-density="compact"] .set-card{padding:14px 16px;}
+    body[data-pc-density="compact"] .data-table td{padding:8px 12px;}
+    body[data-pc-density="compact"] .data-table th{padding:8px 12px;}
+    body[data-pc-density="compact"] .set-row{padding:10px 0;}
   </style>
-  <script src="/static/pc_shared.js?v=1779707892"></script>
+  <script src="/static/pc_shared.js?v=1780700400"></script>
 </head>
 <body>
   <header>
@@ -600,6 +652,7 @@
     <div class="view-tabs" role="tablist" aria-label="Dashboard view">
       <button type="button" class="view-tab active" id="tab-overview" role="tab" aria-selected="true" onclick="switchView('overview')">Overview</button>
       <button type="button" class="view-tab" id="tab-account" role="tab" aria-selected="false" onclick="switchView('account')">My Account</button>
+      <button type="button" class="view-tab" id="tab-settings" role="tab" aria-selected="false" onclick="switchView('settings')">Settings</button>
     </div>
 
     <!-- ── Overview view (existing) ───────────────────────────── -->
@@ -717,6 +770,131 @@
 
     </div><!-- /view-account -->
 
+    <!-- ── Settings view ─────────────────────────────────────────── -->
+    <div id="view-settings" style="display:none;">
+      <p class="set-intro">Preferences are saved to your account, so they follow you on any device you sign in from.</p>
+
+      <section class="set-card">
+        <div class="set-h">Appearance</div>
+        <div class="set-row">
+          <div class="set-meta">
+            <div class="set-label">Time format</div>
+            <div class="set-sub">How dates and times are shown across your portal.</div>
+          </div>
+          <select class="set-input" id="set-time_format" onchange="saveSetting('time_format', this.value)">
+            <option value="24h">24-hour (14:30)</option>
+            <option value="12h">12-hour (2:30 PM)</option>
+          </select>
+        </div>
+        <div class="set-row">
+          <div class="set-meta">
+            <div class="set-label">Date format</div>
+            <div class="set-sub">How dates are shown across your portal.</div>
+          </div>
+          <select class="set-input" id="set-date_format" onchange="saveSetting('date_format', this.value)">
+            <option value="dmy">04/Jun/2026</option>
+            <option value="iso">2026-06-04</option>
+            <option value="mdy">Jun/04/2026</option>
+          </select>
+        </div>
+        <div class="set-row">
+          <div class="set-meta">
+            <div class="set-label">Density</div>
+            <div class="set-sub">Compact tightens spacing to fit more on screen.</div>
+          </div>
+          <select class="set-input" id="set-density" onchange="saveSetting('density', this.value)">
+            <option value="comfortable">Comfortable</option>
+            <option value="compact">Compact</option>
+          </select>
+        </div>
+        <div class="set-row">
+          <div class="set-meta">
+            <div class="set-label">Text size</div>
+            <div class="set-sub">Larger scales up the whole portal for easier reading.</div>
+          </div>
+          <select class="set-input" id="set-font_scale" onchange="saveSetting('font_scale', this.value)">
+            <option value="normal">Normal</option>
+            <option value="large">Large</option>
+          </select>
+        </div>
+        <div class="set-row">
+          <div class="set-meta">
+            <div class="set-label">Reduce motion</div>
+            <div class="set-sub">Minimizes animations and transitions across the portal.</div>
+          </div>
+          <label class="set-switch">
+            <input type="checkbox" id="set-reduce_motion" onchange="saveSetting('reduce_motion', this.checked)">
+            <span class="set-slider"></span>
+          </label>
+        </div>
+      </section>
+
+      <section class="set-card">
+        <div class="set-h">General</div>
+        <div class="set-row">
+          <div class="set-meta">
+            <div class="set-label">Default landing screen</div>
+            <div class="set-sub">Which screen opens first when you sign in.</div>
+          </div>
+          <select class="set-input" id="set-default_landing" onchange="saveSetting('default_landing', this.value)">
+            <option value="auto">Overview (default)</option>
+            <option value="overview">Overview</option>
+            <option value="account">My Account</option>
+          </select>
+        </div>
+        <div class="set-row">
+          <div class="set-meta">
+            <div class="set-label">Language</div>
+            <div class="set-sub">More languages are coming. English is the only option today.</div>
+          </div>
+          <select class="set-input" id="set-language" onchange="saveSetting('language', this.value)">
+            <option value="en">English</option>
+          </select>
+        </div>
+      </section>
+
+      <section class="set-card">
+        <div class="set-h">Security &amp; sign-in</div>
+        <div class="set-row">
+          <div class="set-meta">
+            <div class="set-label">Password &amp; two-factor</div>
+            <div class="set-sub">Set or change your password and turn on two-factor authentication.</div>
+          </div>
+          <button class="set-btn" onclick="openAccountSecurity()">Manage</button>
+        </div>
+        <div class="set-row set-row--block">
+          <div class="set-meta">
+            <div class="set-label">Recent sign-ins</div>
+            <div class="set-sub">Devices that have signed in to your account recently.</div>
+          </div>
+          <div class="sec-sessions" id="sec-sessions"><div class="set-sub">Loading…</div></div>
+        </div>
+        <div class="set-row">
+          <div class="set-meta">
+            <div class="set-label">Sign out of all other devices</div>
+            <div class="set-sub">Ends every session except this one. Use this if you lost a device.</div>
+          </div>
+          <button class="set-btn set-btn--danger" id="sec-revoke-btn" onclick="revokeOtherSessions()">Sign out others</button>
+        </div>
+      </section>
+
+      <section class="set-card">
+        <div class="set-h">Privacy &amp; data</div>
+        <div class="set-row set-row--block">
+          <div class="set-meta">
+            <div class="set-label">Your data</div>
+            <div class="set-sub">Download a copy of the account, equipment and service-history data we hold for you, or ask us to delete your account.</div>
+          </div>
+          <div class="set-btns">
+            <button class="set-btn set-btn--ghost" onclick="downloadMyData()">⬇ Download my data</button>
+            <button class="set-btn set-btn--danger" onclick="requestDeletion()">Request deletion</button>
+          </div>
+        </div>
+      </section>
+
+      <div class="set-status" id="set-status" aria-live="polite"></div>
+    </div><!-- /view-settings -->
+
   </div>
 
   <!-- Toast -->
@@ -823,7 +1001,7 @@
         <div id="acct-status" style="background:var(--light);padding:12px;border-radius:8px;margin-bottom:14px;font-size:13px;line-height:1.6;"></div>
 
         <details style="margin-bottom:14px;">
-          <summary style="cursor:pointer;font-weight:600;color:var(--navy);padding:10px;background:white;border:1px solid var(--border);border-radius:8px;">Set a password (recommended for commercial accounts)</summary>
+          <summary style="cursor:pointer;font-weight:600;color:var(--ink);padding:10px;background:white;border:1px solid var(--border);border-radius:8px;">Set a password (recommended for commercial accounts)</summary>
           <div style="padding:14px;border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;">
             <label class="modal-label">Current PIN or password</label>
             <input id="pwd-current" class="modal-input" type="password" placeholder="••••••" style="margin-bottom:10px;">
@@ -836,7 +1014,7 @@
         </details>
 
         <details style="margin-bottom:14px;">
-          <summary style="cursor:pointer;font-weight:600;color:var(--navy);padding:10px;background:white;border:1px solid var(--border);border-radius:8px;">Two-factor authentication (MFA)</summary>
+          <summary style="cursor:pointer;font-weight:600;color:var(--ink);padding:10px;background:white;border:1px solid var(--border);border-radius:8px;">Two-factor authentication (MFA)</summary>
           <div style="padding:14px;border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;">
             <p id="mfa-status-msg" style="font-size:13px;color:var(--muted);margin:0 0 10px;line-height:1.5;"></p>
             <div id="mfa-setup-box" style="display:none;">
@@ -852,7 +1030,7 @@
         </details>
 
         <details style="margin-bottom:14px;">
-          <summary style="cursor:pointer;font-weight:600;color:var(--navy);padding:10px;background:white;border:1px solid var(--border);border-radius:8px;">Privacy &amp; data</summary>
+          <summary style="cursor:pointer;font-weight:600;color:var(--ink);padding:10px;background:white;border:1px solid var(--border);border-radius:8px;">Privacy &amp; data</summary>
           <div style="padding:14px;border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;">
             <p style="font-size:13px;line-height:1.5;color:var(--muted);margin:0 0 10px;">Download a copy of all data we hold on your account, or request account deletion.</p>
             <button class="btn-ghost" onclick="downloadMyData()" style="margin-right:8px;">⬇ Download my data</button>
@@ -904,8 +1082,7 @@
     }
     function fmt(dateStr) {
       if (!dateStr) return null;
-      const d = new Date(dateStr + (dateStr.includes('T') ? '' : 'T00:00:00'));
-      return d.toLocaleDateString('en-TT', { day: 'numeric', month: 'long', year: 'numeric' });
+      return PC.fmtDate(dateStr);
     }
     function fmtTime12(t) {
       if (!t) return '';
@@ -1332,7 +1509,7 @@
             </div>
             <div style="font-size:12px;color:var(--muted);text-align:right;max-width:240px;line-height:1.5;">
               Contact PrimeCool to arrange payment:<br>
-              <strong style="color:var(--navy);">+1 (876) 315-9940</strong>
+              <strong style="color:var(--ink);">+1 (876) 315-9940</strong>
             </div>
           </div>`;
       } else {
@@ -1354,7 +1531,7 @@
           <div class="visit-card" data-pc-row-invoice="${i.id}">
             <div class="visit-header">
               <div class="visit-left">
-                <div style="font-family:'Courier New',monospace;font-weight:700;color:var(--navy);background:#f0f4f8;padding:4px 10px;border-radius:6px;font-size:13px;">${i.invoice_number}</div>
+                <div style="font-family:'Courier New',monospace;font-weight:700;color:var(--ink);background:#f0f4f8;padding:4px 10px;border-radius:6px;font-size:13px;">${i.invoice_number}</div>
                 <div class="visit-info">
                   <div class="visit-date">${fmtMoney(i.total, i.currency)}</div>
                   <div class="visit-sub">Issued ${fmt(i.issue_date)} · Due ${fmt(i.due_date)}${balance > 0.005 ? ` · Balance ${fmtMoney(balance, i.currency)}` : ''}</div>
@@ -1601,7 +1778,11 @@
 
     function acctErr(msg) {
       const el = document.getElementById('acct-error');
-      el.textContent = msg; el.style.display = 'block';
+      const modalOpen = document.getElementById('acctModal').classList.contains('open');
+      if (el) { el.textContent = msg; el.style.display = 'block'; }
+      // When triggered from the Settings page (modal closed) the inline error
+      // banner isn't visible, so surface it as a toast too.
+      if (!modalOpen && window.PC && PC.toast) PC.toast(msg);
     }
 
     // ── My Account view ──────────────────────────────────────────────────
@@ -1613,18 +1794,127 @@
     const showToast = (msg) => window.PC.toast(msg);
 
     function switchView(which) {
-      const isAccount = which === 'account';
-      document.getElementById('view-overview').style.display = isAccount ? 'none' : '';
-      document.getElementById('view-account').style.display  = isAccount ? '' : 'none';
-      document.getElementById('tab-overview').classList.toggle('active', !isAccount);
-      document.getElementById('tab-account').classList.toggle('active', isAccount);
-      document.getElementById('tab-overview').setAttribute('aria-selected', String(!isAccount));
-      document.getElementById('tab-account').setAttribute('aria-selected', String(isAccount));
+      const views = ['overview', 'account', 'settings'];
+      if (views.indexOf(which) === -1) which = 'overview';
+      views.forEach(v => {
+        const view = document.getElementById('view-' + v);
+        const tab  = document.getElementById('tab-' + v);
+        const on   = v === which;
+        if (view) view.style.display = on ? '' : 'none';
+        if (tab) { tab.classList.toggle('active', on); tab.setAttribute('aria-selected', String(on)); }
+      });
       try {
         history.replaceState(null, '', '#' + which);
       } catch {}
-      if (isAccount) renderMyAccount();
+      if (which === 'account')  renderMyAccount();
+      if (which === 'settings') loadSettingsPanel();
     }
+
+    // ── Settings (per-customer preferences) ──────────────────────────────
+    function loadSettingsPanel() {
+      const s = (window.PC && PC._settings) || {};
+      const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+      set('set-time_format',     s.time_format || '24h');
+      set('set-date_format',     s.date_format || 'dmy');
+      set('set-density',         s.density || 'comfortable');
+      set('set-font_scale',      s.font_scale || 'normal');
+      set('set-default_landing', s.default_landing || 'auto');
+      set('set-language',        s.language || 'en');
+      const rm = document.getElementById('set-reduce_motion');
+      if (rm) rm.checked = !!s.reduce_motion;
+      loadSessions();
+    }
+
+    async function saveSetting(key, value) {
+      const status = document.getElementById('set-status');
+      if (status) { status.style.color = ''; status.textContent = 'Saving…'; }
+      try {
+        await PC.saveSettings('/api/portal/me/settings', { [key]: value });
+        if (status) { status.style.color = 'var(--teal)'; status.textContent = 'Saved.'; }
+        if (window.PC && PC.toast) PC.toast('Settings saved.');
+      } catch (e) {
+        if (status) { status.style.color = '#b91c1c'; status.textContent = 'Could not save — please try again.'; }
+        if (window.PC && PC.toast) PC.toast('Could not save settings.');
+        loadSettingsPanel();
+      }
+    }
+    window.saveSetting = saveSetting;
+
+    // ── Settings → Security & sign-in : recent sign-ins ──────────────────
+    function _deviceLabel(ua) {
+      ua = ua || '';
+      let os = '';
+      if (/iPhone|iPad|iOS/i.test(ua)) os = 'iOS';
+      else if (/Android/i.test(ua)) os = 'Android';
+      else if (/Mac OS X|Macintosh/i.test(ua)) os = 'Mac';
+      else if (/Windows/i.test(ua)) os = 'Windows';
+      else if (/Linux/i.test(ua)) os = 'Linux';
+      let br = '';
+      if (/Edg\//i.test(ua)) br = 'Edge';
+      else if (/Chrome\//i.test(ua) && !/Edg\//i.test(ua)) br = 'Chrome';
+      else if (/Firefox\//i.test(ua)) br = 'Firefox';
+      else if (/Safari\//i.test(ua) && !/Chrome\//i.test(ua)) br = 'Safari';
+      const parts = [br, os].filter(Boolean);
+      return parts.length ? parts.join(' · ') : 'Unknown device';
+    }
+    function _renderSessions(payload) {
+      const host = document.getElementById('sec-sessions');
+      if (!host) return;
+      const rows = (payload && payload.sessions) || [];
+      if (!rows.length) { host.innerHTML = '<div class="set-sub">No recent sign-ins on record.</div>'; return; }
+      const fmt = (window.PC && PC.fmtDateTime) ? PC.fmtDateTime : (x => String(x || ''));
+      host.innerHTML = rows.map(r => {
+        let badge = '';
+        if (r.current)      badge = '<span class="sec-session-badge is-current">This device</span>';
+        else if (r.revoked) badge = '<span class="sec-session-badge is-revoked">Signed out</span>';
+        const when = r.created_at ? fmt(r.created_at) : '';
+        const seen = r.last_seen_at ? ' · last active ' + fmt(r.last_seen_at) : '';
+        const ip = r.ip_address ? ' · ' + esc(r.ip_address) : '';
+        return `<div class="sec-session-row">
+          <div class="ss-main">
+            <div class="sec-session-dev">${esc(_deviceLabel(r.user_agent))}</div>
+            <div class="sec-session-meta">${esc(when)}${esc(seen)}${ip}</div>
+          </div>${badge}
+        </div>`;
+      }).join('');
+      const btn = document.getElementById('sec-revoke-btn');
+      if (btn) btn.disabled = (payload.active_count || 0) <= 1;
+    }
+    async function loadSessions() {
+      const host = document.getElementById('sec-sessions');
+      if (host) host.innerHTML = '<div class="set-sub">Loading…</div>';
+      try {
+        const r = await fetch('/api/portal/me/sessions', {
+          headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+          credentials: 'include',
+        });
+        if (!r.ok) throw new Error('load failed');
+        _renderSessions(await r.json());
+      } catch (_) {
+        if (host) host.innerHTML = '<div class="set-sub">Could not load sign-in history.</div>';
+      }
+    }
+    async function revokeOtherSessions() {
+      if (!confirm('Sign out of all other devices? You will stay signed in here.')) return;
+      const btn = document.getElementById('sec-revoke-btn');
+      if (btn) { btn.disabled = true; btn.textContent = 'Working…'; }
+      try {
+        const r = await fetch('/api/portal/me/sessions/revoke-others', {
+          method: 'POST',
+          headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+          credentials: 'include',
+        });
+        if (!r.ok) throw new Error('revoke failed');
+        const j = await r.json();
+        _renderSessions(j);
+        if (window.PC && PC.toast) PC.toast((j.revoked || 0) + ' other session(s) signed out.');
+      } catch (_) {
+        if (window.PC && PC.toast) PC.toast('Could not sign out other devices.');
+      } finally {
+        if (btn) btn.textContent = 'Sign out others';
+      }
+    }
+    window.revokeOtherSessions = revokeOtherSessions;
 
     function initials(name) {
       return String(name || '?').split(/\s+/).filter(Boolean).slice(0, 2)
@@ -1931,7 +2221,7 @@
           : esc(i.invoice_number || '—');
         return `
           <tr data-pc-row-invoice="${i.id}">
-            <td><code style="font-family:'Courier New',monospace;font-weight:700;color:var(--navy);">${numCell}</code></td>
+            <td><code style="font-family:'Courier New',monospace;font-weight:700;color:var(--ink);">${numCell}</code></td>
             <td class="num">${esc(ymd(i.issue_date) || '—')}</td>
             <td class="num">${fmtMoney(i.total, i.currency)}</td>
             <td class="num">${fmtMoney(i.amount_paid || 0, i.currency)}</td>
@@ -1975,18 +2265,25 @@
       }
     }
 
-    // Honor deep-link to #account on load.
+    // Honor deep-link on load; otherwise fall back to the saved default
+    // landing screen (Settings → General). An explicit #hash always wins.
     function applyInitialView() {
-      if (window.location.hash === '#account') {
-        switchView('account');
+      const hash = (window.location.hash || '').replace('#', '');
+      if (['account', 'overview', 'settings'].indexOf(hash) !== -1) {
+        switchView(hash);
+        return;
       }
+      const land = (window.PC && PC.getSetting('default_landing')) || 'auto';
+      if (land && land !== 'auto') switchView(land);
     }
 
-    // Wrap load() so the account view auto-renders once data arrives
-    // if the user navigated directly to #account.
+    // Wrap load() so settings are fetched + applied (density/time format) and
+    // the correct initial view is shown once data arrives.
     const _origLoad = load;
     load = async function() {
       await _origLoad();
+      try { await PC.loadSettings('/api/portal/me/settings'); } catch (_) {}
+      try { loadSettingsPanel(); } catch (_) {}
       applyInitialView();
     };
 

@@ -4,6 +4,7 @@ import os
 import secrets
 import sqlite3
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 
 # Audit chain serialization — single-process write lock so concurrent
@@ -412,6 +413,24 @@ def init_db():
             created_at    TEXT NOT NULL
         )
     """)
+    # Idempotent column additions for equipment edit-history + soft-delete.
+    # active=0 hides the row from the everyday list (techs can no longer pick
+    # it for new visits) but preserves historical visit_id → equipment_id
+    # references. Hard delete remains admin-only via delete_equipment().
+    eq_cols = {row[1] for row in con.execute("PRAGMA table_info(equipment)")}
+    for name, sql in (
+        ("active",            "ALTER TABLE equipment ADD COLUMN active INTEGER NOT NULL DEFAULT 1"),
+        ("updated_at",        "ALTER TABLE equipment ADD COLUMN updated_at TEXT"),
+        # updated_by_* is a polymorphic FK: kind ∈ {'admin','tech'}, id refers
+        # to the matching table. We don't enforce a FK constraint because
+        # ALTER TABLE can't add one in SQLite anyway, and the kind+id pair is
+        # only ever consulted for audit display.
+        ("updated_by_kind",   "ALTER TABLE equipment ADD COLUMN updated_by_kind TEXT"),
+        ("updated_by_id",     "ALTER TABLE equipment ADD COLUMN updated_by_id INTEGER"),
+    ):
+        if name not in eq_cols:
+            try: con.execute(sql)
+            except sqlite3.OperationalError: pass
     con.execute("""
         CREATE TABLE IF NOT EXISTS technicians (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -508,6 +527,12 @@ def init_db():
         ("department",
             "ALTER TABLE technicians ADD COLUMN department TEXT NOT NULL "
             "DEFAULT 'field'"),
+        # Profile photo — populated by /api/staff/me/avatar. NULL = no photo
+        # set (UI falls back to coloured initials). Filename is flat (no
+        # slashes) and lives under uploads/photos/ so it reuses the existing
+        # signed-URL infra in main._sign_photo_url.
+        ("avatar_filename",
+            "ALTER TABLE technicians ADD COLUMN avatar_filename TEXT"),
     ):
         if name not in tech_cols:
             try: con.execute(sql)
@@ -570,6 +595,9 @@ def init_db():
         ("must_enrol_mfa",
             "ALTER TABLE admin_users ADD COLUMN must_enrol_mfa "
             "INTEGER NOT NULL DEFAULT 0"),
+        # Profile photo — see matching column on technicians.
+        ("avatar_filename",
+            "ALTER TABLE admin_users ADD COLUMN avatar_filename TEXT"),
     ):
         if col not in admin_cols:
             try: con.execute(sql)
@@ -922,20 +950,41 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_audit_target  ON audit_log(target_type, target_id)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at)")
 
-    # R2 (scale-up indexes for 30 staff + 200 customers). Hot-path
-    # queries that previously did sequential scans on the ~7k-visit /
-    # ~800-invoice working set.
-    con.execute("CREATE INDEX IF NOT EXISTS idx_visits_tech_date   ON maintenance_visits(assigned_tech_id, scheduled_date)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_visits_customer    ON maintenance_visits(customer_id, scheduled_date)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_visits_status_date ON maintenance_visits(status, scheduled_date)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_visits_date        ON maintenance_visits(scheduled_date)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_visits_equipment   ON maintenance_visits(equipment_id)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_equipment_customer ON equipment(customer_id)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_customers_code     ON customers(customer_code)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_customers_active   ON customers(active, customer_type)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_tech_code          ON technicians(tech_code)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_tech_active_type   ON technicians(active, staff_type)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_visit_photos_visit ON visit_photos(visit_id)")
+    # ── Append-only enforcement (DB-level) ──────────────────────────────────
+    # INSERTs are always allowed; DELETE/UPDATE are blocked by BEFORE triggers
+    # that RAISE(ABORT) unless a maintenance flag is lifted. The flag lives in
+    # a single-row guard table and is only ever lifted by the _audit_maintenance
+    # context manager around the three legitimate maintenance paths: the rolling
+    # retention purge, the one-time PII-redaction rebuild, and the chain-hash
+    # backfill. Everything else — including any future endpoint, ORM call, or
+    # buggy code — physically cannot mutate or remove an audit row.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS _audit_guard (
+            id          INTEGER PRIMARY KEY CHECK (id = 1),
+            maintenance INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    con.execute("INSERT OR IGNORE INTO _audit_guard (id, maintenance) VALUES (1, 0)")
+    # Defensive: never leave the guard lifted across a restart.
+    con.execute("UPDATE _audit_guard SET maintenance = 0 WHERE id = 1")
+    con.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_audit_no_delete
+        BEFORE DELETE ON audit_log
+        WHEN (SELECT maintenance FROM _audit_guard WHERE id = 1) = 0
+        BEGIN
+            SELECT RAISE(ABORT,
+                'audit_log is append-only: deletes are blocked outside retention maintenance');
+        END
+    """)
+    con.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_audit_no_update
+        BEFORE UPDATE ON audit_log
+        WHEN (SELECT maintenance FROM _audit_guard WHERE id = 1) = 0
+        BEGIN
+            SELECT RAISE(ABORT,
+                'audit_log is append-only: updates are blocked outside maintenance');
+        END
+    """)
 
     # Read-access trail — separate from audit_log so the hash chain stays
     # focused on mutations and security events. Reads are high-volume; this
@@ -1125,6 +1174,25 @@ def init_db():
             try: con.execute(sql)
             except sqlite3.OperationalError: pass
 
+    # Crew assignment — many additional techs per visit beyond the primary
+    # `assigned_tech_id` on maintenance_visits. The primary acts as the
+    # lead (existing semantics unchanged); every row here is an "extra"
+    # crew member who can also see the job in their queue and update it.
+    # We don't include the lead here to avoid double-counting; UNION at
+    # query time covers both.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS visit_techs (
+            visit_id   INTEGER NOT NULL REFERENCES maintenance_visits(id) ON DELETE CASCADE,
+            tech_id    INTEGER NOT NULL REFERENCES technicians(id),
+            added_at   TEXT NOT NULL,
+            added_by_kind TEXT,
+            added_by_id   INTEGER,
+            PRIMARY KEY (visit_id, tech_id)
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_visit_techs_tech ON visit_techs(tech_id)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_visit_techs_visit ON visit_techs(visit_id)")
+
     # Structured field readings per visit (multiple rows allowed for re-checks).
     # Free-text "work_done" stays; this captures the numbers the spec mandates.
     con.execute("""
@@ -1246,6 +1314,21 @@ def init_db():
     """)
     con.execute("CREATE INDEX IF NOT EXISTS idx_svcreq_status ON service_requests(status, created_at)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_svcreq_customer ON service_requests(customer_id, created_at)")
+
+    # R2 (scale-up indexes for 30 staff + 200 customers). Hot-path
+    # queries that previously did sequential scans on the ~7k-visit /
+    # ~800-invoice working set. Created after all referenced tables exist.
+    con.execute("CREATE INDEX IF NOT EXISTS idx_visits_tech_date   ON maintenance_visits(assigned_tech_id, scheduled_date)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_visits_customer    ON maintenance_visits(customer_id, scheduled_date)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_visits_status_date ON maintenance_visits(status, scheduled_date)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_visits_date        ON maintenance_visits(scheduled_date)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_visits_equipment   ON maintenance_visits(equipment_id)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_equipment_customer ON equipment(customer_id)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_customers_code     ON customers(customer_code)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_customers_active   ON customers(active, customer_type)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_tech_code          ON technicians(tech_code)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_tech_active_type   ON technicians(active, staff_type)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_visit_photos_visit ON visit_photos(visit_id)")
 
     # ── Purchase orders + goods received + physical counts (SoD controls) ──
     # The flow: inventory_manager drafts a PO → "sends" it → goods physically
@@ -1650,14 +1733,19 @@ def init_db():
     # Task delegation: super_admin (and admins with delegation power) can
     # grant scoped access to other admins. Record-level, type-level, or
     # full power. Chain-hashed append-only audit, mirrored from payments.
+    # v2 schema: recipient may be an admin OR a tech/warehouse employee.
+    # The recipient_kind column distinguishes which identity space the
+    # numeric recipient_id points to. We drop the cross-table FK because
+    # SQLite has no FK union — referential integrity is enforced at the
+    # API layer (admin_delegation_grant resolves and validates each kind).
     con.execute("""
         CREATE TABLE IF NOT EXISTS delegations (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
             grantor_id          INTEGER NOT NULL REFERENCES admin_users(id),
             grantor_role        TEXT NOT NULL,
-            recipient_id        INTEGER NOT NULL REFERENCES admin_users(id),
+            recipient_id        INTEGER NOT NULL,
             recipient_kind      TEXT NOT NULL DEFAULT 'admin'
-                                  CHECK (recipient_kind = 'admin'),
+                                  CHECK (recipient_kind IN ('admin','tech')),
             delegation_type     TEXT NOT NULL
                                   CHECK (delegation_type IN ('record','record_type','power')),
             scope_record_id     INTEGER,
@@ -1677,6 +1765,73 @@ def init_db():
             hub_id              INTEGER NOT NULL DEFAULT 1
         )
     """)
+    # One-shot migration for DBs created under the old v1 schema (which
+    # FKs recipient_id → admin_users and pins recipient_kind = 'admin').
+    # SQLite can't ALTER away a FK or a CHECK, so we rebuild in place.
+    try:
+        existing_sql = con.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='delegations'"
+        ).fetchone()
+        needs_rebuild = bool(existing_sql) and (
+            "CHECK (recipient_kind = 'admin')" in (existing_sql[0] or "")
+            or "REFERENCES admin_users(id)" in (existing_sql[0] or "").split("recipient_kind")[0].split("recipient_id")[-1]
+        )
+        if needs_rebuild:
+            con.commit()  # flush any pending DDL from earlier in init_db
+            con.execute("PRAGMA foreign_keys = OFF")
+            con.execute("""
+                CREATE TABLE delegations__v2 (
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    grantor_id          INTEGER NOT NULL REFERENCES admin_users(id),
+                    grantor_role        TEXT NOT NULL,
+                    recipient_id        INTEGER NOT NULL,
+                    recipient_kind      TEXT NOT NULL DEFAULT 'admin'
+                                          CHECK (recipient_kind IN ('admin','tech')),
+                    delegation_type     TEXT NOT NULL
+                                          CHECK (delegation_type IN ('record','record_type','power')),
+                    scope_record_id     INTEGER,
+                    scope_record_type   TEXT,
+                    permission_level    TEXT
+                                          CHECK (permission_level IN ('read','read_write') OR permission_level IS NULL),
+                    valid_until         TEXT,
+                    grantor_notes       TEXT,
+                    created_at          TEXT NOT NULL,
+                    revoked_at          TEXT,
+                    revoked_by          INTEGER REFERENCES admin_users(id),
+                    revoke_reason       TEXT,
+                    revoke_kind         TEXT
+                                          CHECK (revoke_kind IN ('manual','auto_expiry','power_cascade') OR revoke_kind IS NULL),
+                    prior_chain_hash    TEXT,
+                    chain_hash          TEXT NOT NULL,
+                    hub_id              INTEGER NOT NULL DEFAULT 1
+                )
+            """)
+            con.execute("""
+                INSERT INTO delegations__v2
+                    (id, grantor_id, grantor_role, recipient_id, recipient_kind,
+                     delegation_type, scope_record_id, scope_record_type,
+                     permission_level, valid_until, grantor_notes, created_at,
+                     revoked_at, revoked_by, revoke_reason, revoke_kind,
+                     prior_chain_hash, chain_hash, hub_id)
+                SELECT id, grantor_id, grantor_role, recipient_id, recipient_kind,
+                       delegation_type, scope_record_id, scope_record_type,
+                       permission_level, valid_until, grantor_notes, created_at,
+                       revoked_at, revoked_by, revoke_reason, revoke_kind,
+                       prior_chain_hash, chain_hash, hub_id
+                FROM delegations
+            """)
+            con.execute("DROP TABLE delegations")
+            con.execute("ALTER TABLE delegations__v2 RENAME TO delegations")
+            con.commit()
+            con.execute("PRAGMA foreign_keys = ON")
+            print("[delegations] v2 migration applied: recipient_kind now accepts 'admin' or 'tech'")
+    except Exception as _mig_err:
+        try: con.rollback()
+        except Exception: pass
+        try: con.execute("PRAGMA foreign_keys = ON")
+        except Exception: pass
+        # Surface the migration failure loudly so the dev sees it on boot.
+        print(f"[delegations] v2 migration failed: {_mig_err}")
     con.execute("CREATE INDEX IF NOT EXISTS idx_deleg_recipient ON delegations(recipient_id, revoked_at)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_deleg_grantor   ON delegations(grantor_id, revoked_at)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_deleg_scope     ON delegations(scope_record_type, scope_record_id, revoked_at)")
@@ -2060,6 +2215,238 @@ def init_db():
             UNIQUE(tech_id, work_date)
         )
     """)
+
+    # Biweekly timesheets with a 2-step approval workflow.
+    #   draft → submitted → supervisor_approved → super_admin_approved
+    # `submitted_by_kind` / `submitted_by_id` track who hit Submit — that's
+    # the tech themself in the usual case, but the supervisor can submit on
+    # behalf of one of their techs, so we record both. Auto-created on the
+    # tech's first sign-in inside a new pay period (see tech_sign_in).
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS tech_timesheets (
+            id INTEGER PRIMARY KEY,
+            tech_id INTEGER NOT NULL REFERENCES technicians(id),
+            period_start TEXT NOT NULL,
+            period_end   TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft'
+                CHECK (status IN ('draft','submitted','supervisor_approved','super_admin_approved')),
+            submitted_at      TEXT,
+            submitted_by_kind TEXT,
+            submitted_by_id   INTEGER,
+            supervisor_approved_by_id INTEGER,
+            supervisor_approved_at    TEXT,
+            super_admin_approved_by_id INTEGER,
+            super_admin_approved_at    TEXT,
+            force_approved INTEGER NOT NULL DEFAULT 0,
+            force_approved_by_id INTEGER,
+            force_approved_at TEXT,
+            force_approved_reason TEXT,
+            tech_notes      TEXT,
+            reject_reason   TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(tech_id, period_start)
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_timesheets_tech_period "
+                "ON tech_timesheets(tech_id, period_start)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_timesheets_status "
+                "ON tech_timesheets(status)")
+    # Per-week submission support — techs can submit Week 1 separately
+    # from Week 2 of the same biweekly period. Once BOTH columns are
+    # populated, the overall `status` flips to 'submitted' so the
+    # supervisor's queue picks it up. These columns are added via
+    # ALTER for existing DBs.
+    for col_sql in (
+        "ALTER TABLE tech_timesheets ADD COLUMN week1_submitted_at TEXT",
+        "ALTER TABLE tech_timesheets ADD COLUMN week1_submitted_by_kind TEXT",
+        "ALTER TABLE tech_timesheets ADD COLUMN week1_submitted_by_id INTEGER",
+        "ALTER TABLE tech_timesheets ADD COLUMN week2_submitted_at TEXT",
+        "ALTER TABLE tech_timesheets ADD COLUMN week2_submitted_by_kind TEXT",
+        "ALTER TABLE tech_timesheets ADD COLUMN week2_submitted_by_id INTEGER",
+    ):
+        try: con.execute(col_sql)
+        except Exception: pass  # column already exists
+
+    # Per-day manual adjustments on top of the immutable tech_clock_events
+    # source-of-truth (which is hash-chained for audit and CANNOT be edited).
+    # If a tech forgot to clock-out, the override lets them or their
+    # supervisor declare the correct end time without rewriting history.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS tech_timesheet_overrides (
+            id INTEGER PRIMARY KEY,
+            timesheet_id INTEGER NOT NULL REFERENCES tech_timesheets(id) ON DELETE CASCADE,
+            work_date TEXT NOT NULL,
+            manual_start_time    TEXT,
+            manual_end_time      TEXT,
+            manual_break_minutes INTEGER,
+            note TEXT,
+            edited_by_kind TEXT NOT NULL,
+            edited_by_id   INTEGER NOT NULL,
+            edited_at TEXT NOT NULL,
+            UNIQUE(timesheet_id, work_date)
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_ts_overrides_ts "
+                "ON tech_timesheet_overrides(timesheet_id)")
+    # ── PTO balances ───────────────────────────────────────────────────
+    # One row per tech per calendar year. floating_total = the prorated
+    # allotment for that year (based on hire-quarter for new hires, 3 for
+    # established staff). vacation_hours_balance = currently available
+    # vacation pool (40h floor at year start + ~3.08h accrued per fortnight,
+    # minus any used). vacation_hours_used = running YTD usage. The accrual
+    # cursor (last_accrual_period_end) prevents double-accrual when the
+    # endpoint is called repeatedly.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS tech_pto_balances (
+            id INTEGER PRIMARY KEY,
+            tech_id INTEGER NOT NULL REFERENCES technicians(id) ON DELETE CASCADE,
+            year    INTEGER NOT NULL,
+            floating_total      REAL NOT NULL DEFAULT 0,
+            floating_used       REAL NOT NULL DEFAULT 0,
+            vacation_balance    REAL NOT NULL DEFAULT 0,
+            vacation_used       REAL NOT NULL DEFAULT 0,
+            vacation_accrued    REAL NOT NULL DEFAULT 0,
+            sick_total          REAL NOT NULL DEFAULT 0,
+            sick_used           REAL NOT NULL DEFAULT 0,
+            last_accrual_period_end TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(tech_id, year)
+        )
+    """)
+    # Add the sick columns to existing DBs.
+    for col_sql in (
+        "ALTER TABLE tech_pto_balances ADD COLUMN sick_total REAL NOT NULL DEFAULT 0",
+        "ALTER TABLE tech_pto_balances ADD COLUMN sick_used  REAL NOT NULL DEFAULT 0",
+    ):
+        try: con.execute(col_sql)
+        except Exception: pass
+    con.execute("CREATE INDEX IF NOT EXISTS idx_pto_tech_year "
+                "ON tech_pto_balances(tech_id, year)")
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS tech_pto_ledger (
+            id INTEGER PRIMARY KEY,
+            tech_id INTEGER NOT NULL REFERENCES technicians(id) ON DELETE CASCADE,
+            year    INTEGER NOT NULL,
+            entry_type TEXT NOT NULL CHECK (entry_type IN
+                ('initial_floating','initial_vacation','initial_sick',
+                 'accrual','floating_used','vacation_used','sick_used',
+                 'manual_adjustment')),
+            hours   REAL NOT NULL,
+            work_date TEXT,
+            note TEXT,
+            recorded_by_kind TEXT,
+            recorded_by_id   INTEGER,
+            recorded_at TEXT NOT NULL
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_pto_ledger_tech "
+                "ON tech_pto_ledger(tech_id, year, recorded_at)")
+    # Migration: expand entry_type CHECK to include sick_used + initial_sick.
+    try:
+        existing = con.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='tech_pto_ledger'"
+        ).fetchone()
+        if existing and existing[0] and "'sick_used'" not in existing[0]:
+            con.commit()
+            con.execute("PRAGMA foreign_keys = OFF")
+            con.execute("""
+                CREATE TABLE tech_pto_ledger__v2 (
+                    id INTEGER PRIMARY KEY,
+                    tech_id INTEGER NOT NULL REFERENCES technicians(id) ON DELETE CASCADE,
+                    year    INTEGER NOT NULL,
+                    entry_type TEXT NOT NULL CHECK (entry_type IN
+                        ('initial_floating','initial_vacation','initial_sick',
+                         'accrual','floating_used','vacation_used','sick_used',
+                         'manual_adjustment')),
+                    hours   REAL NOT NULL,
+                    work_date TEXT,
+                    note TEXT,
+                    recorded_by_kind TEXT,
+                    recorded_by_id   INTEGER,
+                    recorded_at TEXT NOT NULL
+                )
+            """)
+            con.execute("INSERT INTO tech_pto_ledger__v2 SELECT * FROM tech_pto_ledger")
+            con.execute("DROP TABLE tech_pto_ledger")
+            con.execute("ALTER TABLE tech_pto_ledger__v2 RENAME TO tech_pto_ledger")
+            con.execute("CREATE INDEX idx_pto_ledger_tech ON tech_pto_ledger(tech_id, year, recorded_at)")
+            con.commit()
+            con.execute("PRAGMA foreign_keys = ON")
+            print("[pto_ledger] migration applied: sick_used entry_type allowed")
+    except Exception as _e:
+        try: con.rollback()
+        except Exception: pass
+        try: con.execute("PRAGMA foreign_keys = ON")
+        except Exception: pass
+        print(f"[pto_ledger] sick-kind migration failed: {_e}")
+    # Tech-submitted time-off requests awaiting supervisor approval. On
+    # approve, the balance is deducted via use_pto() and a ledger entry is
+    # written; on deny, only a status change. Cancelled requests stay in
+    # the table for audit but have no balance impact.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS tech_pto_requests (
+            id INTEGER PRIMARY KEY,
+            tech_id INTEGER NOT NULL REFERENCES technicians(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL CHECK (kind IN ('vacation','floating','sick')),
+            start_date TEXT NOT NULL,
+            end_date   TEXT NOT NULL,
+            hours      REAL NOT NULL,
+            reason     TEXT,
+            status     TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending','approved','denied','cancelled')),
+            requested_at  TEXT NOT NULL,
+            decided_by_kind TEXT,
+            decided_by_id   INTEGER,
+            decided_at      TEXT,
+            decision_note   TEXT
+        )
+    """)
+    # v2 → v3 schema migration: original CHECK only allowed
+    # ('vacation','floating'); we need to add 'sick'. SQLite can't ALTER
+    # a CHECK in place, so we rebuild if the old constraint is detected.
+    try:
+        existing = con.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='tech_pto_requests'"
+        ).fetchone()
+        if existing and existing[0] and "'sick'" not in existing[0]:
+            con.commit()
+            con.execute("PRAGMA foreign_keys = OFF")
+            con.execute("""
+                CREATE TABLE tech_pto_requests__v3 (
+                    id INTEGER PRIMARY KEY,
+                    tech_id INTEGER NOT NULL REFERENCES technicians(id) ON DELETE CASCADE,
+                    kind TEXT NOT NULL CHECK (kind IN ('vacation','floating','sick')),
+                    start_date TEXT NOT NULL,
+                    end_date   TEXT NOT NULL,
+                    hours      REAL NOT NULL,
+                    reason     TEXT,
+                    status     TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending','approved','denied','cancelled')),
+                    requested_at  TEXT NOT NULL,
+                    decided_by_kind TEXT,
+                    decided_by_id   INTEGER,
+                    decided_at      TEXT,
+                    decision_note   TEXT
+                )
+            """)
+            con.execute("INSERT INTO tech_pto_requests__v3 SELECT * FROM tech_pto_requests")
+            con.execute("DROP TABLE tech_pto_requests")
+            con.execute("ALTER TABLE tech_pto_requests__v3 RENAME TO tech_pto_requests")
+            con.commit()
+            con.execute("PRAGMA foreign_keys = ON")
+            print("[pto_requests] migration applied: 'sick' kind now allowed")
+    except Exception as _e:
+        try: con.rollback()
+        except Exception: pass
+        try: con.execute("PRAGMA foreign_keys = ON")
+        except Exception: pass
+        print(f"[pto_requests] sick-kind migration failed: {_e}")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_pto_req_tech "
+                "ON tech_pto_requests(tech_id, status, requested_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_pto_req_status "
+                "ON tech_pto_requests(status, requested_at)")
     con.execute("""
         CREATE TABLE IF NOT EXISTS tech_certifications (
             id INTEGER PRIMARY KEY,
@@ -2131,6 +2518,23 @@ def init_db():
     """)
     con.execute("CREATE INDEX IF NOT EXISTS idx_company_msg_active "
                 "ON company_messages(hidden_at, expires_at, posted_at)")
+
+    # ── In-app user settings (per-user preferences) ───────────────────────
+    # One row per (subject_type, subject_id). subject_type ∈
+    # {'admin','tech','customer'} so the same table serves all three identity
+    # systems. settings_json holds a small whitelisted JSON object; validation
+    # and defaults live in main.py (_SETTINGS_*). Not encrypted — these are
+    # UI preferences (density, time format, default landing, notification
+    # opt-ins), not PII.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS user_settings (
+            subject_type  TEXT    NOT NULL,
+            subject_id    INTEGER NOT NULL,
+            settings_json TEXT    NOT NULL DEFAULT '{}',
+            updated_at    TEXT,
+            PRIMARY KEY (subject_type, subject_id)
+        )
+    """)
 
     con.commit()
     con.close()
@@ -3081,11 +3485,20 @@ def get_equipment_by_id(equipment_id: int):
     return _dec_row("equipment", row)
 
 
-def get_customer_equipment(customer_id: int):
+def get_customer_equipment(customer_id, include_inactive=False):
+    """Returns active equipment for the customer by default. Pass
+    include_inactive=True to include deactivated rows (admin-only view)."""
     con = _con()
-    rows = con.execute(
-        "SELECT * FROM equipment WHERE customer_id = ? ORDER BY name", (customer_id,)
-    ).fetchall()
+    if include_inactive:
+        rows = con.execute(
+            "SELECT * FROM equipment WHERE customer_id = ? ORDER BY name",
+            (customer_id,),
+        ).fetchall()
+    else:
+        rows = con.execute(
+            "SELECT * FROM equipment WHERE customer_id = ? AND active = 1 ORDER BY name",
+            (customer_id,),
+        ).fetchall()
     con.close()
     return _dec_rows("equipment", rows)
 
@@ -3094,12 +3507,14 @@ def get_customer_equipment_portal_safe(customer_id: int):
     """Portal-safe view of a customer's equipment register. Selects ONLY
     the columns that are appropriate for the self-service portal — never
     returns the decrypted `serial_number` or `notes` columns (admin-only
-    PII). Used by GET /api/portal/me to plug the equipment leak.
+    PII). Used by GET /api/portal/me to plug the equipment leak. Hides
+    deactivated rows so customers don't see equipment we're no longer
+    tracking.
     """
     con = _con()
     rows = con.execute(
         "SELECT id, customer_id, name, type, model, location, created_at "
-        "FROM equipment WHERE customer_id = ? ORDER BY name",
+        "FROM equipment WHERE customer_id = ? AND active = 1 ORDER BY name",
         (customer_id,),
     ).fetchall()
     con.close()
@@ -3146,6 +3561,67 @@ def delete_equipment(equipment_id: int):
     con.close()
 
 
+# ── Equipment edit + soft-delete (admin + tech) ──────────────────────
+#
+# update_equipment writes only the keys present in `updates`, encrypts the
+# three field-encrypted columns (serial_number, location, notes) on the way
+# in, stamps updated_at/updated_by, and returns the row count. Pass any
+# subset of: name, type, model, serial_number, location, notes, active.
+# customer_id is intentionally not editable here — moving equipment between
+# customers would orphan visit_id → equipment_id history and should be a
+# separate, audited admin action when needed.
+
+_EQUIPMENT_PLAIN_COLS  = ("name", "type", "model", "active")
+_EQUIPMENT_ENC_COLS    = ("serial_number", "location", "notes")
+_EQUIPMENT_ALL_EDITABLE = _EQUIPMENT_PLAIN_COLS + _EQUIPMENT_ENC_COLS
+
+def update_equipment(equipment_id, updates, updated_by_kind=None, updated_by_id=None):
+    if not isinstance(updates, dict) or not updates:
+        return False
+    set_parts = []
+    args = []
+    for col in _EQUIPMENT_ALL_EDITABLE:
+        if col not in updates:
+            continue
+        val = updates[col]
+        if col in _EQUIPMENT_ENC_COLS:
+            val = _enc(val or "")
+        elif col == "active":
+            val = 1 if val else 0
+        set_parts.append("%s = ?" % col)
+        args.append(val)
+    if not set_parts:
+        return False
+    # Always stamp updated_at + who, even if only one editable column changed.
+    set_parts.append("updated_at = ?")
+    args.append(datetime.now(timezone.utc).isoformat())
+    if updated_by_kind is not None:
+        set_parts.append("updated_by_kind = ?")
+        args.append(updated_by_kind)
+    if updated_by_id is not None:
+        set_parts.append("updated_by_id = ?")
+        args.append(int(updated_by_id))
+    args.append(int(equipment_id))
+    sql = "UPDATE equipment SET %s WHERE id = ?" % ", ".join(set_parts)
+    con = _con()
+    try:
+        cur = con.execute(sql, args)
+        con.commit()
+        return cur.rowcount > 0
+    finally:
+        con.close()
+
+
+def deactivate_equipment(equipment_id, updated_by_kind=None, updated_by_id=None):
+    """Soft-delete: active=0. Visit history is preserved."""
+    return update_equipment(
+        equipment_id,
+        {"active": 0},
+        updated_by_kind=updated_by_kind,
+        updated_by_id=updated_by_id,
+    )
+
+
 # ── Maintenance Visits ────────────────────────────────────────────────────────
 
 def get_customer_visits(customer_id: int):
@@ -3175,8 +3651,33 @@ def get_all_visits():
         ORDER BY COALESCE(v.scheduled_date, v.created_at) DESC
         """,
     ).fetchall()
+    # Build a {visit_id: [crew tech rows]} map in one query so we don't
+    # round-trip per visit. The lead tech (assigned_tech_id) is included as
+    # well so the UI can render every member of the crew in one list.
+    crew_map = {}
+    for r in con.execute("""
+        SELECT vt.visit_id, vt.tech_id, t.name AS tech_name
+        FROM visit_techs vt
+        JOIN technicians t ON t.id = vt.tech_id
+    """).fetchall():
+        crew_map.setdefault(r["visit_id"], []).append(
+            {"id": r["tech_id"], "name": r["tech_name"]}
+        )
     con.close()
-    return _dec_rows("maintenance_visits", rows)
+    decoded = _dec_rows("maintenance_visits", rows)
+    for d in decoded:
+        extras = crew_map.get(d["id"], [])
+        d["crew_tech_ids"]   = [c["id"]   for c in extras]
+        d["crew_tech_names"] = [c["name"] for c in extras]
+        # all_tech_ids = lead (if any) ∪ extras. Order: lead first, then crew.
+        all_ids = []
+        if d.get("assigned_tech_id"):
+            all_ids.append(d["assigned_tech_id"])
+        for cid in d["crew_tech_ids"]:
+            if cid not in all_ids:
+                all_ids.append(cid)
+        d["all_tech_ids"] = all_ids
+    return decoded
 
 
 def create_visit(data: dict) -> int:
@@ -3304,6 +3805,32 @@ def get_visit_by_id(visit_id: int, with_parts: bool = False):
         if d.get(k):
             try: d[k] = _dec(d[k])
             except Exception: pass
+    # Attach crew (extra techs beyond the lead). Lead is already in d as
+    # assigned_tech_id + tech_name; we expose `crew_*` for the extras only,
+    # plus an `all_tech_*` that merges lead + crew for UI convenience.
+    # The first con was closed when we returned `row`; visit-detail isn't
+    # a hot path so a second cheap connection is fine here.
+    con2 = _con()
+    crew_rows = con2.execute(
+        "SELECT vt.tech_id, t.name AS tech_name FROM visit_techs vt "
+        "JOIN technicians t ON t.id = vt.tech_id WHERE vt.visit_id = ? "
+        "ORDER BY t.name",
+        (visit_id,),
+    ).fetchall()
+    con2.close()
+    d["crew_tech_ids"]   = [r["tech_id"]   for r in crew_rows]
+    d["crew_tech_names"] = [r["tech_name"] for r in crew_rows]
+    all_ids = []
+    all_names = []
+    if d.get("assigned_tech_id"):
+        all_ids.append(d["assigned_tech_id"])
+        if d.get("tech_name"): all_names.append(d["tech_name"])
+    for cid, cname in zip(d["crew_tech_ids"], d["crew_tech_names"]):
+        if cid not in all_ids:
+            all_ids.append(cid)
+            all_names.append(cname)
+    d["all_tech_ids"]   = all_ids
+    d["all_tech_names"] = all_names
     if with_parts:
         d["parts_used"] = get_visit_parts(visit_id)
     return d
@@ -3345,14 +3872,129 @@ def tech_complete_visit(visit_id: int, work_done: str, parts: str, notes: str,
     con.close()
 
 
+# ── Visit crew (multi-tech assignment) ────────────────────────────────
+#
+# The maintenance_visits row has a single `assigned_tech_id` (the lead).
+# Extra crew live in visit_techs (visit_id, tech_id). Helpers here treat
+# the lead and the extras as two halves of the same membership: every
+# write checks the lead and won't insert a duplicate row for them.
+
+def get_visit_crew(visit_id):
+    """Returns the EXTRA crew members (excludes the lead) as a list of
+    {id, name} dicts ordered by name."""
+    con = _con()
+    try:
+        rows = con.execute(
+            "SELECT vt.tech_id AS id, t.name FROM visit_techs vt "
+            "JOIN technicians t ON t.id = vt.tech_id WHERE vt.visit_id = ? "
+            "ORDER BY t.name",
+            (int(visit_id),),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        con.close()
+
+
+def add_visit_crew(visit_id, tech_id, by_kind=None, by_id=None):
+    """Add one extra crew member to a visit. Idempotent (PRIMARY KEY (visit_id,
+    tech_id)). Refuses to add the lead a second time. Returns True if a row
+    was actually inserted, False if it was already there or the tech is the
+    lead."""
+    con = _con()
+    try:
+        lead_row = con.execute(
+            "SELECT assigned_tech_id FROM maintenance_visits WHERE id = ?",
+            (int(visit_id),),
+        ).fetchone()
+        if not lead_row:
+            return False
+        if lead_row["assigned_tech_id"] == int(tech_id):
+            return False
+        try:
+            con.execute(
+                "INSERT INTO visit_techs (visit_id, tech_id, added_at, added_by_kind, added_by_id) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (int(visit_id), int(tech_id),
+                 datetime.now(timezone.utc).isoformat(), by_kind, by_id),
+            )
+            con.commit()
+            return True
+        except sqlite3.IntegrityError:
+            # Already there.
+            return False
+    finally:
+        con.close()
+
+
+def remove_visit_crew(visit_id, tech_id):
+    """Remove one extra crew member. Does NOT touch the lead (the lead is
+    on the visit row itself)."""
+    con = _con()
+    try:
+        cur = con.execute(
+            "DELETE FROM visit_techs WHERE visit_id = ? AND tech_id = ?",
+            (int(visit_id), int(tech_id)),
+        )
+        con.commit()
+        return cur.rowcount > 0
+    finally:
+        con.close()
+
+
+def set_visit_crew(visit_id, tech_ids, by_kind=None, by_id=None):
+    """Replace the EXTRA crew (lead is untouched) with exactly tech_ids.
+    Lead is filtered out if it sneaks into tech_ids. Returns (added_count,
+    removed_count)."""
+    con = _con()
+    try:
+        lead_row = con.execute(
+            "SELECT assigned_tech_id FROM maintenance_visits WHERE id = ?",
+            (int(visit_id),),
+        ).fetchone()
+        if not lead_row:
+            return (0, 0)
+        lead_id = lead_row["assigned_tech_id"]
+        desired = {int(t) for t in (tech_ids or []) if t and int(t) != (lead_id or -1)}
+        current = {r["tech_id"] for r in con.execute(
+            "SELECT tech_id FROM visit_techs WHERE visit_id = ?",
+            (int(visit_id),),
+        ).fetchall()}
+        to_add    = desired - current
+        to_remove = current - desired
+        now = datetime.now(timezone.utc).isoformat()
+        for tid in to_add:
+            try:
+                con.execute(
+                    "INSERT INTO visit_techs (visit_id, tech_id, added_at, added_by_kind, added_by_id) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (int(visit_id), int(tid), now, by_kind, by_id),
+                )
+            except sqlite3.IntegrityError:
+                pass  # raced; treat as no-op
+        for tid in to_remove:
+            con.execute(
+                "DELETE FROM visit_techs WHERE visit_id = ? AND tech_id = ?",
+                (int(visit_id), int(tid)),
+            )
+        con.commit()
+        return (len(to_add), len(to_remove))
+    finally:
+        con.close()
+
+
 def get_tech_jobs(tech_id: int):
     """Tech-facing job list. Customer phone is intentionally NOT included —
     per spec the tech only sees the contact_person fields on the visit,
-    never the client's primary phone. The address is included for routing."""
+    never the client's primary phone. The address is included for routing.
+
+    Includes visits where the tech is either the LEAD (assigned_tech_id)
+    or an EXTRA crew member (visit_techs join). DISTINCT prevents a tech
+    from seeing the same row twice if they were ever recorded both ways.
+    """
     con = _con()
     rows = con.execute(
         """
-        SELECT v.id, v.customer_id, v.equipment_id, v.visit_type, v.status,
+        SELECT DISTINCT v.id, v.customer_id, v.equipment_id, v.visit_type, v.status,
                v.scheduled_date, v.scheduled_time, v.completed_date,
                v.start_time, v.end_time, v.work_done, v.parts_replaced,
                v.notes, v.assigned_tech_id, v.created_at,
@@ -3366,10 +4008,26 @@ def get_tech_jobs(tech_id: int):
         JOIN customers c ON v.customer_id = c.id
         LEFT JOIN equipment e ON v.equipment_id = e.id
         WHERE v.assigned_tech_id = ?
+           OR v.id IN (SELECT visit_id FROM visit_techs WHERE tech_id = ?)
         ORDER BY COALESCE(v.scheduled_date, v.created_at) ASC
         """,
-        (tech_id,),
+        (tech_id, tech_id),
     ).fetchall()
+    # Pre-bucket crew per visit so the tech can see the rest of the team on
+    # each row without a second round-trip.
+    visit_ids = [r["id"] for r in rows]
+    crew_map = {}
+    if visit_ids:
+        placeholders = ",".join("?" for _ in visit_ids)
+        for r in con.execute(
+            f"SELECT vt.visit_id, vt.tech_id, t.name AS tech_name "
+            f"FROM visit_techs vt JOIN technicians t ON t.id = vt.tech_id "
+            f"WHERE vt.visit_id IN ({placeholders})",
+            visit_ids,
+        ).fetchall():
+            crew_map.setdefault(r["visit_id"], []).append(
+                {"id": r["tech_id"], "name": r["tech_name"]}
+            )
     con.close()
     out = []
     for r in rows:
@@ -3380,6 +4038,10 @@ def get_tech_jobs(tech_id: int):
             if d.get(k):
                 try: d[k] = _dec(d[k])
                 except Exception: pass
+        extras = crew_map.get(d["id"], [])
+        d["crew_tech_ids"]   = [c["id"]   for c in extras]
+        d["crew_tech_names"] = [c["name"] for c in extras]
+        d["is_lead"]         = (d.get("assigned_tech_id") == tech_id)
         out.append(d)
     return out
 
@@ -3544,7 +4206,7 @@ def get_all_techs():
 
 
 VALID_STAFF_TYPES = ("tech", "warehouse_floor", "parts_runner",
-                     "warehouse_manager")
+                     "warehouse_manager", "driver")
 VALID_DEPARTMENTS = ("field", "warehouse", "office")
 
 
@@ -3645,6 +4307,9 @@ def create_tech(data: dict) -> tuple:
                          f"{hub_prefix} Parts Truck {{num}}")
         _provision_asset("PPE",  "toolkit",
                          f"{hub_prefix} Runner PPE Locker {{num}}")
+    elif staff_type == "driver":
+        _provision_asset("TRK",  "vehicle",
+                         f"{hub_prefix} Delivery Truck {{num}}")
     elif staff_type in ("warehouse_floor", "warehouse_manager"):
         _provision_asset("PPE",  "toolkit",
                          f"{hub_prefix} Warehouse PPE Locker {{num}}")
@@ -4322,6 +4987,23 @@ def consume_admin_password_reset(token: str):
 AUDIT_GENESIS = "GENESIS"   # chain anchor when there's no previous row
 
 
+@contextmanager
+def _audit_maintenance(con):
+    """Lifts the append-only guard on audit_log for the duration of a legitimate
+    maintenance operation (retention purge / PII-redaction rebuild / chain-hash
+    backfill), then re-arms it. Scope this as narrowly as possible: while lifted,
+    DELETE/UPDATE on audit_log are permitted on EVERY connection (the flag is a
+    single shared row), so do the minimum work inside and let `finally` re-arm it
+    even if the body raises. Caller is responsible for committing the surrounding
+    transaction; the guard reset is flushed here so it can't get stuck lifted."""
+    con.execute("UPDATE _audit_guard SET maintenance = 1 WHERE id = 1")
+    try:
+        yield
+    finally:
+        con.execute("UPDATE _audit_guard SET maintenance = 0 WHERE id = 1")
+        con.commit()
+
+
 def _audit_canonical_payload(row: dict) -> str:
     """Stable canonical JSON for a row's hashable content. Field order matters."""
     return _json.dumps({
@@ -4352,8 +5034,11 @@ def _classify_retention(action: str) -> str:
     (retention purges, schema bootstraps) is kept indefinitely so we always
     know what was discarded and when."""
     a = (action or "").lower()
-    if a.startswith(("system.", "auth.", "admin.login", "admin.logout",
-                     "admin.mfa", "security.")):
+    # Identity, authentication, and employment-lifecycle events are kept
+    # indefinitely — this is the HR/legal/security trail (logins, admin
+    # create/role/permission changes, hires, terminations, promotions,
+    # reinstatements) that must never be auto-purged on the rolling window.
+    if a.startswith(("system.", "auth.", "admin.", "account.", "security.")):
         return "system"
     if a.startswith(("invoice.", "payment.", "po.", "count.",
                      "inventory.received", "inventory.export",
@@ -4404,33 +5089,35 @@ def _backfill_audit_pii_redaction():
     if not needs:
         con.close()
         return
-    # Redact + rebuild chain.
+    # Redact + rebuild chain. This legitimately rewrites audit rows, so it runs
+    # under the append-only maintenance guard.
     prev_hash = AUDIT_GENESIS
-    for r in rows:
-        d = dict(r)
-        for blob_col in ("before_value", "after_value"):
-            if d[blob_col]:
-                try:
-                    v = _json.loads(d[blob_col])
-                    d[blob_col] = _json.dumps(_redact_pii_for_audit(v))
-                except Exception:
-                    pass
-        # Re-read the rest of the row to recompute the chain hash properly.
-        full = con.execute(
-            """SELECT actor_type, actor_id, actor_prid, actor_label, actor_role,
-                      action, target_type, target_id, target_label,
-                      ip_address, created_at
-                 FROM audit_log WHERE id = ?""", (d["id"],)
-        ).fetchone()
-        row_for_hash = dict(full)
-        row_for_hash["before_value"] = d["before_value"]
-        row_for_hash["after_value"]  = d["after_value"]
-        chain_hash = _audit_compute_hash(prev_hash, row_for_hash)
-        con.execute(
-            "UPDATE audit_log SET before_value = ?, after_value = ?, chain_hash = ? WHERE id = ?",
-            (d["before_value"], d["after_value"], chain_hash, d["id"]),
-        )
-        prev_hash = chain_hash
+    with _audit_maintenance(con):
+        for r in rows:
+            d = dict(r)
+            for blob_col in ("before_value", "after_value"):
+                if d[blob_col]:
+                    try:
+                        v = _json.loads(d[blob_col])
+                        d[blob_col] = _json.dumps(_redact_pii_for_audit(v))
+                    except Exception:
+                        pass
+            # Re-read the rest of the row to recompute the chain hash properly.
+            full = con.execute(
+                """SELECT actor_type, actor_id, actor_prid, actor_label, actor_role,
+                          action, target_type, target_id, target_label,
+                          ip_address, created_at
+                     FROM audit_log WHERE id = ?""", (d["id"],)
+            ).fetchone()
+            row_for_hash = dict(full)
+            row_for_hash["before_value"] = d["before_value"]
+            row_for_hash["after_value"]  = d["after_value"]
+            chain_hash = _audit_compute_hash(prev_hash, row_for_hash)
+            con.execute(
+                "UPDATE audit_log SET before_value = ?, after_value = ?, chain_hash = ? WHERE id = ?",
+                (d["before_value"], d["after_value"], chain_hash, d["id"]),
+            )
+            prev_hash = chain_hash
     con.commit()
     con.close()
 
@@ -4563,7 +5250,8 @@ def _backfill_audit_chain():
             updates.append((new_hash, d["id"]))
             prev_hash = new_hash
         if updates:
-            con.executemany("UPDATE audit_log SET chain_hash = ? WHERE id = ?", updates)
+            with _audit_maintenance(con):
+                con.executemany("UPDATE audit_log SET chain_hash = ? WHERE id = ?", updates)
             con.commit()
         con.close()
 
@@ -5775,8 +6463,9 @@ def purge_old_audit_log(financial_days: int = 365*7, operational_days: int = 365
         "SELECT COUNT(*) AS n FROM audit_log WHERE retention_class='operational' AND created_at < ?",
         (ops_cutoff,),
     ).fetchone()["n"]
-    con.execute("DELETE FROM audit_log WHERE retention_class='financial'   AND created_at < ?", (fin_cutoff,))
-    con.execute("DELETE FROM audit_log WHERE retention_class='operational' AND created_at < ?", (ops_cutoff,))
+    with _audit_maintenance(con):
+        con.execute("DELETE FROM audit_log WHERE retention_class='financial'   AND created_at < ?", (fin_cutoff,))
+        con.execute("DELETE FROM audit_log WHERE retention_class='operational' AND created_at < ?", (ops_cutoff,))
     con.commit()
     con.close()
     return {"financial_purged": int(n_fin), "operational_purged": int(n_ops),
@@ -6254,6 +6943,52 @@ def get_active_sessions_for(subject_type: str, subject_id: int):
     ).fetchall()
     con.close()
     return [dict(r) for r in rows]
+
+
+def get_recent_sessions_for(subject_type: str, subject_id: int, limit: int = 20):
+    """Recent sign-ins for the 'login history' / 'recent sign-ins' view —
+    each session row is one login, so this is the authoritative source
+    (login is a POST, so it never lands in access_log). Includes revoked
+    and expired rows so the user sees their full recent history."""
+    con = _con()
+    rows = con.execute(
+        """
+        SELECT jti, ip_address, user_agent, created_at, expires_at,
+               revoked_at, last_seen_at
+        FROM sessions
+        WHERE subject_type = ? AND subject_id = ?
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (subject_type, int(subject_id), int(limit)),
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def revoke_other_sessions_for(subject_type: str, subject_id: int, keep_jti) -> int:
+    """Revoke every live session for this subject EXCEPT keep_jti. Generic
+    version of revoke_admin_sessions_except, used by 'sign out of all other
+    devices' across admin / tech / customer. Returns rows revoked."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    if keep_jti:
+        cur = con.execute(
+            "UPDATE sessions SET revoked_at = ? "
+            "WHERE subject_type = ? AND subject_id = ? "
+            "AND revoked_at IS NULL AND jti != ?",
+            (now, subject_type, int(subject_id), keep_jti),
+        )
+    else:
+        cur = con.execute(
+            "UPDATE sessions SET revoked_at = ? "
+            "WHERE subject_type = ? AND subject_id = ? AND revoked_at IS NULL",
+            (now, subject_type, int(subject_id)),
+        )
+    n = cur.rowcount
+    con.commit()
+    con.close()
+    return n
 
 
 def purge_expired_sessions():
@@ -7329,6 +8064,11 @@ def terminate_account(subject_type: str, subject_id: int) -> dict:
     con = _con()
     con.execute(f"UPDATE {table} SET active = 0, terminated_at = ? WHERE id = ?",
                 (now, int(subject_id)))
+    # technicians carry a separate employment_status column; keep it in sync so
+    # archived field records don't read 'active' after a hard-off.
+    if table == "technicians":
+        con.execute("UPDATE technicians SET employment_status = 'terminated' WHERE id = ?",
+                    (int(subject_id),))
     con.commit()
     con.close()
     sessions_killed = revoke_all_sessions_for(subject_type, subject_id)
@@ -7345,6 +8085,10 @@ def reinstate_account(subject_type: str, subject_id: int):
     con = _con()
     con.execute(f"UPDATE {table} SET active = 1, terminated_at = NULL WHERE id = ?",
                 (int(subject_id),))
+    # Mirror the employment_status reset for techs (see terminate_account).
+    if table == "technicians":
+        con.execute("UPDATE technicians SET employment_status = 'active' WHERE id = ?",
+                    (int(subject_id),))
     con.commit()
     con.close()
 
@@ -7691,9 +8435,11 @@ def mark_payslip_viewed(payslip_id: int):
     con.close()
 
 
-def approve_pay_period(period_id: int, approved_by: int) -> dict:
-    """SoD: super_admin only. Endpoint also enforces approved_by != created_by
-    as defense in depth so HR can never approve their own batch."""
+def approve_pay_period(period_id: int, approved_by: int,
+                       allow_self_approval: bool = False) -> dict:
+    """Approve a pay period. The endpoint enforces the separation-of-duties
+    rule (approved_by != created_by) for everyone except super_admin; pass
+    allow_self_approval=True to bypass it here."""
     con = _con()
     row = con.execute("SELECT created_by, status FROM pay_periods WHERE id = ?", (period_id,)).fetchone()
     if not row:
@@ -7702,7 +8448,7 @@ def approve_pay_period(period_id: int, approved_by: int) -> dict:
     if row["status"] != "draft":
         con.close()
         raise ValueError(f"pay period is {row['status']}, only draft can be approved")
-    if row["created_by"] == approved_by:
+    if row["created_by"] == approved_by and not allow_self_approval:
         con.close()
         raise ValueError("approver cannot be the same admin who created the period")
     now = datetime.now(timezone.utc).isoformat()
@@ -11699,23 +12445,69 @@ def _prior_period_key(period_key: str) -> str:
         return period_key
 
 
-def _kpi_flag_exists_open(con, tech_id: int, kpi_key, severity: str) -> bool:
-    """Idempotency check: return True if an OPEN (non-terminal) flag of the
-    same (tech, kpi_key, severity) already exists. Terminal states
-    (resolved/overridden) do not block creation of a new flag."""
+def _kpi_flag_exists_open(con, tech_id: int, kpi_key, severity: str,
+                          period_key: str = None) -> bool:
+    """Idempotency check. Returns True if a flag of the same
+    (tech, kpi_key, severity) already exists in EITHER:
+      • a non-terminal state (open/acknowledged/in_progress) for any
+        period — prevents stacking duplicates, OR
+      • a TERMINAL state (resolved/overridden/dismissed) for the same
+        `period_key` — a human already decided this period's outcome,
+        so don't re-raise the same flag the next time the cron recomputes.
+    Pass `period_key` to enable the terminal-state guard."""
+    statuses_open     = ('open', 'acknowledged', 'in_progress')
+    statuses_terminal = ('resolved', 'overridden', 'dismissed')
     if kpi_key is None:
         r = con.execute(
             "SELECT 1 FROM kpi_flags WHERE tech_id=? AND kpi_key IS NULL "
             "AND severity=? AND status IN ('open','acknowledged','in_progress') "
             "LIMIT 1", (tech_id, severity),
         ).fetchone()
+        if r: return True
+        if period_key:
+            r = con.execute(
+                "SELECT 1 FROM kpi_flags WHERE tech_id=? AND kpi_key IS NULL "
+                "AND severity=? AND period_key=? "
+                "AND status IN ('resolved','overridden','dismissed') LIMIT 1",
+                (tech_id, severity, period_key),
+            ).fetchone()
+            if r: return True
     else:
         r = con.execute(
             "SELECT 1 FROM kpi_flags WHERE tech_id=? AND kpi_key=? "
             "AND severity=? AND status IN ('open','acknowledged','in_progress') "
             "LIMIT 1", (tech_id, kpi_key, severity),
         ).fetchone()
-    return bool(r)
+        if r: return True
+        if period_key:
+            r = con.execute(
+                "SELECT 1 FROM kpi_flags WHERE tech_id=? AND kpi_key=? "
+                "AND severity=? AND period_key=? "
+                "AND status IN ('resolved','overridden','dismissed') LIMIT 1",
+                (tech_id, kpi_key, severity, period_key),
+            ).fetchone()
+            if r: return True
+    return False
+
+
+def _kpi_period_is_in_progress(con, period_key: str) -> bool:
+    """Return True if the named KPI period hasn't ended yet (i.e. the
+    bucket is still accumulating data). We refuse to generate flags for
+    open periods because partial-week numbers can falsely register as
+    RED (e.g. 0/0 audits → "Safety RED")."""
+    from datetime import date as _date
+    row = con.execute(
+        "SELECT end_date, status FROM kpi_periods WHERE period_key = ?",
+        (period_key,),
+    ).fetchone()
+    if not row: return False  # unknown period — don't block
+    if row["status"] == "closed":
+        return False
+    try:
+        end = _date.fromisoformat(row["end_date"][:10])
+    except Exception:
+        return False
+    return _date.today() <= end
 
 
 def _insert_kpi_flag(con, tech_id: int, period_key: str, kpi_key,
@@ -11750,6 +12542,16 @@ def _generate_kpi_flags_for_tech(tech_id: int, period_key: str) -> list:
     prior_pk = _prior_period_key(period_key)
     con = _con()
     try:
+        # Refuse to raise flags for a period that's still in progress —
+        # half-week numbers can falsely register as RED (e.g. zero audits
+        # logged yet → "Safety Compliance is RED"). Wait until the period
+        # closes (manual close OR end_date passes).
+        if _kpi_period_is_in_progress(con, period_key):
+            _logger.info(
+                f"kpi.flag_skip: tech_id={tech_id} period={period_key} "
+                f"reason=period_in_progress"
+            )
+            return []
         # Pull current + prior scores by kpi_key.
         cur_rows = con.execute(
             "SELECT kpi_key, band, raw_value FROM kpi_scores "
@@ -11776,7 +12578,7 @@ def _generate_kpi_flags_for_tech(tech_id: int, period_key: str) -> list:
             pband = prior_band.get(kpi_key)
             # 1) Safety RED → immediate_escalation (bypasses ladder)
             if kpi_key in safety_keys and band == "red":
-                if not _kpi_flag_exists_open(con, tech_id, kpi_key,
+                if not _kpi_flag_exists_open(con, tech_id, kpi_key, period_key=period_key, severity=
                                               "immediate_escalation"):
                     reason = (f"Safety-critical KPI '{display.get(kpi_key, kpi_key)}' "
                               f"is RED for period {period_key}. Immediate review required.")
@@ -11790,7 +12592,7 @@ def _generate_kpi_flags_for_tech(tech_id: int, period_key: str) -> list:
 
             # 2) Two consecutive REDs on a composite KPI → written_warning_recommended
             if (kpi_key in composite_keys and band == "red" and pband == "red"):
-                if not _kpi_flag_exists_open(con, tech_id, kpi_key,
+                if not _kpi_flag_exists_open(con, tech_id, kpi_key, period_key=period_key, severity=
                                               "written_warning_recommended"):
                     reason = (f"KPI '{display.get(kpi_key, kpi_key)}' has been "
                               f"RED for two consecutive periods ({prior_pk}, {period_key}).")
@@ -11807,7 +12609,7 @@ def _generate_kpi_flags_for_tech(tech_id: int, period_key: str) -> list:
 
             # 3) Current RED on a composite KPI → coaching_required
             if kpi_key in composite_keys and band == "red":
-                if not _kpi_flag_exists_open(con, tech_id, kpi_key,
+                if not _kpi_flag_exists_open(con, tech_id, kpi_key, period_key=period_key, severity=
                                               "coaching_required"):
                     reason = (f"KPI '{display.get(kpi_key, kpi_key)}' is RED for "
                               f"period {period_key}. Coaching required.")
@@ -11819,7 +12621,7 @@ def _generate_kpi_flags_for_tech(tech_id: int, period_key: str) -> list:
 
             # 4) Two consecutive AMBER → coaching_suggested
             if band == "amber" and pband == "amber":
-                if not _kpi_flag_exists_open(con, tech_id, kpi_key,
+                if not _kpi_flag_exists_open(con, tech_id, kpi_key, period_key=period_key, severity=
                                               "coaching_suggested"):
                     reason = (f"KPI '{display.get(kpi_key, kpi_key)}' has been "
                               f"AMBER for two consecutive periods ({prior_pk}, {period_key}).")
@@ -13981,3 +14783,1028 @@ def hide_company_message(message_id: int, admin_id: int) -> bool:
     n = cur.rowcount
     con.close()
     return n > 0
+
+
+# ── Staff profile photo (techs + admins) ─────────────────────────────
+#
+# avatar_filename is a flat filename (no slashes) that lives in
+# uploads/photos/ alongside other photo assets, so URLs are issued
+# through main._sign_photo_url. Pass None to clear. Returns the row count.
+
+_AVATAR_TABLE = {"tech": "technicians", "admin": "admin_users"}
+
+def set_subject_avatar(subject_type, subject_id, filename):
+    """filename is a str (set) or None (clear). Returns True if a row matched."""
+    table = _AVATAR_TABLE.get(subject_type)
+    if not table:
+        raise ValueError("unknown subject_type: %s" % subject_type)
+    con = _con()
+    try:
+        cur = con.execute(
+            "UPDATE %s SET avatar_filename = ? WHERE id = ?" % table,
+            (filename, int(subject_id)),
+        )
+        con.commit()
+        return cur.rowcount > 0
+    finally:
+        con.close()
+
+
+def get_subject_avatar(subject_type, subject_id):
+    """Returns the str filename if set, else None."""
+    table = _AVATAR_TABLE.get(subject_type)
+    if not table:
+        raise ValueError("unknown subject_type: %s" % subject_type)
+    con = _con()
+    try:
+        row = con.execute(
+            "SELECT avatar_filename FROM %s WHERE id = ?" % table,
+            (int(subject_id),),
+        ).fetchone()
+        return row["avatar_filename"] if row else None
+    finally:
+        con.close()
+
+
+# ── Biweekly timesheets ───────────────────────────────────────────────
+#
+# Pay period math is anchored on a known Monday (PAYROLL_BIWEEKLY_ANCHOR,
+# default 2024-01-01 which is a real Monday). From there every 14-day
+# window starting on a Monday is a pay period. Helpers compute the period
+# for any date, the previous/next periods, and aggregate the tech's
+# tech_clock_events + tech_timesheet_overrides into a daily breakdown.
+
+PAYROLL_BIWEEKLY_ANCHOR = os.environ.get("PAYROLL_BIWEEKLY_ANCHOR", "2024-01-01")
+
+def _biweekly_period_for(date_iso):
+    """Returns (period_start_iso, period_end_iso) — both inclusive — for
+    whichever 14-day period contains `date_iso` (YYYY-MM-DD)."""
+    from datetime import date as _date, timedelta as _td
+    anchor = _date.fromisoformat(PAYROLL_BIWEEKLY_ANCHOR)
+    target = _date.fromisoformat(date_iso[:10])
+    delta_days = (target - anchor).days
+    # Negative dates also work — floor division pushes us to the correct period.
+    period_index = delta_days // 14
+    start = anchor + _td(days=period_index * 14)
+    end   = start + _td(days=13)
+    return (start.isoformat(), end.isoformat())
+
+
+def current_biweekly_period():
+    return _biweekly_period_for(datetime.now(timezone.utc).date().isoformat())
+
+
+def get_or_create_timesheet(tech_id, period_start, period_end):
+    """Fetches the tech's timesheet for this period, creating a fresh
+    draft if it doesn't exist yet. Called from the sign-in handler so
+    every active tech gets a timesheet auto-spun-up on day 1."""
+    con = _con()
+    try:
+        row = con.execute(
+            "SELECT * FROM tech_timesheets WHERE tech_id = ? AND period_start = ?",
+            (int(tech_id), period_start),
+        ).fetchone()
+        if row:
+            return dict(row)
+        now = datetime.now(timezone.utc).isoformat()
+        cur = con.execute(
+            "INSERT INTO tech_timesheets (tech_id, period_start, period_end, "
+            "status, created_at, updated_at) VALUES (?, ?, ?, 'draft', ?, ?)",
+            (int(tech_id), period_start, period_end, now, now),
+        )
+        con.commit()
+        ts_id = cur.lastrowid
+        row = con.execute(
+            "SELECT * FROM tech_timesheets WHERE id = ?", (ts_id,)
+        ).fetchone()
+        return dict(row)
+    finally:
+        con.close()
+
+
+def get_timesheet_by_id(timesheet_id):
+    con = _con()
+    try:
+        row = con.execute(
+            "SELECT ts.*, t.name AS tech_name, t.tech_code, t.prid AS tech_prid, "
+            "t.role AS tech_role, t.hourly_rate, t.supervisor_id "
+            "FROM tech_timesheets ts JOIN technicians t ON t.id = ts.tech_id "
+            "WHERE ts.id = ?",
+            (int(timesheet_id),),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        con.close()
+
+
+def list_timesheets_for_tech(tech_id, limit=20):
+    """Tech-facing history view — most-recent period first."""
+    con = _con()
+    try:
+        rows = con.execute(
+            "SELECT * FROM tech_timesheets WHERE tech_id = ? "
+            "ORDER BY period_start DESC LIMIT ?",
+            (int(tech_id), int(limit)),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        con.close()
+
+
+def list_pending_timesheets_for_supervisor(supervisor_admin_id):
+    """Returns timesheets in status='submitted' for techs whose
+    supervisor_id matches this admin. Used by the supervisor's approval
+    queue."""
+    con = _con()
+    try:
+        rows = con.execute(
+            "SELECT ts.*, t.name AS tech_name, t.tech_code, t.prid AS tech_prid "
+            "FROM tech_timesheets ts "
+            "JOIN technicians t ON t.id = ts.tech_id "
+            "WHERE ts.status = 'submitted' AND t.supervisor_id = ? "
+            "ORDER BY ts.submitted_at ASC",
+            (int(supervisor_admin_id),),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        con.close()
+
+
+def list_pending_timesheets_for_super_admin():
+    """Returns timesheets in status='supervisor_approved' (waiting for the
+    final super_admin pass) AND any 'submitted' rows whose tech has no
+    supervisor (so they don't get stranded)."""
+    con = _con()
+    try:
+        rows = con.execute(
+            "SELECT ts.*, t.name AS tech_name, t.tech_code, t.prid AS tech_prid, "
+            "t.supervisor_id AS tech_supervisor_id "
+            "FROM tech_timesheets ts "
+            "JOIN technicians t ON t.id = ts.tech_id "
+            "WHERE ts.status = 'supervisor_approved' "
+            "   OR (ts.status = 'submitted' AND t.supervisor_id IS NULL) "
+            "ORDER BY ts.submitted_at ASC",
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        con.close()
+
+
+def get_timesheet_overrides(timesheet_id):
+    con = _con()
+    try:
+        rows = con.execute(
+            "SELECT * FROM tech_timesheet_overrides WHERE timesheet_id = ?",
+            (int(timesheet_id),),
+        ).fetchall()
+        return {r["work_date"]: dict(r) for r in rows}
+    finally:
+        con.close()
+
+
+def upsert_timesheet_override(timesheet_id, work_date,
+                              manual_start_time=None, manual_end_time=None,
+                              manual_break_minutes=None, note=None,
+                              edited_by_kind=None, edited_by_id=None):
+    """Insert or replace a per-day override. Passing None for a field means
+    "leave it null"; the row carries whatever the editor set."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    try:
+        con.execute(
+            "INSERT INTO tech_timesheet_overrides "
+            "(timesheet_id, work_date, manual_start_time, manual_end_time, "
+            " manual_break_minutes, note, edited_by_kind, edited_by_id, edited_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(timesheet_id, work_date) DO UPDATE SET "
+            " manual_start_time    = excluded.manual_start_time, "
+            " manual_end_time      = excluded.manual_end_time, "
+            " manual_break_minutes = excluded.manual_break_minutes, "
+            " note                 = excluded.note, "
+            " edited_by_kind       = excluded.edited_by_kind, "
+            " edited_by_id         = excluded.edited_by_id, "
+            " edited_at            = excluded.edited_at",
+            (int(timesheet_id), work_date,
+             manual_start_time, manual_end_time, manual_break_minutes, note,
+             edited_by_kind, edited_by_id, now),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def delete_timesheet_override(timesheet_id, work_date):
+    """Remove a per-day override row entirely. After deletion the day falls
+    back to whatever the raw clock events show (or empty if none)."""
+    con = _con()
+    try:
+        con.execute(
+            "DELETE FROM tech_timesheet_overrides "
+            "WHERE timesheet_id = ? AND work_date = ?",
+            (int(timesheet_id), work_date),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def update_timesheet_notes(timesheet_id, tech_notes):
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    try:
+        con.execute(
+            "UPDATE tech_timesheets SET tech_notes = ?, updated_at = ? WHERE id = ?",
+            (tech_notes, now, int(timesheet_id)),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def submit_timesheet_week(timesheet_id, week_no, submitted_by_kind, submitted_by_id):
+    """Mark a single week (1 or 2) of a biweekly timesheet as submitted.
+    Once BOTH weeks are flagged, the overall `status` flips to 'submitted'
+    so the supervisor queue picks it up. Refuses to act on a week that's
+    already been submitted, or on a timesheet whose overall status is no
+    longer 'draft' (i.e. supervisor has it).
+
+    Returns one of: 'partial' (one week still outstanding) or 'submitted'
+    (both weeks in, status flipped)."""
+    if week_no not in (1, 2):
+        raise ValueError("week_no must be 1 or 2")
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    row = con.execute(
+        "SELECT status, week1_submitted_at, week2_submitted_at FROM tech_timesheets WHERE id = ?",
+        (int(timesheet_id),),
+    ).fetchone()
+    if not row:
+        con.close(); raise ValueError("Timesheet not found")
+    if row["status"] != "draft":
+        con.close(); raise ValueError(f"Cannot submit week from status='{row['status']}'")
+    other_col = "week2_submitted_at" if week_no == 1 else "week1_submitted_at"
+    this_col  = "week1_submitted_at" if week_no == 1 else "week2_submitted_at"
+    if row[this_col]:
+        con.close(); raise ValueError(f"Week {week_no} already submitted")
+    # Flip this week's columns.
+    con.execute(
+        f"UPDATE tech_timesheets SET {this_col} = ?, "
+        f"week{week_no}_submitted_by_kind = ?, "
+        f"week{week_no}_submitted_by_id = ?, updated_at = ? WHERE id = ?",
+        (now, submitted_by_kind, submitted_by_id, now, int(timesheet_id)),
+    )
+    # If the OTHER week is already submitted, flip overall status.
+    both_in = bool(row[other_col])
+    if both_in:
+        con.execute(
+            "UPDATE tech_timesheets SET status='submitted', submitted_at=?, "
+            "submitted_by_kind=?, submitted_by_id=?, reject_reason=NULL, "
+            "updated_at=? WHERE id=?",
+            (now, submitted_by_kind, submitted_by_id, now, int(timesheet_id)),
+        )
+    con.commit(); con.close()
+    return "submitted" if both_in else "partial"
+
+
+def transition_timesheet(timesheet_id, new_status,
+                         submitted_by_kind=None, submitted_by_id=None,
+                         supervisor_id=None, super_admin_id=None,
+                         force_reason=None, reject_reason=None):
+    """State-machine write. Caller is responsible for verifying that the
+    transition is legal (e.g. submit only from draft, supervisor_approve
+    only from submitted). We just set the right timestamp + actor."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    try:
+        if new_status == 'submitted':
+            con.execute(
+                "UPDATE tech_timesheets SET status='submitted', "
+                "submitted_at=?, submitted_by_kind=?, submitted_by_id=?, "
+                "reject_reason=NULL, updated_at=? WHERE id=?",
+                (now, submitted_by_kind, submitted_by_id, now, int(timesheet_id)),
+            )
+        elif new_status == 'supervisor_approved':
+            con.execute(
+                "UPDATE tech_timesheets SET status='supervisor_approved', "
+                "supervisor_approved_by_id=?, supervisor_approved_at=?, "
+                "updated_at=? WHERE id=?",
+                (supervisor_id, now, now, int(timesheet_id)),
+            )
+        elif new_status == 'super_admin_approved':
+            # Set force_approved flag iff the caller passed a force_reason —
+            # used by the super_admin's escape hatch that bypasses the
+            # supervisor step.
+            if force_reason:
+                con.execute(
+                    "UPDATE tech_timesheets SET status='super_admin_approved', "
+                    "super_admin_approved_by_id=?, super_admin_approved_at=?, "
+                    "force_approved=1, force_approved_by_id=?, "
+                    "force_approved_at=?, force_approved_reason=?, "
+                    "updated_at=? WHERE id=?",
+                    (super_admin_id, now, super_admin_id, now, force_reason,
+                     now, int(timesheet_id)),
+                )
+            else:
+                con.execute(
+                    "UPDATE tech_timesheets SET status='super_admin_approved', "
+                    "super_admin_approved_by_id=?, super_admin_approved_at=?, "
+                    "updated_at=? WHERE id=?",
+                    (super_admin_id, now, now, int(timesheet_id)),
+                )
+        elif new_status == 'draft':
+            # Reject path. Clears the approval timestamps so the next
+            # submission goes through the supervisor again.
+            con.execute(
+                "UPDATE tech_timesheets SET status='draft', "
+                "submitted_at=NULL, submitted_by_kind=NULL, submitted_by_id=NULL, "
+                "supervisor_approved_by_id=NULL, supervisor_approved_at=NULL, "
+                "reject_reason=?, updated_at=? WHERE id=?",
+                (reject_reason, now, int(timesheet_id)),
+            )
+        else:
+            raise ValueError(f"unknown timesheet status: {new_status}")
+        con.commit()
+    finally:
+        con.close()
+
+
+_JM_HOLIDAY_CACHE = {}
+
+# ── PTO (vacation + floating holidays) ─────────────────────────────────
+# Floating-holiday allotment is prorated by the hire-quarter on hire year:
+#   Q1 (Jan–Mar) hire → 3 floaters that year
+#   Q2 (Apr–Jun) hire → 2
+#   Q3 (Jul–Sep) hire → 1
+#   Q4 (Oct–Dec) hire → 0 (start fresh next Jan)
+# In subsequent years, every tech gets 3 floaters at Jan 1.
+#
+# Vacation: every employee gets 40 hours up front (provided hired on or
+# before Oct 31 of the year; later hires get 0 until Jan 1), then accrues
+# a flat 3.6h per biweekly pay period. Annual accrual = 3.6 × 26 ≈ 93.6h.
+#
+# Carryover rule: at Jan 1, only the accruals earned in the LAST TWO
+# MONTHS of the previous year (Nov + Dec) can carry over to the new
+# year. Everything earned before Nov 1 either had to be used or it's
+# forfeited. The cap = sum of accrual ledger entries whose period
+# ended in Nov or Dec of the previous year.
+VACATION_STARTING_HOURS    = 40.0
+VACATION_PER_PERIOD        = 3.6
+VACATION_CARRYOVER_MONTHS  = (11, 12)   # November + December
+
+# Sick / Family time: 40 hours per calendar year, no accrual, no carryover.
+# Doctor's-note workflow (to lift the 40h cap) is a TODO — for now we
+# enforce the cap unconditionally and surface a polite error if exceeded.
+SICK_FAMILY_CAP_HOURS      = 40.0
+
+def compute_floating_allotment(hire_date_iso, year):
+    """Return how many floating holidays this tech is allotted for `year`,
+    given their hire date. After the hire year, every tech gets the full
+    standard allotment (3) on Jan 1."""
+    from datetime import date as _date
+    try:
+        hire = _date.fromisoformat((hire_date_iso or "")[:10])
+    except Exception:
+        # Unknown hire date → assume long-tenured, give standard allotment.
+        return 3
+    if year > hire.year:
+        return 3
+    if year < hire.year:
+        return 0
+    # Hired in `year` — prorate by quarter.
+    q = (hire.month - 1) // 3 + 1
+    return {1: 3, 2: 2, 3: 1, 4: 0}.get(q, 0)
+
+
+def _vacation_carryover_from(year_prev, tech_id):
+    """Return the hours eligible to carry from year_prev into year_prev+1.
+    Per policy: only accruals whose period ended in November or December
+    of year_prev count toward the cap. The actual amount carried =
+    min(remaining balance at year-end, that cap)."""
+    con = _con()
+    rows = con.execute(
+        """SELECT hours, work_date FROM tech_pto_ledger
+             WHERE tech_id = ? AND year = ? AND entry_type = 'accrual'""",
+        (tech_id, year_prev),
+    ).fetchall()
+    cap = 0.0
+    for r in rows:
+        wd = (r["work_date"] or "")[:10]
+        if not wd: continue
+        try:
+            mm = int(wd[5:7])
+        except Exception:
+            continue
+        if mm in VACATION_CARRYOVER_MONTHS:
+            cap += float(r["hours"] or 0)
+    # Remaining balance at end of year_prev (we look it up now; if the
+    # prior-year row was already accrued through Dec, this is final).
+    prior = con.execute(
+        "SELECT vacation_balance FROM tech_pto_balances WHERE tech_id = ? AND year = ?",
+        (tech_id, year_prev),
+    ).fetchone()
+    con.close()
+    remaining = float(prior["vacation_balance"]) if prior else 0.0
+    return round(min(remaining, cap), 2), round(cap, 2), round(remaining, 2)
+
+
+def get_or_init_pto(tech_id, year, accrue_through_period_end=None):
+    """Return (and lazily create) the tech's PTO balance row for `year`.
+
+    On first creation, we seed:
+      • floating_total  = compute_floating_allotment(hire_date, year)
+      • vacation_balance = VACATION_STARTING_HOURS (40) for the year
+    and emit initial ledger entries so the audit trail explains the seed.
+
+    If `accrue_through_period_end` (an ISO date) is supplied, we top up
+    vacation accrual for every biweekly period that ENDED on or before
+    that date and has not yet been credited. This makes the read-side
+    self-healing — no separate cron required, and idempotent thanks to
+    the `last_accrual_period_end` cursor."""
+    from datetime import datetime as _dt, date as _date, timedelta as _td
+    con = _con()
+    row = con.execute(
+        "SELECT * FROM tech_pto_balances WHERE tech_id = ? AND year = ?",
+        (tech_id, year),
+    ).fetchone()
+    now = _dt.now(timezone.utc).isoformat()
+    if not row:
+        # Look up the tech to know their hire_date for floater proration.
+        tech = con.execute(
+            "SELECT hire_date FROM technicians WHERE id = ?", (tech_id,)
+        ).fetchone()
+        hire = (tech["hire_date"] if tech else None)
+        floating_total = compute_floating_allotment(hire, year)
+        # Vacation seed: 40h is granted in full regardless of WHEN in the
+        # year they were hired — provided that hire date is on or before
+        # Oct 31. A tech hired Nov 1 or later gets 0h for that year and
+        # starts fresh with 40h on Jan 1 of the following year.
+        try:
+            h = _date.fromisoformat((hire or "")[:10])
+        except Exception:
+            h = None
+        if h and h.year == year and (h.month, h.day) > (10, 31):
+            vacation_seed = 0.0
+        else:
+            vacation_seed = VACATION_STARTING_HOURS
+        # Year-rollover carryover: if a prior-year balance exists, top
+        # the new year up by min(remaining, accruals earned in Nov+Dec).
+        # First make sure the prior year is fully accrued through Dec 31
+        # so the "remaining balance" we compare against is final.
+        carryover = 0.0
+        if year > 1900:
+            # Idempotent — does nothing if there's no prior-year row.
+            prior_year = year - 1
+            try:
+                # Ensure prior year is fully credited before measuring.
+                # We re-enter get_or_init_pto with the Dec 31 anchor; if
+                # the prior row exists, this just runs the accrual catch-up.
+                _prior_check = con.execute(
+                    "SELECT 1 FROM tech_pto_balances WHERE tech_id = ? AND year = ?",
+                    (tech_id, prior_year),
+                ).fetchone()
+                if _prior_check:
+                    # Inline catch-up to Dec 31 of prior year (close the
+                    # short transaction here so the nested call sees a
+                    # clean writer).
+                    con.commit()
+                    get_or_init_pto(tech_id, prior_year,
+                                    accrue_through_period_end=f"{prior_year}-12-31")
+                    carryover, cap, remaining = _vacation_carryover_from(prior_year, tech_id)
+            except Exception:
+                carryover = 0.0
+        vacation_seed = round(vacation_seed + carryover, 2)
+        # Sick / family allotment: flat 40h per year for every active tech,
+        # regardless of hire date or tenure. No accrual, no carryover.
+        sick_seed = SICK_FAMILY_CAP_HOURS
+        con.execute(
+            """INSERT INTO tech_pto_balances
+                 (tech_id, year, floating_total, floating_used,
+                  vacation_balance, vacation_used, vacation_accrued,
+                  sick_total, sick_used,
+                  last_accrual_period_end, created_at, updated_at)
+               VALUES (?, ?, ?, 0, ?, 0, 0, ?, 0, NULL, ?, ?)""",
+            (tech_id, year, floating_total, vacation_seed, sick_seed, now, now),
+        )
+        # Audit ledger
+        con.execute(
+            """INSERT INTO tech_pto_ledger
+                 (tech_id, year, entry_type, hours, note, recorded_by_kind, recorded_at)
+               VALUES (?, ?, 'initial_floating', ?, ?, 'system', ?)""",
+            (tech_id, year, floating_total,
+             f"Floating allotment for {year} (hire {hire or 'unknown'})", now),
+        )
+        con.execute(
+            """INSERT INTO tech_pto_ledger
+                 (tech_id, year, entry_type, hours, note, recorded_by_kind, recorded_at)
+               VALUES (?, ?, 'initial_vacation', ?, ?, 'system', ?)""",
+            (tech_id, year, vacation_seed,
+             f"Vacation seed for {year}", now),
+        )
+        con.execute(
+            """INSERT INTO tech_pto_ledger
+                 (tech_id, year, entry_type, hours, note, recorded_by_kind, recorded_at)
+               VALUES (?, ?, 'initial_sick', ?, ?, 'system', ?)""",
+            (tech_id, year, sick_seed,
+             f"Sick/family cap for {year} (no doctor's note required)", now),
+        )
+        con.commit()
+        row = con.execute(
+            "SELECT * FROM tech_pto_balances WHERE tech_id = ? AND year = ?",
+            (tech_id, year),
+        ).fetchone()
+
+    # Vacation accrual catch-up
+    if accrue_through_period_end:
+        last_end = row["last_accrual_period_end"]
+        target = accrue_through_period_end
+        if not last_end or target > last_end:
+            # Count how many biweekly periods ended after `last_end` and
+            # on/before `target`. Periods are aligned to the standard
+            # biweekly grid via _biweekly_period_for. For a mid-year hire
+            # we anchor to their hire date so they don't earn accruals for
+            # periods that ended before they were employed.
+            tech_row = con.execute("SELECT hire_date FROM technicians WHERE id = ?", (tech_id,)).fetchone()
+            try:
+                hire_d = _date.fromisoformat((tech_row["hire_date"] or "")[:10]) if tech_row else None
+            except Exception:
+                hire_d = None
+            year_start = _date(year, 1, 1)
+            anchor = max(year_start, hire_d) if (hire_d and hire_d.year == year) else year_start
+            from_date = _date.fromisoformat(last_end) + _td(days=14) if last_end else anchor
+            cur = from_date
+            periods_to_credit = []
+            # Walk forward through possible period ends until we pass target.
+            # Use _biweekly_period_for to anchor.
+            probe = cur
+            seen_ends = set()
+            while probe <= _date.fromisoformat(target):
+                ps, pe = _biweekly_period_for(probe.isoformat())
+                pe_d = _date.fromisoformat(pe)
+                if pe_d.year != year:
+                    probe += _td(days=14); continue
+                if pe in seen_ends:
+                    probe += _td(days=14); continue
+                seen_ends.add(pe)
+                if (not last_end or pe > last_end) and pe <= target:
+                    periods_to_credit.append(pe)
+                probe = pe_d + _td(days=1)
+            if periods_to_credit:
+                credit_total = round(len(periods_to_credit) * VACATION_PER_PERIOD, 2)
+                con.execute(
+                    """UPDATE tech_pto_balances
+                         SET vacation_balance = vacation_balance + ?,
+                             vacation_accrued = vacation_accrued + ?,
+                             last_accrual_period_end = ?,
+                             updated_at = ?
+                       WHERE tech_id = ? AND year = ?""",
+                    (credit_total, credit_total, periods_to_credit[-1], now, tech_id, year),
+                )
+                # Write ONE ledger row per pay period, each stamped with
+                # its own period_end. This is what lets the year-end
+                # carryover query pick out the Nov/Dec accruals (and only
+                # those) without parsing freeform notes.
+                for pe in periods_to_credit:
+                    con.execute(
+                        """INSERT INTO tech_pto_ledger
+                             (tech_id, year, entry_type, hours, work_date, note, recorded_by_kind, recorded_at)
+                           VALUES (?, ?, 'accrual', ?, ?, ?, 'system', ?)""",
+                        (tech_id, year, VACATION_PER_PERIOD, pe,
+                         f"Biweekly accrual for period ending {pe}", now),
+                    )
+                con.commit()
+                row = con.execute(
+                    "SELECT * FROM tech_pto_balances WHERE tech_id = ? AND year = ?",
+                    (tech_id, year),
+                ).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
+def create_pto_request(tech_id, kind, start_date, end_date, hours, reason=None):
+    """Create a pending PTO request. Validates the basics; balance check
+    happens at approval time (so a tech can submit a request even if their
+    balance isn't quite there yet — supervisor decides)."""
+    from datetime import datetime as _dt
+    if kind not in ("vacation","floating","sick"):
+        raise ValueError("kind must be 'vacation', 'floating', or 'sick'")
+    if hours <= 0:
+        raise ValueError("hours must be positive")
+    if end_date < start_date:
+        raise ValueError("end_date must be on or after start_date")
+    now = _dt.now(timezone.utc).isoformat()
+    con = _con()
+    cur = con.execute(
+        """INSERT INTO tech_pto_requests
+             (tech_id, kind, start_date, end_date, hours, reason, status, requested_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)""",
+        (tech_id, kind, start_date, end_date, hours, (reason or "")[:500], now),
+    )
+    new_id = cur.lastrowid
+    con.commit(); con.close()
+    return new_id
+
+
+def list_pto_requests(tech_id=None, status=None, limit=200):
+    """Filtered list of requests. Tech-side passes their own id; admin
+    review queue leaves tech_id=None and filters on status='pending'."""
+    sql = ("SELECT r.*, t.name AS tech_name, t.prid AS tech_prid, "
+           "t.tech_code AS tech_code "
+           "FROM tech_pto_requests r "
+           "JOIN technicians t ON r.tech_id = t.id WHERE 1=1")
+    args = []
+    if tech_id is not None:
+        sql += " AND r.tech_id = ?"; args.append(int(tech_id))
+    if status:
+        sql += " AND r.status = ?"; args.append(status)
+    sql += " ORDER BY r.requested_at DESC LIMIT ?"; args.append(int(limit))
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def get_pto_request(request_id):
+    con = _con()
+    row = con.execute(
+        "SELECT r.*, t.name AS tech_name, t.prid AS tech_prid "
+        "FROM tech_pto_requests r JOIN technicians t ON r.tech_id = t.id "
+        "WHERE r.id = ?", (int(request_id),)
+    ).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
+def decide_pto_request(request_id, decision, actor_kind, actor_id, note=None):
+    """decision ∈ {'approved','denied','cancelled'}. On 'approved', deducts
+    the balance via use_pto() in the same transaction so the request and
+    the ledger entry land together. On 'denied' or 'cancelled', only the
+    status flips. Refuses to act on an already-decided request."""
+    from datetime import datetime as _dt
+    if decision not in ("approved","denied","cancelled"):
+        raise ValueError("decision must be 'approved', 'denied', or 'cancelled'")
+    req = get_pto_request(request_id)
+    if not req:
+        raise ValueError("Request not found")
+    if req["status"] != "pending":
+        raise ValueError(f"Request is already {req['status']}; cannot {decision}")
+    now = _dt.now(timezone.utc).isoformat()
+    if decision == "approved":
+        year = int(req["start_date"][:4])
+        # use_pto will raise if balance is insufficient — that error
+        # propagates back to the caller so the supervisor sees why.
+        use_pto(req["tech_id"], year, req["kind"], req["hours"],
+                work_date=req["start_date"],
+                note=f"PTO request #{request_id}: {req.get('reason') or ''}",
+                actor_kind=actor_kind, actor_id=actor_id)
+    con = _con()
+    con.execute(
+        """UPDATE tech_pto_requests SET status = ?, decided_by_kind = ?,
+             decided_by_id = ?, decided_at = ?, decision_note = ?
+           WHERE id = ?""",
+        (decision, actor_kind, actor_id, now, (note or "")[:500], int(request_id)),
+    )
+    con.commit(); con.close()
+    return get_pto_request(request_id)
+
+
+def use_pto(tech_id, year, kind, hours, work_date=None, note=None,
+            actor_kind="tech", actor_id=None):
+    """Deduct `hours` from the tech's floating, vacation, or sick balance
+    for `year`. `kind` ∈ {'floating','vacation','sick'}. Refuses to
+    overdraw. Writes a ledger entry on success."""
+    if kind not in ("floating", "vacation", "sick"):
+        raise ValueError("kind must be 'floating', 'vacation', or 'sick'")
+    if hours <= 0:
+        raise ValueError("hours must be positive")
+    bal = get_or_init_pto(tech_id, year)
+    if not bal:
+        raise ValueError(f"No PTO row for tech {tech_id} year {year}")
+    from datetime import datetime as _dt
+    now = _dt.now(timezone.utc).isoformat()
+    con = _con()
+    if kind == "floating":
+        # floating is counted in DAYS not hours — but we store days as a
+        # decimal. 1 floating day = 8h. Allow partial-day usage.
+        days = hours / 8.0
+        avail = bal["floating_total"] - bal["floating_used"]
+        if days > avail + 1e-6:
+            con.close()
+            raise ValueError(f"Insufficient floating holidays ({avail:.2f} days available, asked for {days:.2f})")
+        con.execute(
+            "UPDATE tech_pto_balances SET floating_used = floating_used + ?, updated_at = ? "
+            "WHERE tech_id = ? AND year = ?", (days, now, tech_id, year))
+        con.execute(
+            """INSERT INTO tech_pto_ledger
+                 (tech_id, year, entry_type, hours, work_date, note, recorded_by_kind, recorded_by_id, recorded_at)
+               VALUES (?, ?, 'floating_used', ?, ?, ?, ?, ?, ?)""",
+            (tech_id, year, days, work_date, note, actor_kind, actor_id, now))
+    elif kind == "sick":
+        # Sick / family: hard 40h cap per year, no carryover, no doctor-
+        # note bypass yet. Compare against remaining (cap − used).
+        sick_avail = float(bal.get("sick_total") or 0) - float(bal.get("sick_used") or 0)
+        if hours > sick_avail + 1e-6:
+            con.close()
+            raise ValueError(
+                f"Insufficient sick/family balance ({sick_avail:.2f}h available, "
+                f"asked for {hours:.2f}h). Doctor's note required to exceed the 40h cap.")
+        con.execute(
+            """UPDATE tech_pto_balances
+                 SET sick_used = sick_used + ?, updated_at = ?
+               WHERE tech_id = ? AND year = ?""",
+            (hours, now, tech_id, year))
+        con.execute(
+            """INSERT INTO tech_pto_ledger
+                 (tech_id, year, entry_type, hours, work_date, note, recorded_by_kind, recorded_by_id, recorded_at)
+               VALUES (?, ?, 'sick_used', ?, ?, ?, ?, ?, ?)""",
+            (tech_id, year, hours, work_date, note, actor_kind, actor_id, now))
+    else:  # vacation
+        if hours > bal["vacation_balance"] + 1e-6:
+            con.close()
+            raise ValueError(f"Insufficient vacation balance ({bal['vacation_balance']:.2f}h available, asked for {hours:.2f}h)")
+        con.execute(
+            """UPDATE tech_pto_balances
+                 SET vacation_balance = vacation_balance - ?,
+                     vacation_used    = vacation_used + ?,
+                     updated_at = ?
+               WHERE tech_id = ? AND year = ?""",
+            (hours, hours, now, tech_id, year))
+        con.execute(
+            """INSERT INTO tech_pto_ledger
+                 (tech_id, year, entry_type, hours, work_date, note, recorded_by_kind, recorded_by_id, recorded_at)
+               VALUES (?, ?, 'vacation_used', ?, ?, ?, ?, ?, ?)""",
+            (tech_id, year, hours, work_date, note, actor_kind, actor_id, now))
+    con.commit()
+    con.close()
+    return get_or_init_pto(tech_id, year)
+
+
+def _easter_sunday(year):
+    """Anonymous Gregorian algorithm — returns date of Easter Sunday."""
+    from datetime import date as _date
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day   = ((h + l - 7 * m + 114) % 31) + 1
+    return _date(year, month, day)
+
+
+def jamaican_holidays(year):
+    """Return {iso_date: holiday_name} for every Jamaican public holiday in
+    the given year. If a fixed-date holiday falls on Saturday or Sunday it
+    is observed on the following Monday (Saturday → +2 days, Sunday → +1).
+    When two consecutive holidays (e.g. Christmas + Boxing Day) both land
+    on a weekend, the second one is bumped forward to the next available
+    weekday so they don't collide. Cached per-year."""
+    if year in _JM_HOLIDAY_CACHE:
+        return _JM_HOLIDAY_CACHE[year]
+    from datetime import date as _date, timedelta as _td
+    easter = _easter_sunday(year)
+    out = {}
+    def add(d, name, observe=True):
+        # Saturday → Monday (+2 days), Sunday → Monday (+1 day).
+        if observe:
+            wd = d.weekday()
+            if wd == 5:    # Saturday
+                d = d + _td(days=2); name = name + " (observed)"
+            elif wd == 6:  # Sunday
+                d = d + _td(days=1); name = name + " (observed)"
+        # Bump forward through any collision (e.g. Christmas observed on
+        # Mon + Boxing Day observed on Mon → push Boxing to Tue).
+        while d.isoformat() in out:
+            d = d + _td(days=1)
+            if d.weekday() >= 5:  # also skip weekends in collision shift
+                d = d + _td(days=(7 - d.weekday()))  # snap to Monday
+        out[d.isoformat()] = name
+    # Process in date order so collision-bumping is deterministic.
+    add(_date(year, 1, 1),  "New Year's Day")
+    add(easter - _td(days=46), "Ash Wednesday", observe=False)
+    add(easter - _td(days=2),  "Good Friday",   observe=False)
+    add(easter + _td(days=1),  "Easter Monday", observe=False)
+    add(_date(year, 5, 23), "Labour Day")
+    add(_date(year, 8, 1),  "Emancipation Day")
+    add(_date(year, 8, 6),  "Independence Day")
+    # National Heroes Day — 3rd Monday in October (always a Monday).
+    d = _date(year, 10, 1)
+    while d.weekday() != 0:  # Monday
+        d += _td(days=1)
+    d += _td(days=14)
+    out[d.isoformat()] = "National Heroes Day"
+    add(_date(year, 12, 25), "Christmas Day")
+    add(_date(year, 12, 26), "Boxing Day")
+    _JM_HOLIDAY_CACHE[year] = out
+    return out
+
+
+def aggregate_timesheet(timesheet_id):
+    """Builds the daily breakdown: for each of the 14 days in the period,
+    merge tech_clock_events (immutable, hash-chained) with any per-day
+    overrides on top, and return a list with calculated minutes. Used by
+    both the tech-facing detail screen and the approval queue.
+
+    Jamaican public holidays are auto-filled: a tech is paid the greater of
+    8 hours OR the hours they actually worked that day. The day payload
+    carries `is_holiday`, `holiday_name`, `holiday_minutes`, and
+    `paid_minutes` (= max(worked_minutes, 480) on holidays, else worked)."""
+    from datetime import date as _date, timedelta as _td, datetime as _dt
+    ts = get_timesheet_by_id(timesheet_id)
+    if not ts:
+        return None
+    overrides = get_timesheet_overrides(timesheet_id)
+    period_start = _date.fromisoformat(ts["period_start"])
+    period_end   = _date.fromisoformat(ts["period_end"])
+    # Pull clock events for the entire period in one query.
+    con = _con()
+    rows = con.execute(
+        "SELECT work_date, kind, event_at FROM tech_clock_events "
+        "WHERE tech_id = ? AND work_date >= ? AND work_date <= ? "
+        "ORDER BY event_at",
+        (ts["tech_id"], ts["period_start"], ts["period_end"]),
+    ).fetchall()
+    con.close()
+    # Bucket events by work_date.
+    events_by_day = {}
+    for r in rows:
+        events_by_day.setdefault(r["work_date"], []).append(dict(r))
+    # Precompute the holiday set across every year this period spans
+    # (a biweekly period can cross a year boundary in late December).
+    holiday_map = {}
+    for y in range(period_start.year, period_end.year + 1):
+        holiday_map.update(jamaican_holidays(y))
+    HOLIDAY_DEFAULT_MIN = 8 * 60  # 8 hours expressed in minutes
+    # Build a row per day in the period (even days with no activity, so
+    # the tech can add an override for a day they forgot to clock in on).
+    days = []
+    total_minutes        = 0
+    total_paid_minutes   = 0
+    total_holiday_minutes = 0
+    cur = period_start
+    while cur <= period_end:
+        ds = cur.isoformat()
+        evts = events_by_day.get(ds, [])
+        # Calculated start = earliest clock_in; calculated end = latest
+        # clock_out / auto_clock_out. If there's no clock_in we leave start
+        # null; same for end.
+        calc_start = None
+        calc_end   = None
+        for e in evts:
+            if e["kind"] == "clock_in" and (calc_start is None or e["event_at"] < calc_start):
+                calc_start = e["event_at"]
+            if e["kind"] in ("clock_out","auto_clock_out") and (calc_end is None or e["event_at"] > calc_end):
+                calc_end = e["event_at"]
+        ov = overrides.get(ds, {})
+        eff_start = ov.get("manual_start_time") or calc_start
+        eff_end   = ov.get("manual_end_time")   or calc_end
+        break_min = ov.get("manual_break_minutes") or 0
+        worked_min = 0
+        if eff_start and eff_end:
+            try:
+                t1 = _dt.fromisoformat(eff_start.replace("Z","+00:00"))
+                t2 = _dt.fromisoformat(eff_end.replace("Z","+00:00"))
+                worked_min = max(0, int((t2 - t1).total_seconds() // 60) - int(break_min))
+            except Exception:
+                worked_min = 0
+        # Per-week submission gate: a day belongs to week 1 (days 0-6)
+        # or week 2 (days 7-13) relative to period_start. If that week
+        # has already been submitted, the tech can no longer edit it.
+        _day_idx = (cur - period_start).days
+        _week    = 1 if _day_idx < 7 else 2
+        _week_locked = bool(ts.get(f"week{_week}_submitted_at"))
+        total_minutes += worked_min
+        # Jamaican-holiday rule: tech is paid for the hours they actually
+        # worked PLUS a holiday bonus equal to max(8h, hours worked). So
+        # working 12h on a holiday = 12 worked + 12 bonus = 24 paid.
+        # Not working = 0 worked + 8 bonus = 8 paid (the 8h floor).
+        # `worked_minutes` stays the raw clock total; `holiday_minutes` is
+        # the bonus added on top; `paid_minutes` = worked + holiday.
+        holiday_name = holiday_map.get(ds)
+        is_holiday   = bool(holiday_name)
+        holiday_min  = 0
+        paid_min     = worked_min
+        if is_holiday:
+            holiday_min = max(HOLIDAY_DEFAULT_MIN, worked_min)
+            paid_min    = worked_min + holiday_min
+            total_holiday_minutes += holiday_min
+        total_paid_minutes += paid_min
+        days.append({
+            "work_date":            ds,
+            "weekday":              cur.strftime("%a"),
+            "calc_start":           calc_start,
+            "calc_end":             calc_end,
+            "eff_start":            eff_start,
+            "eff_end":              eff_end,
+            "manual_break_minutes": break_min,
+            "override_note":        ov.get("note"),
+            "override_edited_by_kind": ov.get("edited_by_kind"),
+            "worked_minutes":       worked_min,
+            "paid_minutes":         paid_min,
+            "is_holiday":           is_holiday,
+            "holiday_name":         holiday_name,
+            "holiday_minutes":      holiday_min,
+            "has_override":         bool(ov),
+            "week":                 _week,           # 1 or 2
+            "week_locked":          _week_locked,    # tech can't edit
+        })
+        cur += _td(days=1)
+    # Payroll cadence anchored on this period's end (which is always a
+    # Sunday given PAYROLL_BIWEEKLY_ANCHOR is a Monday). The full cadence:
+    #   Sun  period_end
+    #   Mon  timesheet_due       ← visible chip
+    #   Tue  approval_deadline   (kept in response but NOT chipped per
+    #                             operator request)
+    #   Wed  payslip_available   (same)
+    #   Fri  payday              ← visible chip
+    cadence = {
+        "period_end":         period_end.isoformat(),
+        "timesheet_due":      (period_end + _td(days=1)).isoformat(),  # Mon
+        "approval_deadline":  (period_end + _td(days=2)).isoformat(),  # Tue (hidden)
+        "payslip_available":  (period_end + _td(days=3)).isoformat(),  # Wed (hidden)
+        "payday":             (period_end + _td(days=5)).isoformat(),  # Fri
+        # The biweekly anchor (a known Monday) lets the client compute
+        # cadence chips for ANY date the user navigates to — not just
+        # this one period. Forward-compatible: change the env var and
+        # every future cycle picks it up automatically.
+        "anchor":             PAYROLL_BIWEEKLY_ANCHOR,
+    }
+    # Per-week submission summary for the UI status strip.
+    weeks_summary = {
+        "week1": {
+            "start":         period_start.isoformat(),
+            "end":           (period_start + _td(days=6)).isoformat(),
+            "submitted_at":  ts.get("week1_submitted_at"),
+            "submitted_by":  ts.get("week1_submitted_by_kind"),
+        },
+        "week2": {
+            "start":         (period_start + _td(days=7)).isoformat(),
+            "end":           period_end.isoformat(),
+            "submitted_at":  ts.get("week2_submitted_at"),
+            "submitted_by":  ts.get("week2_submitted_by_kind"),
+        },
+    }
+    return {
+        "timesheet": ts,
+        "days": days,
+        "cadence":               cadence,
+        "weeks":                 weeks_summary,
+        "total_minutes":         total_minutes,
+        "total_hours":           round(total_minutes / 60.0, 2),
+        "total_paid_minutes":    total_paid_minutes,
+        "total_paid_hours":      round(total_paid_minutes / 60.0, 2),
+        "total_holiday_minutes": total_holiday_minutes,
+        "total_holiday_hours":   round(total_holiday_minutes / 60.0, 2),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# In-app user settings (per-user preferences)
+# ─────────────────────────────────────────────────────────────────────────
+# Storage layer only — defaults, the allowed-key whitelist and value
+# validation live in main.py (_SETTINGS_DEFAULTS / _sanitize_settings) so the
+# DB stays a dumb key/value store. subject_type ∈ {'admin','tech','customer'}.
+
+def get_user_settings(subject_type: str, subject_id: int) -> dict:
+    """Return the stored settings dict for a subject, or {} if none saved.
+    Never raises on malformed JSON — returns {} so callers can merge over
+    defaults safely."""
+    con = _con()
+    row = con.execute(
+        "SELECT settings_json FROM user_settings "
+        "WHERE subject_type = ? AND subject_id = ?",
+        (subject_type, int(subject_id)),
+    ).fetchone()
+    con.close()
+    if not row or not row["settings_json"]:
+        return {}
+    try:
+        data = _json.loads(row["settings_json"])
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def set_user_settings(subject_type: str, subject_id: int, settings: dict) -> None:
+    """Upsert the full settings dict for a subject. Caller is responsible for
+    having already validated/whitelisted the dict (see _sanitize_settings in
+    main.py)."""
+    payload = _json.dumps(settings or {})
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    con.execute(
+        "INSERT INTO user_settings (subject_type, subject_id, settings_json, updated_at) "
+        "VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(subject_type, subject_id) DO UPDATE SET "
+        "  settings_json = excluded.settings_json, "
+        "  updated_at    = excluded.updated_at",
+        (subject_type, int(subject_id), payload, now),
+    )
+    con.commit()
+    con.close()

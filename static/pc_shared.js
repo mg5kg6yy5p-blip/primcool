@@ -1,17 +1,163 @@
-// PrimeCool shared frontend helpers — used by admin.html, tech.html, portal_dashboard.html
-// Loaded via <script src="/icons/pc_shared.js"></script> at the top of each SPA.
+// PrimeCool shared frontend helpers — used by all six SPAs (admin.html,
+// staff_home.html, tech.html, portal.html, staff_portal.html, portal_dashboard.html).
+// Loaded via <script src="/static/pc_shared.js?v=..."></script> at the top of each SPA.
 // Exports a global `PC` namespace; do not pollute window with bare identifiers.
 //
-// FIXME(static-mount): main.py does NOT mount /static (it mounts /images and /icons only).
-// To avoid editing main.py during this refactor (concurrent agents), the canonical copy of
-// this module lives at static/pc_shared.js but is *served* from icons/pc_shared.js via the
-// existing `app.mount("/icons", StaticFiles(directory="icons"))` route. Keep the two copies
-// in sync until a /static mount is added, at which point delete icons/pc_shared.js and
-// update the three SPA <script> tags to /static/pc_shared.js.
+// Served from the /static mount (main.py: app.mount("/static", StaticFiles(directory="static"))).
+// This file at static/pc_shared.js is the single canonical copy — there is no
+// icons/pc_shared.js duplicate. Bump the ?v= cache-buster in all six SPAs when editing.
 
 (function () {
   if (typeof window === 'undefined') return;
   const PC = window.PC = window.PC || {};
+
+  // ── In-app user settings (per-user, server-backed) ────────
+  // Defaults mirror the server (_SETTINGS_DEFAULTS in main.py). Every key
+  // here drives a real, wired-up effect — no decorative toggles. The server
+  // is the source of truth; localStorage is only a cache so density/time
+  // format apply instantly on the next load without a flash.
+  PC._settings = {
+    time_format: '24h', date_format: 'dmy', density: 'comfortable',
+    font_scale: 'normal', reduce_motion: false, start_of_week: 'monday',
+  };
+  PC.getSetting = function (k) { return PC._settings ? PC._settings[k] : undefined; };
+  PC.applySettings = function (s) {
+    if (!s || typeof s !== 'object') return PC._settings;
+    PC._settings = Object.assign({}, PC._settings, s);
+    // Purge deprecated keys so stale localStorage caches self-heal. `theme`
+    // was removed when dark mode was deferred; it drives nothing now.
+    delete PC._settings.theme;
+    try {
+      const b = document.body;
+      if (b) {
+        if (PC._settings.density)    b.setAttribute('data-pc-density', PC._settings.density);
+        if (PC._settings.font_scale) b.setAttribute('data-pc-fontscale', PC._settings.font_scale);
+        b.setAttribute('data-pc-motion', PC._settings.reduce_motion ? 'reduce' : 'full');
+      }
+    } catch (_) {}
+    try { localStorage.setItem('pc_settings', JSON.stringify(PC._settings)); } catch (_) {}
+    // Let pages react (re-render clocks/lists that depend on time/date format).
+    try { window.dispatchEvent(new CustomEvent('pc:settings', { detail: PC._settings })); } catch (_) {}
+    return PC._settings;
+  };
+  // Apply any cached settings immediately to avoid a flash on load.
+  // Re-apply on DOMContentLoaded too: pc_shared.js usually loads in <head>
+  // before <body> exists, so the first applySettings can't set body
+  // attributes (theme/density/font/motion). This guarantees every page that
+  // includes this module honors the cached prefs — including admin.html,
+  // which doesn't run its own loadSettings.
+  function _applyCached() {
+    try {
+      const _cached = JSON.parse(localStorage.getItem('pc_settings') || 'null');
+      if (_cached) PC.applySettings(_cached);
+    } catch (_) {}
+  }
+  _applyCached();
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _applyCached, { once: true });
+  }
+  // Fetch + apply the authoritative settings for the current session.
+  // url = the GET endpoint (/api/staff/me/settings | /api/portal/me/settings).
+  PC.loadSettings = async function (url) {
+    try {
+      const r = await fetch(url, { credentials: 'same-origin' });
+      if (!r.ok) return PC._settings;
+      const j = await r.json();
+      if (j && j.settings) PC.applySettings(j.settings);
+    } catch (_) {}
+    return PC._settings;
+  };
+  // Persist a partial update (PUT), then apply the canonical server result.
+  PC.saveSettings = async function (url, patch) {
+    const r = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify(patch || {}),
+    });
+    if (!r.ok) throw new Error('Could not save settings');
+    const j = await r.json();
+    if (j && j.settings) PC.applySettings(j.settings);
+    return PC._settings;
+  };
+  // Format an (hours, minutes) pair honoring the time_format preference.
+  // Exposed so clocks/tick functions can share one source of truth.
+  PC.fmtClock = function (h, m) {
+    const mm = String(m).padStart(2, '0');
+    if ((PC._settings && PC._settings.time_format) === '12h') {
+      const ap = h < 12 ? 'AM' : 'PM';
+      const hr = h % 12 || 12;
+      return `${hr}:${mm} ${ap}`;
+    }
+    return `${String(h).padStart(2, '0')}:${mm}`;
+  };
+
+  // ── Date / Time formatters (system-wide standard) ─────────
+  // House style for every surface that renders a date or time:
+  //   Date     → 27/May/2026
+  //   Time     → 14:30 (24-hour)
+  //   DateTime → 27/May/2026 14:30
+  //
+  // All accept either an ISO string (the storage format) or a Date.
+  // Falsy / unparsable input renders as the empty string so callers
+  // can drop the result straight into innerHTML without guards.
+  const _MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  function _toDate(v) {
+    if (!v) return null;
+    if (v instanceof Date) return isNaN(v) ? null : v;
+    // Normalize bare YYYY-MM-DD to local midnight so timezones don't slip
+    // a date back a day on the client.
+    const s = String(v);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+      const d = new Date(s + 'T00:00:00');
+      return isNaN(d) ? null : d;
+    }
+    const d = new Date(s);
+    return isNaN(d) ? null : d;
+  }
+  PC.fmtDate = function (v) {
+    const d = _toDate(v); if (!d) return '';
+    const dd = String(d.getDate()).padStart(2, '0');
+    const mo = _MONTH_SHORT[d.getMonth()];
+    const yr = d.getFullYear();
+    const fmt = (PC._settings && PC._settings.date_format) || 'dmy';
+    if (fmt === 'iso') return `${yr}-${String(d.getMonth() + 1).padStart(2, '0')}-${dd}`;
+    if (fmt === 'mdy') return `${mo}/${dd}/${yr}`;
+    return `${dd}/${mo}/${yr}`;  // dmy (house default)
+  };
+  PC.fmtTime = function (v) {
+    const d = _toDate(v); if (!d) return '';
+    return PC.fmtClock(d.getHours(), d.getMinutes());
+  };
+  PC.fmtDateTime = function (v) {
+    const d = _toDate(v); if (!d) return '';
+    return PC.fmtDate(d) + ' ' + PC.fmtTime(d);
+  };
+  // Convenience: compact format that omits the year when the date is in
+  // the current year (used in dense rows like audit logs).
+  PC.fmtDateTimeCompact = function (v) {
+    const d = _toDate(v); if (!d) return '';
+    const now = new Date();
+    const yr = d.getFullYear() === now.getFullYear()
+      ? '' : '/' + d.getFullYear();
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${dd}/${_MONTH_SHORT[d.getMonth()]}${yr} ${PC.fmtTime(d)}`;
+  };
+
+  // ── Accessibility prefs (font scale + reduce motion) ──────
+  // Real, global effects so the toggles aren't decorative. Font scale uses
+  // `zoom` because the SPAs size everything in px (rem scaling wouldn't
+  // cascade); reduce_motion neutralizes animations/transitions everywhere.
+  if (!document.getElementById('pc-a11y-style')) {
+    const a = document.createElement('style');
+    a.id = 'pc-a11y-style';
+    a.textContent =
+      'body[data-pc-fontscale="large"]{zoom:1.12;}' +
+      'body[data-pc-motion="reduce"] *,body[data-pc-motion="reduce"] *::before,body[data-pc-motion="reduce"] *::after{' +
+      'animation-duration:0.001ms !important;animation-iteration-count:1 !important;' +
+      'transition-duration:0.001ms !important;scroll-behavior:auto !important;}';
+    document.head && document.head.appendChild(a);
+  }
 
   // ── Toast ─────────────────────────────────────────────────
   // PC.toast(message, kind?) — kind: 'info' (default) | 'success' | 'warning' | 'error'
@@ -111,7 +257,7 @@
     if (!host) { host = document.createElement('div'); host.id = 'pc-toast-host'; document.body.appendChild(host); }
     const styles = {
       info:    { bg: '#0F2A4A', fg: '#fff',     ico: 'ℹ', icoBg: 'rgba(125,211,232,0.25)', icoFg: '#7DD3E8' },
-      success: { bg: '#0F2A4A', fg: '#fff',     ico: '✓', icoBg: '#B6E021',                icoFg: '#0F2A4A' },
+      success: { bg: '#0F2A4A', fg: '#fff',     ico: '✓', icoBg: '#22A08A',                icoFg: '#0F2A4A' },
       warning: { bg: '#FFF1D6', fg: '#9A6700',  ico: '⚠', icoBg: '#FFD27A',                icoFg: '#5B3B00' },
       error:   { bg: '#FFE2E2', fg: '#B42318',  ico: '×', icoBg: '#B42318',                icoFg: '#fff'    },
     };
@@ -190,18 +336,9 @@
     return prefix + n.toLocaleString('en-US', { minimumFractionDigits: dp, maximumFractionDigits: dp });
   };
 
-  // ── Date helpers ──────────────────────────────────────────
-  PC.fmtDate = function (iso) {
-    if (!iso) return '—';
-    try { return new Date(iso).toISOString().slice(0, 10); } catch (_) { return iso; }
-  };
-  PC.fmtDateTime = function (iso) {
-    if (!iso) return '—';
-    try {
-      const d = new Date(iso);
-      return d.toISOString().slice(0, 10) + ' ' + d.toISOString().slice(11, 16);
-    } catch (_) { return iso; }
-  };
+  // (Date helpers PC.fmtDate / PC.fmtDateTime are defined once, above, and
+  //  honor the user's date_format preference. A second ISO-only definition
+  //  used to live here and silently shadowed them — removed.)
 
   // ── Modal helpers ─────────────────────────────────────────
   PC.modalOpen = function (id) {
