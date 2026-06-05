@@ -1749,12 +1749,29 @@ async def access_log_middleware(request: Request, call_next):
 
 @app.middleware("http")
 async def no_store_api_responses(request: Request, call_next):
-    """Tell browsers never to cache /api/* responses. Without this, the back
-    button can replay a previous user's data on a shared device after they
-    sign out. Scenario 7."""
+    """Cache policy for two response classes browsers must not stale-serve.
+
+    1. /api/* — never cache. Without this, the back button can replay a
+       previous user's data on a shared device after they sign out (Scenario 7).
+
+    2. HTML documents (the SPA shells: admin.html, staff_home.html, portal_*,
+       tech.html, …) — must revalidate on every load. These go out via
+       FileResponse, which sets only ETag/Last-Modified and NO Cache-Control,
+       so browsers apply *heuristic freshness* and serve a stale shell for a
+       while without checking back. The inline JS lives inside these HTML files
+       (only pc_shared.js carries a ?v= cache-buster), so a stale shell means a
+       stale app — which is why edits used to need a hard reload. "no-cache"
+       forces revalidation: the server returns a cheap 304 when unchanged and
+       the fresh document the moment it changes, so a plain reload is enough.
+       Static assets (JS/CSS/images — all ?v=-busted, none text/html) stay
+       cacheable and are untouched here.
+    """
     response = await call_next(request)
     if request.url.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+        response.headers["Pragma"] = "no-cache"
+    elif response.headers.get("content-type", "").startswith("text/html"):
+        response.headers["Cache-Control"] = "no-cache, must-revalidate, private"
         response.headers["Pragma"] = "no-cache"
     return response
 
