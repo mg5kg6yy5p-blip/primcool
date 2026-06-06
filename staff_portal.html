@@ -143,6 +143,18 @@
       <div class="backup-codes" id="backupCodes"></div>
       <button class="btn btn-primary" onclick="finishEnrolAndContinue()">I've saved them — continue</button>
     </div>
+
+    <!-- Step 4: forced credential reset (must_change_credentials) -->
+    <div id="step-change-cred" style="display:none;">
+      <h2 id="ccTitle">Set a new password</h2>
+      <div class="step-banner" id="ccBanner">For security, you must choose a new password before continuing.</div>
+      <label id="ccNewLabel" for="ccNew">New password</label>
+      <input id="ccNew" type="password" autocomplete="new-password">
+      <label id="ccConfirmLabel" for="ccConfirm">Confirm</label>
+      <input id="ccConfirm" type="password" autocomplete="new-password">
+      <button class="btn btn-primary" id="ccBtn" onclick="submitChangeCred()">Save and continue</button>
+      <div class="err" id="ccErr"></div>
+    </div>
   </div>
 
   <div class="alt">
@@ -156,9 +168,9 @@
   //            mfa_enrol_token?, mfa_token?, mfa_secret?}
 
   function _show(stepId) {
-    ['step-login','step-verify','step-enrol-intro','step-enrol-scan','step-enrol-done']
+    ['step-login','step-verify','step-enrol-intro','step-enrol-scan','step-enrol-done','step-change-cred']
       .forEach(id => document.getElementById(id).style.display = (id === stepId ? '' : 'none'));
-    ['loginErr','verifyErr','enrolIntroErr','enrolErr']
+    ['loginErr','verifyErr','enrolIntroErr','enrolErr','ccErr']
       .forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
   }
   function _err(elId, msg) {
@@ -196,6 +208,68 @@
       window.location.replace('/');
     }
   }
+  function _postSession(res) {
+    // Called once a session cookie is landed. Pre-launch checklist #2:
+    // if the account is flagged for a forced credential reset, divert
+    // into the change-cred step before reaching any dashboard.
+    if (res && res.must_change_credentials) {
+      enterChangeCred();
+      return;
+    }
+    _routeFinal();
+  }
+  function enterChangeCred() {
+    const isTech = pending && pending.kind === 'tech';
+    document.getElementById('ccTitle').textContent =
+      isTech ? 'Set a new PIN' : 'Set a new password';
+    document.getElementById('ccBanner').textContent = isTech
+      ? 'For security, choose a new PIN before continuing — 6–16 digits, not all-the-same or a simple sequence.'
+      : 'For security, you must choose a new password before continuing.';
+    document.getElementById('ccNewLabel').textContent =
+      isTech ? 'New PIN' : 'New password';
+    document.getElementById('ccConfirmLabel').textContent =
+      isTech ? 'Confirm PIN' : 'Confirm password';
+    const newI = document.getElementById('ccNew');
+    const conf = document.getElementById('ccConfirm');
+    newI.value = ''; conf.value = '';
+    if (isTech) {
+      newI.setAttribute('inputmode', 'numeric');
+      conf.setAttribute('inputmode', 'numeric');
+    } else {
+      newI.removeAttribute('inputmode');
+      conf.removeAttribute('inputmode');
+    }
+    _show('step-change-cred');
+    newI.focus();
+  }
+  async function submitChangeCred() {
+    const isTech = pending && pending.kind === 'tech';
+    const nv = document.getElementById('ccNew').value;
+    const cf = document.getElementById('ccConfirm').value;
+    const noun = isTech ? 'PIN' : 'password';
+    if (!nv || !cf) { _err('ccErr', `Enter and confirm your new ${noun}.`); return; }
+    if (nv !== cf) { _err('ccErr', `The two ${noun}s do not match.`); return; }
+    const btn = document.getElementById('ccBtn');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      // We already hold the current credential in pending.secret (what
+      // the user just signed in with) — submit it as the re-auth so the
+      // user only has to type the new value twice.
+      if (isTech) {
+        await api('/api/tech/me/pin',
+                  { current_pin: pending.secret, new_pin: nv, confirm_pin: cf });
+      } else {
+        await api('/api/admin/me/password',
+                  { current_password: pending.secret, new_password: nv,
+                    confirm_password: cf });
+      }
+      _routeFinal();
+    } catch (e) {
+      _err('ccErr', e.message || `Could not set your new ${noun}.`);
+    } finally {
+      btn.disabled = false; btn.textContent = 'Save and continue';
+    }
+  }
   function _storeAdminToken(token) {
     // Admin UI reads pc_admin_session from cookie (set by server) AND
     // localStorage 'pc_admin_token' as a fallback. Stash both to be safe.
@@ -227,7 +301,7 @@
         // but handle it for completeness.
         if (res.kind === 'admin') _storeAdminToken(res.token);
         else if (res.kind === 'tech') _storeTechToken(res.token);
-        _routeFinal();
+        _postSession(res);
       } else {
         _err('loginErr', 'Unexpected response from server. Try again.');
       }
@@ -255,7 +329,7 @@
                         { mfa_token: pending.mfa_token, code });
         if (res.token) _storeTechToken(res.token);
       }
-      _routeFinal();
+      _postSession(res);
     } catch (e) {
       _err('verifyErr', e.message || 'Incorrect code.');
     }
@@ -317,7 +391,7 @@
       } else if (res.token) {
         if (res.kind === 'admin') _storeAdminToken(res.token);
         else if (res.kind === 'tech') _storeTechToken(res.token);
-        _routeFinal();
+        _postSession(res);
       } else {
         cancelToLogin();
       }
@@ -345,11 +419,16 @@
   document.getElementById('enrolCode').addEventListener('keydown', e => {
     if (e.key === 'Enter') activateEnrol();
   });
+  ['ccNew','ccConfirm'].forEach(id => {
+    document.getElementById(id).addEventListener('keydown', e => {
+      if (e.key === 'Enter') submitChangeCred();
+    });
+  });
 
   // Focus identifier on load.
   document.getElementById('identifier').focus();
 </script>
 <!-- PrimeCool shared utilities (brand toast pill, skeleton loaders). -->
-<script src="/static/pc_shared.js?v=1780787400" defer></script>
+<script src="/static/pc_shared.js?v=1780790500" defer></script>
 </body>
 </html>

@@ -313,6 +313,10 @@ def init_db():
         # Phase 3 — per-account lockout tracking for PIN auth.
         ("pin_failed_count", "ALTER TABLE customers ADD COLUMN pin_failed_count INTEGER NOT NULL DEFAULT 0"),
         ("pin_locked_until", "ALTER TABLE customers ADD COLUMN pin_locked_until TEXT"),
+        # First-login PIN reset. When 1, the customer is forced to choose their
+        # own PIN before the portal unlocks — so the seeded "1000 + id" formula
+        # never reaches a real customer. Cleared by set_customer_pin().
+        ("must_set_pin",   "ALTER TABLE customers ADD COLUMN must_set_pin INTEGER NOT NULL DEFAULT 0"),
         # Multi-hub readiness (Tier-1 from the strategy reframe).
         # All current rows default to hub_id=1 (Kingston). Adding the column
         # now is ~free; retrofitting it at multi-hub launch would touch
@@ -1050,6 +1054,46 @@ def init_db():
     """)
     con.execute("CREATE INDEX IF NOT EXISTS idx_alerts_status  ON security_alerts(status, created_at)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_alerts_actor   ON security_alerts(actor_id, created_at)")
+    # General per-recipient notification feed (the in-app notification centre).
+    # Distinct from security_alerts (which is an admin-only security queue):
+    # this is a user-facing inbox for ANY of the three subject kinds. Rows are
+    # owned by (recipient_type, recipient_id) and only that viewer can read or
+    # mark them. `dedupe_key` (optional) lets a producer collapse repeats.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS notifications (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            recipient_type TEXT NOT NULL,              -- 'admin'|'tech'|'customer'
+            recipient_id   INTEGER NOT NULL,
+            kind           TEXT NOT NULL,              -- 'invoice'|'visit'|'kpi'|'system'|…
+            title          TEXT NOT NULL,
+            body           TEXT,
+            link           TEXT,                        -- in-app deep link (hash route)
+            severity       TEXT NOT NULL DEFAULT 'info',-- 'info'|'success'|'warning'|'critical'
+            dedupe_key     TEXT,
+            read_at        TEXT,
+            created_at     TEXT NOT NULL
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_notif_recipient ON notifications(recipient_type, recipient_id, read_at, created_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_notif_created   ON notifications(created_at)")
+    # Web-push subscriptions (RFC 8291). One row per browser endpoint; a single
+    # recipient may have several (multiple devices/browsers). Keyed unique on
+    # the endpoint so re-subscribe upserts rather than duplicates.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS push_subscriptions (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            recipient_type TEXT NOT NULL,
+            recipient_id   INTEGER NOT NULL,
+            endpoint       TEXT NOT NULL UNIQUE,
+            p256dh         TEXT NOT NULL,
+            auth           TEXT NOT NULL,
+            user_agent     TEXT,
+            created_at     TEXT NOT NULL,
+            last_sent_at   TEXT,
+            failure_count  INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_push_recipient ON push_subscriptions(recipient_type, recipient_id)")
     con.execute("""
         CREATE TABLE IF NOT EXISTS tech_pin_resets (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1175,10 +1219,45 @@ def init_db():
         # exists. Unblocks Visit Detail § 9 (Callback History) + the tech
         # detail "callbacks-only" filter.
         ("callback_of_visit_id",   "ALTER TABLE maintenance_visits ADD COLUMN callback_of_visit_id INTEGER"),
+        # PM-contract link — when a visit was auto-generated from (or manually
+        # attached to) a preventive-maintenance contract, this points at the
+        # originating pm_contracts row. NULL for ad-hoc / CM visits. SQLite
+        # ALTER can't add an FK, so the helper layer validates the target.
+        ("pm_contract_id",         "ALTER TABLE maintenance_visits ADD COLUMN pm_contract_id INTEGER"),
     ):
         if col_sql[0] not in existing_cols:
             try: con.execute(col_sql[1])
             except sqlite3.OperationalError: pass
+    con.execute("CREATE INDEX IF NOT EXISTS idx_visits_pm_contract ON maintenance_visits(pm_contract_id, scheduled_date)")
+
+    # ── Preventive-maintenance contracts ──────────────────────────────────
+    # A standing agreement to perform PM visits for a customer at a regular
+    # cadence over a fixed term, for a contract value. The nightly generator
+    # (generate_due_pm_visits) materialises upcoming PM visits from the active
+    # contracts; each generated maintenance_visits row carries pm_contract_id.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS pm_contracts (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            contract_code       TEXT NOT NULL UNIQUE,
+            customer_id         INTEGER NOT NULL REFERENCES customers(id),
+            equipment_id        INTEGER REFERENCES equipment(id),
+            hub_id              INTEGER NOT NULL DEFAULT 1,
+            title               TEXT,
+            start_date          TEXT NOT NULL,
+            end_date            TEXT NOT NULL,
+            frequency           TEXT NOT NULL,
+            contract_value      REAL NOT NULL DEFAULT 0,
+            status              TEXT NOT NULL DEFAULT 'active',
+            notes               TEXT,
+            last_generated_date TEXT,
+            created_at          TEXT NOT NULL,
+            updated_at          TEXT,
+            created_by_kind     TEXT,
+            created_by_id       INTEGER
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_pm_contracts_customer ON pm_contracts(customer_id, status)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_pm_contracts_status ON pm_contracts(status, end_date)")
 
     # Parts: image + location for tech in-field visual confirmation
     part_cols = {row[1] for row in con.execute("PRAGMA table_info(parts)")}
@@ -2757,6 +2836,10 @@ def create_customer(data: dict) -> int:
         ),
     )
     customer_id = cur.lastrowid
+    # Optionally force a first-login PIN reset (admin-created accounts that
+    # were handed a temporary/seeded PIN). Default off for self-set PINs.
+    if data.get("must_set_pin"):
+        con.execute("UPDATE customers SET must_set_pin = 1 WHERE id = ?", (customer_id,))
     con.commit()
     con.close()
     return customer_id
@@ -3002,8 +3085,26 @@ def is_tech_login_locked(tech_id: int) -> tuple:
 
 
 def set_customer_pin(customer_id: int, pin: str):
+    # Setting a PIN always clears the first-login force-set flag: once the
+    # customer (or an admin reset) has chosen a PIN, the seeded formula is gone.
     con = _con()
-    con.execute("UPDATE customers SET pin_hash = ? WHERE id = ?", (_hash_pin(pin), customer_id))
+    con.execute(
+        "UPDATE customers SET pin_hash = ?, must_set_pin = 0 WHERE id = ?",
+        (_hash_pin(pin), customer_id),
+    )
+    con.commit()
+    con.close()
+
+
+def set_customer_must_set_pin(customer_id: int, flag: bool = True):
+    """Force (or clear) the first-login PIN-reset gate for one customer.
+    Set by admin create / wipe-and-reseed so a real customer must replace the
+    seeded `1000 + id` PIN with one of their own before the portal unlocks."""
+    con = _con()
+    con.execute(
+        "UPDATE customers SET must_set_pin = ? WHERE id = ?",
+        (1 if flag else 0, customer_id),
+    )
     con.commit()
     con.close()
 
@@ -3882,6 +3983,217 @@ def update_visit(visit_id: int, data: dict):
     con.close()
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Preventive-maintenance (PM) contracts
+# A standing agreement to perform PM visits for a customer at a regular
+# cadence over a fixed term. `generate_due_pm_visits` materialises upcoming
+# PM visits from the active contracts; each generated visit row carries
+# pm_contract_id back to its originating contract.
+# ─────────────────────────────────────────────────────────────────────────
+_PM_FREQ_MONTHS = {"monthly": 1, "quarterly": 3, "semiannual": 6, "annual": 12}
+
+
+def _pm_add_months(d, months: int):
+    """Add `months` calendar months to a date, clamping the day to the last
+    valid day of the target month (31 Jan + 1mo → 28/29 Feb)."""
+    import calendar as _cal
+    y = d.year + (d.month - 1 + months) // 12
+    m = (d.month - 1 + months) % 12 + 1
+    last = _cal.monthrange(y, m)[1]
+    return d.replace(year=y, month=m, day=min(d.day, last))
+
+
+def pm_contract_schedule(start_date: str, end_date: str, frequency: str) -> list:
+    """Pure helper: the ordered list of YYYY-MM-DD PM due-dates for a contract
+    term, stepping from start_date by the frequency interval up to and
+    including end_date. Returns [] for an unknown frequency or inverted range."""
+    from datetime import date as _date
+    months = _PM_FREQ_MONTHS.get((frequency or "").lower())
+    if not months:
+        return []
+    try:
+        start = _date.fromisoformat(str(start_date)[:10])
+        end = _date.fromisoformat(str(end_date)[:10])
+    except Exception:
+        return []
+    if end < start:
+        return []
+    out = []
+    i = 0
+    cur = start
+    while cur <= end and i < 1000:
+        out.append(cur.isoformat())
+        i += 1
+        cur = _pm_add_months(start, months * i)
+    return out
+
+
+def _next_pm_contract_code() -> str:
+    """Sequential year-prefixed contract code: PMC-2026-0001."""
+    year = datetime.now(timezone.utc).year
+    prefix = f"PMC-{year}-"
+    con = _con()
+    row = con.execute(
+        "SELECT MAX(CAST(SUBSTR(contract_code, ?) AS INTEGER)) AS max_seq "
+        "FROM pm_contracts WHERE contract_code LIKE ?",
+        (len(prefix) + 1, f"{prefix}%"),
+    ).fetchone()
+    con.close()
+    return f"{prefix}{(row['max_seq'] or 0) + 1:04d}"
+
+
+def create_pm_contract(data: dict, by_kind: str = None, by_id: int = None) -> int:
+    """Insert a PM contract. Caller validates business rules (frequency in the
+    known set, end_date >= start_date, customer exists). Returns new id."""
+    now = datetime.now(timezone.utc).isoformat()
+    code = _next_pm_contract_code()
+    con = _con()
+    cur = con.execute(
+        "INSERT INTO pm_contracts "
+        "(contract_code, customer_id, equipment_id, hub_id, title, start_date, "
+        " end_date, frequency, contract_value, status, notes, created_at, "
+        " updated_at, created_by_kind, created_by_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (code, int(data["customer_id"]), data.get("equipment_id") or None,
+         int(data.get("hub_id", 1)), data.get("title", ""), data["start_date"],
+         data["end_date"], (data["frequency"] or "").lower(),
+         float(data.get("contract_value") or 0), data.get("status", "active"),
+         data.get("notes", ""), now, now, by_kind, by_id),
+    )
+    cid = cur.lastrowid
+    con.commit()
+    con.close()
+    return cid
+
+
+def get_pm_contract(contract_id: int) -> dict:
+    con = _con()
+    row = con.execute("SELECT * FROM pm_contracts WHERE id = ?", (int(contract_id),)).fetchone()
+    con.close()
+    return _dec_row("pm_contracts", row)
+
+
+def list_pm_contracts(filters: dict = None) -> list:
+    filters = filters or {}
+    where = []
+    params = []
+    if filters.get("customer_id") is not None:
+        where.append("customer_id = ?")
+        params.append(int(filters["customer_id"]))
+    if filters.get("status"):
+        where.append("status = ?")
+        params.append(filters["status"])
+    if filters.get("hub_id") is not None:
+        where.append("hub_id = ?")
+        params.append(int(filters["hub_id"]))
+    sql = "SELECT * FROM pm_contracts"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY (status='active') DESC, end_date ASC, id DESC"
+    con = _con()
+    rows = con.execute(sql, params).fetchall()
+    con.close()
+    return _dec_rows("pm_contracts", rows)
+
+
+def update_pm_contract(contract_id: int, updates: dict,
+                       by_kind: str = None, by_id: int = None) -> bool:
+    """Patch mutable contract fields. Returns True if a row was written."""
+    allowed = {"title", "start_date", "end_date", "frequency", "contract_value",
+               "status", "notes", "equipment_id", "hub_id"}
+    sets = []
+    params = []
+    for k, v in updates.items():
+        if k not in allowed:
+            continue
+        if k == "frequency" and v is not None:
+            v = str(v).lower()
+        if k == "contract_value" and v is not None:
+            v = float(v)
+        sets.append(f"{k} = ?")
+        params.append(v)
+    if not sets:
+        return False
+    sets.append("updated_at = ?")
+    params.append(datetime.now(timezone.utc).isoformat())
+    params.append(int(contract_id))
+    con = _con()
+    con.execute(f"UPDATE pm_contracts SET {', '.join(sets)} WHERE id = ?", params)
+    con.commit()
+    con.close()
+    return True
+
+
+def list_visits_for_contract(contract_id: int) -> list:
+    con = _con()
+    rows = con.execute(
+        "SELECT id, customer_id, equipment_id, visit_type, status, scheduled_date, "
+        "completed_date FROM maintenance_visits WHERE pm_contract_id = ? "
+        "ORDER BY scheduled_date", (int(contract_id),),
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def generate_due_pm_visits(now=None, lookahead_days: int = 30,
+                           only_contract_id: int = None) -> dict:
+    """Materialise upcoming PM visits from active contracts. Idempotent — a
+    visit is created for a (contract, due-date) pair only if none exists yet.
+    Contracts whose end_date has passed are flipped to 'expired' (no visit).
+    Returns {created: [visit_ids], expired: [contract_ids], processed: n}."""
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    now = now or _dt.now(_tz.utc)
+    today = now.date()
+    horizon = (today + _td(days=int(lookahead_days))).isoformat()
+    today_iso = today.isoformat()
+    con = _con()
+    q = "SELECT * FROM pm_contracts WHERE status = 'active'"
+    qp = []
+    if only_contract_id is not None:
+        q += " AND id = ?"
+        qp.append(int(only_contract_id))
+    contracts = con.execute(q, qp).fetchall()
+    created = []
+    expired = []
+    for c in contracts:
+        c = dict(c)
+        # Expire first if the term has ended — no further visits generated.
+        if c["end_date"] and c["end_date"] < today_iso:
+            con.execute("UPDATE pm_contracts SET status='expired', updated_at=? WHERE id=?",
+                        (now.isoformat(), c["id"]))
+            expired.append(c["id"])
+            continue
+        due_dates = pm_contract_schedule(c["start_date"], c["end_date"], c["frequency"])
+        existing = {r["scheduled_date"] for r in con.execute(
+            "SELECT scheduled_date FROM maintenance_visits WHERE pm_contract_id = ?",
+            (c["id"],)).fetchall()}
+        last_gen = c.get("last_generated_date")
+        for dd in due_dates:
+            if dd > horizon:
+                break  # only materialise within the lookahead window
+            if dd in existing:
+                continue
+            cur = con.execute(
+                "INSERT INTO maintenance_visits "
+                "(customer_id, equipment_id, visit_type, status, scheduled_date, "
+                " created_at, scope_of_work, hub_id, pm_contract_id) "
+                "VALUES (?, ?, 'PM', 'scheduled', ?, ?, ?, ?, ?)",
+                (c["customer_id"], c.get("equipment_id") or None, dd, now.isoformat(),
+                 (c.get("title") or f"PM visit — contract {c['contract_code']}"),
+                 int(c.get("hub_id", 1)), c["id"]),
+            )
+            created.append(cur.lastrowid)
+            existing.add(dd)
+            if (last_gen is None) or (dd > last_gen):
+                last_gen = dd
+        if last_gen != c.get("last_generated_date"):
+            con.execute("UPDATE pm_contracts SET last_generated_date=?, updated_at=? WHERE id=?",
+                        (last_gen, now.isoformat(), c["id"]))
+    con.commit()
+    con.close()
+    return {"created": created, "expired": expired, "processed": len(contracts)}
+
+
 def get_visit_by_id(visit_id: int, with_parts: bool = False):
     con = _con()
     row = con.execute(
@@ -4342,6 +4654,14 @@ def create_tech(data: dict) -> tuple:
     prid      = generate_prid(name=data["name"], hire_date=hire_date)
     raw_code  = (data.get("tech_code") or "").strip().upper()
     tech_code = raw_code if raw_code else prid
+    # Reciprocal-uniqueness guard: a custom tech_code must not collide with
+    # an admin login (username/PRID), or the unified /staff login would
+    # resolve to the admin and silently shadow this tech. (PRID itself is
+    # already globally unique via generate_prid.)
+    if raw_code:
+        _conflict = staff_identifier_conflict(raw_code, space="tech")
+        if _conflict:
+            raise ValueError(_conflict)
     hub_id    = int(data.get("hub_id") or 1)
     now_iso   = datetime.now(timezone.utc).isoformat()
     staff_type = (data.get("staff_type") or "tech").strip()
@@ -4722,6 +5042,53 @@ def _verify_password(pw: str, stored: str) -> bool:
     return _verify_pin(pw, stored)
 
 
+def staff_identifier_conflict(identifier: str, *, space: str) -> str:
+    """Reciprocal-uniqueness guard for the unified `/staff` login.
+
+    `/api/staff/login` resolves the admin identity space FIRST, then tech.
+    So if a tech is given a custom `tech_code` that equals an admin
+    username/PRID (or vice-versa), the admin path wins and the tech is
+    silently shadowed — they can never log in. PRIDs are already globally
+    unique (generate_prid checks both tables), but a *custom* tech_code or
+    admin username bypasses that.
+
+    Call this BEFORE creating/renaming a staff account. `space` is the
+    space the identifier is being created in ('admin' or 'tech'); this
+    checks the OPPOSITE space (and the same-space PRID column) for a
+    case-insensitive collision. Returns a human description of the clash,
+    or "" when the identifier is free.
+
+    NOTE: the β migration's unified `staff` table + single `staff_code`
+    UNIQUE constraint will enforce this at the schema level; until then
+    this is the application-layer guard."""
+    ident = (identifier or "").strip()
+    if not ident:
+        return ""
+    con = _con()
+    try:
+        # An identifier in EITHER space collides if it matches an admin
+        # username/PRID or a tech tech_code/PRID belonging to a live row.
+        admin_hit = con.execute(
+            "SELECT username FROM admin_users "
+            "WHERE (LOWER(username) = LOWER(?) OR LOWER(prid) = LOWER(?)) "
+            "AND active = 1 LIMIT 1",
+            (ident, ident),
+        ).fetchone()
+        tech_hit = con.execute(
+            "SELECT tech_code FROM technicians "
+            "WHERE (UPPER(tech_code) = UPPER(?) OR LOWER(prid) = LOWER(?)) "
+            "AND active = 1 LIMIT 1",
+            (ident, ident),
+        ).fetchone()
+    finally:
+        con.close()
+    if space == "tech" and admin_hit:
+        return f"identifier '{ident}' is already an admin login"
+    if space == "admin" and tech_hit:
+        return f"identifier '{ident}' is already a technician code"
+    return ""
+
+
 def get_admin_user_by_username(username: str):
     """Accepts either the username (legacy / bootstrap admins) OR the PRID
     (auto-generated for everyone else). One lookup, two columns, so an admin
@@ -4783,6 +5150,13 @@ def create_admin_user(data: dict, created_by: int = None) -> tuple:
     prid      = generate_prid(name=data["name"], hire_date=hire_date)
     raw_user  = (data.get("username") or "").strip()
     username  = raw_user.lower() if raw_user else prid.lower()
+    # Reciprocal-uniqueness guard: a custom admin username must not collide
+    # with a technician code/PRID. (Auto-generated PRIDs are already
+    # globally unique; this only bites custom usernames.)
+    if raw_user:
+        _conflict = staff_identifier_conflict(raw_user, space="admin")
+        if _conflict:
+            raise ValueError(_conflict)
     con = _con()
     cur = con.execute(
         """
@@ -6894,6 +7268,197 @@ def resolve_security_alerts_bulk(alert_ids: list, admin_id: int,
     }
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Notifications — general per-recipient in-app feed (the notification centre)
+# ═══════════════════════════════════════════════════════════════════════════
+_NOTIF_KINDS     = {"invoice", "visit", "kpi", "payroll", "document",
+                    "contract", "delegation", "system", "message"}
+_NOTIF_SEVERITY  = {"info", "success", "warning", "critical"}
+
+
+def create_notification(recipient_type: str, recipient_id: int, kind: str,
+                        title: str, *, body: str = None, link: str = None,
+                        severity: str = "info", dedupe_key: str = None,
+                        dedupe_window_minutes: int = None) -> int:
+    """Insert a notification for one recipient. Returns the new id, or the
+    existing id if `dedupe_key` collides inside `dedupe_window_minutes`
+    (so a producer that fires repeatedly doesn't flood the bell).
+
+    recipient_type ∈ {'admin','tech','customer'}. `kind`/`severity` are
+    coerced to known values so a typo can't create an unfilterable row."""
+    rt = (recipient_type or "").strip().lower()
+    if rt not in ("admin", "tech", "customer"):
+        raise ValueError(f"bad recipient_type: {recipient_type!r}")
+    k = (kind or "system").strip().lower()
+    if k not in _NOTIF_KINDS:
+        k = "system"
+    sev = (severity or "info").strip().lower()
+    if sev not in _NOTIF_SEVERITY:
+        sev = "info"
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    try:
+        if dedupe_key:
+            if dedupe_window_minutes:
+                from datetime import timedelta as _td
+                cutoff = (datetime.now(timezone.utc)
+                          - _td(minutes=int(dedupe_window_minutes))).isoformat()
+                prior = con.execute(
+                    "SELECT id FROM notifications WHERE recipient_type=? AND "
+                    "recipient_id=? AND dedupe_key=? AND created_at>=? "
+                    "ORDER BY id DESC LIMIT 1",
+                    (rt, int(recipient_id), dedupe_key, cutoff),
+                ).fetchone()
+            else:
+                prior = con.execute(
+                    "SELECT id FROM notifications WHERE recipient_type=? AND "
+                    "recipient_id=? AND dedupe_key=? AND read_at IS NULL "
+                    "ORDER BY id DESC LIMIT 1",
+                    (rt, int(recipient_id), dedupe_key),
+                ).fetchone()
+            if prior:
+                con.close()
+                return int(prior["id"])
+        cur = con.execute(
+            "INSERT INTO notifications (recipient_type, recipient_id, kind, "
+            "title, body, link, severity, dedupe_key, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (rt, int(recipient_id), k, title, body, link, sev, dedupe_key, now),
+        )
+        nid = cur.lastrowid
+        con.commit()
+        return nid
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
+
+
+def list_notifications(recipient_type: str, recipient_id: int, *,
+                       only_unread: bool = False, limit: int = 50) -> list:
+    """Newest-first notifications owned by this recipient."""
+    limit = min(200, max(1, int(limit or 50)))
+    sql = ("SELECT id, kind, title, body, link, severity, read_at, created_at "
+           "FROM notifications WHERE recipient_type=? AND recipient_id=?")
+    args = [recipient_type, int(recipient_id)]
+    if only_unread:
+        sql += " AND read_at IS NULL"
+    sql += " ORDER BY id DESC LIMIT ?"
+    args.append(limit)
+    con = _con()
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def count_unread_notifications(recipient_type: str, recipient_id: int) -> int:
+    con = _con()
+    n = con.execute(
+        "SELECT COUNT(*) AS n FROM notifications WHERE recipient_type=? AND "
+        "recipient_id=? AND read_at IS NULL",
+        (recipient_type, int(recipient_id)),
+    ).fetchone()["n"]
+    con.close()
+    return int(n or 0)
+
+
+def mark_notification_read(notif_id: int, recipient_type: str,
+                           recipient_id: int) -> bool:
+    """Mark ONE notification read — scoped to its owner so a viewer can't
+    flip another recipient's row. Returns True if a row was updated."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    cur = con.execute(
+        "UPDATE notifications SET read_at=? WHERE id=? AND recipient_type=? "
+        "AND recipient_id=? AND read_at IS NULL",
+        (now, int(notif_id), recipient_type, int(recipient_id)),
+    )
+    con.commit()
+    changed = cur.rowcount
+    con.close()
+    return changed > 0
+
+
+def mark_all_notifications_read(recipient_type: str, recipient_id: int) -> int:
+    """Mark every unread notification for this recipient read. Returns count."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    cur = con.execute(
+        "UPDATE notifications SET read_at=? WHERE recipient_type=? AND "
+        "recipient_id=? AND read_at IS NULL",
+        (now, recipient_type, int(recipient_id)),
+    )
+    con.commit()
+    n = cur.rowcount
+    con.close()
+    return int(n or 0)
+
+
+# ── Web-push subscription store (the transport layer is in main.py) ──────────
+def upsert_push_subscription(recipient_type: str, recipient_id: int, *,
+                             endpoint: str, p256dh: str, auth: str,
+                             user_agent: str = None) -> int:
+    """Store (or refresh) a browser push subscription. UNIQUE(endpoint) means
+    a re-subscribe from the same browser updates the owner/keys in place."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    cur = con.execute(
+        "INSERT INTO push_subscriptions (recipient_type, recipient_id, "
+        "endpoint, p256dh, auth, user_agent, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(endpoint) DO UPDATE SET recipient_type=excluded.recipient_type, "
+        "recipient_id=excluded.recipient_id, p256dh=excluded.p256dh, "
+        "auth=excluded.auth, user_agent=excluded.user_agent, failure_count=0",
+        (recipient_type, int(recipient_id), endpoint, p256dh, auth, user_agent, now),
+    )
+    con.commit()
+    rid = cur.lastrowid
+    con.close()
+    return rid
+
+
+def list_push_subscriptions(recipient_type: str, recipient_id: int) -> list:
+    con = _con()
+    rows = con.execute(
+        "SELECT id, endpoint, p256dh, auth FROM push_subscriptions "
+        "WHERE recipient_type=? AND recipient_id=?",
+        (recipient_type, int(recipient_id)),
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def delete_push_subscription(endpoint: str) -> bool:
+    con = _con()
+    cur = con.execute("DELETE FROM push_subscriptions WHERE endpoint=?", (endpoint,))
+    con.commit()
+    changed = cur.rowcount
+    con.close()
+    return changed > 0
+
+
+def mark_push_subscription_failure(endpoint: str, *, drop_at: int = 5) -> None:
+    """Bump failure_count; drop the subscription once a push endpoint has
+    failed `drop_at` times in a row (it's almost certainly gone)."""
+    con = _con()
+    con.execute("UPDATE push_subscriptions SET failure_count = failure_count + 1 "
+                "WHERE endpoint=?", (endpoint,))
+    con.execute("DELETE FROM push_subscriptions WHERE endpoint=? AND failure_count >= ?",
+                (endpoint, int(drop_at)))
+    con.commit()
+    con.close()
+
+
+def mark_push_subscription_sent(endpoint: str) -> None:
+    con = _con()
+    con.execute("UPDATE push_subscriptions SET last_sent_at=?, failure_count=0 "
+                "WHERE endpoint=?",
+                (datetime.now(timezone.utc).isoformat(), endpoint))
+    con.commit()
+    con.close()
+
+
 def detect_anomalies_for_actor(actor_type: str, actor_id: int) -> list:
     """Run the standard checks against this actor's recent access_log.
     Returns a list of (kind, severity, summary, details) tuples for any
@@ -7021,6 +7586,33 @@ def revoke_admin_sessions_except(admin_id: int, keep_jti):
             "WHERE subject_type = 'admin' AND subject_id = ? "
             "AND revoked_at IS NULL",
             (now, int(admin_id)),
+        )
+    n = cur.rowcount
+    con.commit()
+    con.close()
+    return n
+
+
+def revoke_tech_sessions_except(tech_id: int, keep_jti):
+    # keep_jti: Optional[str] — Py3.9 friendly signature.
+    """Tech-side mirror of revoke_admin_sessions_except. Used by the
+    self-service PIN-change flow so a stolen cookie can't outlive the
+    PIN, without bouncing the session that just performed the change."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    if keep_jti:
+        cur = con.execute(
+            "UPDATE sessions SET revoked_at = ? "
+            "WHERE subject_type = 'tech' AND subject_id = ? "
+            "AND revoked_at IS NULL AND jti != ?",
+            (now, int(tech_id), keep_jti),
+        )
+    else:
+        cur = con.execute(
+            "UPDATE sessions SET revoked_at = ? "
+            "WHERE subject_type = 'tech' AND subject_id = ? "
+            "AND revoked_at IS NULL",
+            (now, int(tech_id)),
         )
     n = cur.rowcount
     con.commit()
@@ -8905,6 +9497,77 @@ FS_DEFAULT_CHECKLIST = {
 }
 
 
+def _fs_build_known_keys():
+    """Union of every item_key shipped in a default template plus the
+    safety-critical keys — the canonical allowlist the per-asset checklist
+    editor validates against and renders as a picker."""
+    keys = set(FS_SAFETY_ITEM_KEYS)
+    for tpl in FS_DEFAULT_CHECKLIST.values():
+        for sec_keys in tpl.values():
+            for k in sec_keys:
+                keys.add(k)
+    return keys
+
+
+FS_KNOWN_ITEM_KEYS = _fs_build_known_keys()
+
+
+def _fs_lev(a: str, b: str) -> int:
+    """Iterative Levenshtein edit distance (small strings only)."""
+    if a == b:
+        return 0
+    la, lb = len(a), len(b)
+    if not la:
+        return lb
+    if not lb:
+        return la
+    prev = list(range(lb + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1,
+                           prev[j - 1] + (0 if ca == cb else 1)))
+        prev = cur
+    return prev[lb]
+
+
+def fs_safety_near_miss(key: str):
+    """If `key` is NOT an exact safety key but is within edit-distance 2 of
+    one, return that canonical safety key; else None.
+
+    This closes a real footgun: severity at audit time is decided purely by
+    `key in FS_SAFETY_ITEM_KEYS` (see record_fs_audit). A warehouse manager
+    who adds a *misspelled* safety item to a per-asset override (e.g.
+    'fluid_checked' for 'fluids_checked') would silently get a 'normal'
+    exception on failure instead of a safety/LOTO one — defeating the
+    compliance escalation. We block the save and tell them the exact key."""
+    k = (key or "").strip().lower()
+    if not k or k in FS_SAFETY_ITEM_KEYS:
+        return None
+    best, best_d = None, 99
+    for sk in FS_SAFETY_ITEM_KEYS:
+        d = _fs_lev(k, sk)
+        if d < best_d:
+            best_d, best = d, sk
+    # Distance ≤ 2 against a reasonably long key = almost certainly a typo
+    # of that safety item, not a distinct new concept.
+    if best is not None and best_d <= 2 and len(best) >= 6:
+        return best
+    return None
+
+
+def fs_item_catalog():
+    """Catalog of known checklist item keys for the editor UI: each entry
+    is {item_key, item_label, safety_critical}. Safety-first then
+    alphabetical so the picker leads with compliance-critical items."""
+    return [
+        {"item_key": k, "item_label": _fs_label(k),
+         "safety_critical": k in FS_SAFETY_ITEM_KEYS}
+        for k in sorted(FS_KNOWN_ITEM_KEYS,
+                        key=lambda x: (x not in FS_SAFETY_ITEM_KEYS, x))
+    ]
+
+
 def get_checklist_for_phase(asset_id: int, phase: str):
     """Returns ordered list[ {section, item_key, item_label} ] for the
     given asset_id and phase.
@@ -8980,9 +9643,28 @@ def set_asset_checklist_override(asset_id: int, phase: str,
     if phase not in FS_VALID_PHASES:
         raise ValueError(f"invalid phase: {phase}")
     clean = {}
+    near_miss = []
     for sec in ("sort", "set", "shine", "standardize", "sustain"):
         keys = items_by_section.get(sec) or []
-        clean[sec] = [str(k).strip() for k in keys if str(k).strip()]
+        norm = []
+        for k in keys:
+            # Normalize server-side too (the client already does this, but
+            # the endpoint must not trust it): lowercase + spaces→underscore.
+            kk = str(k).strip().lower().replace(" ", "_")
+            if not kk:
+                continue
+            nm = fs_safety_near_miss(kk)
+            if nm:
+                near_miss.append((kk, nm))
+            norm.append(kk)
+        clean[sec] = norm
+    # Block typo'd safety keys before they silently downgrade audit severity.
+    if near_miss:
+        raise ValueError("; ".join(
+            f"'{k}' looks like the safety item '{nm}' but isn't an exact "
+            f"match — a failed audit on it would NOT raise a safety/LOTO "
+            f"exception. Use '{nm}' or rename it to something clearly "
+            f"different." for k, nm in near_miss))
     items_json = _json.dumps(clean)
     now_iso = datetime.now(timezone.utc).isoformat()
     con = _con()
@@ -9561,7 +10243,7 @@ def correlate_5s_to_kpi(tech_id: int, window_days: int = 30) -> dict:
     kpi_band = _kpi_band_for_tech(tech_id, window_days=window_days)
     fs_band = fs["band"]
     if kpi_band is None:
-        diagnostic = "kpi module not active — using 5S band only"
+        diagnostic = "no KPI band yet for this window — using 5S band only"
     elif fs_band == "red" and kpi_band == "red":
         diagnostic = "systemic — investigate conditions before performance"
     elif fs_band == "green" and kpi_band == "red":
@@ -10672,12 +11354,19 @@ def get_invoice_metrics(today: str = None) -> dict:
     overdue_n   = int(row["n"] or 0)
 
     row = con.execute(
-        "SELECT COALESCE(SUM(total),0) AS inv_mtd "
+        "SELECT COALESCE(SUM(total),0) AS inv_mtd, "
+        "       COALESCE(SUM(tax_amount),0) AS gct_mtd "
         "FROM invoices WHERE substr(issue_date,1,7) = ? "
         "AND status NOT IN ('draft','cancelled','canceled')",
         (month_prefix,),
     ).fetchone()
     invoiced_mtd = float(row["inv_mtd"] or 0)
+    # Output GCT accrued this month (accrual basis — GCT becomes a remittance
+    # liability when the invoice is *issued*, regardless of payment). This is
+    # GROSS output tax; the system does not track input tax (GCT paid on
+    # purchases), so this is NOT a net GCT-payable figure. Mirrors the
+    # currency convention of invoiced_mtd above (summed in base units).
+    gct_output_mtd = float(row["gct_mtd"] or 0)
 
     row = con.execute(
         "SELECT COALESCE(SUM(amount),0) AS collected_mtd "
@@ -10695,10 +11384,99 @@ def get_invoice_metrics(today: str = None) -> dict:
         "overdue_count":          overdue_n,
         "invoiced_this_month":    round(invoiced_mtd, 2),
         "collected_this_month":   round(collected_mtd, 2),
+        "gct_output_this_month":  round(gct_output_mtd, 2),
         "as_of":                  today,
         # Legacy aliases (deprecated):
         "outstanding":            round(outstanding_amt, 2),
         "overdue":                round(overdue_amt, 2),
+    }
+
+
+def get_gct_liability_report(from_date: str = None, to_date: str = None) -> dict:
+    """Accrual-basis output-GCT (General Consumption Tax) liability report.
+
+    GCT collected on sales is not revenue — it is a liability the business
+    holds on behalf of the tax authority (TAJ) until remitted. This report
+    surfaces that output-tax liability per calendar month so the operator can
+    reconcile against a GCT return.
+
+    Basis & scope (important — the figures mean exactly this and no more):
+      * ACCRUAL basis: a sale's GCT is recognised on the invoice's *issue
+        date*, regardless of whether/when the customer pays. This is the
+        standard basis for GCT-registered businesses.
+      * GROSS output tax only. The system does not record input tax (GCT paid
+        on purchases / parts), so this is NOT a net GCT-payable figure — the
+        operator must subtract their own input-tax credits when filing.
+      * Excludes draft and cancelled invoices (no liability accrues on those).
+      * Grouped BY currency: GCT is filed in JMD, but invoices may be raised in
+        other currencies, so each currency is reported on its own line rather
+        than silently summed across denominations.
+
+    Args:
+      from_date / to_date — inclusive ISO (YYYY-MM-DD) issue-date bounds.
+        Defaults: Jan 1 of the current year → today.
+
+    Returns:
+      {
+        basis: "accrual", gross_output_tax_only: True,
+        from, to,
+        periods: [ {month:"YYYY-MM", currency, invoice_count,
+                    net, output_gct, gross}, … ]  # month asc, currency asc
+        totals_by_currency: { CUR: {invoice_count, net, output_gct, gross}, … }
+      }
+    """
+    today = datetime.now(timezone.utc).date().isoformat()
+    if not to_date:
+        to_date = today
+    if not from_date:
+        from_date = today[:4] + "-01-01"
+    con = _con()
+    rows = con.execute(
+        "SELECT substr(issue_date,1,7) AS month, "
+        # Bill/remit currency = display_currency (the v2 path sets this and may
+        # leave the legacy `currency` column at its 'TTD' default). Fall back to
+        # `currency` for older rows that predate display_currency.
+        "       COALESCE(NULLIF(display_currency,''), NULLIF(currency,''), 'JMD') AS currency, "
+        "       COUNT(*) AS invoice_count, "
+        "       COALESCE(SUM(subtotal),0) AS net, "
+        "       COALESCE(SUM(tax_amount),0) AS output_gct, "
+        "       COALESCE(SUM(total),0) AS gross "
+        "FROM invoices "
+        "WHERE status NOT IN ('draft','cancelled','canceled') "
+        "  AND issue_date >= ? AND issue_date <= ? "
+        "GROUP BY month, currency "
+        "ORDER BY month ASC, currency ASC",
+        (from_date, to_date),
+    ).fetchall()
+    con.close()
+    periods, totals = [], {}
+    for r in rows:
+        cur = r["currency"]
+        periods.append({
+            "month":         r["month"],
+            "currency":      cur,
+            "invoice_count": int(r["invoice_count"] or 0),
+            "net":           round(float(r["net"] or 0), 2),
+            "output_gct":    round(float(r["output_gct"] or 0), 2),
+            "gross":         round(float(r["gross"] or 0), 2),
+        })
+        t = totals.setdefault(cur, {"invoice_count": 0, "net": 0.0,
+                                    "output_gct": 0.0, "gross": 0.0})
+        t["invoice_count"] += int(r["invoice_count"] or 0)
+        t["net"]        += float(r["net"] or 0)
+        t["output_gct"] += float(r["output_gct"] or 0)
+        t["gross"]      += float(r["gross"] or 0)
+    for cur, t in totals.items():
+        t["net"]        = round(t["net"], 2)
+        t["output_gct"] = round(t["output_gct"], 2)
+        t["gross"]      = round(t["gross"], 2)
+    return {
+        "basis": "accrual",
+        "gross_output_tax_only": True,
+        "from": from_date,
+        "to": to_date,
+        "periods": periods,
+        "totals_by_currency": totals,
     }
 
 
@@ -10831,9 +11609,20 @@ def record_invoice_payment_v2(invoice_id: int, data: dict,
                               recorded_by_label: str = None,
                               recorded_by_prid: str = None) -> dict:
     """Append-only invoice-side payment record. Stores JMD amount in `amount`
-    (legacy column); foreign breakdown in fx fields. Idempotency: if an
-    identical (invoice_id, amount, payment_date, method, recorded_by) row
-    exists within 30s, return the existing id and a duplicate flag."""
+    (legacy column); foreign breakdown in fx fields.
+
+    Idempotency (two layers — matches record_invoice_payment / Audit M3):
+      1. PRIMARY — a client-supplied `idempotency_key` (UUID per "Record
+         Payment" click, reused on retry). If a row with the same
+         (invoice_id, idempotency_key) already exists, return it with a
+         duplicate flag WITHOUT inserting. Backed by the partial unique
+         index uq_invoice_payment_idemp so a race that slips past the
+         SELECT still fails the INSERT — that IntegrityError is caught
+         and resolved to the same idempotent return.
+      2. FALLBACK — for callers that omit the key, the legacy 30-second
+         heuristic on (invoice_id, amount, payment_date, method,
+         recorded_by) still guards against a naive double-tap."""
+    import sqlite3 as _sqlite3
     now = datetime.now(timezone.utc).isoformat()
     amount_jmd = float(data.get("amount_jmd") if "amount_jmd" in data else data.get("amount"))
     method     = (data.get("payment_method") or data.get("method") or "other").lower()
@@ -10844,19 +11633,35 @@ def record_invoice_payment_v2(invoice_id: int, data: dict,
     fx_fee_pct_used  = data.get("fx_fee_pct_used")
     effective_rate   = data.get("effective_rate_used")
     notes_plain      = data.get("notes") or ""
+    idem             = (data.get("idempotency_key") or "").strip() or None
 
     con = _con()
-    # Idempotency window — last 30 seconds
-    dup = con.execute(
-        "SELECT id FROM invoice_payments WHERE invoice_id = ? AND amount = ? "
-        "AND payment_date = ? AND COALESCE(method,'') = ? AND COALESCE(recorded_by,0) = ? "
-        "AND created_at >= datetime('now','-30 seconds') "
-        "ORDER BY id DESC LIMIT 1",
-        (invoice_id, amount_jmd, payment_date, method, recorded_by or 0),
-    ).fetchone()
-    if dup:
-        con.close()
-        return {"id": dup["id"], "duplicate": True}
+    # Layer 1 — explicit idempotency key (preferred, survives any window).
+    if idem:
+        existing = con.execute(
+            "SELECT id FROM invoice_payments "
+            "WHERE invoice_id = ? AND idempotency_key = ? LIMIT 1",
+            (invoice_id, idem),
+        ).fetchone()
+        if existing:
+            con.close()
+            import logging as _lg
+            _lg.getLogger("primecool").info(
+                f"record_invoice_payment_v2: idempotent return invoice "
+                f"#{invoice_id} payment #{existing['id']} (key={idem[:8]}…)")
+            return {"id": existing["id"], "duplicate": True}
+    # Layer 2 — legacy 30-second heuristic (only for keyless callers).
+    if not idem:
+        dup = con.execute(
+            "SELECT id FROM invoice_payments WHERE invoice_id = ? AND amount = ? "
+            "AND payment_date = ? AND COALESCE(method,'') = ? AND COALESCE(recorded_by,0) = ? "
+            "AND created_at >= datetime('now','-30 seconds') "
+            "ORDER BY id DESC LIMIT 1",
+            (invoice_id, amount_jmd, payment_date, method, recorded_by or 0),
+        ).fetchone()
+        if dup:
+            con.close()
+            return {"id": dup["id"], "duplicate": True}
 
     prior = con.execute(
         "SELECT chain_hash FROM invoice_payments "
@@ -10874,19 +11679,34 @@ def record_invoice_payment_v2(invoice_id: int, data: dict,
     }
     chash = _chain_hash_payment(prior_hash, row_for_hash)
 
-    cur = con.execute(
-        "INSERT INTO invoice_payments "
-        "(invoice_id, payment_date, amount, method, reference, notes, "
-        " recorded_by, recorded_by_label, recorded_by_prid, created_at, "
-        " foreign_amount, foreign_currency, fx_rate_used, fx_fee_pct_used, "
-        " effective_rate_used, hub_id, prior_chain_hash, chain_hash) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
-        (invoice_id, payment_date, amount_jmd, method,
-         data.get("reference", ""), enc.get("notes"),
-         recorded_by, recorded_by_label, recorded_by_prid, now,
-         foreign_amount, foreign_currency, fx_rate_used, fx_fee_pct_used,
-         effective_rate, prior_hash, chash),
-    )
+    try:
+        cur = con.execute(
+            "INSERT INTO invoice_payments "
+            "(invoice_id, payment_date, amount, method, reference, notes, "
+            " recorded_by, recorded_by_label, recorded_by_prid, created_at, "
+            " foreign_amount, foreign_currency, fx_rate_used, fx_fee_pct_used, "
+            " effective_rate_used, hub_id, prior_chain_hash, chain_hash, "
+            " idempotency_key) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
+            (invoice_id, payment_date, amount_jmd, method,
+             data.get("reference", ""), enc.get("notes"),
+             recorded_by, recorded_by_label, recorded_by_prid, now,
+             foreign_amount, foreign_currency, fx_rate_used, fx_fee_pct_used,
+             effective_rate, prior_hash, chash, idem),
+        )
+    except _sqlite3.IntegrityError:
+        # Lost the race against a concurrent identical request — the partial
+        # unique index (invoice_id, idempotency_key) fired. Resolve to the
+        # winner's row and report it as a duplicate, no double-credit.
+        existing = con.execute(
+            "SELECT id FROM invoice_payments "
+            "WHERE invoice_id = ? AND idempotency_key = ? LIMIT 1",
+            (invoice_id, idem),
+        ).fetchone()
+        con.close()
+        if existing:
+            return {"id": existing["id"], "duplicate": True}
+        raise
     payment_id = cur.lastrowid
     _recompute_invoice_totals(con, invoice_id)
     # Auto-flip to paid if covered

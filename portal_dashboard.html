@@ -661,7 +661,7 @@
     body[data-pc-density="compact"] .data-table th{padding:8px 12px;}
     body[data-pc-density="compact"] .set-row{padding:10px 0;}
   </style>
-  <script src="/static/pc_shared.js?v=1780787400"></script>
+  <script src="/static/pc_shared.js?v=1780790500"></script>
 </head>
 <body>
   <header>
@@ -743,6 +743,12 @@
       <div class="section-title">Invoices</div>
       <div id="invoicesSummary" style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px 22px;margin-bottom:14px;"></div>
       <div id="invoicesList" class="visit-list"></div>
+    </section>
+
+    <!-- PM service contracts — only shown when the customer has any. -->
+    <section id="contractsSection" style="display:none;">
+      <div class="section-title">Service Contracts</div>
+      <div id="contractsList" class="visit-list"></div>
     </section>
 
     <!-- Annual company review CTA -->
@@ -1322,6 +1328,39 @@
                <div class="date-sub">${lastCM.technician ? `By ${lastCM.technician}` : ''}</div>`
             : `<div class="date-val none">No record yet</div>`}`;
 
+        // Summary-tile hooks: each populated card opens its backing visit's
+        // detail modal (openVisitDetail resolves against dashboardData.visits).
+        // Gated through PC.gateRow so a customer without visit read access gets
+        // a static card. Cards with no backing visit stay inert. We reset the
+        // interactive attributes first so a re-render of the persistent card
+        // element doesn't leave a stale clickable state when the slot empties.
+        const _wireSummaryTile = (el, v) => {
+          if (!el) return;
+          el.classList.remove('pc-row-clickable');
+          el.removeAttribute('tabindex');
+          el.removeAttribute('role');
+          el.removeAttribute('aria-label');
+          if (!v || !v.id) return;
+          if (typeof PC !== 'undefined' && PC.gateRow) {
+            PC.gateRow(el, 'visit', v.id, {
+              onClick: function () { openVisitDetail(v.id); },
+              ariaLabel: 'Open visit on ' + (fmt(v.completed_date || v.scheduled_date) || ''),
+            });
+          } else {
+            el.classList.add('pc-row-clickable');
+            el.setAttribute('tabindex', '0');
+            el.setAttribute('role', 'button');
+            el.onclick = function () { openVisitDetail(v.id); };
+            el.onkeydown = function (e) {
+              if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openVisitDetail(v.id); }
+            };
+          }
+        };
+        _wireSummaryTile(cardNextPM, nextPM);
+        _wireSummaryTile(cardNextCM, nextCM);
+        _wireSummaryTile(cardLastPM, lastPM);
+        _wireSummaryTile(cardLastCM, lastCM);
+
         // Equipment
         if (equipment.length > 0) {
           document.getElementById('equipmentSection').style.display = 'block';
@@ -1381,6 +1420,9 @@
 
         // Load customer invoices
         loadCustomerInvoices().catch(() => {});
+
+        // Load PM service contracts (section self-hides when none)
+        loadCustomerContracts().catch(() => {});
 
         // Annual company review eligibility
         const oneYearAgo = new Date();
@@ -1563,6 +1605,7 @@
       }
 
       const list = document.getElementById('invoicesList');
+      const _gInv = (typeof PC !== 'undefined' && PC.gateLinkHtml);
       list.innerHTML = visible.map(i => {
         const balance = (i.total || 0) - (i.amount_paid || 0);
         const overdue = i.status === 'sent' && balance > 0.005 &&
@@ -1570,6 +1613,15 @@
         const status = overdue ? 'overdue' : i.status;
         const statusBg = {sent:'var(--warn-bg)',overdue:'var(--err-bg)',paid:'var(--ok-bg)',cancelled:'var(--border)'}[status] || 'var(--surface-2)';
         const statusFg = {sent:'var(--warn-fg)',overdue:'var(--err-fg)',paid:'var(--ok-fg)',cancelled:'var(--muted)'}[status] || 'var(--ink)';
+        // Invoice → service-visit cross-reference. Only render the link when the
+        // referenced visit is actually present in this customer's loaded history
+        // (so openVisitDetail can resolve it) and access is permitted; otherwise
+        // omit silently rather than dangle a dead link.
+        const _visit = i.visit_id ? (dashboardData.visits || []).find(x => x.id === i.visit_id) : null;
+        const _visitLabel = _visit ? (ymd(_visit.completed_date || _visit.scheduled_date) || ('visit #' + i.visit_id)) : '';
+        const visitRef = (_visit && _gInv)
+          ? `<div class="visit-sub" style="margin-top:3px;">Service visit: ${PC.gateLinkHtml('visit', i.visit_id, _visitLabel, {onClick: 'function(){openVisitDetail(' + i.visit_id + ')}', title: 'View the service visit this invoice was raised from'})}</div>`
+          : '';
         return `
           <div class="visit-card" data-pc-row-invoice="${i.id}">
             <div class="visit-header">
@@ -1578,6 +1630,7 @@
                 <div class="visit-info">
                   <div class="visit-date">${fmtMoney(i.total, i.currency)}</div>
                   <div class="visit-sub">Issued ${fmt(i.issue_date)} · Due ${fmt(i.due_date)}${balance > 0.005 ? ` · Balance ${fmtMoney(balance, i.currency)}` : ''}</div>
+                  ${visitRef}
                 </div>
               </div>
               <div class="visit-right">
@@ -1587,9 +1640,6 @@
             </div>
           </div>`;
       }).join('');
-      // FIXME: /api/portal/invoices payload does not currently include visit_id;
-      // once it does, render a PC.gateLinkHtml('visit', i.visit_id, ...) line
-      // inside .visit-sub above.
       if (typeof PC !== 'undefined' && PC.gateRow) {
         list.querySelectorAll('[data-pc-row-invoice]').forEach(function (card) {
           const iid = Number(card.getAttribute('data-pc-row-invoice'));
@@ -1630,6 +1680,60 @@
           if (e.key === 'Enter' || e.key === ' ') goInvoices(e);
         });
       }
+    }
+
+    // ── PM service contracts (read-only) ──────────────────────────────────
+    // Surfaces the customer's own maintenance agreements with the upcoming
+    // auto-scheduled PM-visit dates. Curated server-side shape — no internal
+    // notes or generation bookkeeping. Section self-hides when the customer
+    // has no contracts so it never shows an empty shell.
+    const _PM_FREQ_LABEL_PORTAL = { monthly:'Monthly', quarterly:'Quarterly', semiannual:'Semi-annual', annual:'Annual' };
+    async function loadCustomerContracts() {
+      const res = await fetch('/api/portal/pm-contracts', {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      if (res.status === 403) {
+        try {
+          const body = await res.json();
+          if (typeof PC !== 'undefined' && PC.handleAccessDenied) PC.handleAccessDenied({ body });
+        } catch (_) {}
+        return;
+      }
+      if (!res.ok) return;
+      const data = await res.json();
+      const contracts = (data && data.contracts) || [];
+      if (!contracts.length) return;
+
+      document.getElementById('contractsSection').style.display = 'block';
+      const statusBg = { active:'var(--ok-bg)', paused:'var(--warn-bg)', expired:'var(--surface-2)', cancelled:'var(--border)' };
+      const statusFg = { active:'var(--ok-fg)', paused:'var(--warn-fg)', expired:'var(--muted)', cancelled:'var(--muted)' };
+      const list = document.getElementById('contractsList');
+      list.innerHTML = contracts.map(c => {
+        const freq = _PM_FREQ_LABEL_PORTAL[c.frequency] || c.frequency || '';
+        const next = (c.upcoming_visits || [])[0];
+        const moreCount = Math.max(0, (c.upcoming_visits || []).length - 1);
+        const nextLine = next
+          ? `Next visit ${fmt(next)}${moreCount ? ` · +${moreCount} more scheduled` : ''}`
+          : 'No upcoming visits scheduled';
+        const valLine = (c.contract_value && c.contract_value > 0)
+          ? ` · ${fmtMoney(c.contract_value, 'JMD')}` : '';
+        return `
+          <div class="visit-card">
+            <div class="visit-header">
+              <div class="visit-left">
+                <div style="font-family:'Courier New',monospace;font-weight:700;color:var(--ink);background:var(--surface-2);padding:4px 10px;border-radius:6px;font-size:13px;">${esc(c.contract_code || '')}</div>
+                <div class="visit-info">
+                  <div class="visit-date">${esc(c.title || (freq + ' maintenance'))}</div>
+                  <div class="visit-sub">${esc(freq)} · ${fmt(c.start_date)} – ${fmt(c.end_date)}${valLine}</div>
+                  <div class="visit-sub" style="margin-top:3px;">${esc(nextLine)}</div>
+                </div>
+              </div>
+              <div class="visit-right">
+                <span class="badge" style="background:${statusBg[c.status] || 'var(--surface-2)'};color:${statusFg[c.status] || 'var(--ink)'};text-transform:capitalize;">${esc(c.status || '')}</span>
+              </div>
+            </div>
+          </div>`;
+      }).join('');
     }
 
     // ── Service Request ──────────────────────────────────────────────────
@@ -2250,9 +2354,6 @@
         return { cls: 'badge-inv-unpaid', label: 'Unpaid' };
       };
 
-      // FIXME: /api/portal/invoices payload does not currently include the
-      // backing visit_id; once it does we can add a PC.gateLinkHtml('visit',
-      // i.visit_id, ...) column here.
       const _g = (typeof PC !== 'undefined' && PC.gateLinkHtml);
       const rows = acctInvoices.map(i => {
         const balance = (i.total || 0) - (i.amount_paid || 0);
@@ -2263,10 +2364,22 @@
               href: '/portal/invoice/' + i.id,
             })
           : esc(i.invoice_number || '—');
+        // Visit cross-reference column. The invoice payload carries visit_id;
+        // we only link it when that visit is present in the customer's loaded
+        // history (openVisitDetail resolves against dashboardData.visits) and
+        // read access is permitted — otherwise show an em-dash.
+        const _visit = i.visit_id ? (dashboardData.visits || []).find(x => x.id === i.visit_id) : null;
+        const visitCell = (_visit && _g)
+          ? PC.gateLinkHtml('visit', i.visit_id, (ymd(_visit.completed_date || _visit.scheduled_date) || ('visit #' + i.visit_id)), {
+              onClick: 'function(){ openVisitDetail(' + i.visit_id + '); }',
+              title: 'View the service visit this invoice was raised from',
+            })
+          : '<span style="color:var(--muted);">—</span>';
         return `
           <tr data-pc-row-invoice="${i.id}">
             <td><code style="font-family:'Courier New',monospace;font-weight:700;color:var(--ink);">${numCell}</code></td>
             <td class="num">${esc(ymd(i.issue_date) || '—')}</td>
+            <td>${visitCell}</td>
             <td class="num">${fmtMoney(i.total, i.currency)}</td>
             <td class="num">${fmtMoney(i.amount_paid || 0, i.currency)}</td>
             <td class="num"><strong>${fmtMoney(balance, i.currency)}</strong></td>
@@ -2288,6 +2401,7 @@
               <tr>
                 <th>Invoice #</th>
                 <th>Issue Date</th>
+                <th>Visit</th>
                 <th>Total</th>
                 <th>Amount Paid</th>
                 <th>Outstanding</th>

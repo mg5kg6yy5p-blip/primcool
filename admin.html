@@ -1183,7 +1183,7 @@
     .adm-org-wrap{animation:adm-org-fade .22s ease;}
     @keyframes adm-org-fade{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:translateY(0);}}
   </style>
-  <script src="/static/pc_shared.js?v=1780787400"></script>
+  <script src="/static/pc_shared.js?v=1780790500"></script>
 </head>
 <body>
 
@@ -1301,6 +1301,10 @@
       <div class="nav-item" onclick="showPanel('techs')" id="nav-techs">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 11h-6"/><path d="M19 8v6"/></svg>
         Technicians
+      </div>
+      <div class="nav-item" onclick="showPanel('contracts')" id="nav-contracts" style="display:none;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 13l2 2 4-4"/></svg>
+        PM Contracts
       </div>
       <div class="nav-item" onclick="showPanel('invoices')" id="nav-invoices" style="display:none;">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
@@ -1534,6 +1538,7 @@
         <div class="top-bar">
           <h2>Invoices</h2>
           <div style="display:flex;gap:8px;">
+            <button class="btn btn-ghost" id="gctReportBtn" onclick="openGctReport()" style="display:none;">GCT Report</button>
             <button class="btn btn-ghost" id="exportInvoicesBtn" onclick="exportResource('invoices')" style="display:none;">⬇ Export CSV</button>
             <button class="btn btn-primary" id="addInvoiceBtn" onclick="openInvoiceModal()" style="display:none;">+ New Invoice</button>
           </div>
@@ -2398,6 +2403,35 @@
         </div>
       </div>
 
+      <!-- ── PM Contracts panel ──
+           Preventive-maintenance service agreements. Each active contract
+           auto-materialises scheduled PM visits on its frequency cadence
+           (nightly generator + manual "Generate now"). Cross-customer list
+           is gated on super_admin or a blanket power delegation, matching
+           the _require_admin_or_power backend guard. -->
+      <div class="panel" id="panel-contracts">
+        <div class="top-bar">
+          <h2>PM Contracts</h2>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-ghost" id="pmGenerateBtn" onclick="pmGenerateNow()" title="Materialise any PM visits now due across all active contracts">⟳ Generate due visits</button>
+            <button class="btn btn-primary" onclick="openPmContractModal()">+ New Contract</button>
+          </div>
+        </div>
+        <div class="filter-bar" id="pmContractFilters">
+          <button class="filter-btn active" onclick="setPmFilter('all',this)">All</button>
+          <button class="filter-btn" onclick="setPmFilter('active',this)">Active</button>
+          <button class="filter-btn" onclick="setPmFilter('paused',this)">Paused</button>
+          <button class="filter-btn" onclick="setPmFilter('expired',this)">Expired</button>
+          <button class="filter-btn" onclick="setPmFilter('cancelled',this)">Cancelled</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Code</th><th>Customer</th><th>Title</th><th>Frequency</th><th>Term</th><th>Value</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="pmContractTableBody"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
       <!-- ── Company Messages panel ── -->
       <div class="panel" id="panel-companymsg">
         <div class="top-bar">
@@ -2685,6 +2719,11 @@
           <div style="display:flex;gap:8px;align-items:center;">
             <select id="kpiPeriodSelect" onchange="kpiOnPeriodChange()" style="padding:8px 12px;border-radius:6px;border:1px solid var(--border);"></select>
             <button class="btn btn-ghost" onclick="kpiLoadCurrentSubtab()">↻ Refresh</button>
+            <button class="btn btn-ghost"   id="kpiBtnTeamNote"  onclick="kpiOpenTeamPeriodNote(document.getElementById('kpiPeriodSelect').value)" style="display:none;" title="Team-wide note for the selected period">Team Note</button>
+            <button class="btn btn-ghost"   id="kpiBtnGoals"     onclick="kpiOpenGoalsPanel()"        style="display:none;" title="Development goals &amp; PIPs across the team">Goals &amp; PIPs</button>
+            <button class="btn btn-ghost"   id="kpiBtnPipQueue"  onclick="kpiOpenHrPipQueue()"        style="display:none;" title="PIPs awaiting HR acknowledgement">PIP Approvals</button>
+            <button class="btn btn-ghost"   id="kpiBtnManual"    onclick="kpiOpenManualEntry(document.getElementById('kpiPeriodSelect').value)" style="display:none;" title="Manually enter KPI raw values for this period">Manual Entry</button>
+            <button class="btn btn-ghost"   id="kpiBtnCustomKpi" onclick="kpiOpenCustomKpiCreate()"   style="display:none;" title="Define a custom KPI">+ Custom KPI</button>
             <button class="btn btn-primary" id="kpiRecomputeBtn" onclick="kpiRecomputeAll()" style="display:none;">Recompute All</button>
           </div>
         </div>
@@ -3136,6 +3175,42 @@
   </div>
 </div>
 
+<!-- GCT (output tax) liability report -->
+<div class="modal-overlay" id="modal-gctReport">
+  <div class="modal" style="max-width:760px;">
+    <div class="modal-header">
+      <h3>GCT Output-Tax Report</h3>
+      <button class="modal-close" onclick="closeModal('gctReport')">×</button>
+    </div>
+    <div class="modal-body">
+      <div style="background:var(--steel-bg);border:1px solid var(--steel-bg);border-radius:8px;padding:11px 14px;font-size:12px;color:var(--ink);line-height:1.6;margin-bottom:14px;">
+        <strong>Gross output tax, accrual basis.</strong> This is the GCT you
+        charged customers on invoices issued in the period — a liability held on
+        behalf of TAJ, not revenue. It is recognised on the invoice <em>issue
+        date</em> (whether or not the customer has paid yet) and
+        <strong>excludes input-tax credits</strong> (GCT you paid on purchases),
+        which the system does not track. Subtract your own input tax before
+        filing. Drafts and cancelled invoices are excluded.
+      </div>
+      <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin-bottom:14px;">
+        <div>
+          <label for="gct-from" style="display:block;font-size:11px;font-weight:600;color:var(--muted);margin-bottom:4px;">From (issue date)</label>
+          <input id="gct-from" type="date" style="padding:7px;border:1px solid var(--border);border-radius:6px;">
+        </div>
+        <div>
+          <label for="gct-to" style="display:block;font-size:11px;font-weight:600;color:var(--muted);margin-bottom:4px;">To (issue date)</label>
+          <input id="gct-to" type="date" style="padding:7px;border:1px solid var(--border);border-radius:6px;">
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="loadGctReport()">Run report</button>
+      </div>
+      <div id="gctReportContent">Loading…</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" onclick="closeModal('gctReport')">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- Add / Edit Part -->
 <div class="modal-overlay" id="modal-addPart">
   <div class="modal" style="max-width:540px;">
@@ -3463,6 +3538,85 @@
       <button class="btn btn-ghost" onclick="closeModal('addCustomer')">Cancel</button>
       <button class="btn btn-primary" onclick="submitAddCustomer()">Create Customer</button>
     </div>
+  </div>
+</div>
+
+<!-- ── PM Contract create / edit ──
+     One modal serves both create and edit. In edit mode the customer
+     picker is locked (a contract never changes hands) and the title bar
+     + submit button relabel. Frequency/value/term stay editable; status
+     changes go through the dedicated cancel action or the status select. -->
+<div class="modal-overlay" id="modal-pmContract">
+  <div class="modal" style="max-width:620px;">
+    <div class="modal-header">
+      <h3 id="pmContractTitle">New PM Contract</h3>
+      <button class="modal-close" onclick="closeModal('pmContract')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="pmc-id" value="">
+      <div class="field">
+        <label for="pmc-customer">Customer <span style="color:var(--danger);">*</span></label>
+        <select id="pmc-customer" onchange="pmcOnCustomerChange()"><option value="">Select customer…</option></select>
+      </div>
+      <div class="field">
+        <label for="pmc-title">Title</label>
+        <input id="pmc-title" maxlength="200" placeholder="Quarterly chiller PM">
+      </div>
+      <div class="field">
+        <label for="pmc-equipment">Equipment <span style="text-transform:none;font-weight:400;color:var(--muted);">(optional — must belong to the customer)</span></label>
+        <select id="pmc-equipment"><option value="">— Not equipment-specific —</option></select>
+      </div>
+      <div class="field-row">
+        <div class="field"><label for="pmc-start">Start date <span style="color:var(--danger);">*</span></label>
+          <input id="pmc-start" type="date"></div>
+        <div class="field"><label for="pmc-end">End date <span style="color:var(--danger);">*</span></label>
+          <input id="pmc-end" type="date"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label for="pmc-frequency">Frequency <span style="color:var(--danger);">*</span></label>
+          <select id="pmc-frequency">
+            <option value="monthly">Monthly</option>
+            <option value="quarterly" selected>Quarterly</option>
+            <option value="semiannual">Semi-annual</option>
+            <option value="annual">Annual</option>
+          </select>
+        </div>
+        <div class="field"><label for="pmc-value">Contract value (J$)</label>
+          <input id="pmc-value" type="number" min="0" step="0.01" placeholder="0.00"></div>
+      </div>
+      <div class="field" id="pmc-status-wrap" style="display:none;">
+        <label for="pmc-status">Status</label>
+        <select id="pmc-status">
+          <option value="active">Active</option>
+          <option value="paused">Paused</option>
+          <option value="expired">Expired</option>
+          <option value="cancelled">Cancelled</option>
+        </select>
+      </div>
+      <div class="field"><label for="pmc-notes">Internal notes</label>
+        <textarea id="pmc-notes" rows="3" maxlength="2000" placeholder="Staff-only notes…"></textarea></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:2px;line-height:1.5;">
+        Active contracts auto-generate scheduled PM visits on their frequency cadence.
+        The nightly job materialises any visit due within the next month; use
+        <strong>Generate due visits</strong> to run it on demand.</p>
+      <div class="form-error" id="err-pmContract" style="display:none;color:var(--danger);font-size:13px;margin-top:6px;"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('pmContract')">Cancel</button>
+      <button class="btn btn-primary" id="pmcSubmitBtn" onclick="submitPmContract()">Create Contract</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── PM Contract detail (read-only summary + materialised visits) ── -->
+<div class="modal-overlay" id="modal-pmContractDetail">
+  <div class="modal" style="max-width:680px;">
+    <div class="modal-header">
+      <h3 id="pmContractDetailTitle">Contract</h3>
+      <button class="modal-close" onclick="closeModal('pmContractDetail')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body" id="pmContractDetailBody">Loading…</div>
+    <div class="modal-footer" id="pmContractDetailFooter"></div>
   </div>
 </div>
 
@@ -4571,6 +4725,23 @@
       const nd = document.getElementById('nav-delegations');
       if (nd) nd.style.display = 'flex';
     }
+    // PM Contracts — the cross-customer contract list mirrors the
+    // _require_admin_or_power backend guard, so the nav shows for a
+    // super_admin OR an admin holding a blanket power delegation. (A
+    // record-scoped customer delegate still reaches a given customer's
+    // contracts via the per-contract endpoints, but the global list/
+    // generate surface is power-or-super, so we gate the nav to match
+    // and avoid a dead 403 button.)
+    if (currentAdmin && (currentAdmin.role === 'super_admin'
+        || currentAdmin.has_delegation_power === 1
+        || currentAdmin.has_delegation_power === true)) {
+      const nc = document.getElementById('nav-contracts');
+      if (nc) nc.style.display = 'flex';
+      // GCT remittance report — the /metrics + /gct-report endpoints are
+      // power-or-super (_require_admin_or_power), so gate the button to match.
+      const gb = document.getElementById('gctReportBtn');
+      if (gb) gb.style.display = '';
+    }
     // Share icons — super_admin OR has_delegation_power.
     if (currentAdmin && (currentAdmin.role === 'super_admin'
         || currentAdmin.has_delegation_power === 1
@@ -5033,6 +5204,7 @@
     audit: 'Audit Log', reviews: 'Reviews', fs: '5S',
     delegations: 'Delegations', kpi: 'Performance KPI',
     companymsg: 'Company Messages', myprofile: 'My Profile',
+    contracts: 'PM Contracts',
   };
   function _setCrumbs(items) {
     const wrap = document.getElementById('pcCrumbs');
@@ -5340,6 +5512,7 @@
     }
     if (name === 'pto') { _safeLoad('loadPtoQueue', loadPtoQueue); }
     if (name === 'delegations') { _safeLoad('loadDelegationsPanel', loadDelegationsPanel); }
+    if (name === 'contracts') { _safeLoad('loadPmContracts', loadPmContracts); }
     if (name === 'companymsg') { _safeLoad('cmLoad', cmLoad); }
     if (name === 'warehouse') { _safeLoad('whInit', whInit); }
     if (name === 'myprofile') { _safeLoad('loadMpProfile', loadMpProfile); }
@@ -7326,6 +7499,8 @@
   let _whCurrentTab = null;
   let _whAssetsCache = null;        // [{id, asset_code, label, asset_type}]
   let _whChecklistItems = null;     // current edited override (mutable)
+  let _whCatalog = [];              // known-keys catalog for the picker
+  let _whActiveSec = 'sort';        // last-focused section textarea
 
   function whInit() {
     // Default to staff on first open.
@@ -7449,18 +7624,43 @@
       const sections = ['sort','set','shine','standardize','sustain'];
       const grouped = {};
       sections.forEach(s => grouped[s] = []);
+      const safetySet = new Set();
       (data.items || []).forEach(it => {
         if (grouped[it.section]) grouped[it.section].push(it.item_key);
+        if (it.safety_critical) safetySet.add(it.item_key);
       });
       _whChecklistItems = grouped;
-      let html = `<div class="muted" style="font-size:12px;margin-bottom:8px;">Edit per-section. Save replaces the override; "Clear" removes it (back to default).</div>`;
+      _whCatalog = data.catalog || [];
+      _whActiveSec = 'sort';
+      const safetyInUse = [...safetySet];
+      let html = `<div class="muted" style="font-size:12px;margin-bottom:8px;">Edit per-section. Save replaces the override; "Clear" removes it (back to default). Click a key below to insert it into the last-focused section.</div>`;
+      if (safetyInUse.length) {
+        html += `<div style="margin-bottom:10px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);font-size:12px;">
+          <strong style="color:var(--ink);">⚠ Safety / LOTO items in this checklist:</strong>
+          ${safetyInUse.map(k => `<span class="badge" style="background:var(--err-bg);color:var(--err-fg);margin:2px;">${escHtml(k)}</span>`).join(' ')}
+          <div class="muted" style="margin-top:4px;">A failed audit on any of these forces a safety exception. Spell them exactly — typo'd safety keys are rejected on save.</div>
+        </div>`;
+      }
       sections.forEach(sec => {
         html += `
           <div style="margin-bottom:14px;border:1px solid var(--border);border-radius:8px;padding:10px 12px;">
             <div style="font-weight:600;color:var(--ink);text-transform:capitalize;margin-bottom:6px;">${sec === 'set' ? 'Set in order' : sec}</div>
-            <textarea data-wh-sec="${sec}" rows="3" style="width:100%;padding:7px;border:1px solid var(--border);border-radius:6px;font-family:monospace;font-size:12px;" placeholder="one item_key per line">${escHtml(grouped[sec].join('\n'))}</textarea>
+            <textarea data-wh-sec="${sec}" onfocus="_whActiveSec='${sec}'" rows="3" style="width:100%;padding:7px;border:1px solid var(--border);border-radius:6px;font-family:monospace;font-size:12px;" placeholder="one item_key per line">${escHtml(grouped[sec].join('\n'))}</textarea>
           </div>`;
       });
+      // Known-keys picker: safety items badged so the manager sees which
+      // keys carry LOTO weight. Clicking inserts into the active section.
+      if (_whCatalog.length) {
+        const chip = (c) => `<button type="button" class="btn btn-ghost" style="padding:2px 8px;margin:2px;font-size:11px;${c.safety_critical ? 'border-color:var(--err-fg);color:var(--err-fg);' : ''}" onclick="_whInsertKey('${c.item_key}')" title="${c.safety_critical ? 'Safety / LOTO key — failed audit forces a safety exception' : 'Standard checklist key'}">${c.safety_critical ? '⚠ ' : ''}${escHtml(c.item_key)}</button>`;
+        const safetyChips = _whCatalog.filter(c => c.safety_critical).map(chip).join('');
+        const otherChips  = _whCatalog.filter(c => !c.safety_critical).map(chip).join('');
+        html += `<details style="margin-top:6px;"><summary style="cursor:pointer;font-size:12px;color:var(--ink);font-weight:600;">Known keys (click to insert into the focused section)</summary>
+          <div style="margin-top:8px;font-size:11px;color:var(--muted);">Safety / LOTO keys:</div>
+          <div style="margin:4px 0;">${safetyChips}</div>
+          <div style="font-size:11px;color:var(--muted);">Standard keys:</div>
+          <div style="margin:4px 0;">${otherChips}</div>
+        </details>`;
+      }
       html += `<div style="display:flex;gap:8px;margin-top:14px;">
         <button class="btn btn-primary" onclick="whSaveChecklist()">Save override</button>
         <button class="btn btn-ghost"   onclick="whClearChecklist()">Clear override (use default)</button>
@@ -7469,6 +7669,18 @@
     } catch (e) {
       editor.innerHTML = `<div class="empty">Could not load: ${escHtml(e.message)}</div>`;
     }
+  }
+
+  // Insert a catalog key into the last-focused section textarea (dedup'd).
+  function _whInsertKey(key) {
+    const sec = _whActiveSec || 'sort';
+    const ta = document.querySelector(`[data-wh-sec="${sec}"]`);
+    if (!ta) return;
+    const lines = (ta.value || '').split('\n').map(s => s.trim()).filter(Boolean);
+    if (lines.includes(key)) { toast(`'${key}' already in ${sec}.`, 'info'); return; }
+    lines.push(key);
+    ta.value = lines.join('\n');
+    ta.focus();
   }
 
   function _whCollectEditorItems() {
@@ -8434,6 +8646,267 @@
     document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     renderVisitTable();
+  }
+
+  // ── PM Contracts ─────────────────────────────────────────────────────────
+  // Preventive-maintenance service agreements. The cross-customer list and
+  // the manual generator hit _require_admin_or_power; per-contract create/
+  // detail/edit/cancel hit _require_record_access("customer",…) so a customer
+  // delegate manages their own customer's contracts. All money is J$.
+  let _pmContracts = [];
+  let _pmFilter = 'all';
+  const _PM_FREQ_LABEL = { monthly:'Monthly', quarterly:'Quarterly', semiannual:'Semi-annual', annual:'Annual' };
+
+  function _pmCustomerName(id) {
+    const c = (allCustomers || []).find(c => c.id === id);
+    return c ? `${c.name} (${c.customer_code})` : ('#' + id);
+  }
+
+  async function loadPmContracts() {
+    const tbody = document.getElementById('pmContractTableBody');
+    if (tbody) tbody.innerHTML = '<tr><td colspan="8" class="empty">Loading…</td></tr>';
+    // The customer picker / name resolution leans on allCustomers; make sure
+    // it's populated even if the operator lands on Contracts before Customers.
+    if (!allCustomers || !allCustomers.length) {
+      try { allCustomers = await api('GET', '/api/admin/customers'); } catch(_) {}
+    }
+    try {
+      const qs = _pmFilter && _pmFilter !== 'all' ? ('?status=' + encodeURIComponent(_pmFilter)) : '';
+      const rows = await api('GET', '/api/admin/pm-contracts' + qs);
+      _pmContracts = Array.isArray(rows) ? rows : (rows.contracts || rows.items || []);
+      renderPmContractTable();
+    } catch (e) {
+      if (tbody) tbody.innerHTML = `<tr><td colspan="8" class="empty">Could not load contracts: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  function setPmFilter(f, btn) {
+    _pmFilter = f;
+    document.querySelectorAll('#pmContractFilters .filter-btn').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    loadPmContracts();
+  }
+
+  function _pmStatusPill(status) {
+    const map = { active:'var(--teal)', paused:'#9a6b00', expired:'var(--muted)', cancelled:'var(--danger)' };
+    const c = map[status] || 'var(--muted)';
+    return `<span style="display:inline-block;padding:1px 9px;border-radius:10px;font-size:11px;font-weight:700;color:#fff;background:${c};text-transform:capitalize;">${escHtml(status||'')}</span>`;
+  }
+
+  function renderPmContractTable() {
+    const tbody = document.getElementById('pmContractTableBody');
+    if (!tbody) return;
+    if (!_pmContracts.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="empty">No contracts yet. Click “+ New Contract”.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = _pmContracts.map(c => {
+      const term = `${escHtml(c.start_date||'')} → ${escHtml(c.end_date||'')}`;
+      const canEdit = c.status !== 'cancelled';
+      const canCancel = c.status !== 'cancelled';
+      return `<tr>
+        <td><code>${escHtml(c.contract_code||'')}</code></td>
+        <td>${escHtml(_pmCustomerName(c.customer_id))}</td>
+        <td>${escHtml(c.title||'—')}</td>
+        <td>${escHtml(_PM_FREQ_LABEL[c.frequency]||c.frequency||'')}</td>
+        <td style="white-space:nowrap;">${term}</td>
+        <td class="pc-mono">${fmtJMD(c.contract_value)}</td>
+        <td>${_pmStatusPill(c.status)}</td>
+        <td style="white-space:nowrap;">
+          <button class="btn btn-ghost btn-sm" onclick="openPmContractDetail(${c.id})">View</button>
+          ${canEdit ? `<button class="btn btn-ghost btn-sm" onclick="openPmContractModal(${c.id})">Edit</button>` : ''}
+          ${canCancel ? `<button class="btn btn-ghost btn-sm" style="color:var(--danger);" onclick="cancelPmContract(${c.id})">Cancel</button>` : ''}
+        </td>
+      </tr>`;
+    }).join('');
+  }
+
+  async function pmcOnCustomerChange() {
+    const cid = document.getElementById('pmc-customer').value;
+    const sel = document.getElementById('pmc-equipment');
+    sel.innerHTML = '<option value="">— Not equipment-specific —</option>';
+    if (!cid) return;
+    try {
+      const eq = await api('GET', `/api/admin/customers/${cid}/equipment`);
+      (eq || []).forEach(e => {
+        const opt = document.createElement('option');
+        opt.value = e.id; opt.textContent = e.name;
+        sel.appendChild(opt);
+      });
+    } catch(_) {}
+  }
+
+  async function openPmContractModal(id) {
+    if (!allCustomers || !allCustomers.length) {
+      try { allCustomers = await api('GET', '/api/admin/customers'); } catch(_) {}
+    }
+    const custSel = document.getElementById('pmc-customer');
+    custSel.innerHTML = '<option value="">Select customer…</option>' +
+      (allCustomers || []).map(c => `<option value="${c.id}">${escHtml(c.name)} (${escHtml(c.customer_code)})</option>`).join('');
+    const errEl = document.getElementById('err-pmContract');
+    if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+    const statusWrap = document.getElementById('pmc-status-wrap');
+
+    if (id) {
+      const c = _pmContracts.find(x => x.id === id);
+      if (!c) { toast('Contract not found', 'error'); return; }
+      document.getElementById('pmContractTitle').textContent = 'Edit Contract ' + (c.contract_code || '');
+      document.getElementById('pmcSubmitBtn').textContent = 'Save Changes';
+      document.getElementById('pmc-id').value = c.id;
+      custSel.value = c.customer_id;
+      custSel.disabled = true;                       // a contract never changes hands
+      await pmcOnCustomerChange();
+      document.getElementById('pmc-equipment').value = c.equipment_id || '';
+      document.getElementById('pmc-title').value = c.title || '';
+      document.getElementById('pmc-start').value = c.start_date || '';
+      document.getElementById('pmc-end').value = c.end_date || '';
+      document.getElementById('pmc-frequency').value = c.frequency || 'quarterly';
+      document.getElementById('pmc-value').value = (c.contract_value != null ? c.contract_value : '');
+      document.getElementById('pmc-notes').value = c.notes || '';
+      document.getElementById('pmc-status').value = c.status || 'active';
+      if (statusWrap) statusWrap.style.display = 'block';
+    } else {
+      document.getElementById('pmContractTitle').textContent = 'New PM Contract';
+      document.getElementById('pmcSubmitBtn').textContent = 'Create Contract';
+      document.getElementById('pmc-id').value = '';
+      custSel.disabled = false;
+      custSel.value = '';
+      document.getElementById('pmc-equipment').innerHTML = '<option value="">— Not equipment-specific —</option>';
+      document.getElementById('pmc-title').value = '';
+      document.getElementById('pmc-start').value = '';
+      document.getElementById('pmc-end').value = '';
+      document.getElementById('pmc-frequency').value = 'quarterly';
+      document.getElementById('pmc-value').value = '';
+      document.getElementById('pmc-notes').value = '';
+      if (statusWrap) statusWrap.style.display = 'none';
+    }
+    document.getElementById('modal-pmContract').classList.add('open');
+  }
+
+  async function submitPmContract() {
+    const errEl = document.getElementById('err-pmContract');
+    const showErr = (m) => { if (errEl) { errEl.textContent = m; errEl.style.display = 'block'; } };
+    if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+    const id = document.getElementById('pmc-id').value;
+    const customerId = document.getElementById('pmc-customer').value;
+    const equipmentId = document.getElementById('pmc-equipment').value;
+    const title = document.getElementById('pmc-title').value.trim();
+    const start = document.getElementById('pmc-start').value;
+    const end = document.getElementById('pmc-end').value;
+    const freq = document.getElementById('pmc-frequency').value;
+    const valRaw = document.getElementById('pmc-value').value;
+    const notes = document.getElementById('pmc-notes').value.trim();
+
+    if (!id && !customerId) return showErr('Pick a customer.');
+    if (!start || !end) return showErr('Start and end dates are both required.');
+    if (end < start) return showErr('End date cannot be before the start date.');
+    const value = valRaw === '' ? 0 : Number(valRaw);
+    if (isNaN(value) || value < 0) return showErr('Contract value must be a non-negative number.');
+
+    const btn = document.getElementById('pmcSubmitBtn');
+    btn.disabled = true;
+    try {
+      if (id) {
+        const body = {
+          title, start_date: start, end_date: end, frequency: freq,
+          contract_value: value, notes,
+          status: document.getElementById('pmc-status').value,
+          equipment_id: equipmentId ? Number(equipmentId) : null,
+        };
+        await api('PATCH', `/api/admin/pm-contracts/${id}`, body);
+        toast('Contract updated', 'success');
+      } else {
+        const body = {
+          customer_id: Number(customerId), title, start_date: start, end_date: end,
+          frequency: freq, contract_value: value, notes,
+        };
+        if (equipmentId) body.equipment_id = Number(equipmentId);
+        await api('POST', '/api/admin/pm-contracts', body);
+        toast('Contract created', 'success');
+      }
+      closeModal('pmContract');
+      loadPmContracts();
+    } catch (e) {
+      showErr(e.message || 'Could not save contract.');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function openPmContractDetail(id) {
+    const body = document.getElementById('pmContractDetailBody');
+    const footer = document.getElementById('pmContractDetailFooter');
+    document.getElementById('pmContractDetailTitle').textContent = 'Contract';
+    body.innerHTML = 'Loading…';
+    footer.innerHTML = '';
+    document.getElementById('modal-pmContractDetail').classList.add('open');
+    try {
+      const d = await api('GET', `/api/admin/pm-contracts/${id}`);
+      const c = d.contract || d;
+      const visits = d.visits || c.visits || [];
+      document.getElementById('pmContractDetailTitle').textContent = (c.contract_code || 'Contract');
+      const rows = visits.length ? visits.map(v => `<tr>
+          <td>${escHtml(v.scheduled_date||'')}</td>
+          <td style="text-transform:capitalize;">${escHtml(v.status||'')}</td>
+          <td>${escHtml(v.technician||v.assigned_tech_name||'—')}</td>
+        </tr>`).join('')
+        : '<tr><td colspan="3" class="empty">No visits materialised yet.</td></tr>';
+      body.innerHTML = `
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 18px;font-size:13px;margin-bottom:16px;">
+          <div><div style="color:var(--muted);">Customer</div><div>${escHtml(_pmCustomerName(c.customer_id))}</div></div>
+          <div><div style="color:var(--muted);">Status</div><div>${_pmStatusPill(c.status)}</div></div>
+          <div><div style="color:var(--muted);">Title</div><div>${escHtml(c.title||'—')}</div></div>
+          <div><div style="color:var(--muted);">Frequency</div><div>${escHtml(_PM_FREQ_LABEL[c.frequency]||c.frequency||'')}</div></div>
+          <div><div style="color:var(--muted);">Term</div><div>${escHtml(c.start_date||'')} → ${escHtml(c.end_date||'')}</div></div>
+          <div><div style="color:var(--muted);">Value</div><div class="pc-mono">${fmtJMD(c.contract_value)}</div></div>
+          ${c.notes ? `<div style="grid-column:1/-1;"><div style="color:var(--muted);">Notes</div><div style="white-space:pre-wrap;">${escHtml(c.notes)}</div></div>` : ''}
+        </div>
+        <h4 style="margin:0 0 8px;font-size:13px;color:var(--ink);">Materialised visits (${visits.length})</h4>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Scheduled</th><th>Status</th><th>Tech</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>`;
+      const parts = [`<button class="btn btn-ghost" onclick="closeModal('pmContractDetail')">Close</button>`];
+      if (c.status !== 'cancelled') {
+        parts.push(`<button class="btn btn-primary" onclick="closeModal('pmContractDetail');openPmContractModal(${c.id})">Edit</button>`);
+      }
+      footer.innerHTML = parts.join('');
+    } catch (e) {
+      body.innerHTML = `<div style="color:var(--danger);">Could not load contract: ${escHtml(e.message)}</div>`;
+      footer.innerHTML = `<button class="btn btn-ghost" onclick="closeModal('pmContractDetail')">Close</button>`;
+    }
+  }
+
+  async function cancelPmContract(id) {
+    const c = _pmContracts.find(x => x.id === id);
+    const label = c ? (c.contract_code || ('#' + id)) : ('#' + id);
+    if (!confirm(`Cancel contract ${label}? This stops future PM-visit generation. Existing scheduled visits are not deleted.`)) return;
+    try {
+      await api('POST', `/api/admin/pm-contracts/${id}/cancel`, {});
+      toast('Contract cancelled', 'success');
+      loadPmContracts();
+    } catch (e) {
+      toast(e.message || 'Could not cancel contract', 'error');
+    }
+  }
+
+  async function pmGenerateNow() {
+    const btn = document.getElementById('pmGenerateBtn');
+    if (btn) btn.disabled = true;
+    try {
+      const r = await api('POST', '/api/admin/pm-contracts/generate', {});
+      const created = (r.created || []).length;
+      const expired = (r.expired || []).length;
+      const bits = [];
+      bits.push(created ? `${created} visit${created===1?'':'s'} scheduled` : 'no new visits due');
+      if (expired) bits.push(`${expired} contract${expired===1?'':'s'} expired`);
+      toast('Generator ran — ' + bits.join(', '), 'success');
+      loadPmContracts();
+    } catch (e) {
+      toast(e.message || 'Generator failed', 'error');
+    } finally {
+      if (btn) btn.disabled = false;
+    }
   }
 
   async function populateCustomerSelect(selectedId) {
@@ -13058,8 +13531,82 @@
         ${summaryCard('Outstanding',         _invFmt(m.outstanding,'JMD'),         m.outstanding>0?'var(--teal-deep)':'var(--muted-2)')}
         ${summaryCard('Overdue',             _invFmt(m.overdue,'JMD'),             m.overdue>0?'var(--red)':'var(--muted-2)')}
         ${summaryCard('Invoiced This Month', _invFmt(m.invoiced_this_month,'JMD'), 'var(--ink)')}
-        ${summaryCard('Collected This Month',_invFmt(m.collected_this_month,'JMD'),'var(--teal-deep)')}`;
+        ${summaryCard('Collected This Month',_invFmt(m.collected_this_month,'JMD'),'var(--teal-deep)')}
+        ${summaryCard('GCT Collected (Output Tax)', _invFmt(m.gct_output_this_month,'JMD'), 'var(--steel)')}`;
     } catch(e) { /* fallback to client-side computation in renderInvoices */ }
+  }
+
+  // ── GCT output-tax report ─────────────────────────────────────────────
+  // Accrual-basis gross output tax (the GCT charged on issued invoices), per
+  // calendar month + billing currency. Read-only; mirrors the labelling on the
+  // server (`get_gct_liability_report`). NOT a net GCT-payable figure.
+  function openGctReport() {
+    openModal('gctReport');
+    const from = document.getElementById('gct-from');
+    const to   = document.getElementById('gct-to');
+    const today = new Date();
+    if (from && !from.value) from.value = today.getFullYear() + '-01-01';
+    if (to && !to.value)     to.value   = today.toISOString().slice(0,10);
+    loadGctReport();
+  }
+
+  async function loadGctReport() {
+    const host = document.getElementById('gctReportContent');
+    if (!host) return;
+    host.innerHTML = 'Loading…';
+    const from = (document.getElementById('gct-from')||{}).value || '';
+    const to   = (document.getElementById('gct-to')||{}).value || '';
+    const qs = [];
+    if (from) qs.push('from=' + encodeURIComponent(from));
+    if (to)   qs.push('to='   + encodeURIComponent(to));
+    let rep;
+    try {
+      rep = await api('GET', '/api/admin/invoices/gct-report' + (qs.length ? ('?' + qs.join('&')) : ''));
+    } catch(e) {
+      host.innerHTML = `<div style="color:var(--red);font-size:13px;">Failed to load report: ${escHtml(e.message||'error')}</div>`;
+      return;
+    }
+    const periods = rep.periods || [];
+    const totals  = rep.totals_by_currency || {};
+    if (!periods.length) {
+      host.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:8px 0;">No invoices issued between ${escHtml(rep.from)} and ${escHtml(rep.to)}.</div>`;
+      return;
+    }
+    const rows = periods.map(p => `
+      <tr>
+        <td>${escHtml(p.month)}</td>
+        <td>${escHtml(p.currency)}</td>
+        <td style="text-align:right;">${p.invoice_count}</td>
+        <td style="text-align:right;">${_invFmt(p.net, p.currency)}</td>
+        <td style="text-align:right;font-weight:700;">${_invFmt(p.output_gct, p.currency)}</td>
+        <td style="text-align:right;">${_invFmt(p.gross, p.currency)}</td>
+      </tr>`).join('');
+    const totalRows = Object.keys(totals).sort().map(cur => {
+      const t = totals[cur];
+      return `
+      <tr style="border-top:2px solid var(--border);font-weight:700;">
+        <td colspan="2">Total ${escHtml(cur)}</td>
+        <td style="text-align:right;">${t.invoice_count}</td>
+        <td style="text-align:right;">${_invFmt(t.net, cur)}</td>
+        <td style="text-align:right;color:var(--steel-deep,var(--steel));">${_invFmt(t.output_gct, cur)}</td>
+        <td style="text-align:right;">${_invFmt(t.gross, cur)}</td>
+      </tr>`; }).join('');
+    host.innerHTML = `
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">
+        Period ${escHtml(rep.from)} → ${escHtml(rep.to)} · basis: ${escHtml(rep.basis)} · gross output tax only
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Month</th><th>Currency</th>
+            <th style="text-align:right;">Invoices</th>
+            <th style="text-align:right;">Net (ex-GCT)</th>
+            <th style="text-align:right;">Output GCT</th>
+            <th style="text-align:right;">Gross</th>
+          </tr></thead>
+          <tbody>${rows}${totalRows}</tbody>
+        </table>
+      </div>`;
   }
 
   // ── Hash-routed Edit View ─────────────────────────────────────────────
@@ -13105,6 +13652,11 @@
       try {
         data = await api('GET', `/api/admin/invoices/${invoiceId}/full`);
         data.line_items = data.line_items || [];
+        // Storage keeps tax_rate as a FRACTION (e.g. 0.15); this editor works
+        // in PERCENT (the "GCT Rate (%)" input + the /100 preview math), and
+        // the server divides by 100 again on save. Convert fraction→percent on
+        // load so the round-trip is lossless.
+        data.tax_rate = Math.round((Number(data.tax_rate) || 0) * 10000) / 100;
       } catch(e) {
         toast('Failed to load invoice: ' + e.message, 'error');
         location.hash = '';
@@ -13632,12 +14184,19 @@
   }
 
   async function _paySubmit(invoiceId) {
+    // One idempotency key per submit; reused on retry so a double-tap or
+    // network blip can't double-credit the invoice (parity with the v1
+    // record-payment flow + Audit M3).
+    const _idem = (window.crypto && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : ('idem-' + Date.now() + '-' + Math.random().toString(36).slice(2,10));
     const body = {
       amount: parseFloat(document.getElementById('inv-pay-amount').value || 0),
       payment_currency: document.getElementById('inv-pay-currency').value,
       payment_method:   document.getElementById('inv-pay-method').value,
       payment_date:     document.getElementById('inv-pay-date').value,
       notes:            document.getElementById('inv-pay-notes').value,
+      idempotency_key:  _idem,
     };
     if (body.payment_currency !== 'JMD') {
       body.fx_rate_used    = parseFloat(document.getElementById('inv-pay-fxrate').value || 0);
@@ -14230,6 +14789,14 @@
     }
     if (can('kpi:recompute')) document.getElementById('kpiRecomputeBtn').style.display = '';
     if (can('kpi:edit_thresholds')) document.getElementById('kpiSubThresholds').style.display = '';
+    // KPI add-on entry points — each gated by the permission its backend
+    // endpoint enforces, so a viewer never sees a button that would 403.
+    const _show = (id, perm) => { if (can(perm)) { const b = document.getElementById(id); if (b) b.style.display = ''; } };
+    _show('kpiBtnTeamNote',  'kpi:note_write_team_period');
+    _show('kpiBtnGoals',     'kpi:goal_view');
+    _show('kpiBtnPipQueue',  'kpi:pip_acknowledge');
+    _show('kpiBtnManual',    'kpi:manual_value_set');
+    _show('kpiBtnCustomKpi', 'kpi:def_create');
   }
 
   function kpiOnPeriodChange() {
@@ -14385,6 +14952,12 @@
       </span>
       ${can('kpi:flag_override') ? `<span style="display:inline-flex;align-items:center;gap:6px;margin-left:14px;padding-left:14px;border-left:1px solid var(--border);"><button class="btn btn-danger btn-sm" onclick="kpiActionOverride(${f.id})" title="Override the flag — requires a reason. Logged in audit trail.">⚠ Override</button></span>` : ''}
     `;
+    // Score annotation applies to the underlying score regardless of flag
+    // status (you can annotate a resolved/overridden score too), so it lives
+    // outside the non-terminal action group.
+    const annotateBtn = (f.score_id && can('kpi:note_write_score_annotation'))
+      ? `<button class="btn btn-ghost btn-sm" onclick="kpiOpenScoreAnnotation(${f.score_id}, ${f.tech_id})" title="Add an annotation to this KPI score">Annotate</button>`
+      : '';
     const _gate = (typeof PC !== 'undefined' && PC.gateLinkHtml);
     const techRef = _gate
       ? PC.gateLinkHtml('technician', f.tech_id, f.tech_name || ('tech #' + f.tech_id), {onClick: 'function(){ kpiOpenScorecard(' + f.tech_id + '); }'})
@@ -14401,7 +14974,7 @@
           <div style="margin-top:8px;font-size:12px;color:var(--muted);">Period: ${esc(f.period_key)} · Created ${created} · ${daysOpen} open · Status: <strong>${esc(f.status)}</strong></div>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;max-width:340px;">
-          ${actions}
+          ${annotateBtn}${actions}
         </div>
       </div>
     </div>`;
@@ -14551,6 +15124,7 @@
 
   function kpiRenderScorecard(container, sc, flags) {
     const t = sc.tech || {};
+    const tid = t.id || sc.tech_id;
     const comp = (sc.current && sc.current.composite) || {};
     const kpis = (sc.current && sc.current.kpis) || {};
     const trend = sc.trend || [];
@@ -14597,6 +15171,12 @@
           </div>
         </div>
       </div>
+      ${(can('kpi:note_write_coaching') || can('kpi:note_write_recognition') || can('kpi:goal_view')) ? `
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
+        ${can('kpi:note_write_coaching')    ? `<button class="btn btn-edit btn-sm"  onclick="kpiOpenCoachingLog(${tid})"   title="View and add coaching notes for this tech">Coaching Log</button>` : ''}
+        ${can('kpi:note_write_recognition') ? `<button class="btn btn-ghost btn-sm" onclick="kpiOpenRecognitionAdd(${tid})" title="Record recognition for this tech">+ Recognition</button>` : ''}
+        ${can('kpi:goal_view')              ? `<button class="btn btn-ghost btn-sm" onclick="kpiOpenGoalsPanel(${tid})"    title="Development goals &amp; PIPs for this tech">Goals &amp; PIPs</button>` : ''}
+      </div>` : ''}
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-bottom:18px;">
         ${kpiCards}
       </div>

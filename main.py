@@ -54,6 +54,8 @@ from database import (
     get_visit_full_detail, get_visit_photos_for_admin,
     update_invoice_payment_status,
     get_customer_visits, get_all_visits, create_visit, update_visit, delete_visit,
+    create_pm_contract, get_pm_contract, list_pm_contracts, update_pm_contract,
+    list_visits_for_contract, generate_due_pm_visits, pm_contract_schedule,
     get_visit_by_id, update_visit_time, tech_complete_visit, get_tech_jobs,
     add_visit_reading, get_visit_readings,
     set_visit_signature, get_visit_signature,
@@ -158,7 +160,7 @@ from database import (
     # PrimeCool Invoicing Module
     search_parts_catalog, get_active_fx_rate, set_fx_rate_manual,
     list_fx_rate_history, compute_fx_display,
-    get_invoice_metrics, list_invoices, export_invoices_csv,
+    get_invoice_metrics, get_gct_liability_report, list_invoices, export_invoices_csv,
     get_invoice_full, record_invoice_payment_v2,
     transition_invoice_status, create_invoice_with_lines,
     update_invoice_with_lines,
@@ -1660,6 +1662,99 @@ def _identify_actor_silent(request: Request) -> dict:
     return {}
 
 
+def _require_viewer(request: Request) -> dict:
+    """Resolve the current signed-in subject from ANY of the three session
+    cookies (admin / tech / customer) and return {type, id}. Raises 401 when
+    nobody is signed in. Used by surfaces that belong to every authenticated
+    user regardless of kind — e.g. the notification centre — gated on identity
+    only, never on a feature permission (per the 'features for all' rule)."""
+    actor = _identify_actor_silent(request)
+    if not actor:
+        raise HTTPException(401, "Sign-in required")
+    return {"type": actor["actor_type"], "id": actor["actor_id"]}
+
+
+def _notify_pto_decision(req: dict, decision: str):
+    """Best-effort in-app notification to the technician whose time-off
+    request was just decided. Silent on any failure — the request row and
+    audit entry remain the source of truth, so a notify error never blocks
+    the decision."""
+    try:
+        if not req or not req.get("tech_id"):
+            return
+        approved = decision == "approved"
+        kind_label = (req.get("kind") or "time-off").replace("_", " ")
+        span = req.get("start_date") or ""
+        if req.get("end_date") and req.get("end_date") != req.get("start_date"):
+            span = f"{span} – {req.get('end_date')}"
+        _notify(
+            "tech", int(req["tech_id"]), "payroll",
+            f"Time-off request {decision}",
+            body=f"Your {kind_label} request"
+                 + (f" for {span}" if span else "")
+                 + f" was {decision} by your supervisor.",
+            link="/tech", severity=("success" if approved else "warning"),
+            dedupe_key=f"pto_decision:{req.get('id')}",
+            dedupe_window_minutes=1440)
+    except Exception as _e:
+        logger.warning(f"[notif] pto decision notify failed: {_e}")
+
+
+def _push_fanout(recipient_type: str, recipient_id: int, *, title: str,
+                 body: str, link: str = None):
+    """Best-effort web-push fan-out to every browser the recipient has
+    subscribed. No-op when WEBPUSH_ENABLED is off (the in-app row already
+    landed), so local dev never makes the external vendor-push POST. Dead
+    endpoints (404/410) get a failure bump and are dropped after a few
+    strikes. Never raises into the caller."""
+    import webpush as _wp
+    if not _wp.is_enabled():
+        return
+    from database import (list_push_subscriptions, mark_push_subscription_sent,
+                          mark_push_subscription_failure)
+    # Audience-correct icon (real PWA assets under /icons). No admin-specific
+    # brand mark exists, so admin falls back to the generic customer icon.
+    _icon = "/icons/tech-192.png" if recipient_type == "tech" else "/icons/customer-192.png"
+    payload = _json.dumps({"title": title, "body": body or "", "link": link or "/",
+                           "icon": _icon})
+    for sub in list_push_subscriptions(recipient_type, int(recipient_id)):
+        try:
+            res = _wp.send(sub, payload)
+            if res.get("sent"):
+                mark_push_subscription_sent(sub["endpoint"])
+            else:
+                mark_push_subscription_failure(sub["endpoint"])
+        except _wp.WebPushDisabled:
+            return
+        except Exception as _e:
+            logger.warning(f"[push] send error for sub {sub.get('id')}: {_e}")
+
+
+def _notify(recipient_type: str, recipient_id: int, kind: str, title: str, *,
+            body: str = None, link: str = None, severity: str = "info",
+            dedupe_key: str = None, dedupe_window_minutes: int = None):
+    """Create the authoritative in-app notification row AND attempt a
+    best-effort web-push to the recipient's browsers. The in-app feed is the
+    source of truth; push is a convenience layer that is silently skipped
+    when disabled or unsubscribed. Returns the notification id (or None)."""
+    nid = None
+    try:
+        from database import create_notification
+        nid = create_notification(recipient_type, int(recipient_id), kind, title,
+                                  body=body, link=link, severity=severity,
+                                  dedupe_key=dedupe_key,
+                                  dedupe_window_minutes=dedupe_window_minutes)
+    except Exception as _e:
+        logger.warning(f"[notif] create failed: {_e}")
+        return None
+    try:
+        _push_fanout(recipient_type, recipient_id, title=title,
+                     body=body or "", link=link)
+    except Exception as _e:
+        logger.warning(f"[notif] push fanout failed: {_e}")
+    return nid
+
+
 def _send_security_alert_email(alert: dict):
     """Best-effort email notification for a newly-raised alert. Silent on
     failure — the alert is still in the DB and visible to super_admin."""
@@ -1942,6 +2037,13 @@ class CustomerPinReset(BaseModel):
     pin: str
 
 
+class PortalSetInitialPin(BaseModel):
+    """First-login forced PIN set (must_set_pin gate). Authenticated by the
+    portal session cookie — no reset token, the customer is already signed in."""
+    pin:         str
+    confirm_pin: str
+
+
 class CustomerSetPassword(BaseModel):
     """Customer self-service: switch own account to password auth."""
     current_pin:      str = ""
@@ -2027,6 +2129,17 @@ class AdminChangeOwnPassword(BaseModel):
     confirm_password: str
 
 
+class TechChangeOwnPin(BaseModel):
+    # Self-service PIN change from the tech portal. Mirrors
+    # AdminChangeOwnPassword — requires the current PIN as re-auth so a
+    # stolen session alone can't permanently take over the account.
+    # Also the endpoint that clears must_change_credentials for a tech
+    # flagged for a first-login forced reset (pre-launch checklist #2).
+    current_pin: str
+    new_pin:     str
+    confirm_pin: str
+
+
 class CustomerCreate(BaseModel):
     customer_code: str
     name:          str
@@ -2037,6 +2150,7 @@ class CustomerCreate(BaseModel):
     address:       str = ""
     notes:         str = ""
     customer_type: str = "residential"   # 'residential' | 'commercial' — commercial requires MFA
+    must_set_pin:  bool = False          # force the customer to choose their own PIN at first login
 
 
 class CustomerProfileUpdate(BaseModel):
@@ -2131,6 +2245,31 @@ class EquipmentUpdate(BaseModel):
     serial_number: Optional[str] = None
     location:      Optional[str] = None
     notes:         Optional[str] = None
+
+
+class PMContractCreate(BaseModel):
+    customer_id:    int
+    equipment_id:   Optional[int] = None
+    title:          str = ""
+    start_date:     str
+    end_date:       str
+    frequency:      str
+    contract_value: float = 0
+    notes:          str = ""
+    hub_id:         Optional[int] = None
+
+
+class PMContractUpdate(BaseModel):
+    """PATCH body — every field optional. customer_id is intentionally not
+    editable (re-parenting a contract is a separate, riskier action)."""
+    title:          Optional[str] = None
+    start_date:     Optional[str] = None
+    end_date:       Optional[str] = None
+    frequency:      Optional[str] = None
+    contract_value: Optional[float] = None
+    status:         Optional[str] = None
+    notes:          Optional[str] = None
+    equipment_id:   Optional[int] = None
 
 
 class VisitCreate(BaseModel):
@@ -2540,7 +2679,12 @@ def portal_login(req: PortalLoginRequest, request: Request, response: Response):
     return {"token": token, "name": customer["name"],
             "customer_type": customer.get("customer_type", "residential"),
             "auth_mode":     customer.get("auth_mode", "pin"),
-            "mfa_enabled":   bool(customer.get("mfa_enabled"))}
+            "mfa_enabled":   bool(customer.get("mfa_enabled")),
+            # First-login gate: when true the portal forces a set-your-own-PIN
+            # step (so the seeded "1000 + id" PIN never sticks on a real
+            # account). Only meaningful for PIN-auth customers.
+            "must_set_pin":  bool(customer.get("must_set_pin"))
+                             and customer.get("auth_mode", "pin") != "password"}
 
 
 def _verify_customer_totp(customer: dict, code: str) -> bool:
@@ -2596,7 +2740,9 @@ def portal_login_mfa(body: dict, request: Request, response: Response):
     _set_session_cookie(response, COOKIE_CUSTOMER, token, 24 * 3600)
     bump_last_login("customer", cust["id"])
     _audit_customer(cust, "portal.login", request, target_label="mfa")
-    return {"token": token, "name": cust["name"]}
+    return {"token": token, "name": cust["name"],
+            "must_set_pin": bool(cust.get("must_set_pin"))
+                            and cust.get("auth_mode", "pin") != "password"}
 
 
 @app.post("/api/portal/mfa/setup")
@@ -2762,6 +2908,33 @@ def portal_reset_pin(body: PortalResetPin):
     )
     set_customer_pin(customer_id, body.pin)
     reset_pin_failures(customer_id)
+    return {"ok": True}
+
+
+@app.post("/api/portal/set-pin")
+def portal_set_initial_pin(body: PortalSetInitialPin, request: Request):
+    """First-login forced PIN set. Driven by the `must_set_pin` gate surfaced
+    on the login response: the portal redirects the just-signed-in customer
+    here to replace the seeded PIN with one of their own. Authenticated by the
+    session cookie (the customer proved the seeded PIN to get here), so no
+    reset token is needed. Also usable as a general logged-in PIN change."""
+    customer_id = _require_customer(request)
+    cust = get_customer_by_id(customer_id)
+    if not cust:
+        raise HTTPException(404, "Customer not found")
+    if cust.get("auth_mode") == "password":
+        # Password-auth accounts don't have a PIN to set; use /api/portal/password.
+        raise HTTPException(400, "This account uses password sign-in")
+    if body.pin != body.confirm_pin:
+        raise HTTPException(400, "PINs do not match")
+    _validate_pin_or_400(
+        body.pin, phone_on_file=cust.get("phone"),
+        actor_type="customer", actor_id=customer_id,
+        label=cust.get("customer_code") or f"customer#{customer_id}",
+    )
+    set_customer_pin(customer_id, body.pin)   # also clears must_set_pin
+    reset_pin_failures(customer_id)
+    _audit_customer(cust, "portal.pin_set_initial", request)
     return {"ok": True}
 
 
@@ -2949,6 +3122,33 @@ def staff_login(req: StaffLoginRequest, request: Request, response: Response):
     tech_row  = get_tech_by_code(identifier)
     _staff_lock_guard("admin", admin_row, request, identifier)
     _staff_lock_guard("tech", tech_row, request, identifier)
+
+    # Identifier-collision detection: this login resolves the admin space
+    # FIRST, so if the SAME identifier matches both an admin and a tech the
+    # tech is silently shadowed (they can never reach the portal). The
+    # creation-time guard (staff_identifier_conflict) prevents NEW
+    # collisions; this surfaces any pre-existing one as a security alert so
+    # ops can rename one of the accounts. Non-fatal — login still proceeds
+    # (admin-first) so we don't lock out the admin half of the pair.
+    if admin_row and tech_row:
+        try:
+            # De-dup: the alert is a standing "rename one of these" signal, not
+            # a per-attempt event. Without this it would fire on every colliding
+            # login. recent_alert_exists keys on (kind, actor_id) within 30 min.
+            if not recent_alert_exists("staff_identifier_collision",
+                                       admin_row["id"], within_minutes=30):
+                create_security_alert(
+                    kind="staff_identifier_collision", severity="medium",
+                    summary=(f"Identifier '{identifier}' matches BOTH admin "
+                             f"#{admin_row['id']} and tech #{tech_row['id']} — "
+                             f"the tech is shadowed on /staff login. Rename one."),
+                    actor_type="staff_unified", actor_id=admin_row["id"],
+                    details={"identifier": identifier,
+                             "admin_id": admin_row["id"],
+                             "tech_id": tech_row["id"]},
+                )
+        except Exception as _e:
+            logger.debug(f"collision alert write failed: {_e}")
 
     # Try admin first — admins use username + password, generally
     # alphanumeric. verify_admin_user is constant-time on miss.
@@ -4765,6 +4965,59 @@ def admin_change_own_password(request: Request, body: AdminChangeOwnPassword):
     return {"ok": True}
 
 
+@app.post("/api/tech/me/pin")
+def tech_change_own_pin(request: Request, body: TechChangeOwnPin):
+    """Self-service PIN change from the tech portal.
+
+    Tech-side mirror of admin_change_own_password. Requires the
+    *current* PIN (re-auth) so a stolen session token alone can't
+    permanently take over the account, validates the new PIN against
+    the same policy as account creation, blocks no-op changes, then
+    sets the new PIN (set_tech_pin also clears must_change_credentials,
+    satisfying pre-launch checklist #2's forced first-login reset).
+    Every other live tech session is revoked so a previously-stolen
+    cookie can't outlive the PIN; the current session stays alive."""
+    from database import _verify_pin, get_tech_by_id
+    tech_id = _require_tech(request)
+    tech = get_tech_by_id(tech_id)
+    if not tech:
+        raise HTTPException(404, "Tech not found")
+    if not _verify_pin(body.current_pin, tech.get("pin_hash") or ""):
+        _tp1_tech_audit(tech_id, "tech.pin.change_failed", request,
+                        target_type="tech", target_id=tech_id,
+                        target_label=tech.get("tech_code"),
+                        after={"reason": "bad_current"})
+        raise HTTPException(401, "Current PIN is incorrect")
+    if body.new_pin != body.confirm_pin:
+        raise HTTPException(400, "New PINs do not match")
+    if body.new_pin == body.current_pin:
+        raise HTTPException(400, "New PIN must be different from current PIN")
+    _validate_pin_or_400(body.new_pin, phone_on_file=tech.get("phone"),
+                         actor_type="tech", actor_id=tech_id,
+                         label=tech.get("tech_code") or f"tech#{tech_id}")
+    set_tech_pin(tech_id, body.new_pin)
+    # Revoke other sessions but keep the current one alive.
+    current_jti = None
+    try:
+        token = _read_token(request, COOKIE_TECH)
+        if token:
+            data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM],
+                              options={"verify_exp": False})
+            current_jti = data.get("jti")
+    except Exception:
+        pass
+    try:
+        from database import revoke_tech_sessions_except
+        revoke_tech_sessions_except(tech_id, current_jti)
+    except Exception:
+        # Helper may not exist on older DBs; non-fatal.
+        pass
+    _tp1_tech_audit(tech_id, "tech.pin.changed", request,
+                    target_type="tech", target_id=tech_id,
+                    target_label=tech.get("tech_code"))
+    return {"ok": True}
+
+
 @app.post("/api/admin/logout")
 def admin_logout(request: Request, response: Response):
     # Log the logout if a valid session exists (best-effort)
@@ -5021,6 +5274,10 @@ def admin_create_user(request: Request, body: AdminUserCreate):
     data = body.model_dump()
     try:
         new_id, prid = create_admin_user(data, created_by=admin["id"])
+    except ValueError as ve:
+        # Reciprocal-uniqueness guard tripped (custom username collides
+        # with a technician code/PRID).
+        raise HTTPException(409, str(ve))
     except Exception as e:
         if "UNIQUE" in str(e):
             raise HTTPException(409, "Email already exists")
@@ -5210,7 +5467,13 @@ def admin_promote_tech(request: Request, tech_id: int, body: PromoteTechBody):
         "username":  (body.username or "").strip(),
         "hire_date": target.get("hire_date") or "",
     }
-    new_admin_id, new_prid = create_admin_user(data, created_by=admin["id"])
+    try:
+        new_admin_id, new_prid = create_admin_user(data, created_by=admin["id"])
+    except ValueError as ve:
+        # Reciprocal-uniqueness guard: the chosen username collides with a
+        # technician code/PRID. (Leaving username blank uses the
+        # auto-generated, globally-unique PRID and avoids this.)
+        raise HTTPException(409, str(ve))
     # Archive the field record last — if admin creation failed above we never
     # get here, so we never strand a tech with no destination account.
     term = terminate_account("tech", tech_id)
@@ -5716,6 +5979,7 @@ def admin_approve_pto_request(request: Request, request_id: int, body: PtoDecisi
     _audit_from(admin, "pto.request_approved", request,
                 target_type="pto_request", target_id=request_id,
                 after={"note": body.note})
+    _notify_pto_decision(out, "approved")
     return {"ok": True, "request": out}
 
 
@@ -5732,6 +5996,7 @@ def admin_deny_pto_request(request: Request, request_id: int, body: PtoDecisionB
     _audit_from(admin, "pto.request_denied", request,
                 target_type="pto_request", target_id=request_id,
                 after={"note": body.note})
+    _notify_pto_decision(out, "denied")
     return {"ok": True, "request": out}
 
 
@@ -7002,8 +7267,23 @@ def admin_export_invoices(request: Request,
 # coerce 'metrics', 'list', 'export.csv' into an int.
 @app.get("/api/admin/invoices/metrics")
 def admin_invoice_metrics_pre(request: Request):
-    _require_super_admin(request)
+    _require_admin_or_power(request)
     return get_invoice_metrics()
+
+
+@app.get("/api/admin/invoices/gct-report")
+def admin_invoice_gct_report(request: Request,
+                             from_: Optional[str] = Query(None, alias="from"),
+                             to: Optional[str] = None):
+    """Accrual-basis output-GCT liability report (per month, per currency).
+    Collection/global financial view → super_admin or a blanket power
+    delegation, matching the invoices-metrics gate."""
+    admin = _require_admin_or_power(request)
+    report = get_gct_liability_report(from_date=from_, to_date=to)
+    _audit_from(admin, "invoice.gct_report", request, target_type="invoice",
+                after={"from": report["from"], "to": report["to"],
+                       "currencies": list(report["totals_by_currency"].keys())})
+    return report
 
 
 @app.get("/api/admin/invoices/list")
@@ -7013,7 +7293,7 @@ def admin_invoice_list_v2_pre(request: Request,
                                 to: Optional[str] = None,
                                 page: int = 1,
                                 limit: int = 20):
-    _require_super_admin(request)
+    _require_admin_or_power(request)
     return list_invoices(
         {"status": status, "from": from_, "to": to},
         page=page, limit=limit,
@@ -7025,7 +7305,7 @@ def admin_invoice_export_csv_pre(request: Request,
                                    status: Optional[str] = None,
                                    from_: Optional[str] = Query(None, alias="from"),
                                    to: Optional[str] = None):
-    admin = _require_super_admin(request)
+    admin = _require_admin_or_power(request)
     rows = export_invoices_csv({"status": status, "from": from_, "to": to})
     import io, csv as _csv
     buf = io.StringIO()
@@ -7055,7 +7335,7 @@ def admin_parts_search_pre(request: Request,
                             limit: int = 20):
     """Searchable inventory lookup. Inventory NOT deducted here —
     see visit parts-used flow (canonical deduction point)."""
-    _require_super_admin(request)
+    _require_admin_or_power(request)
     return search_parts_catalog(q, limit=limit)
 
 
@@ -7063,7 +7343,7 @@ def admin_parts_search_pre(request: Request,
 def admin_fx_rate_get_pre(request: Request,
                             currency: str,
                             effective_date: Optional[str] = None):
-    _require_super_admin(request)
+    _require_admin_or_power(request)
     cu = (currency or "").upper()
     if cu not in ("USD", "GBP"):
         raise HTTPException(400, "Invalid currency")
@@ -7073,7 +7353,7 @@ def admin_fx_rate_get_pre(request: Request,
 
 @app.post("/api/admin/fx-rates")
 async def admin_fx_rate_set_pre(request: Request):
-    admin = _require_super_admin(request)
+    admin = _require_admin_or_power(request)
     body = await request.json()
     fc = (body.get("from_currency") or "").upper()
     if fc not in ("USD", "GBP"):
@@ -7100,7 +7380,7 @@ async def admin_fx_rate_set_pre(request: Request):
 def admin_fx_rate_history_pre(request: Request,
                                 currency: str,
                                 limit: int = 30):
-    _require_super_admin(request)
+    _require_admin_or_power(request)
     cu = (currency or "").upper()
     if cu not in ("USD", "GBP"):
         raise HTTPException(400, "Invalid currency")
@@ -7246,7 +7526,7 @@ async def admin_invoice_create_v2(request: Request):
     """Spec §5 invoice.created. Honours display_currency, fx_fee_pct, fx_rate.
     Lines support labor (tech_id/hours/hourly_rate), part (part_id/part_sku),
     and other."""
-    admin = _require_super_admin(request)
+    admin = _require_admin_or_power(request)
     body = await request.json()
     # Server-side validation
     if not body.get("customer_id"):
@@ -7264,7 +7544,11 @@ async def admin_invoice_create_v2(request: Request):
                    else DEFAULT_FX_FEE_PCT)
     if fx_fee < 0 or fx_fee > 50:
         raise HTTPException(400, "fx_fee_pct must be 0–50")
-    body["tax_rate"]   = tax_rate
+    # The API/UI express tax_rate as a PERCENT (0–100), but the storage layer
+    # (`_recompute_invoice_totals` does subtotal * tax_rate) and the v1 path
+    # both treat tax_rate as a FRACTION. Convert at the boundary so the column
+    # stays a fraction; otherwise tax_amount would be inflated 100×.
+    body["tax_rate"]   = tax_rate / 100.0
     body["fx_fee_pct"] = fx_fee
     body["display_currency"] = dc
     invoice_id = create_invoice_with_lines(body, created_by=admin["id"])
@@ -7281,7 +7565,7 @@ async def admin_invoice_create_v2(request: Request):
 @app.patch("/api/admin/invoices/{invoice_id}", response_model=Dict[str, Any])
 async def admin_invoice_patch(request: Request, invoice_id: int):
     """Atomic header + line replacement for the new column set."""
-    admin = _require_super_admin(request)
+    admin = _require_record_access(request, "invoice", invoice_id, write=True)
     before = get_invoice_by_id(invoice_id, with_lines=False)
     if not before:
         raise HTTPException(404, "Invoice not found")
@@ -7296,6 +7580,8 @@ async def admin_invoice_patch(request: Request, invoice_id: int):
         tr = float(body["tax_rate"])
         if tr < 0 or tr > 100:
             raise HTTPException(400, "tax_rate must be 0–100")
+        # Percent (API/UI) → fraction (storage). See admin_invoice_create_v2.
+        body["tax_rate"] = tr / 100.0
     if "fx_fee_pct" in body:
         ff = float(body["fx_fee_pct"])
         if ff < 0 or ff > 50:
@@ -7319,7 +7605,7 @@ async def admin_invoice_patch(request: Request, invoice_id: int):
 @app.post("/api/admin/invoices/{invoice_id}/send", response_model=OkResponse)
 def admin_invoice_send(request: Request, invoice_id: int):
     """draft → sent transition with sent_at stamp."""
-    admin = _require_super_admin(request)
+    admin = _require_record_access(request, "invoice", invoice_id, write=True)
     inv = get_invoice_by_id(invoice_id, with_lines=False)
     if not inv:
         raise HTTPException(404, "Invoice not found")
@@ -7332,13 +7618,28 @@ def admin_invoice_send(request: Request, invoice_id: int):
                 target_label=inv["invoice_number"],
                 before={"status": inv["status"]},
                 after={"status": "sent"})
+    # Best-effort in-app notification to the billed customer (A5). Never
+    # blocks the send: the status transition + audit are the source of truth.
+    try:
+        cust_id = inv.get("customer_id")
+        if cust_id:
+            _notify(
+                "customer", int(cust_id), "invoice",
+                f"Invoice {inv['invoice_number']} is ready",
+                body="A new invoice has been issued to your account. "
+                     "Open your portal to review it.",
+                link="/portal", severity="info",
+                dedupe_key=f"invoice_sent:{invoice_id}",
+                dedupe_window_minutes=1440)
+    except Exception as _e:
+        logger.warning(f"[notif] invoice.sent customer notify failed: {_e}")
     return {"ok": True, "status": "sent"}
 
 
 @app.post("/api/admin/invoices/{invoice_id}/cancel", response_model=OkResponse)
 async def admin_invoice_cancel(request: Request, invoice_id: int):
     """Cancel an invoice. Reason is required and encrypted at rest."""
-    admin = _require_super_admin(request)
+    admin = _require_record_access(request, "invoice", invoice_id, write=True)
     body = await request.json()
     reason = (body.get("reason") or "").strip()
     if not reason:
@@ -7364,7 +7665,7 @@ async def admin_invoice_payment_v2(request: Request, invoice_id: int):
     """Append-only, chain-hashed payment row. Body matches the modal:
        amount, payment_currency, payment_method, payment_date, notes,
        fx_rate_used (if foreign), fx_fee_pct_used (if foreign)."""
-    admin = _require_super_admin(request)
+    admin = _require_record_access(request, "invoice", invoice_id, write=True)
     inv = get_invoice_by_id(invoice_id, with_lines=False)
     if not inv:
         raise HTTPException(404, "Invoice not found")
@@ -7433,6 +7734,11 @@ async def admin_invoice_payment_v2(request: Request, invoice_id: int):
         "fx_fee_pct_used":      fx_fee_pct_used,
         "effective_rate_used":  effective_rate,
         "overpay_action":       overpay_action,
+        # Client-supplied UUID per "Record Payment" click — reused on
+        # retry so a double-tap / network-retry can't double-credit the
+        # invoice. Optional; keyless callers fall back to the 30s window.
+        "idempotency_key":      (str(body.get("idempotency_key")).strip()
+                                 if body.get("idempotency_key") else None),
     }
     result = record_invoice_payment_v2(
         invoice_id, payload,
@@ -7485,7 +7791,7 @@ async def admin_invoice_payment_v2(request: Request, invoice_id: int):
 
 @app.get("/api/admin/invoices/{invoice_id}/payments", response_model=Dict[str, Any])
 def admin_invoice_payments_list(request: Request, invoice_id: int):
-    _require_super_admin(request)
+    _require_record_access(request, "invoice", invoice_id, write=False)
     inv = get_invoice_full(invoice_id)
     if not inv:
         raise HTTPException(404, "Invoice not found")
@@ -7497,6 +7803,31 @@ def admin_invoice_payments_list(request: Request, invoice_id: int):
 def portal_invoices(request: Request):
     customer_id = _require_customer(request)
     return get_customer_invoices(customer_id)
+
+
+@app.get("/api/portal/pm-contracts")
+def portal_pm_contracts(request: Request):
+    """The logged-in customer's own PM contracts (read-only, curated shape).
+    Internal-only fields (notes, created_by, generation bookkeeping) are
+    omitted; upcoming scheduled PM-visit dates are surfaced so the client can
+    see what's coming."""
+    customer_id = _require_customer(request)
+    today = datetime.now(timezone.utc).date().isoformat()
+    out = []
+    for c in list_pm_contracts({"customer_id": customer_id}):
+        upcoming = [v["scheduled_date"] for v in list_visits_for_contract(c["id"])
+                    if v["status"] == "scheduled" and (v["scheduled_date"] or "") >= today]
+        out.append({
+            "contract_code": c["contract_code"],
+            "title": c.get("title") or "",
+            "start_date": c["start_date"],
+            "end_date": c["end_date"],
+            "frequency": c["frequency"],
+            "contract_value": c["contract_value"],
+            "status": c["status"],
+            "upcoming_visits": sorted(upcoming),
+        })
+    return {"contracts": out, "count": len(out)}
 
 
 @app.get("/api/portal/invoices/{invoice_id}")
@@ -8003,6 +8334,107 @@ def admin_bulk_resolve_alerts(request: Request, body: AlertBulkResolveBody):
     return {"ok": True, **result}
 
 
+# ---------------------------------------------------------------------------
+# In-app notification centre (A5).
+#
+# These belong to EVERY authenticated subject — admin, technician, or
+# customer — so they gate on identity via `_require_viewer`, never on a
+# feature permission. A viewer only ever sees rows addressed to their own
+# (recipient_type, recipient_id) pair; the helpers enforce that scoping in
+# SQL, so there is no cross-subject leak even though the route is shared.
+# ---------------------------------------------------------------------------
+@app.get("/api/notifications")
+def list_my_notifications(request: Request, unread: int = 0, limit: int = 50):
+    from database import list_notifications, count_unread_notifications
+    v = _require_viewer(request)
+    limit = max(1, min(int(limit or 50), 200))
+    items = list_notifications(v["type"], v["id"],
+                               only_unread=bool(unread), limit=limit)
+    return {"items": items,
+            "unread": count_unread_notifications(v["type"], v["id"])}
+
+
+@app.get("/api/notifications/unread-count")
+def my_unread_notification_count(request: Request):
+    """Tiny polling endpoint for the bell badge — returns just the integer
+    so the shared widget can poll cheaply from all six pages."""
+    from database import count_unread_notifications
+    v = _require_viewer(request)
+    return {"unread": count_unread_notifications(v["type"], v["id"])}
+
+
+@app.post("/api/notifications/{notif_id}/read")
+def mark_my_notification_read(request: Request, notif_id: int):
+    from database import mark_notification_read, count_unread_notifications
+    v = _require_viewer(request)
+    ok = mark_notification_read(notif_id, v["type"], v["id"])
+    if not ok:
+        # Either it does not exist or it is not addressed to this viewer.
+        raise HTTPException(404, "Notification not found")
+    return {"ok": True,
+            "unread": count_unread_notifications(v["type"], v["id"])}
+
+
+@app.post("/api/notifications/read-all")
+def mark_all_my_notifications_read(request: Request):
+    from database import mark_all_notifications_read
+    v = _require_viewer(request)
+    n = mark_all_notifications_read(v["type"], v["id"])
+    return {"ok": True, "marked": n, "unread": 0}
+
+
+# ---------------------------------------------------------------------------
+# Web Push (A5) — VAPID + RFC 8291. The browser needs the VAPID public key to
+# subscribe; the subscription (endpoint + keys) is stored per signed-in
+# subject. Actual delivery is gated by WEBPUSH_ENABLED (off in local dev), so
+# these endpoints only ever store/remove subscriptions locally — no external
+# call. `configured` tells the client whether push is even available.
+# ---------------------------------------------------------------------------
+@app.get("/api/push/vapid-public-key")
+def push_vapid_public_key():
+    import webpush as _wp
+    key = _wp.get_public_key()
+    return {"key": key, "configured": bool(key), "enabled": _wp.is_enabled()}
+
+
+class PushSubscribeBody(BaseModel):
+    endpoint: str
+    keys: Dict[str, str]   # {"p256dh": "...", "auth": "..."}
+
+
+@app.post("/api/push/subscribe")
+def push_subscribe(request: Request, body: PushSubscribeBody):
+    """Store a browser push subscription for the current signed-in subject.
+    Identity-gated only (any admin/tech/customer may subscribe their own
+    browser) — never a feature permission."""
+    v = _require_viewer(request)
+    p256dh = (body.keys or {}).get("p256dh")
+    auth = (body.keys or {}).get("auth")
+    if not (body.endpoint and p256dh and auth):
+        raise HTTPException(400, "endpoint, keys.p256dh and keys.auth are required")
+    from database import upsert_push_subscription
+    ua = (request.headers.get("user-agent", "") or "")[:255]
+    sid = upsert_push_subscription(v["type"], v["id"], endpoint=body.endpoint,
+                                   p256dh=p256dh, auth=auth, user_agent=ua)
+    return {"ok": True, "id": sid}
+
+
+class PushUnsubscribeBody(BaseModel):
+    endpoint: str
+
+
+@app.post("/api/push/unsubscribe")
+def push_unsubscribe(request: Request, body: PushUnsubscribeBody):
+    """Remove a push subscription. Requires a signed-in subject; the
+    subscription is keyed by its globally-unique endpoint."""
+    _require_viewer(request)
+    if not body.endpoint:
+        raise HTTPException(400, "endpoint is required")
+    from database import delete_push_subscription
+    delete_push_subscription(body.endpoint)
+    return {"ok": True}
+
+
 def _csv_response(rows: list, columns: list, filename: str) -> PlainTextResponse:
     """Render rows to CSV with RFC 4180 escaping. `columns` is a list of dict
     keys to include, in order."""
@@ -8222,7 +8654,13 @@ def _require_super_admin(request: Request):
 # power) with permission_level ≥ required → ALLOW (audit delegation.accessed
 # when DELEGATION_VERBOSE_AUDIT != "0").
 # Otherwise 403. Audit-write failures NEVER raise — they log to stderr.
-# FIXME(docs/FIXMES.md): delegation retrofit gap — only customer/visit/invoice/technician detail+edit endpoints honor delegation; other endpoints retain super_admin gate.
+# Delegation retrofit (2026-06-06): every record-scoped admin endpoint whose
+# path names a delegatable record (customer/visit/invoice/technician) now flows
+# through this guard, and collection/global endpoints flow through
+# `_require_admin_or_power`. Only meta-governance surfaces stay hard
+# super_admin: the access-denied audit reader and the delegation
+# regrant-request approve/deny queue (a power-delegate must not self-approve
+# delegation governance). See docs/FIXMES.md "Resolved".
 def _require_record_access(request: Request, record_type: str,
                            record_id: int, write: bool = False):
     from database import lookup_record_delegation as _lookup_deleg
@@ -8304,6 +8742,51 @@ def _require_record_access(request: Request, record_type: str,
                    viewer_kind="admin", viewer_id=admin["id"],
                    action=("record.write" if write else "record.read"),
                    resource_type=record_type, resource_id=record_id,
+                   request=request, status=403)
+
+
+# ── Collection-scope access guard (super_admin OR a blanket "power" grant) ──
+# `_require_record_access` covers endpoints that name a single delegatable
+# record (customer/visit/invoice/technician). Collection / global endpoints
+# (invoice list, fx-rates, parts search, …) have no record_id to scope a
+# record/record_type delegation against, so the only delegation that can stand
+# in for the super_admin role here is a blanket `power` grant. Non-delegated
+# non-super admins are denied exactly as `_require_super_admin` would deny them
+# — this widens access ONLY for active power-delegation holders.
+def _require_admin_or_power(request: Request, action: str = "super_admin_only"):
+    from database import lookup_record_delegation as _lookup_deleg
+    admin = _require_admin(request)
+    if admin.get("role") == "super_admin":
+        try:
+            _audit_from(admin, "access.role_allow", request,
+                        target_type=None, target_id=None)
+        except Exception as _e:
+            logger.warning(f"[delegation] audit-write failed: {_e}")
+        return admin
+    # A power grant matches any record_type unconditionally (priority 3 in
+    # lookup_record_delegation), so a sentinel record_type/id surfaces it while
+    # never matching a record/record_type-scoped grant.
+    deleg = None
+    try:
+        deleg = _lookup_deleg(admin["id"], "__collection__", 0)
+    except Exception as _e:
+        logger.warning(f"[delegation] power lookup failed: {_e}")
+    if deleg and deleg.get("delegation_type") == "power":
+        verbose = os.environ.get("DELEGATION_VERBOSE_AUDIT", "1") != "0"
+        if verbose:
+            try:
+                _audit_from(admin, "delegation.accessed", request,
+                            target_type=None, target_id=None,
+                            after={"delegation_id": deleg["id"],
+                                   "delegation_type": "power",
+                                   "scope": "collection"})
+            except Exception as _e:
+                logger.warning(f"[delegation] audit-write failed: {_e}")
+        return admin
+    _deny_response(reason="not_super_admin",
+                   viewer_kind="admin", viewer_id=admin["id"],
+                   action=action,
+                   resource_type=None, resource_id=None,
                    request=request, status=403)
 
 
@@ -8460,8 +8943,8 @@ def admin_list_equipment(request: Request, customer_id: int):
 @app.get("/api/admin/customers/{customer_id}/visits", response_model=Dict[str, Any])
 def admin_customer_visits(request: Request, customer_id: int,
                           page: int = 1, limit: int = 10):
-    """super_admin-only: paginated reverse-chronological service history."""
-    admin = _require_super_admin(request)
+    """Delegation-aware: paginated reverse-chronological service history."""
+    admin = _require_record_access(request, "customer", customer_id, write=False)
     cust = get_customer_by_id(customer_id)
     if not cust:
         raise HTTPException(404, "Customer not found")
@@ -8470,6 +8953,202 @@ def admin_customer_visits(request: Request, customer_id: int,
                 target_label=cust.get("customer_code"),
                 after={"page": page, "limit": limit})
     return get_customer_visits_paginated(customer_id, page=page, limit=limit)
+
+
+# ── Preventive-maintenance (PM) contracts ───────────────────────────────────
+# A contract is a customer-scoped record, so per-contract endpoints flow
+# through the delegation-aware `_require_record_access(... "customer" ...)`
+# guard (a customer-delegate can manage that customer's contracts). The
+# cross-customer list + the manual generation trigger are collection/global
+# operations, so they flow through `_require_admin_or_power` (super_admin or a
+# blanket power delegation). The nightly generator runs unattended (cron).
+_PM_FREQUENCIES = ("monthly", "quarterly", "semiannual", "annual")
+_PM_STATUSES    = ("active", "paused", "expired", "cancelled")
+
+
+def _validate_pm_contract(*, start_date=None, end_date=None, frequency=None,
+                          contract_value=None, status=None,
+                          require_all=True) -> list:
+    """Returns a list of {field, message} dicts. Empty = OK. When
+    require_all is False (PATCH), only validates the fields that are present."""
+    errs = []
+    def _is_ymd(s):
+        return bool(s) and bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(s)))
+    if frequency is not None or require_all:
+        if (frequency or "").lower() not in _PM_FREQUENCIES:
+            errs.append({"field": "frequency",
+                         "message": "Must be one of: monthly, quarterly, semiannual, annual"})
+    if start_date is not None or require_all:
+        if not _is_ymd(start_date):
+            errs.append({"field": "start_date", "message": "Start date must be ISO date (YYYY-MM-DD)"})
+    if end_date is not None or require_all:
+        if not _is_ymd(end_date):
+            errs.append({"field": "end_date", "message": "End date must be ISO date (YYYY-MM-DD)"})
+    # Range check only when both ends are valid ISO dates.
+    if _is_ymd(start_date) and _is_ymd(end_date) and str(end_date) < str(start_date):
+        errs.append({"field": "end_date", "message": "End date must be on or after the start date"})
+    if contract_value is not None:
+        try:
+            if float(contract_value) < 0:
+                errs.append({"field": "contract_value", "message": "Contract value cannot be negative"})
+        except (TypeError, ValueError):
+            errs.append({"field": "contract_value", "message": "Contract value must be a number"})
+    if status is not None and status not in _PM_STATUSES:
+        errs.append({"field": "status",
+                     "message": "Must be one of: active, paused, expired, cancelled"})
+    return errs
+
+
+def _pm_contract_with_visits(contract: dict) -> dict:
+    """Decorate a contract dict with its materialised visits + the full
+    computed due-date schedule for the term."""
+    out = dict(contract)
+    out["visits"] = list_visits_for_contract(contract["id"])
+    out["schedule"] = pm_contract_schedule(
+        contract.get("start_date"), contract.get("end_date"), contract.get("frequency"))
+    return out
+
+
+@app.get("/api/admin/pm-contracts", response_model=Dict[str, Any])
+def admin_pm_contracts_list(request: Request,
+                            customer_id: Optional[int] = None,
+                            status: Optional[str] = None,
+                            hub_id: Optional[int] = None):
+    """List PM contracts. Cross-customer view is a collection op (power-or-super).
+    When scoped to a single customer_id, honour a customer-record delegation so
+    a customer-delegate can see that customer's contracts."""
+    if customer_id is not None:
+        admin = _require_record_access(request, "customer", customer_id, write=False)
+    else:
+        admin = _require_admin_or_power(request)
+    filters = {}
+    if customer_id is not None:
+        filters["customer_id"] = customer_id
+    if status:
+        filters["status"] = status
+    if hub_id is not None:
+        filters["hub_id"] = hub_id
+    rows = list_pm_contracts(filters)
+    _audit_from(admin, "pm_contract.list", request,
+                target_type="customer", target_id=customer_id,
+                after={"count": len(rows), "status": status})
+    return {"contracts": rows, "count": len(rows)}
+
+
+@app.post("/api/admin/pm-contracts", response_model=Dict[str, Any])
+def admin_pm_contract_create(request: Request, body: PMContractCreate):
+    # Customer-scoped write — a customer-record (read_write) delegate may create.
+    admin = _require_record_access(request, "customer", body.customer_id, write=True)
+    cust = get_customer_by_id(body.customer_id)
+    if not cust:
+        raise HTTPException(404, "Customer not found")
+    errs = _validate_pm_contract(start_date=body.start_date, end_date=body.end_date,
+                                 frequency=body.frequency,
+                                 contract_value=body.contract_value)
+    if errs:
+        raise HTTPException(422, detail={"errors": errs})
+    if body.equipment_id is not None:
+        eq = get_equipment_by_id(body.equipment_id)
+        if not eq or int(eq.get("customer_id") or 0) != int(body.customer_id):
+            raise HTTPException(422, detail={"errors": [
+                {"field": "equipment_id", "message": "Equipment not found for this customer"}]})
+    data = body.model_dump()
+    if data.get("hub_id") is None:
+        data["hub_id"] = cust.get("hub_id", 1)
+    cid = create_pm_contract(data, by_kind="admin", by_id=admin["id"])
+    contract = get_pm_contract(cid)
+    _audit_from(admin, "pm_contract.created", request,
+                target_type="customer", target_id=body.customer_id,
+                target_label=cust.get("customer_code"),
+                after={"contract_id": cid, "contract_code": contract["contract_code"],
+                       "frequency": contract["frequency"],
+                       "start_date": contract["start_date"],
+                       "end_date": contract["end_date"]})
+    return {"ok": True, "contract": contract}
+
+
+@app.post("/api/admin/pm-contracts/generate", response_model=Dict[str, Any])
+def admin_pm_contracts_generate(request: Request,
+                                lookahead_days: int = 30,
+                                contract_id: Optional[int] = None):
+    """Manually run the PM-visit generator (the same routine the nightly cron
+    runs). Collection/global op → super_admin or a blanket power delegation."""
+    admin = _require_admin_or_power(request)
+    lookahead_days = max(0, min(int(lookahead_days), 365))
+    result = generate_due_pm_visits(lookahead_days=lookahead_days,
+                                    only_contract_id=contract_id)
+    _audit_from(admin, "pm_contract.generate_run", request,
+                target_type="pm_contracts", target_id=contract_id,
+                after={"created": len(result["created"]),
+                       "expired": len(result["expired"]),
+                       "processed": result["processed"],
+                       "lookahead_days": lookahead_days})
+    return {"ok": True, **result}
+
+
+@app.get("/api/admin/pm-contracts/{contract_id}", response_model=Dict[str, Any])
+def admin_pm_contract_detail(request: Request, contract_id: int):
+    contract = get_pm_contract(contract_id)
+    if not contract:
+        # Authenticate before leaking existence; treat as not-found for any admin.
+        _require_admin(request)
+        raise HTTPException(404, "Contract not found")
+    admin = _require_record_access(request, "customer", contract["customer_id"], write=False)
+    _audit_from(admin, "pm_contract.view", request,
+                target_type="customer", target_id=contract["customer_id"],
+                after={"contract_id": contract_id})
+    return {"contract": _pm_contract_with_visits(contract)}
+
+
+@app.patch("/api/admin/pm-contracts/{contract_id}", response_model=Dict[str, Any])
+def admin_pm_contract_update(request: Request, contract_id: int, body: PMContractUpdate):
+    contract = get_pm_contract(contract_id)
+    if not contract:
+        _require_admin(request)
+        raise HTTPException(404, "Contract not found")
+    admin = _require_record_access(request, "customer", contract["customer_id"], write=True)
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(422, detail={"errors": [
+            {"field": "_", "message": "No fields to update"}]})
+    # Validate using the post-merge view so a partial PATCH still keeps a sane range.
+    merged_start = updates.get("start_date", contract["start_date"])
+    merged_end   = updates.get("end_date", contract["end_date"])
+    errs = _validate_pm_contract(
+        start_date=merged_start, end_date=merged_end,
+        frequency=updates.get("frequency"), contract_value=updates.get("contract_value"),
+        status=updates.get("status"), require_all=False)
+    if errs:
+        raise HTTPException(422, detail={"errors": errs})
+    if "equipment_id" in updates and updates["equipment_id"] is not None:
+        eq = get_equipment_by_id(updates["equipment_id"])
+        if not eq or int(eq.get("customer_id") or 0) != int(contract["customer_id"]):
+            raise HTTPException(422, detail={"errors": [
+                {"field": "equipment_id", "message": "Equipment not found for this customer"}]})
+    update_pm_contract(contract_id, updates, by_kind="admin", by_id=admin["id"])
+    after = get_pm_contract(contract_id)
+    _audit_from(admin, "pm_contract.updated", request,
+                target_type="customer", target_id=contract["customer_id"],
+                before={k: contract.get(k) for k in updates},
+                after={k: after.get(k) for k in updates} | {"contract_id": contract_id})
+    return {"ok": True, "contract": _pm_contract_with_visits(after)}
+
+
+@app.post("/api/admin/pm-contracts/{contract_id}/cancel", response_model=Dict[str, Any])
+def admin_pm_contract_cancel(request: Request, contract_id: int):
+    contract = get_pm_contract(contract_id)
+    if not contract:
+        _require_admin(request)
+        raise HTTPException(404, "Contract not found")
+    admin = _require_record_access(request, "customer", contract["customer_id"], write=True)
+    if contract["status"] == "cancelled":
+        return {"ok": True, "already_cancelled": True}
+    update_pm_contract(contract_id, {"status": "cancelled"}, by_kind="admin", by_id=admin["id"])
+    _audit_from(admin, "pm_contract.cancelled", request,
+                target_type="customer", target_id=contract["customer_id"],
+                before={"status": contract["status"]},
+                after={"status": "cancelled", "contract_id": contract_id})
+    return {"ok": True, "contract": get_pm_contract(contract_id)}
 
 
 # ── Visit Detail View (super_admin only) ─────────────────────────────────────
@@ -8536,7 +9215,7 @@ def admin_visit_photos(request: Request, visit_id: int):
     Detail View. We reuse the existing _sign_photo_url HMAC infra rather
     than inventing a parallel admin-only blob endpoint — signatures are
     short-lived (PHOTO_URL_TTL) and tied to the filename."""
-    admin = _require_super_admin(request)
+    admin = _require_record_access(request, "visit", visit_id, write=False)
     # 404 if no such visit at all (avoids silent empty list for bad ids)
     v = get_visit_by_id(visit_id)
     if not v:
@@ -8573,7 +9252,7 @@ def admin_visit_invoice_payment(request: Request, visit_id: int,
     append-only and chain-hashed. Voids (status='unpaid') append a
     negative-amount marker row with voided_at set, keeping the chain
     intact."""
-    admin = _require_super_admin(request)
+    admin = _require_record_access(request, "visit", visit_id, write=True)
 
     # Resolve the invoice for this visit. We deliberately do not accept an
     # invoice_id in the URL — the contract is "the invoice for this visit".
@@ -8786,8 +9465,8 @@ def admin_technician_jobs(request: Request, tech_id: int,
                           date_to: Optional[str] = None,
                           callbacks_only: bool = False,
                           status: Optional[str] = None):
-    """super_admin-only: paginated reverse-chronological job history."""
-    admin = _require_super_admin(request)
+    """Delegation-aware: paginated reverse-chronological job history."""
+    admin = _require_record_access(request, "technician", tech_id, write=False)
     t = get_tech_by_id(tech_id)
     if not t:
         raise HTTPException(404, "Technician not found")
@@ -8863,7 +9542,7 @@ def admin_technician_kpi(request: Request, tech_id: int, window: int = 30):
 def admin_technician_5s(request: Request, tech_id: int, window: int = 30):
     """super_admin-only: 5S compliance score + recent audits + open
     exceptions for the tech. Wraps the existing 5S helpers."""
-    admin = _require_super_admin(request)
+    admin = _require_record_access(request, "technician", tech_id, write=False)
     t = get_tech_by_id(tech_id)
     if not t:
         raise HTTPException(404, "Technician not found")
@@ -8889,7 +9568,7 @@ def admin_technician_kpi_threshold(request: Request, tech_id: int,
                                    body: TechnicianKpiThresholdOverride):
     """super_admin-only: persist a KPI threshold override row. Will surface
     in the UI once the KPI module reads from technician_kpi_overrides."""
-    admin = _require_super_admin(request)
+    admin = _require_record_access(request, "technician", tech_id, write=True)
     t = get_tech_by_id(tech_id)
     if not t:
         raise HTTPException(404, "Technician not found")
@@ -9961,7 +10640,7 @@ def admin_technician_5s_override(request: Request, tech_id: int,
     """super_admin-only: persist a forensic override row for a 5S exception.
     Does NOT mutate the original fs_exceptions row — that row stays for the
     audit trail. The override is a parallel forensic record."""
-    admin = _require_super_admin(request)
+    admin = _require_record_access(request, "technician", tech_id, write=True)
     t = get_tech_by_id(tech_id)
     if not t:
         raise HTTPException(404, "Technician not found")
@@ -9995,7 +10674,7 @@ def admin_technician_5s_override(request: Request, tech_id: int,
 def admin_technician_reviews_list(request: Request, tech_id: int,
                                   status: Optional[str] = None,
                                   limit: int = 50):
-    admin = _require_super_admin(request)
+    admin = _require_record_access(request, "technician", tech_id, write=False)
     t = get_tech_by_id(tech_id)
     if not t:
         raise HTTPException(404, "Technician not found")
@@ -10011,7 +10690,7 @@ def admin_technician_reviews_list(request: Request, tech_id: int,
 @app.post("/api/admin/technicians/{tech_id}/reviews")
 def admin_technician_review_create(request: Request, tech_id: int,
                                    body: TechnicianReviewCreate):
-    admin = _require_super_admin(request)
+    admin = _require_record_access(request, "technician", tech_id, write=True)
     t = get_tech_by_id(tech_id)
     if not t:
         raise HTTPException(404, "Technician not found")
@@ -10062,7 +10741,7 @@ def admin_technician_review_create(request: Request, tech_id: int,
 def admin_technician_review_update(request: Request, tech_id: int,
                                    review_id: int,
                                    body: TechnicianReviewUpdate):
-    admin = _require_super_admin(request)
+    admin = _require_record_access(request, "technician", tech_id, write=True)
     t = get_tech_by_id(tech_id)
     if not t:
         raise HTTPException(404, "Technician not found")
@@ -10113,7 +10792,7 @@ def admin_technician_review_update(request: Request, tech_id: int,
 
 @app.get("/api/admin/technicians/{tech_id}/certifications", response_model=Dict[str, Any])
 def admin_technician_certifications(request: Request, tech_id: int):
-    admin = _require_super_admin(request)
+    admin = _require_record_access(request, "technician", tech_id, write=False)
     t = get_tech_by_id(tech_id)
     if not t:
         raise HTTPException(404, "Technician not found")
@@ -10127,7 +10806,7 @@ def admin_technician_certifications(request: Request, tech_id: int):
 @app.get("/api/admin/technicians/{tech_id}/payroll-summary", response_model=Dict[str, Any])
 def admin_technician_payroll_summary(request: Request, tech_id: int,
                                      limit: int = 6):
-    admin = _require_super_admin(request)
+    admin = _require_record_access(request, "technician", tech_id, write=False)
     t = get_tech_by_id(tech_id)
     if not t:
         raise HTTPException(404, "Technician not found")
@@ -10896,12 +11575,20 @@ def admin_get_asset_checklist(request: Request, asset_id: int, phase: str):
     Gated by warehouse:manage_assets so the inventory_manager can SEE
     the live checklist via the 5S panel but cannot EDIT it."""
     _require_perm(request, "warehouse:manage_assets")
-    from database import get_checklist_for_phase as _gcfp
+    from database import (get_checklist_for_phase as _gcfp,
+                          FS_SAFETY_ITEM_KEYS, fs_item_catalog)
     items = _gcfp(asset_id, phase)
     if not items:
         raise HTTPException(404,
             "No checklist exists for this asset / phase combination")
-    return {"asset_id": asset_id, "phase": phase, "items": items}
+    # Flag the safety-critical items so the editor can badge them, and hand
+    # back the full known-keys catalog so the UI can offer a validated
+    # picker instead of blind free-text (a typo'd safety key would otherwise
+    # silently downgrade audit severity — see fs_safety_near_miss).
+    for it in items:
+        it["safety_critical"] = it["item_key"] in FS_SAFETY_ITEM_KEYS
+    return {"asset_id": asset_id, "phase": phase, "items": items,
+            "catalog": fs_item_catalog()}
 
 
 @app.post("/api/admin/fs/assets/{asset_id}/checklist/{phase}")
@@ -13075,6 +13762,23 @@ def admin_regrant_create(request: Request, body: RegrantRequestBody):
                     target_type="delegation_regrant_requests", target_id=rid)
     except Exception as _e:
         logger.warning(f"[delegation] audit-write failed: {_e}")
+    # Best-effort: ping the super-admins who own the regrant approval queue
+    # (approve/deny are super_admin-only). Never blocks the request.
+    try:
+        from database import get_all_admin_users
+        requester = admin.get("name") or admin.get("prid") or f"admin #{admin['id']}"
+        for au in get_all_admin_users():
+            if au.get("active") and au.get("role") == "super_admin":
+                _notify(
+                    "admin", int(au["id"]), "delegation",
+                    "Re-grant request awaiting review",
+                    body=f"{requester} requested re-grant of a cascade-revoked "
+                         f"delegation. Open the delegations queue to approve or deny.",
+                    link="/admin", severity="info",
+                    dedupe_key=f"regrant_req:{rid}",
+                    dedupe_window_minutes=1440)
+    except Exception as _e:
+        logger.warning(f"[notif] regrant request notify failed: {_e}")
     return {"id": rid, "ok": True}
 
 
@@ -13153,6 +13857,39 @@ async def _delegation_expiry_loop():
 async def _start_delegation_expiry_loop():
     _asyncio.create_task(_delegation_expiry_loop())
 _LIFESPAN_STARTERS.append(_start_delegation_expiry_loop)
+
+
+# ── PM-contract visit generation cron (daily) ──────────────────────────────
+# Materialises upcoming PM visits from active contracts and expires contracts
+# whose term has ended. Idempotent (see generate_due_pm_visits), so a missed
+# run or a manual `/pm-contracts/generate` trigger never double-books a visit.
+PM_GEN_LOOKAHEAD_DAYS = int(os.environ.get("PM_GEN_LOOKAHEAD_DAYS", "30"))
+
+
+async def _pm_contract_gen_loop():
+    await _asyncio.sleep(60)  # let init_db settle on boot
+    while True:
+        try:
+            res = generate_due_pm_visits(lookahead_days=PM_GEN_LOOKAHEAD_DAYS)
+            if res["created"] or res["expired"]:
+                try:
+                    log_audit(actor_type="system", action="pm_contract.cron_generate",
+                              target_type="pm_contracts",
+                              after_value={"created": len(res["created"]),
+                                           "expired": len(res["expired"]),
+                                           "processed": res["processed"]})
+                except Exception as _e:
+                    logger.warning(f"[pm] audit-write failed: {_e}")
+                logger.info(f"pm generate cron: {len(res['created'])} visit(s) created, "
+                            f"{len(res['expired'])} contract(s) expired")
+        except Exception as _e:
+            logger.error(f"pm generate cron error: {_e}")
+        await _asyncio.sleep(24 * 60 * 60)
+
+
+async def _start_pm_contract_gen_loop():
+    _asyncio.create_task(_pm_contract_gen_loop())
+_LIFESPAN_STARTERS.append(_start_pm_contract_gen_loop)
 
 
 # ── TP-1b: per-tech EOD enforcement cron ─────────────────────────────────

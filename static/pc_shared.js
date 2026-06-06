@@ -606,6 +606,376 @@
     return false;
   };
 
+  // ── In-app notification bell (A5) ─────────────────────────
+  // A single shared widget used by all six SPAs. It gates on IDENTITY
+  // only: a quick probe of /api/notifications/unread-count returns 401
+  // when nobody is signed in, in which case the bell never appears. Any
+  // signed-in subject (admin / technician / customer) gets the bell and
+  // sees only their own rows (the server scopes by recipient).
+  //
+  // Mount target: if the host page provides an element with
+  // [data-pc-notif-bell] the bell is injected there (so it can live in a
+  // real top-bar); otherwise it floats fixed in the top-right corner as a
+  // universal fallback. Either way nothing existing is removed.
+  PC.notif = PC.notif || { unread: 0, open: false, _timer: null, _mounted: false };
+
+  function _notifStyles() {
+    if (document.getElementById('pc-notif-style')) return;
+    const s = document.createElement('style');
+    s.id = 'pc-notif-style';
+    s.textContent =
+      '.pc-bell-wrap{position:relative;display:inline-flex;}' +
+      '.pc-bell-wrap.pc-bell-float{position:fixed;top:14px;right:18px;z-index:99990;}' +
+      '.pc-bell-btn{position:relative;display:inline-flex;align-items:center;justify-content:center;' +
+        'width:38px;height:38px;border-radius:50%;border:1px solid rgba(27,79,130,0.22);' +
+        'background:#fff;color:#1B4F82;cursor:pointer;box-shadow:0 2px 8px rgba(15,42,74,0.12);' +
+        'transition:background 140ms,box-shadow 140ms;}' +
+      '.pc-bell-btn:hover{background:#EAF1F8;box-shadow:0 4px 14px rgba(15,42,74,0.2);}' +
+      '.pc-bell-btn:focus-visible{outline:2px solid #22A08A;outline-offset:2px;}' +
+      '.pc-bell-btn svg{width:19px;height:19px;}' +
+      '.pc-bell-badge{position:absolute;top:-3px;right:-3px;min-width:17px;height:17px;padding:0 4px;' +
+        'border-radius:9px;background:#B42318;color:#fff;font:700 10px/17px "IBM Plex Sans",system-ui,sans-serif;' +
+        'text-align:center;box-shadow:0 0 0 2px #fff;display:none;}' +
+      '.pc-bell-badge.show{display:block;}' +
+      '.pc-notif-panel{position:absolute;top:46px;right:0;width:min(360px,calc(100vw - 28px));' +
+        'max-height:min(70vh,520px);overflow:hidden;display:none;flex-direction:column;' +
+        'background:#fff;border:1px solid rgba(27,79,130,0.18);border-radius:14px;' +
+        'box-shadow:0 18px 48px rgba(15,42,74,0.28);z-index:99991;}' +
+      '.pc-notif-panel.open{display:flex;}' +
+      '.pc-notif-head{display:flex;align-items:center;justify-content:space-between;gap:8px;' +
+        'padding:12px 14px;border-bottom:1px solid #EEF2F6;}' +
+      '.pc-notif-head h4{margin:0;font:700 14px/1.2 "IBM Plex Sans",system-ui,sans-serif;color:#0B2545;}' +
+      '.pc-notif-readall{border:0;background:none;color:#1B4F82;font:600 12px/1 inherit;cursor:pointer;padding:4px 6px;border-radius:6px;}' +
+      '.pc-notif-readall:hover{background:#EAF1F8;}' +
+      '.pc-notif-readall[disabled]{color:#9AA7B4;cursor:default;background:none;}' +
+      '.pc-notif-list{overflow-y:auto;-webkit-overflow-scrolling:touch;}' +
+      '.pc-notif-item{display:flex;gap:10px;padding:11px 14px;border-bottom:1px solid #F2F5F8;cursor:pointer;text-align:left;}' +
+      '.pc-notif-item:last-child{border-bottom:0;}' +
+      '.pc-notif-item:hover{background:#F6F9FC;}' +
+      '.pc-notif-item.unread{background:#F0F7FF;}' +
+      '.pc-notif-item.unread:hover{background:#E6F1FC;}' +
+      '.pc-notif-dot{flex:0 0 auto;width:8px;height:8px;border-radius:50%;margin-top:5px;background:#1B4F82;}' +
+      '.pc-notif-dot.info{background:#1B4F82;}.pc-notif-dot.success{background:#22A08A;}' +
+      '.pc-notif-dot.warning{background:#E0A100;}.pc-notif-dot.critical,.pc-notif-dot.error{background:#B42318;}' +
+      '.pc-notif-body{flex:1 1 auto;min-width:0;}' +
+      '.pc-notif-title{font:600 13px/1.35 "IBM Plex Sans",system-ui,sans-serif;color:#0B2545;}' +
+      '.pc-notif-sub{font:400 12px/1.4 "IBM Plex Sans",system-ui,sans-serif;color:#5B6B7B;margin-top:1px;' +
+        'overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;}' +
+      '.pc-notif-time{font:400 11px/1 "IBM Plex Sans",system-ui,sans-serif;color:#90A0B0;margin-top:4px;}' +
+      '.pc-notif-empty{padding:26px 14px;text-align:center;color:#90A0B0;font:400 13px/1.4 "IBM Plex Sans",system-ui,sans-serif;}' +
+      '.pc-notif-foot{border-top:1px solid #EEF2F6;padding:9px 14px;}' +
+      '.pc-notif-pushbtn{width:100%;border:1px solid rgba(27,79,130,0.25);background:#F6F9FC;color:#1B4F82;' +
+        'font:600 12px/1.2 "IBM Plex Sans",system-ui,sans-serif;padding:8px 10px;border-radius:8px;cursor:pointer;}' +
+      '.pc-notif-pushbtn:hover{background:#EAF1F8;}' +
+      '.pc-notif-pushbtn[disabled]{color:#9AA7B4;cursor:default;background:#F6F9FC;}';
+    (document.head || document.documentElement).appendChild(s);
+  }
+
+  function _notifEsc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function _notifRelTime(iso) {
+    const d = _toDate(iso);
+    if (!d || isNaN(d)) return '';
+    const secs = Math.round((Date.now() - d.getTime()) / 1000);
+    if (secs < 45) return 'just now';
+    if (secs < 90) return '1 min ago';
+    if (secs < 3600) return Math.round(secs / 60) + ' min ago';
+    if (secs < 5400) return '1 hr ago';
+    if (secs < 86400) return Math.round(secs / 3600) + ' hr ago';
+    if (secs < 172800) return 'yesterday';
+    if (secs < 604800) return Math.round(secs / 86400) + ' days ago';
+    return PC.fmtDate ? PC.fmtDate(d) : d.toLocaleDateString();
+  }
+
+  PC._setBellBadge = function (n) {
+    PC.notif.unread = n = Math.max(0, n | 0);
+    const b = document.getElementById('pc-bell-badge');
+    if (!b) return;
+    b.textContent = n > 99 ? '99+' : String(n);
+    b.classList.toggle('show', n > 0);
+    const btn = document.getElementById('pc-bell-btn');
+    if (btn) btn.setAttribute('aria-label', n > 0 ? (n + ' unread notifications') : 'Notifications');
+  };
+
+  PC.refreshNotifCount = async function () {
+    try {
+      const r = await fetch('/api/notifications/unread-count', { credentials: 'same-origin' });
+      if (!r.ok) return null;            // 401 → not signed in; leave bell hidden
+      const j = await r.json();
+      PC._setBellBadge(j.unread || 0);
+      return j.unread || 0;
+    } catch (_) { return null; }
+  };
+
+  PC._renderNotifList = function (items) {
+    const list = document.getElementById('pc-notif-list');
+    if (!list) return;
+    if (!items || !items.length) {
+      list.innerHTML = '<div class="pc-notif-empty">You’re all caught up.</div>';
+      return;
+    }
+    list.innerHTML = items.map(function (it) {
+      const unread = !it.read_at;
+      const sev = (it.severity || 'info').toLowerCase();
+      const sub = it.body ? '<div class="pc-notif-sub">' + _notifEsc(it.body) + '</div>' : '';
+      return '<button class="pc-notif-item' + (unread ? ' unread' : '') + '" data-nid="' + it.id +
+        '" data-link="' + _notifEsc(it.link || '') + '">' +
+        '<span class="pc-notif-dot ' + _notifEsc(sev) + '"></span>' +
+        '<span class="pc-notif-body">' +
+          '<span class="pc-notif-title">' + _notifEsc(it.title) + '</span>' + sub +
+          '<span class="pc-notif-time">' + _notifEsc(_notifRelTime(it.created_at)) + '</span>' +
+        '</span></button>';
+    }).join('');
+    list.querySelectorAll('.pc-notif-item').forEach(function (el) {
+      el.addEventListener('click', function () {
+        const nid = el.getAttribute('data-nid');
+        const link = el.getAttribute('data-link');
+        if (el.classList.contains('unread')) {
+          el.classList.remove('unread');
+          fetch('/api/notifications/' + nid + '/read', {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Origin': location.origin },
+          }).then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (j) { if (j && typeof j.unread === 'number') PC._setBellBadge(j.unread); })
+            .catch(function () {});
+        }
+        if (link) { PC._closeNotifPanel(); location.href = link; }
+      });
+    });
+  };
+
+  PC._openNotifPanel = async function () {
+    const panel = document.getElementById('pc-notif-panel');
+    if (!panel) return;
+    panel.classList.add('open');
+    PC.notif.open = true;
+    try { PC._refreshPushFooter(); } catch (_) {}
+    const list = document.getElementById('pc-notif-list');
+    if (list) list.innerHTML = '<div class="pc-notif-empty">Loading…</div>';
+    try {
+      const r = await fetch('/api/notifications?limit=25', { credentials: 'same-origin' });
+      if (r.ok) {
+        const j = await r.json();
+        PC._renderNotifList(j.items || []);
+        if (typeof j.unread === 'number') PC._setBellBadge(j.unread);
+      } else if (list) {
+        list.innerHTML = '<div class="pc-notif-empty">Could not load notifications.</div>';
+      }
+    } catch (_) {
+      if (list) list.innerHTML = '<div class="pc-notif-empty">Could not load notifications.</div>';
+    }
+  };
+
+  PC._closeNotifPanel = function () {
+    const panel = document.getElementById('pc-notif-panel');
+    if (panel) panel.classList.remove('open');
+    PC.notif.open = false;
+  };
+
+  PC._toggleNotifPanel = function () {
+    if (PC.notif.open) PC._closeNotifPanel(); else PC._openNotifPanel();
+  };
+
+  PC.markAllNotifsRead = async function () {
+    try {
+      const r = await fetch('/api/notifications/read-all', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Origin': location.origin },
+      });
+      if (r.ok) {
+        PC._setBellBadge(0);
+        document.querySelectorAll('#pc-notif-list .pc-notif-item.unread')
+          .forEach(function (el) { el.classList.remove('unread'); });
+      }
+    } catch (_) {}
+  };
+
+  // ── Web Push opt-in (A5) ──────────────────────────────────
+  // The browser-push half. Best-effort + progressive: if the browser lacks
+  // service-worker/Push support, or the server has no VAPID key, or delivery
+  // is disabled server-side, the footer button simply doesn't appear and the
+  // in-app bell still works on its own.
+  function _urlB64ToUint8(b64) {
+    const pad = '='.repeat((4 - (b64.length % 4)) % 4);
+    const s = (b64 + pad).replace(/-/g, '+').replace(/_/g, '/');
+    const raw = atob(s);
+    const out = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    return out;
+  }
+  PC.push = PC.push || { supported: false, configured: false, permission: 'default' };
+
+  PC.pushSupported = function () {
+    return ('serviceWorker' in navigator) && ('PushManager' in window) && ('Notification' in window);
+  };
+
+  PC.enablePush = async function () {
+    if (!PC.pushSupported()) { PC.toast && PC.toast('Push not supported in this browser', 'warning'); return false; }
+    try {
+      const keyResp = await fetch('/api/push/vapid-public-key', { credentials: 'same-origin' });
+      if (!keyResp.ok) return false;
+      const kj = await keyResp.json();
+      if (!kj.configured || !kj.key) { PC.toast && PC.toast('Push not configured yet', 'warning'); return false; }
+      const perm = await Notification.requestPermission();
+      PC.push.permission = perm;
+      if (perm !== 'granted') { PC.toast && PC.toast('Notifications permission denied', 'warning'); PC._refreshPushFooter(); return false; }
+      const reg = await navigator.serviceWorker.register('/sw.js');
+      await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: _urlB64ToUint8(kj.key),
+        });
+      }
+      const j = sub.toJSON();
+      const r = await fetch('/api/push/subscribe', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'Origin': location.origin },
+        body: JSON.stringify({ endpoint: j.endpoint, keys: j.keys || {} }),
+      });
+      if (r.ok) { PC.toast && PC.toast('Browser notifications enabled', 'success'); PC._refreshPushFooter(); return true; }
+      return false;
+    } catch (e) {
+      PC.toast && PC.toast('Could not enable push notifications', 'error');
+      return false;
+    }
+  };
+
+  PC.disablePush = async function () {
+    try {
+      if (!PC.pushSupported()) return;
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (!reg) { PC._refreshPushFooter(); return; }
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        const ep = sub.endpoint;
+        await sub.unsubscribe();
+        await fetch('/api/push/unsubscribe', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'Origin': location.origin },
+          body: JSON.stringify({ endpoint: ep }),
+        });
+      }
+      PC.toast && PC.toast('Browser notifications turned off', 'info');
+      PC._refreshPushFooter();
+    } catch (_) {}
+  };
+
+  // Reflect current push state in the panel footer. Hidden entirely when the
+  // browser can't do push or the server has no VAPID key configured.
+  PC._refreshPushFooter = async function () {
+    const foot = document.getElementById('pc-notif-foot');
+    const btn = document.getElementById('pc-notif-pushbtn');
+    if (!foot || !btn) return;
+    if (!PC.pushSupported()) { foot.style.display = 'none'; return; }
+    let configured = false;
+    try {
+      const r = await fetch('/api/push/vapid-public-key', { credentials: 'same-origin' });
+      if (r.ok) { const j = await r.json(); configured = !!j.configured; }
+    } catch (_) {}
+    if (!configured) { foot.style.display = 'none'; return; }
+    foot.style.display = 'block';
+    let subscribed = false;
+    try {
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (reg) { const s = await reg.pushManager.getSubscription(); subscribed = !!s; }
+    } catch (_) {}
+    if (Notification.permission === 'denied') {
+      btn.textContent = 'Browser notifications blocked in site settings';
+      btn.disabled = true;
+      btn.onclick = null;
+    } else if (subscribed) {
+      btn.textContent = 'Turn off browser notifications';
+      btn.disabled = false;
+      btn.onclick = function (e) { e.stopPropagation(); PC.disablePush(); };
+    } else {
+      btn.textContent = 'Enable browser notifications';
+      btn.disabled = false;
+      btn.onclick = function (e) { e.stopPropagation(); PC.enablePush(); };
+    }
+  };
+
+  PC.mountNotificationBell = function () {
+    if (PC.notif._mounted) return;
+    _notifStyles();
+    const wrap = document.createElement('div');
+    wrap.className = 'pc-bell-wrap';
+    const host = document.querySelector('[data-pc-notif-bell]');
+    if (!host) wrap.classList.add('pc-bell-float');
+    wrap.innerHTML =
+      '<button class="pc-bell-btn" id="pc-bell-btn" type="button" aria-label="Notifications" aria-haspopup="true" aria-expanded="false">' +
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        '<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>' +
+        '<path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>' +
+        '<span class="pc-bell-badge" id="pc-bell-badge"></span>' +
+      '</button>' +
+      '<div class="pc-notif-panel" id="pc-notif-panel" role="dialog" aria-label="Notifications">' +
+        '<div class="pc-notif-head"><h4>Notifications</h4>' +
+          '<button class="pc-notif-readall" id="pc-notif-readall" type="button">Mark all read</button></div>' +
+        '<div class="pc-notif-list" id="pc-notif-list"></div>' +
+        '<div class="pc-notif-foot" id="pc-notif-foot" style="display:none;">' +
+          '<button class="pc-notif-pushbtn" id="pc-notif-pushbtn" type="button"></button>' +
+        '</div>' +
+      '</div>';
+    (host || document.body).appendChild(wrap);
+    PC.notif._mounted = true;
+
+    const btn = wrap.querySelector('#pc-bell-btn');
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      const exp = !PC.notif.open;
+      btn.setAttribute('aria-expanded', exp ? 'true' : 'false');
+      PC._toggleNotifPanel();
+    });
+    wrap.querySelector('#pc-notif-readall').addEventListener('click', function (e) {
+      e.stopPropagation();
+      PC.markAllNotifsRead();
+    });
+    // Click-away + Escape close.
+    document.addEventListener('click', function (e) {
+      if (PC.notif.open && !wrap.contains(e.target)) {
+        PC._closeNotifPanel();
+        btn.setAttribute('aria-expanded', 'false');
+      }
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && PC.notif.open) {
+        PC._closeNotifPanel();
+        btn.setAttribute('aria-expanded', 'false');
+      }
+    });
+  };
+
+  // Auto-init: probe identity, mount only if signed in, then poll the
+  // unread count. Polling pauses while the tab is hidden (battery + load)
+  // and does an immediate catch-up refresh when it becomes visible again.
+  PC._initNotifBell = async function () {
+    const n = await PC.refreshNotifCount();
+    if (n === null) return;              // not authenticated — no bell
+    PC.mountNotificationBell();
+    PC._setBellBadge(n);
+    function schedule() {
+      if (PC.notif._timer) { clearInterval(PC.notif._timer); PC.notif._timer = null; }
+      PC.notif._timer = setInterval(function () {
+        if (!document.hidden) PC.refreshNotifCount();
+      }, 60000);
+    }
+    schedule();
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) PC.refreshNotifCount();
+    });
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function () { setTimeout(PC._initNotifBell, 300); });
+  } else {
+    setTimeout(PC._initNotifBell, 300);
+  }
+
   // CSS-only additions: append a <style> with gate-related styling once on first use.
   (function injectStyles() {
     if (typeof document === 'undefined') return;

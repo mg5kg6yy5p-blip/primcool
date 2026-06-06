@@ -250,11 +250,15 @@ def main() -> int:
                         "must_enrol_mfa = 1 WHERE active = 1")
         except sqlite3.OperationalError:
             pass
-        # Customers: no must_change_credentials column (they choose
-        # their own PIN at first portal login), but the MFA gate in
-        # /api/portal/login now intercepts every customer without
-        # mfa_enabled, so no flag flip is needed to enforce. Recorded
-        # in the audit log so it's visible.
+        # Customers: flag every active account with must_set_pin=1 so the
+        # seeded "1000 + id" PIN can never reach a real customer — the
+        # /api/portal/login response now surfaces must_set_pin and the portal
+        # forces a set-your-own-PIN step before unlocking. (The MFA gate also
+        # intercepts every customer without mfa_enabled.)
+        try:
+            con.execute("UPDATE customers SET must_set_pin = 1 WHERE active = 1")
+        except sqlite3.OperationalError:
+            pass
         con.commit()
     except Exception as e:
         con.rollback()

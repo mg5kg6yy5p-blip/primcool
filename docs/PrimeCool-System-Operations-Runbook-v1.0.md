@@ -903,6 +903,48 @@ restart `on_failure`.
 | **Record an invoice payment** | `POST /api/admin/invoices/{id}/payments/v2` (`invoice:record_payment`). |
 | **Reseed test data** | `python3 scripts/seed_30_200.py --apply` (with env sourced; wipes customer-side tables, writes creds to `/tmp/pc_creds_30_200.tsv`). |
 
+### 5.3.1 Technician MFA lockout recovery
+
+MFA is mandatory for every staff login. A technician is **fully locked out**
+when they have *both* lost their authenticator app *and* exhausted all 10
+one-time backup codes — at that point `mfa_disable` (which needs PIN + a valid
+TOTP **or** an unused backup code) can no longer help them, so an admin must
+reset it for them.
+
+**Who can do it:** any admin with the `tech:reset_pin` permission
+(super_admin, and roles granted it). The same permission gates the tech-PIN
+reset, so the "I can reset this tech's credentials" trust boundary is reused.
+
+**Procedure:**
+
+1. **Verify the requester out-of-band.** Confirm you're really talking to the
+   technician (call the number on file / in-person). An MFA reset removes the
+   second factor, so treat the request like a password reset: never action it
+   from an unverified inbound message.
+2. **Reset:** `POST /api/admin/technicians/{tech_id}/mfa/reset`
+   (`admin_reset_tech_mfa`). This calls `disable_tech_mfa()` (clears
+   `mfa_secret`, `mfa_enabled`, backup codes) **and** sets
+   `must_enrol_mfa = 1`, so the tech's *next* login forces fresh TOTP
+   enrolment (new QR + new backup codes) before any session is issued.
+   The action writes a `tech.mfa.reset_by_admin` audit row keyed to the
+   acting admin and the tech's `tech_code`.
+3. **Tell the tech to log in promptly** and complete enrolment: scan the new
+   QR in their authenticator and **save the new backup codes** — the old codes
+   are dead. Until they re-enrol they cannot reach the portal (this is the
+   intended hard gate, not a bug).
+4. **If the tech is offline / will re-enrol later:** the account simply stays
+   MFA-off-but-flagged until their next login; no session can be issued in the
+   meantime. There is nothing further to do.
+
+**Audit trail:** every reset is in the audit log as `tech.mfa.reset_by_admin`.
+Spot-check this periodically — a cluster of resets for one tech, or resets by
+an admin who shouldn't be touching that tech, is a social-engineering signal.
+
+> Admins have **no self-service MFA reset** and no admin-resets-another-admin
+> endpoint today. An admin who is fully locked out needs the DB path in the
+> 5.3 table (`UPDATE admin_users SET mfa_secret=NULL, mfa_enabled=0,
+> backup_codes=NULL WHERE id=?;`), performed by someone with DB access.
+
 ## 5.4 Troubleshooting
 
 | Symptom | Likely cause | Fix |

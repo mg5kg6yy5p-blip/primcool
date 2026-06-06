@@ -255,6 +255,14 @@
         <input type="text" id="mfaCode" inputmode="numeric" maxlength="16" placeholder="6-digit code or backup code" autocomplete="one-time-code" style="text-align:center;font-size:18px;">
       </div>
 
+      <div id="setPinRow" style="display:none;">
+        <p class="subtitle" style="margin-top:6px;">For your security, please choose your own PIN to replace the temporary one.</p>
+        <label for="newPin" style="margin-top:8px;">New PIN <span style="font-weight:400;text-transform:none;font-size:11px;color:var(--muted,#5A6472);">(6–16 digits)</span></label>
+        <input type="password" id="newPin" inputmode="numeric" pattern="[0-9]*" maxlength="16" placeholder="••••••" autocomplete="off" style="letter-spacing:10px;text-align:center;font-size:20px;">
+        <label for="confirmPin" style="margin-top:10px;">Confirm PIN</label>
+        <input type="password" id="confirmPin" inputmode="numeric" pattern="[0-9]*" maxlength="16" placeholder="••••••" autocomplete="off" style="letter-spacing:10px;text-align:center;font-size:20px;">
+      </div>
+
       <div class="error" id="error"></div>
       <button class="btn" id="loginBtn" onclick="doLogin()">Sign In →</button>
 
@@ -350,6 +358,7 @@
     let authMode = 'pin';      // 'pin' | 'password'
     let pendingMfaToken = null; // set when server returns requires_mfa
     let pendingEnrolToken = null; // set when server returns requires_mfa_setup
+    let setPinMode = false; // set when server returns must_set_pin (first-login PIN reset)
 
     function usePassword() {
       authMode = 'password';
@@ -398,6 +407,23 @@
       err.style.display = 'none';
 
       try {
+        // First-login forced PIN set: the session cookie is already set, so we
+        // post the chosen PIN to /api/portal/set-pin then enter the dashboard.
+        if (setPinMode) {
+          const np = document.getElementById('newPin').value.trim();
+          const cp = document.getElementById('confirmPin').value.trim();
+          if (!np || !cp) { showError('Enter and confirm your new PIN.'); btn.disabled=false; btn.textContent='Set PIN →'; return; }
+          if (np !== cp) { showError('PINs do not match.'); btn.disabled=false; btn.textContent='Set PIN →'; return; }
+          const res = await fetch('/api/portal/set-pin', {
+            method: 'POST',
+            headers: { 'Content-Type':'application/json' },
+            body: JSON.stringify({ pin: np, confirm_pin: cp }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) { showError(data.detail || 'Could not set PIN.'); btn.disabled=false; btn.textContent='Set PIN →'; return; }
+          window.location.replace('/portal/dashboard');
+          return;
+        }
         // If we're in the middle of MFA challenge, use the /login/mfa step.
         if (pendingMfaToken) {
           if (!mfa) { showError('Enter your 6-digit code.'); btn.disabled=false; btn.textContent='Sign In →'; return; }
@@ -410,6 +436,7 @@
           if (!res.ok) { showError(data.detail || 'Invalid MFA code.'); btn.disabled=false; btn.textContent='Sign In →'; return; }
           localStorage.setItem('pc_token', data.token);
           localStorage.setItem('pc_name',  data.name);
+          if (data.must_set_pin) { enterSetPinMode(); return; }
           window.location.replace('/portal/dashboard');
           return;
         }
@@ -451,11 +478,28 @@
 
         localStorage.setItem('pc_token', data.token);
         localStorage.setItem('pc_name',  data.name);
+        if (data.must_set_pin) { enterSetPinMode(); return; }
         window.location.replace('/portal/dashboard');
       } catch {
         showError('Connection error. Please try again.');
         btn.disabled=false; btn.textContent='Sign In →';
       }
+    }
+
+    // Switch the login card into "choose your own PIN" mode after a first
+    // login where the server returned must_set_pin.
+    function enterSetPinMode() {
+      setPinMode = true;
+      ['code','pin','password','mfaRow'].forEach(id => {
+        const el = document.getElementById(id); if (el) el.style.display = 'none';
+      });
+      const lbl = document.querySelector('label[for="code"]'); if (lbl) lbl.style.display = 'none';
+      const pwLbl = document.querySelector('label[for="pin"]'); if (pwLbl) pwLbl.style.display = 'none';
+      document.getElementById('setPinRow').style.display = '';
+      const btn = document.getElementById('loginBtn');
+      btn.disabled = false; btn.textContent = 'Set PIN →';
+      document.getElementById('error').style.display = 'none';
+      document.getElementById('newPin').focus();
     }
 
     function showError(msg) {
@@ -509,6 +553,6 @@
     });
   </script>
   <!-- PrimeCool shared utilities (brand toast pill, skeleton loaders). -->
-  <script src="/static/pc_shared.js?v=1780787400" defer></script>
+  <script src="/static/pc_shared.js?v=1780790500" defer></script>
 </body>
 </html>
