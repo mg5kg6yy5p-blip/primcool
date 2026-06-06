@@ -18,16 +18,19 @@
   // format apply instantly on the next load without a flash.
   PC._settings = {
     time_format: '24h', date_format: 'dmy', density: 'comfortable',
-    font_scale: 'normal', reduce_motion: false, start_of_week: 'monday',
+    theme: 'light', font_scale: 'normal', reduce_motion: false,
+    start_of_week: 'monday',
   };
   PC.getSetting = function (k) { return PC._settings ? PC._settings[k] : undefined; };
   PC.applySettings = function (s) {
     if (!s || typeof s !== 'object') return PC._settings;
     PC._settings = Object.assign({}, PC._settings, s);
-    // Purge deprecated keys so stale localStorage caches self-heal. `theme`
-    // was removed when dark mode was deferred; it drives nothing now.
-    delete PC._settings.theme;
     try {
+      // Theme goes on <html> (documentElement), which exists even while
+      // pc_shared.js runs in <head> — so dark mode applies with zero flash
+      // before <body> is parsed. CSS targets html[data-pc-theme="dark"].
+      const root = document.documentElement;
+      if (root) root.setAttribute('data-pc-theme', PC._settings.theme === 'dark' ? 'dark' : 'light');
       const b = document.body;
       if (b) {
         if (PC._settings.density)    b.setAttribute('data-pc-density', PC._settings.density);

@@ -11508,11 +11508,7 @@ _SETTINGS_DEFAULTS = {
     "time_format":         "24h",          # PC.fmtTime + clocks (12h/24h)
     "date_format":         "dmy",          # PC.fmtDate (dmy=04/Jun/2026, iso=2026-06-04, mdy=Jun/04/2026)
     "density":             "comfortable",  # body[data-pc-density] (comfortable/compact)
-    # NOTE: a dark "theme" key is intentionally NOT shipped yet — a correct
-    # dark mode needs a file-wide color-token refactor (the staff SPA has ~150
-    # literal light colors, many semantic like danger-bg). Groundwork (the
-    # --ink text token) is in place; ship it as a dedicated pass, not a half
-    # toggle that leaves white patches.
+    "theme":               "light",        # html[data-pc-theme] (light/dark) — dark mode
     "font_scale":          "normal",       # body[data-pc-fontscale] (normal/large)
     "reduce_motion":       False,          # body[data-pc-motion="reduce"] — disables animations/transitions
     "default_landing":     "auto",         # which panel/tab opens on load
@@ -11524,6 +11520,7 @@ _SETTINGS_ENUMS = {
     "time_format":   {"12h", "24h"},
     "date_format":   {"dmy", "iso", "mdy"},
     "density":       {"comfortable", "compact"},
+    "theme":         {"light", "dark"},
     "font_scale":    {"normal", "large"},
     "start_of_week": {"monday", "sunday"},
     "language":      {"en"},
@@ -11542,7 +11539,7 @@ _LANDING_BY_SUBJECT = {
 def _settings_keys_for(subject_type: str):
     """Which setting keys apply to a given identity. announcement_alerts and
     start_of_week are staff-only (customers have no company bell or schedule)."""
-    keys = ["time_format", "date_format", "density", "font_scale",
+    keys = ["time_format", "date_format", "density", "theme", "font_scale",
             "reduce_motion", "default_landing", "language"]
     if subject_type in ("admin", "tech"):
         keys.extend(["start_of_week", "announcement_alerts"])

@@ -22,9 +22,19 @@
       --mist: #F2F6FA;
       --light: #f0f4f8;
       --white: #ffffff;
+      --ink: #0F2A4A; /* primary heading/label text — remapped light in dark theme */
       --text: #1a2533;
       --muted: #5A6472;
       --border: #dde3ea;
+      /* Semantic surface/status tokens — remapped by the dark override below. */
+      --surface: #ffffff;
+      --surface-2: #f5f8fb;
+      --surface-3: #eef2f7;
+      --teal-deep: #1b8f7a;
+      --disabled: #b0bec5;
+      --placeholder: #c0c8d2;
+      --ok-bg: #f0fdf4;   --ok-fg: #059669;  --ok-border: #bbf7d0;
+      --err-bg: #fff5f5;  --err-fg: #e53e3e; --err-border: #fed7d7;
       --font-display: 'Archivo', 'Segoe UI', system-ui, -apple-system, sans-serif;
       --font-body:    'IBM Plex Sans', 'Segoe UI', system-ui, -apple-system, sans-serif;
       --font-mono:    'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace;
@@ -32,6 +42,28 @@
       --shadow-md: 0 2px 4px rgba(15,42,74,0.08), 0 12px 28px -10px rgba(15,42,74,0.20);
       --gradient-navy: linear-gradient(135deg, var(--navy-2), var(--navy));
       --gradient-cool: var(--navy);
+    }
+    /* ─── Dark theme ─── applied via html[data-pc-theme="dark"] (set in <head> by pc_shared, zero flash) */
+    html[data-pc-theme="dark"] {
+      --navy: #0e1b2e;
+      --navy-2: #16243b;
+      --ink: #e9eef5;
+      --mist: #111c2c;
+      --light: #0b1320;
+      --white: #16212f;
+      --text: #d3dbe6;
+      --muted: #9aa6b6;
+      --border: #2a3848;
+      --surface: #16212f;
+      --surface-2: #1d2a3a;
+      --surface-3: #243345;
+      --teal-deep: #2bb89e;
+      --disabled: #3a4858;
+      --placeholder: #6b7888;
+      --ok-bg: rgba(34,160,138,0.16);  --ok-fg: #5fe0c4; --ok-border: rgba(34,160,138,0.4);
+      --err-bg: rgba(229,62,62,0.16);  --err-fg: #fca5a5; --err-border: rgba(229,62,62,0.4);
+      --shadow-sm: 0 1px 3px rgba(0,0,0,0.4), 0 8px 24px -16px rgba(0,0,0,0.6);
+      --shadow-md: 0 2px 4px rgba(0,0,0,0.4), 0 12px 28px -10px rgba(0,0,0,0.7);
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -49,13 +81,13 @@
     .pc-snowflake { display:inline-block;width:18px;height:18px;background:var(--lime);border-radius:5px;flex-shrink:0;position:relative; }
     .pc-snowflake::before { content:"";position:absolute;inset:3px;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230F2A4A' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><line x1='12' y1='2' x2='12' y2='22'/><line x1='2' y1='12' x2='22' y2='12'/><line x1='4.93' y1='4.93' x2='19.07' y2='19.07'/><line x1='19.07' y1='4.93' x2='4.93' y2='19.07'/></svg>");background-size:contain;background-repeat:no-repeat; }
     /* Skeleton + empty state — shared brand utilities. */
-    .pc-skeleton-line,.pc-skeleton-block{background:linear-gradient(90deg,#eef2f7 0%,#f5f8fb 50%,#eef2f7 100%);background-size:200% 100%;border-radius:6px;animation:pcShimmer 1.4s ease-in-out infinite;}
+    .pc-skeleton-line,.pc-skeleton-block{background:linear-gradient(90deg,var(--surface-3) 0%,var(--surface-2) 50%,var(--surface-3) 100%);background-size:200% 100%;border-radius:6px;animation:pcShimmer 1.4s ease-in-out infinite;}
     .pc-skeleton-line{height:12px;margin:6px 0;}
     .pc-skeleton-block{height:38px;}
     @keyframes pcShimmer{0%{background-position:100% 0;}100%{background-position:-100% 0;}}
     .pc-empty{padding:32px 20px;text-align:center;color:var(--muted);font-size:13px;}
     .pc-empty-glyph{font-size:28px;margin-bottom:8px;opacity:0.7;}
-    .pc-empty-title{font-family:var(--font-display);font-weight:700;color:var(--navy);font-size:15px;margin-bottom:4px;}
+    .pc-empty-title{font-family:var(--font-display);font-weight:700;color:var(--ink);font-size:15px;margin-bottom:4px;}
     .pc-empty-sub{font-size:12px;color:var(--muted);max-width:360px;margin:0 auto;line-height:1.5;}
     header {
       background: var(--navy);
@@ -94,13 +126,13 @@
       margin-bottom: 24px;
     }
     .icon-wrap svg { width: 28px; height: 28px; color: var(--teal); }
-    h1 { font-size: 24px; color: var(--navy); margin-bottom: 8px; }
+    h1 { font-size: 24px; color: var(--ink); margin-bottom: 8px; }
     .subtitle { color: var(--muted); font-size: 14px; line-height: 1.6; margin-bottom: 32px; }
     label {
       display: block;
       font-size: 12px;
       font-weight: 600;
-      color: var(--navy);
+      color: var(--ink);
       letter-spacing: 0.8px;
       text-transform: uppercase;
       margin-bottom: 8px;
@@ -111,6 +143,7 @@
       border: 2px solid var(--border);
       border-radius: 10px;
       font-size: 18px;
+      background: var(--surface);
       color: var(--text);
       letter-spacing: 3px;
       text-transform: uppercase;
@@ -119,7 +152,7 @@
       font-family: 'Courier New', monospace;
     }
     input:focus { border-color: var(--teal); }
-    input::placeholder { letter-spacing: 1px; font-size: 15px; color: #c0c8d2; }
+    input::placeholder { letter-spacing: 1px; font-size: 15px; color: var(--placeholder); }
     .btn {
       width: 100%;
       padding: 14px;
@@ -134,17 +167,17 @@
       transition: background 0.15s, transform 0.1s;
       letter-spacing: 0.3px;
     }
-    .btn:hover:not(:disabled) { background: #1b8f7a; }
+    .btn:hover:not(:disabled) { background: var(--teal-deep); }
     .btn:active:not(:disabled) { transform: scale(0.99); }
-    .btn:disabled { background: #b0bec5; cursor: not-allowed; }
+    .btn:disabled { background: var(--disabled); cursor: not-allowed; }
     .error {
-      color: #e53e3e;
+      color: var(--err-fg);
       font-size: 13px;
       margin-top: 12px;
       padding: 10px 14px;
-      background: #fff5f5;
+      background: var(--err-bg);
       border-radius: 8px;
-      border: 1px solid #fed7d7;
+      border: 1px solid var(--err-border);
       display: none;
     }
     .help-text {
@@ -169,7 +202,7 @@
     }
     .install-banner.show { display: flex; }
     .install-banner .txt {
-      font-size: 12px; color: var(--navy); line-height: 1.4;
+      font-size: 12px; color: var(--ink); line-height: 1.4;
     }
     .install-banner .txt strong { color: var(--teal); }
     .install-banner button {
@@ -248,12 +281,12 @@
 
   <!-- Forgot PIN modal -->
   <div id="forgotModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:500;align-items:center;justify-content:center;padding:20px;">
-    <div style="background:white;border-radius:16px;width:100%;max-width:400px;padding:32px 28px;box-shadow:0 8px 40px rgba(0,0,0,0.2);">
-      <h2 style="color:var(--navy);font-size:21px;margin-bottom:8px;">Reset Your PIN</h2>
+    <div style="background:var(--surface);border-radius:16px;width:100%;max-width:400px;padding:32px 28px;box-shadow:0 8px 40px rgba(0,0,0,0.2);">
+      <h2 style="color:var(--ink);font-size:21px;margin-bottom:8px;">Reset Your PIN</h2>
       <p style="color:var(--muted);font-size:13px;margin-bottom:22px;line-height:1.5;">Enter your customer ID and the email PrimeCool has on file. If they match, we'll send you a reset link.</p>
 
       <div class="error" id="forgotErr"></div>
-      <div id="forgotOk" style="display:none;background:#f0fdf4;color:#059669;border:1px solid #bbf7d0;padding:12px 14px;border-radius:8px;font-size:13px;line-height:1.5;margin-bottom:14px;">
+      <div id="forgotOk" style="display:none;background:var(--ok-bg);color:var(--ok-fg);border:1px solid var(--ok-border);padding:12px 14px;border-radius:8px;font-size:13px;line-height:1.5;margin-bottom:14px;">
         If a matching account exists, a reset link has been sent. Check your email (and spam folder).
       </div>
 
@@ -476,6 +509,6 @@
     });
   </script>
   <!-- PrimeCool shared utilities (brand toast pill, skeleton loaders). -->
-  <script src="/static/pc_shared.js?v=1780700400" defer></script>
+  <script src="/static/pc_shared.js?v=1780786800" defer></script>
 </body>
 </html>
