@@ -618,7 +618,7 @@
       .pc-link:focus-visible { outline: 2px solid #22A08A; outline-offset: 2px; }
       .pc-text-only { color: inherit; cursor: default; text-decoration: none; }
       .pc-row-clickable { cursor: pointer; transition: background 120ms; }
-      .pc-row-clickable:hover { background: #f5f7fa; }
+      .pc-row-clickable:hover { background: var(--surface-2, #f5f7fa); }
       .pc-row-clickable:focus-visible { outline: 2px solid #22A08A; outline-offset: -2px; }
       .pc-badge-clickable { cursor: pointer; }
       .pc-badge-clickable:hover { filter: brightness(1.1); }
