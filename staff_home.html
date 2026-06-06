@@ -989,6 +989,23 @@
     .wd-pay-modal .foot .btn-print{background:var(--navy);color:#fff;border:none;}
     .wd-pay-modal .foot .btn-close-pay{background:var(--card);color:var(--ink);border:1px solid var(--border);}
 
+    /* Sign-in reason modal (day off / off hours) */
+    .signin-modal-overlay{display:none;position:fixed;inset:0;background:rgba(11,37,69,0.45);z-index:760;align-items:center;justify-content:center;padding:30px;}
+    .signin-modal-overlay.open{display:flex;}
+    .signin-modal{background:var(--card);width:min(440px,100%);border-radius:14px;box-shadow:0 20px 60px rgba(11,37,69,0.4);overflow:hidden;}
+    .signin-modal .head{padding:16px 22px;border-bottom:1px solid var(--border-light);display:flex;justify-content:space-between;align-items:center;}
+    .signin-modal .head h2{font-family:var(--font-display);font-size:18px;color:var(--ink);margin:0;}
+    .signin-modal .head .x{background:none;border:none;font-size:22px;color:var(--muted);cursor:pointer;line-height:1;}
+    .signin-modal .body{padding:20px 24px;}
+    .signin-modal .body p{font-size:13px;color:var(--muted);margin:0 0 14px;line-height:1.5;}
+    .signin-modal .body textarea{width:100%;min-height:96px;box-sizing:border-box;border:1px solid var(--border);border-radius:10px;padding:11px 13px;font:14px var(--font-body);color:var(--ink);background:var(--surface-2,var(--card));resize:vertical;}
+    .signin-modal .body textarea:focus{outline:none;border-color:var(--teal);}
+    .signin-modal .foot{padding:14px 22px;border-top:1px solid var(--border-light);display:flex;justify-content:flex-end;gap:10px;}
+    .signin-modal .foot button{padding:9px 20px;border-radius:999px;font:600 13px var(--font-body);cursor:pointer;}
+    .signin-modal .foot .btn-confirm{background:var(--navy);color:#fff;border:none;}
+    .signin-modal .foot .btn-confirm:disabled{opacity:0.6;cursor:default;}
+    .signin-modal .foot .btn-cancel{background:var(--card);color:var(--ink);border:1px solid var(--border);}
+
     /* Print-friendly payslip (only shown when window.print fires) */
     @media print{
       body > *{display:none!important;}
@@ -1725,6 +1742,24 @@
     </main>
   </div>
 
+  <!-- ─── Sign-in reason modal (day off / off hours) ──────────────── -->
+  <div class="signin-modal-overlay" id="signin-reason-modal" role="dialog" aria-modal="true" aria-labelledby="signin-reason-title">
+    <div class="signin-modal">
+      <div class="head">
+        <h2 id="signin-reason-title">Reason for signing in</h2>
+        <button class="x" type="button" onclick="closeSignInReason()" aria-label="Cancel">&times;</button>
+      </div>
+      <div class="body">
+        <p id="signin-reason-blurb">You're signing in outside your scheduled hours. Give us a brief reason — payroll and your supervisor will be notified.</p>
+        <textarea id="signin-reason-input" placeholder="e.g. covering for Marcus, callout at Royal Plaza"></textarea>
+      </div>
+      <div class="foot">
+        <button class="btn-cancel" type="button" onclick="closeSignInReason()">Cancel</button>
+        <button class="btn-confirm" type="button" id="signin-reason-confirm" onclick="confirmSignInReason()">Sign In &amp; Start 5S</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ─── Bottom nav (mobile only) ────────────────────────────────── -->
   <nav class="bottomnav" aria-label="Primary mobile navigation">
     <button class="bn-item active" data-panel="dashboard" onclick="showPanel('dashboard')">
@@ -1800,7 +1835,7 @@
   <script src="/static/pc_shared.js?v=1780790500"></script>
   <script>
   // ── Utilities ─────────────────────────────────────────────────────────
-  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const fmtJMD = (n) => 'J$' + (Number(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
   let _me = null;
 
@@ -2072,6 +2107,7 @@
   // ── Today / Clock-in card ─────────────────────────────────────────────
   let _clockState = null;
   let _isDayOff = false;
+  let _isOffHours = false;
   async function loadTodayCard(me) {
     const card = document.getElementById('today-card');
     const fallback = document.getElementById('today-clock-fallback');
@@ -2087,11 +2123,16 @@
       const ov = await api('/api/tech/me/today-overview');
       _clockState = ov.sign_in_status;
       _isDayOff   = !!ov.is_day_off;
+      _isOffHours = !!ov.is_off_hours;
       const status = document.getElementById('today-status');
       const jobs   = document.getElementById('today-jobs');
       const banner = document.getElementById('today-dayoff-banner');
       const reason = document.getElementById('today-dayoff-reason');
       const cta    = document.getElementById('today-cta');
+      // The reason is now collected in a popup that appears after the tech taps
+      // Sign In, so the inline banner/textarea are no longer pre-shown.
+      if (banner) banner.style.display = 'none';
+      if (reason) reason.style.display = 'none';
       const pm = ov.pm_today || 0, cm = ov.cm_today || 0;
       const _total = pm + cm;
       if (_total > 0) {
@@ -2107,24 +2148,24 @@
       cta.className = 'cta';
       if (_clockState === 'signed_in') {
         status.textContent = "You're on the clock — since " + (ov.signed_in_at_local || 'today');
-        banner.style.display = 'none';
-        reason.style.display = 'none';
         cta.textContent = 'Sign Out';
         cta.classList.add('signout');
         return;
       }
       if (_isDayOff) {
         status.textContent = "You're not checked in — today is your scheduled day off";
-        banner.style.display = '';
-        reason.style.display = '';
         cta.textContent = 'Sign In (day off)';
+        cta.classList.add('dayoff');
+      } else if (_isOffHours) {
+        status.textContent = ov.today_schedule_label
+          ? (ov.today_schedule_label + " — you're signing in off hours")
+          : "You're signing in outside your scheduled hours";
+        cta.textContent = 'Sign In (off hours)';
         cta.classList.add('dayoff');
       } else {
         status.textContent = ov.today_schedule_label
           ? ov.today_schedule_label
           : "You're not checked in";
-        banner.style.display = 'none';
-        reason.style.display = 'none';
         cta.textContent = 'Sign In for Work';
       }
     } catch (e) {
@@ -2132,49 +2173,95 @@
       if (status) status.textContent = 'Could not load clock status.';
     }
   }
-  async function doClockAction() {
+
+  // Tap handler for the Today-card CTA. Sign-out goes straight through. A
+  // sign-in on a day off OR off hours opens the reason popup first; a normal
+  // sign-in goes straight through with no reason.
+  function doClockAction() {
+    if (_clockState === 'signed_in') { performSignOut(); return; }
+    if (_isDayOff || _isOffHours) { openSignInReason(); return; }
+    performSignIn(null);
+  }
+  window.doClockAction = doClockAction;
+
+  function openSignInReason() {
+    const modal = document.getElementById('signin-reason-modal');
+    const blurb = document.getElementById('signin-reason-blurb');
+    const input = document.getElementById('signin-reason-input');
+    if (blurb) {
+      blurb.textContent = _isDayOff
+        ? "Today is your scheduled day off. If you're signing in anyway, give us a brief reason — payroll and your supervisor will be notified."
+        : "You're signing in outside your scheduled hours. Give us a brief reason — payroll and your supervisor will be notified.";
+    }
+    if (input) input.value = '';
+    if (modal) modal.classList.add('open');
+    setTimeout(() => { try { input && input.focus(); } catch (_) {} }, 50);
+  }
+  window.openSignInReason = openSignInReason;
+
+  function closeSignInReason() {
+    const modal = document.getElementById('signin-reason-modal');
+    if (modal) modal.classList.remove('open');
+  }
+  window.closeSignInReason = closeSignInReason;
+
+  function confirmSignInReason() {
+    const input = document.getElementById('signin-reason-input');
+    const r = ((input && input.value) || '').trim();
+    if (!r) {
+      (window.PC && PC.toast) ? PC.toast('Please add a brief reason to sign in.', 'warning') : alert('Please add a brief reason to sign in.');
+      try { input && input.focus(); } catch (_) {}
+      return;
+    }
+    closeSignInReason();
+    performSignIn(r);
+  }
+  window.confirmSignInReason = confirmSignInReason;
+
+  async function performSignOut() {
     const cta = document.getElementById('today-cta');
-    if (!cta) return;
-    cta.disabled = true;
+    if (cta) cta.disabled = true;
     try {
-      if (_clockState === 'signed_in') {
-        const res = await fetch('/api/tech/me/sign-out', { method:'POST', credentials:'include' });
-        // Mirror the sign-in flow: 409 + 5s_end_shift_required means the
-        // tech still has the end-of-shift 5S audit to complete. Don't show
-        // an error — just route them to the audit and the audit-finished
-        // hook will retry the sign-out automatically.
-        if (res.status === 409) {
-          const txt = await res.text().catch(() => '');
-          if (/5s_end_shift_required/i.test(txt)) {
-            if (window.PC && PC.toast) PC.toast('Complete your end-of-shift 5S to sign out.', 'info');
-            location.assign('/tech?view=5s&pending=signout');
-            return;
-          }
-          if (/not_clocked_in/i.test(txt)) {
-            // Already signed out elsewhere — refresh the card state.
-            if (window.PC && PC.toast) PC.toast('You were already signed out.', 'info');
-            loadTodayCard(_me);
-            return;
-          }
-          throw new Error(txt || 'Sign-out failed (409)');
+      const res = await fetch('/api/tech/me/sign-out', { method:'POST', credentials:'include' });
+      // Mirror the sign-in flow: 409 + 5s_end_shift_required means the tech
+      // still has the end-of-shift 5S audit to complete. Don't show an error —
+      // route them to the audit; the audit-finished hook retries the sign-out.
+      if (res.status === 409) {
+        const txt = await res.text().catch(() => '');
+        if (/5s_end_shift_required/i.test(txt)) {
+          if (window.PC && PC.toast) PC.toast('Complete your end-of-shift 5S to sign out.', 'info');
+          location.assign('/tech?view=5s&pending=signout');
+          return;
         }
-        if (!res.ok) {
-          const txt = await res.text().catch(() => '');
-          throw new Error(txt || ('Sign-out failed (' + res.status + ')'));
+        if (/not_clocked_in/i.test(txt)) {
+          if (window.PC && PC.toast) PC.toast('You were already signed out.', 'info');
+          loadTodayCard(_me);
+          return;
         }
-        if (window.PC && PC.toast) PC.toast('Signed out for the day. Complete end-of-shift 5S.', 'success');
-        setTimeout(() => location.assign('/tech?view=5s&pending=signout'), 600);
-        return;
+        throw new Error(txt || 'Sign-out failed (409)');
       }
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        throw new Error(txt || ('Sign-out failed (' + res.status + ')'));
+      }
+      if (window.PC && PC.toast) PC.toast('Signed out for the day. Complete end-of-shift 5S.', 'success');
+      setTimeout(() => location.assign('/tech?view=5s&pending=signout'), 600);
+    } catch (e) {
+      if (window.PC && PC.toast) PC.toast(e.message || 'Sign-out failed.', 'error');
+      if (cta) cta.disabled = false;
+    }
+  }
+
+  // Post the sign-in. reason is null for a normal on-schedule sign-in, or the
+  // tech's justification for a day-off / off-hours sign-in. On a start-shift 5S
+  // gate we stash the reason and route to the 5S; /tech replays the sign-in
+  // (with the stored reason) once the audit completes.
+  async function performSignIn(reason) {
+    const cta = document.getElementById('today-cta');
+    if (cta) cta.disabled = true;
+    try {
       const body = {};
-      if (_isDayOff) {
-        const r = (document.getElementById('today-dayoff-reason').value || '').trim();
-        if (!r) {
-          (window.PC && PC.toast) ? PC.toast('Day-off sign-in requires a reason.', 'warning') : alert('Day-off sign-in requires a reason.');
-          cta.disabled = false; return;
-        }
-        body.dayoff_reason = r;
-      }
+      if (reason) body.dayoff_reason = reason;
       const res = await fetch('/api/tech/me/sign-in', {
         method:'POST', credentials:'include',
         headers:{'Content-Type':'application/json'}, body: JSON.stringify(body),
@@ -2190,31 +2277,23 @@
         location.assign('/tech?view=5s&pending=signin');
         return;
       }
-      // Server says today is a day off and a reason is required, but the card
-      // wasn't showing the reason field (e.g. stale overview). Reveal it and
-      // prompt — never leak the raw {"detail":...} JSON to the tech.
+      // Server says a reason is required but we didn't collect one (e.g. stale
+      // overview missed a day off). Open the popup rather than leaking raw JSON.
       if (res.status === 409 && /dayoff_reason_required/i.test(txt)) {
         _isDayOff = true;
-        const banner = document.getElementById('today-dayoff-banner');
-        const reason = document.getElementById('today-dayoff-reason');
-        if (banner) banner.style.display = '';
-        if (reason) { reason.style.display = ''; try { reason.focus(); } catch (_) {} }
-        cta.textContent = 'Sign In (day off)';
-        cta.classList.add('dayoff');
-        if (window.PC && PC.toast) PC.toast('Today is a day off — add a reason to sign in.', 'warning');
-        cta.disabled = false; return;
+        if (window.PC && PC.toast) PC.toast('Add a reason to sign in.', 'warning');
+        if (cta) cta.disabled = false;
+        openSignInReason();
+        return;
       }
-      // Unwrap a JSON error body so we surface the message, not raw JSON.
       let _msg = txt;
       try { const j = JSON.parse(txt); if (j && j.detail) _msg = j.detail; } catch (_) {}
       throw new Error(_msg || ('HTTP ' + res.status));
     } catch (e) {
       if (window.PC && PC.toast) PC.toast(e.message || 'Sign-in failed.', 'error');
-    } finally {
-      cta.disabled = false;
+      if (cta) cta.disabled = false;
     }
   }
-  window.doClockAction = doClockAction;
 
   // ── SPA panel router ──────────────────────────────────────────────────
   const _loaded = {};

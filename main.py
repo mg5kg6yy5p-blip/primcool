@@ -4448,6 +4448,23 @@ def tp1_tech_today_overview(request: Request):
         today_schedule_label = f"Scheduled {_st}–{_en}" if (_st and _en) else None
     elif on_call:
         today_schedule_label = "On call today"
+
+    # Off-hours: scheduled today but the current Jamaica-local time falls
+    # outside the shift window (before start or after end). On-call techs are
+    # exempt — they're expected outside operational hours. The landing prompts
+    # for a justification in this case too, mirroring the day-off prompt; the
+    # reason is recorded on the clock-in. "HH:MM" strings compare correctly
+    # lexicographically because they're zero-padded.
+    is_off_hours = False
+    if scheduled_today and not on_call and today_sched:
+        try:
+            now_jm = _dt.now(_tz(_td(hours=-5))).strftime("%H:%M")
+            _s = str(today_sched.get("start_time") or "")[:5]
+            _e = str(today_sched.get("end_time") or "")[:5]
+            if _s and _e:
+                is_off_hours = (now_jm < _s) or (now_jm > _e)
+        except Exception:
+            is_off_hours = False
     in_overtime = bool(open_in and sched_end and not on_call and
                        _dt.now(_tz.utc).isoformat() > sched_end)
     ot_approved = is_overtime_approved(tech_id) if in_overtime else False
@@ -4476,6 +4493,7 @@ def tp1_tech_today_overview(request: Request):
         "today_schedule_label": today_schedule_label,
         "on_call_today": on_call,
         "is_day_off": is_day_off,
+        "is_off_hours": is_off_hours,
         "sign_in_status": sign_in_status,
         "signed_in_at": (open_in or {}).get("event_at"),
         "signed_in_at_local": _jm_time_label((open_in or {}).get("event_at")),
