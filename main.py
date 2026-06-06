@@ -44,6 +44,8 @@ from database import (
     create_customer, delete_customer, verify_customer, set_customer_pin,
     validate_pin_policy, record_pin_failure, reset_pin_failures,
     is_customer_pin_locked,
+    record_admin_login_failure, reset_admin_login_failures, is_admin_login_locked,
+    record_tech_login_failure, reset_tech_login_failures, is_tech_login_locked,
     get_customer_by_code_and_email, create_customer_pin_reset, consume_customer_pin_reset,
     get_customer_equipment, get_customer_equipment_portal_safe,
     get_equipment_by_id, create_equipment, delete_equipment,
@@ -63,7 +65,7 @@ from database import (
     create_physical_count, list_physical_counts, approve_physical_count,
     create_review, get_review_for_visit, get_customer_reviews,
     get_all_reviews, get_approved_reviews, update_review_status, delete_review,
-    verify_tech, get_tech_by_id, get_all_techs, create_tech, update_tech,
+    verify_tech, get_tech_by_id, get_tech_by_code, get_all_techs, create_tech, update_tech,
     # W1+W2 unified staff helpers
     list_staff, get_staff_by_id, VALID_STAFF_TYPES, VALID_DEPARTMENTS,
     # Pass B warehouse movements
@@ -90,7 +92,7 @@ from database import (
     get_visit_parts, add_visit_part, remove_visit_part, get_visit_part_by_id,
     build_invoice_lines_from_visit,
     # Admin users + audit
-    verify_admin_user, get_admin_user_by_id, get_all_admin_users,
+    verify_admin_user, get_admin_user_by_id, get_admin_user_by_username, get_all_admin_users,
     create_admin_user, update_admin_user, set_admin_role, set_admin_active,
     set_admin_password, count_active_admins, get_admin_by_email,
     create_admin_password_reset, consume_admin_password_reset,
@@ -795,6 +797,29 @@ def _enforce_export_rate(request: Request, admin_id: int, resource: str):
     _enforce_rate(request, bucket=f"export:{resource}", identity=str(admin_id),
                   max_attempts=10, window_seconds=3600,
                   message=f"Export limit reached: max 10 {resource} exports per hour.")
+
+
+def _enforce_forgot_rate(request: Request, identity: str = ""):
+    """Rate-limit the forgot-password / forgot-pin endpoints (IT-module #7).
+
+    These endpoints send an email on every successful (code,email) match and
+    are an enumeration + mail-bomb surface, so they were the most practical
+    abuse path left open. Two layers, both per source IP:
+
+      • per-identity  — 5 / hour, keyed on the supplied email/code, so one
+                         victim can't be targeted with a flood of reset mails.
+      • per-IP global — 20 / hour across all identities, so a single client
+                         can't spray reset requests across many accounts to
+                         enumerate which (code,email) pairs exist.
+
+    The 200/ok response is unchanged (no enumeration leak); we just cap the
+    rate. 429 is generic and identical regardless of whether the identity
+    exists, preserving the no-enumeration contract."""
+    msg = "Too many reset requests. Please wait a while and try again."
+    _enforce_rate(request, bucket="forgot", identity=(identity or "").lower(),
+                  max_attempts=5, window_seconds=3600, message=msg)
+    _enforce_rate(request, bucket="forgot_ip", identity="",
+                  max_attempts=20, window_seconds=3600, message=msg)
 
 
 # Signed photo URL helpers are defined further down — after JWT_SECRET.
@@ -2683,6 +2708,7 @@ def portal_logout(request: Request, response: Response):
 
 @app.post("/api/portal/forgot-pin")
 async def portal_forgot_pin(request: Request, body: PortalForgotPin):
+    _enforce_forgot_rate(request, body.email or body.code)
     # Always return ok — don't leak which (code, email) pairs exist
     customer = get_customer_by_code_and_email(body.code, body.email)
     if customer:
@@ -2847,6 +2873,42 @@ class StaffLoginRequest(BaseModel):
                                        # /api/tech/login/mfa endpoints
 
 
+def _staff_lock_guard(kind: str, row: dict, request: Request, identity: str):
+    """IT-module #9 — per-account login lockout for staff (admin + tech),
+    independent of source IP. Checked BEFORE password/PIN verification so a
+    locked account can't be probed with valid credentials inside the window.
+    Raises a generic 401 (no enumeration) if the account is currently locked."""
+    if not row:
+        return
+    checker = is_admin_login_locked if kind == "admin" else is_tech_login_locked
+    locked, locked_until = checker(row["id"])
+    if locked:
+        _audit_anon("auth.login_failed", request, attempted_identity=identity,
+                    actor_type=kind, target_label=f"account locked until {locked_until}")
+        raise HTTPException(401, "Invalid credentials")
+
+
+def _staff_record_login_failure(kind: str, row: dict, request: Request, identity: str):
+    """Record one failed staff login. At the threshold this flips the account
+    into a 30-min lock and raises a high-severity security alert (bursts across
+    accounts from rotating IPs are the credential-spray signature this catches
+    where the per-IP rate limit alone can't)."""
+    if not row:
+        return
+    recorder = record_admin_login_failure if kind == "admin" else record_tech_login_failure
+    res = recorder(row["id"])
+    if res.get("locked"):
+        try:
+            create_security_alert(
+                kind="account_lockout", severity="high",
+                summary=f"{kind.title()} {identity} locked after {res['failed']} failed sign-in attempts",
+                actor_type=kind, actor_id=row["id"],
+                details={"locked_until": res["locked_until"], "ip": _client_ip(request)},
+            )
+        except Exception:
+            pass
+
+
 @app.post("/api/staff/login")
 def staff_login(req: StaffLoginRequest, request: Request, response: Response):
     """Unified staff login. Tries the admin identity space first, then
@@ -2879,10 +2941,20 @@ def staff_login(req: StaffLoginRequest, request: Request, response: Response):
         raise HTTPException(400, "identifier and secret are required")
     _enforce_login_rate(request, f"staff:{identifier}")
 
+    # IT-module #9 — resolve the candidate rows up front so we can (a) refuse a
+    # locked account before verifying, and (b) record a failure against the
+    # right account on a credential miss. Lookups are generic; the response
+    # stays identical whether or not the identifier exists (no enumeration).
+    admin_row = get_admin_user_by_username(identifier)
+    tech_row  = get_tech_by_code(identifier)
+    _staff_lock_guard("admin", admin_row, request, identifier)
+    _staff_lock_guard("tech", tech_row, request, identifier)
+
     # Try admin first — admins use username + password, generally
     # alphanumeric. verify_admin_user is constant-time on miss.
     admin = verify_admin_user(identifier, secret)
     if admin and admin.get("active"):
+        reset_admin_login_failures(admin["id"])
         # Mirror admin_login's response shape; same gates.
         if not admin.get("mfa_enabled"):
             enrol_token = _make_token(
@@ -2906,9 +2978,15 @@ def staff_login(req: StaffLoginRequest, request: Request, response: Response):
                 "requires_mfa": True,
                 "mfa_token": mfa_token}
 
+    # Admin identifier matched but password was wrong — count it against the
+    # admin account (may trip the lockout).
+    if admin_row and admin is None:
+        _staff_record_login_failure("admin", admin_row, request, identifier)
+
     # Try tech — uses tech_code (case-folded) + numeric PIN.
     tech = verify_tech(identifier, secret)
     if tech and tech.get("active"):
+        reset_tech_login_failures(tech["id"])
         if not tech.get("mfa_enabled"):
             enrol_token = _make_token(
                 {"sub": str(tech["id"]), "type": "tech_mfa_enrol"},
@@ -2928,6 +3006,10 @@ def staff_login(req: StaffLoginRequest, request: Request, response: Response):
                 "redirect_to": "/home",
                 "requires_mfa": True,
                 "mfa_token": mfa_token}
+
+    # Tech identifier matched but PIN was wrong — count it against the tech.
+    if tech_row and tech is None:
+        _staff_record_login_failure("tech", tech_row, request, identifier)
 
     # Neither space matched — generic error.
     _audit_anon("auth.login_failed", request,
@@ -2965,13 +3047,18 @@ def tech_login(req: TechLogin, request: Request, response: Response):
     3. Issued session: original shape with the 7d session token,
        must_change_credentials flag (forced PIN reset, item #2)."""
     _enforce_login_rate(request, req.tech_code)
+    # IT-module #9 — per-account lockout (independent of IP).
+    tech_row = get_tech_by_code(req.tech_code)
+    _staff_lock_guard("tech", tech_row, request, req.tech_code)
     tech = verify_tech(req.tech_code, req.pin)
     if not tech:
+        _staff_record_login_failure("tech", tech_row, request, req.tech_code)
         _audit_anon("auth.login_failed", request,
                     attempted_identity=req.tech_code,
                     actor_type="tech",
                     target_label="invalid PRID or PIN")
         raise HTTPException(401, "Invalid tech code or PIN")
+    reset_tech_login_failures(tech["id"])
 
     # Gate 1 — MFA enrolment HARD-REQUIRED (May 2026 operator
     # directive: everyone who logs in needs MFA). must_enrol_mfa is
@@ -3247,6 +3334,7 @@ def tech_logout(request: Request, response: Response):
 
 @app.post("/api/tech/forgot-pin")
 async def tech_forgot_pin(request: Request, body: TechForgotPin):
+    _enforce_forgot_rate(request, body.email or body.tech_code)
     # Always return ok to avoid leaking which (code, email) pairs exist.
     tech = get_tech_by_code_and_email(body.tech_code, body.email)
     if tech:
@@ -4368,13 +4456,18 @@ def admin_login(req: AdminLoginRequest, request: Request, response: Response):
     if not req.username:
         raise HTTPException(400, "Username is required")
     _enforce_login_rate(request, req.username)
+    # IT-module #9 — per-account lockout (independent of IP).
+    admin_row = get_admin_user_by_username(req.username)
+    _staff_lock_guard("admin", admin_row, request, req.username)
     admin = verify_admin_user(req.username, req.password)
     if not admin:
+        _staff_record_login_failure("admin", admin_row, request, req.username)
         _audit_anon("auth.login_failed", request,
                     attempted_identity=req.username,
                     actor_type="admin",
                     target_label="invalid credentials")
         raise HTTPException(401, "Invalid username or password")
+    reset_admin_login_failures(admin["id"])
     if not admin.get("active"):
         _audit_anon("auth.login_failed", request,
                     attempted_identity=req.username,
@@ -4858,6 +4951,7 @@ def tech_access_bundle(request: Request, response: Response):
 
 @app.post("/api/admin/forgot-password")
 async def admin_forgot_password(request: Request, body: AdminForgotPassword):
+    _enforce_forgot_rate(request, body.email)
     admin = get_admin_by_email(body.email)
     if admin:
         token = create_admin_password_reset(admin["id"])
@@ -4894,10 +4988,12 @@ async def admin_forgot_password(request: Request, body: AdminForgotPassword):
 
 @app.post("/api/admin/reset-password")
 def admin_reset_password_endpoint(body: AdminResetPassword):
-    if len(body.password) < 8:
-        raise HTTPException(400, "Password must be at least 8 characters")
+    # IT-module #8: the admin reset rule was weaker than the portal
+    # (≥8 chars, no complexity). Match the portal floor exactly —
+    # ≥12 chars, letters+digits, common-password deny-list.
     if body.password != body.confirm_password:
         raise HTTPException(400, "Passwords do not match")
+    _validate_password_strength(body.password)
     admin_id = consume_admin_password_reset(body.token)
     if not admin_id:
         raise HTTPException(400, "Reset link is invalid or has expired")
@@ -4918,8 +5014,9 @@ def admin_create_user(request: Request, body: AdminUserCreate):
     admin = _require_perm(request, "admin:create")
     if body.role not in ADMIN_PERMS:
         raise HTTPException(400, "Invalid role")
-    if len(body.password) < 8:
-        raise HTTPException(400, "Password must be at least 8 characters")
+    # IT-module #8: admin credentials use the same strength floor as the
+    # portal (≥12 chars + letters/digits + deny-list), not the old ≥8.
+    _validate_password_strength(body.password)
     # PRID is generated server-side and used as the username.
     data = body.model_dump()
     try:
@@ -5101,8 +5198,8 @@ def admin_promote_tech(request: Request, tech_id: int, body: PromoteTechBody):
         raise HTTPException(400, "Unknown role")
     if body.role == "super_admin" and not _admin_can(admin["role"], "admin:set_role"):
         raise HTTPException(403, "You cannot promote directly into super_admin")
-    if len(body.password or "") < 8:
-        raise HTTPException(400, "Initial password must be at least 8 characters")
+    # IT-module #8: match the portal strength floor for admin credentials.
+    _validate_password_strength(body.password or "")
 
     data = {
         "name":      target.get("name") or "",
@@ -5207,8 +5304,8 @@ def admin_reset_user_password(request: Request, user_id: int, body: AdminPasswor
     # super_admin can reset anyone's; everyone else can reset only their own
     if admin["id"] != user_id and not _admin_can(admin["role"], "admin:reset_password"):
         raise HTTPException(403, "You can only reset your own password")
-    if len(body.password) < 8:
-        raise HTTPException(400, "Password must be at least 8 characters")
+    # IT-module #8: match the portal strength floor for admin credentials.
+    _validate_password_strength(body.password)
     set_admin_password(user_id, body.password)
     _audit_from(admin, "admin.reset_password", request,
                 target_type="admin", target_id=user_id, target_label=target["username"])
@@ -6202,16 +6299,44 @@ _JM_EDTAX_EE_RATE = 0.0225    # Employee Ed-Tax  2.25 %
 _JM_EDTAX_ER_RATE = 0.035     # Employer Ed-Tax  3.5 %
 _JM_HEART_RATE    = 0.03      # HEART Trust  3 %  (employer)
 _JM_HEART_THRESHOLD_MO = 173_328  # only if monthly wage bill ≥ this
-# Company-level placeholders. TODO: replace with the real PrimeCool
-# TRN + NIS Employer # once the operator provides them — see Q2 in
-# the "make the printable payslip look like AstraZeneca" discussion.
+# Company-level statutory identifiers for the printable payslip (IT-module
+# #10). These are now CONFIG, read from the environment, instead of the old
+# hardcoded "TODO-COMPANY-TRN" / "TODO-NIS-EMPLOYER-#" strings that would have
+# printed fake employer tax IDs on a real payroll run.
+#
+# Set these in .dev.env (local) / the deploy env (prod):
+#   PC_COMPANY_NAME, PC_COMPANY_ADDRESS, PC_COMPANY_PHONE,
+#   PC_COMPANY_TRN, PC_COMPANY_NIS_ER
+#
+# When a statutory ID is unset we render the sentinel "— not set —" (see
+# _PC_TAXID_UNSET) rather than a fabricated number, so an un-configured
+# payslip is obviously incomplete instead of silently wrong. A real Tax
+# Administration Jamaica TRN is 9 digits; values are validated lightly at
+# load (digits/length warning only — we never block startup on it).
+_PC_TAXID_UNSET = "— not set —"
+
+
+def _env_or_unset(key: str) -> str:
+    v = (os.environ.get(key) or "").strip()
+    return v or _PC_TAXID_UNSET
+
+
 _PC_COMPANY = {
-    "name":     "PrimeCool Services Limited",
-    "address":  "Kingston, Jamaica",
-    "phone":    "",
-    "trn":      "TODO-COMPANY-TRN",
-    "nis_er":   "TODO-NIS-EMPLOYER-#",
+    "name":     (os.environ.get("PC_COMPANY_NAME") or "PrimeCool Services Limited").strip(),
+    "address":  (os.environ.get("PC_COMPANY_ADDRESS") or "Kingston, Jamaica").strip(),
+    "phone":    (os.environ.get("PC_COMPANY_PHONE") or "").strip(),
+    "trn":      _env_or_unset("PC_COMPANY_TRN"),
+    "nis_er":   _env_or_unset("PC_COMPANY_NIS_ER"),
 }
+# Loud, non-fatal warning so anyone running a real payroll without the IDs
+# configured sees it in the logs (and the payslip shows "— not set —").
+if _PC_COMPANY["trn"] == _PC_TAXID_UNSET or _PC_COMPANY["nis_er"] == _PC_TAXID_UNSET:
+    logger.warning(
+        "Payroll: employer TRN / NIS Employer # not configured "
+        "(PC_COMPANY_TRN / PC_COMPANY_NIS_ER). Payslips will print "
+        "'%s' for the missing field(s) until these env vars are set.",
+        _PC_TAXID_UNSET,
+    )
 
 
 def _jm_tax_year_bounds(period_end_iso: str):

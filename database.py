@@ -533,6 +533,16 @@ def init_db():
         # signed-URL infra in main._sign_photo_url.
         ("avatar_filename",
             "ALTER TABLE technicians ADD COLUMN avatar_filename TEXT"),
+        # IT-module #9 — per-account login lockout, independent of source IP.
+        # Mirrors the customer PIN-lockout columns. Drives is_tech_locked /
+        # record_tech_login_failure: N failed PIN attempts → 30-min lock on
+        # THIS account, so distributed (multi-IP) credential stuffing against
+        # one PRID is capped even when each attempt comes from a fresh IP.
+        ("login_failed_count",
+            "ALTER TABLE technicians ADD COLUMN login_failed_count "
+            "INTEGER NOT NULL DEFAULT 0"),
+        ("login_locked_until",
+            "ALTER TABLE technicians ADD COLUMN login_locked_until TEXT"),
     ):
         if name not in tech_cols:
             try: con.execute(sql)
@@ -598,6 +608,15 @@ def init_db():
         # Profile photo — see matching column on technicians.
         ("avatar_filename",
             "ALTER TABLE admin_users ADD COLUMN avatar_filename TEXT"),
+        # IT-module #9 — per-account login lockout, independent of source IP.
+        # See the matching technicians columns. N failed password attempts on
+        # one username → 30-min lock on THAT account, so distributed
+        # credential stuffing is capped even with per-attempt IP rotation.
+        ("login_failed_count",
+            "ALTER TABLE admin_users ADD COLUMN login_failed_count "
+            "INTEGER NOT NULL DEFAULT 0"),
+        ("login_locked_until",
+            "ALTER TABLE admin_users ADD COLUMN login_locked_until TEXT"),
     ):
         if col not in admin_cols:
             try: con.execute(sql)
@@ -2888,6 +2907,98 @@ def is_customer_pin_locked(customer_id: int) -> tuple:
         reset_pin_failures(customer_id)
         return False, None
     return True, locked_until
+
+
+# ── IT-module #9 — staff (admin + tech) per-account login lockout ─────────────
+# Mirrors the customer PIN-lockout above, but keyed on the
+# login_failed_count / login_locked_until columns and parameterised by table.
+# `table` is NEVER request-supplied — callers pass one of the two literals
+# below, so the f-string interpolation can't be used for SQL injection. The
+# assert is a defensive belt-and-braces guard against a future caller typo.
+_LOCKOUT_TABLES = {"admin_users", "technicians"}
+
+
+def _record_login_failure(table: str, row_id: int) -> dict:
+    """Increment login_failed_count; at the threshold, set a 30-min lock.
+    Returns {'locked': bool, 'failed': int, 'locked_until': str|None}."""
+    assert table in _LOCKOUT_TABLES, f"bad lockout table {table!r}"
+    from datetime import timedelta as _td
+    con = _con()
+    row = con.execute(
+        f"SELECT login_failed_count, login_locked_until FROM {table} WHERE id = ?",
+        (row_id,),
+    ).fetchone()
+    if not row:
+        con.close()
+        return {"locked": False, "failed": 0, "locked_until": None}
+    failed = (row["login_failed_count"] or 0) + 1
+    locked_until = None
+    locked = False
+    if failed >= PIN_LOCKOUT_THRESHOLD:
+        locked = True
+        locked_until = (datetime.now(timezone.utc) + _td(minutes=PIN_LOCKOUT_MINUTES)).isoformat()
+    con.execute(
+        f"UPDATE {table} SET login_failed_count = ?, login_locked_until = ? WHERE id = ?",
+        (failed, locked_until, row_id),
+    )
+    con.commit()
+    con.close()
+    return {"locked": locked, "failed": failed, "locked_until": locked_until}
+
+
+def _reset_login_failures(table: str, row_id: int):
+    assert table in _LOCKOUT_TABLES, f"bad lockout table {table!r}"
+    con = _con()
+    con.execute(
+        f"UPDATE {table} SET login_failed_count = 0, login_locked_until = NULL WHERE id = ?",
+        (row_id,),
+    )
+    con.commit()
+    con.close()
+
+
+def _is_login_locked(table: str, row_id: int) -> tuple:
+    """Returns (locked: bool, locked_until: str|None). Auto-clears an expired
+    lock so the next failed attempt starts a fresh window."""
+    assert table in _LOCKOUT_TABLES, f"bad lockout table {table!r}"
+    con = _con()
+    row = con.execute(
+        f"SELECT login_locked_until FROM {table} WHERE id = ?", (row_id,),
+    ).fetchone()
+    con.close()
+    if not row or not row["login_locked_until"]:
+        return False, None
+    locked_until = row["login_locked_until"]
+    if locked_until < datetime.now(timezone.utc).isoformat():
+        _reset_login_failures(table, row_id)
+        return False, None
+    return True, locked_until
+
+
+# Thin, explicitly-named wrappers so main.py imports stay readable and the
+# table literal is never threaded through call sites.
+def record_admin_login_failure(admin_id: int) -> dict:
+    return _record_login_failure("admin_users", admin_id)
+
+
+def reset_admin_login_failures(admin_id: int):
+    _reset_login_failures("admin_users", admin_id)
+
+
+def is_admin_login_locked(admin_id: int) -> tuple:
+    return _is_login_locked("admin_users", admin_id)
+
+
+def record_tech_login_failure(tech_id: int) -> dict:
+    return _record_login_failure("technicians", tech_id)
+
+
+def reset_tech_login_failures(tech_id: int):
+    _reset_login_failures("technicians", tech_id)
+
+
+def is_tech_login_locked(tech_id: int) -> tuple:
+    return _is_login_locked("technicians", tech_id)
 
 
 def set_customer_pin(customer_id: int, pin: str):

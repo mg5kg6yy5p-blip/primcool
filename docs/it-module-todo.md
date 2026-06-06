@@ -26,10 +26,10 @@ The May 2026 security audit surfaced gaps that are better solved by a dedicated 
 ## Scope for the IT module
 
 ### Authentication hardening
-- [ ] Tech MFA enrolment (currently PIN-only)
-- [ ] Per-account lockout after N failed attempts (not just per-IP)
-- [ ] Rate limit `/api/admin/forgot-password`, `/api/portal/forgot-pin`, `/api/tech/forgot-pin`
-- [ ] Tighten admin reset-password rule to match portal (12 chars + complexity + denylist)
+- [x] Tech MFA enrolment (currently PIN-only) — DONE: `/api/tech/mfa/setup|activate|status`, `/api/tech/login/mfa`, forced-enrolment gate in `tech_login`, backup codes.
+- [x] Per-account lockout after N failed attempts (not just per-IP) — DONE (2026-06-06): `login_failed_count`/`login_locked_until` on `admin_users` + `technicians`; 5 failures → 30-min lock (`PIN_LOCKOUT_THRESHOLD`/`PIN_LOCKOUT_MINUTES`); wired into `/api/admin/login`, `/api/tech/login`, `/api/staff/login`; raises a high-severity `account_lockout` security alert.
+- [x] Rate limit `/api/admin/forgot-password`, `/api/portal/forgot-pin`, `/api/tech/forgot-pin` — DONE (2026-06-06): `_enforce_forgot_rate` — 5/hr per identity + 20/hr per IP, generic 429 (no enumeration leak).
+- [x] Tighten admin reset-password rule to match portal (12 chars + complexity + denylist) — DONE (2026-06-06): all admin password-set paths now call `_validate_password_strength` (reset-password, create-user, promote-tech, reset-user-password).
 - [ ] Strip auth-token echo from admin login JSON body (cookie is enough)
 
 ### Session management
@@ -72,6 +72,9 @@ The May 2026 security audit surfaced gaps that are better solved by a dedicated 
 - [ ] Periodic credential rotation reminders
 - [ ] Offboarding checklist tied to the existing Terminate flow (covers SSO + MDM + PrimeCool account)
 - [ ] Documented incident-response runbook
+
+## Pre-production data (tracked alongside the IT module)
+- [x] Payslip employer TRN / NIS Employer # were hardcoded placeholders (`main.py` `_PC_COMPANY`) — DONE (2026-06-06): now read from env (`PC_COMPANY_TRN`, `PC_COMPANY_NIS_ER`, `PC_COMPANY_NAME`, `PC_COMPANY_ADDRESS`, `PC_COMPANY_PHONE`). Unset → payslip prints the sentinel `— not set —` (never a fake number) + a boot warning. **Operator still needs to supply the real TAJ values in the deploy env before the first live payroll run.**
 
 ## Items deliberately deferred (low ROI for current scale)
 - Phishing-resistant MFA (hardware keys) — TOTP is sufficient for now
