@@ -900,12 +900,26 @@
     }
   };
 
+  // A page opts out of the floating-corner notification bell by setting
+  // [data-pc-no-bell] on <body> (or window.PC_DISABLE_NOTIF_BELL = true) —
+  // used by the staff home hub, which already surfaces alerts through its own
+  // header + "Awaiting Your Action" feed. A page that provides an explicit
+  // inline [data-pc-notif-bell] host is unaffected: the bell mounts there.
+  PC._notifBellSuppressed = function () {
+    try {
+      return !!(document.querySelector('[data-pc-no-bell]')
+             || window.PC_DISABLE_NOTIF_BELL === true);
+    } catch (_) { return false; }
+  };
+
   PC.mountNotificationBell = function () {
     if (PC.notif._mounted) return;
+    const host = document.querySelector('[data-pc-notif-bell]');
+    // No inline host and the page opted out → skip the floating fallback.
+    if (!host && PC._notifBellSuppressed()) return;
     _notifStyles();
     const wrap = document.createElement('div');
     wrap.className = 'pc-bell-wrap';
-    const host = document.querySelector('[data-pc-notif-bell]');
     if (!host) wrap.classList.add('pc-bell-float');
     wrap.innerHTML =
       '<button class="pc-bell-btn" id="pc-bell-btn" type="button" aria-label="Notifications" aria-haspopup="true" aria-expanded="false">' +
@@ -955,6 +969,8 @@
   // unread count. Polling pauses while the tab is hidden (battery + load)
   // and does an immediate catch-up refresh when it becomes visible again.
   PC._initNotifBell = async function () {
+    // Skip entirely when the page opts out and offers no inline mount host.
+    if (PC._notifBellSuppressed() && !document.querySelector('[data-pc-notif-bell]')) return;
     const n = await PC.refreshNotifCount();
     if (n === null) return;              // not authenticated — no bell
     PC.mountNotificationBell();
@@ -974,6 +990,142 @@
     document.addEventListener('DOMContentLoaded', function () { setTimeout(PC._initNotifBell, 300); });
   } else {
     setTimeout(PC._initNotifBell, 300);
+  }
+
+  // ───────────────────────────────────────────────────────────────────────
+  // Shared bottom navigation bar.
+  //
+  // The staff home hub (staff_home.html) renders its own in-page `.bottomnav`
+  // and drives it with showPanel() — so the bar is always present THERE. But
+  // every other staff surface (Admin console, Tech portal, sub-pages) is a
+  // separate document with no bar, so the bar "disappeared" the moment you
+  // navigated off Home. This mounts the SAME bar on those pages, with links
+  // that route back to the relevant /home#panel, giving continuous nav.
+  //
+  // Opt-out / dedupe rules:
+  //   • If the page already has a native `.bottomnav` (i.e. staff_home), skip
+  //     — we never want two bars.
+  //   • If the page sets [data-pc-no-bottomnav] on <body>, skip (sign-in
+  //     screens, kiosk views, etc.).
+  //   • Only staff get it: we probe /api/staff/me; a 401 (logged-out, or a
+  //     customer-portal session) yields no bar.
+  // ───────────────────────────────────────────────────────────────────────
+  PC.bottomNav = PC.bottomNav || { _mounted: false };
+
+  PC._bottomNavSuppressed = function () {
+    try {
+      return !!(document.querySelector('.bottomnav')               // native bar present
+             || document.querySelector('[data-pc-no-bottomnav]')   // explicit opt-out
+             || window.PC_DISABLE_BOTTOMNAV === true);
+    } catch (_) { return false; }
+  };
+
+  function _bottomNavStyles() {
+    if (document.getElementById('pc-bottomnav-styles')) return;
+    const css = document.createElement('style');
+    css.id = 'pc-bottomnav-styles';
+    css.textContent = `
+      body.pc-has-bottomnav {
+        padding-bottom: calc(64px + env(safe-area-inset-bottom,0px)) !important;
+      }
+      .pc-bottomnav {
+        position: fixed; bottom: 0; left: 0; right: 0;
+        background: var(--card, #ffffff);
+        border-top: 1px solid var(--border-light, var(--border, #e6ebf1));
+        height: calc(64px + env(safe-area-inset-bottom,0px));
+        padding-bottom: env(safe-area-inset-bottom,0px);
+        display: flex; z-index: 100;
+        box-shadow: 0 -2px 10px rgba(11,37,69,.04);
+        font-family: var(--font-body, system-ui, -apple-system, sans-serif);
+      }
+      .pc-bottomnav .pc-bn-item {
+        flex: 1; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 3px;
+        font-size: 11px; font-weight: 600;
+        color: var(--muted, #6b7a90);
+        text-decoration: none;
+        padding: 6px 4px; position: relative; cursor: pointer;
+        background: none; border: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .pc-bottomnav .pc-bn-ico {
+        width: 34px; height: 34px; border-radius: 50%;
+        display: inline-flex; align-items: center; justify-content: center;
+        transition: background .14s ease, color .14s ease;
+      }
+      .pc-bottomnav .pc-bn-ico svg { width: 18px; height: 18px; }
+      .pc-bottomnav .pc-bn-item.active { color: var(--ink, #0b2545); }
+      .pc-bottomnav .pc-bn-item.active .pc-bn-ico {
+        background: var(--navy, #0b2545); color: #fff;
+      }
+      .pc-bottomnav .pc-bn-item.active .pc-bn-ico svg { stroke: #fff; }
+      @media (min-width:768px){
+        .pc-bottomnav {
+          left: 50%; transform: translateX(-50%);
+          width: min(640px, 100%);
+          border-left: 1px solid var(--border-light, var(--border, #e6ebf1));
+          border-right: 1px solid var(--border-light, var(--border, #e6ebf1));
+          border-top-left-radius: 16px; border-top-right-radius: 16px;
+        }
+      }
+    `;
+    document.head.appendChild(css);
+  }
+
+  // Icons mirror the staff_home bottom bar exactly.
+  const _BN_ICONS = {
+    home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2h-4v-7h-6v7H5a2 2 0 0 1-2-2z"/></svg>',
+    jobs: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-4V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2Z"/><path d="M10 5h4v2h-4z"/></svg>',
+    find: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>',
+    profile: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>',
+    menu: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>',
+  };
+
+  PC.mountBottomNav = function (me) {
+    if (PC.bottomNav._mounted) return;
+    if (PC._bottomNavSuppressed()) return;
+    _bottomNavStyles();
+
+    const isTech = me && me.kind === 'tech';
+    const items = [
+      { key: 'dashboard', label: 'Home',    ico: 'home' },
+      isTech ? { key: 'jobs', label: 'My Jobs', ico: 'jobs' } : null,
+      { key: 'find',      label: 'Find',    ico: 'find' },
+      { key: 'profile',   label: 'Profile', ico: 'profile' },
+      { key: 'menu',      label: 'Menu',    ico: 'menu' },
+    ].filter(Boolean);
+
+    const nav = document.createElement('nav');
+    nav.className = 'pc-bottomnav';
+    nav.setAttribute('aria-label', 'Primary navigation');
+    nav.setAttribute('data-pc-bottomnav', '');
+    nav.innerHTML = items.map(function (it) {
+      return '<a class="pc-bn-item" href="/home#' + it.key + '">'
+           +   '<span class="pc-bn-ico">' + _BN_ICONS[it.ico] + '</span>'
+           +   '<span>' + it.label + '</span>'
+           + '</a>';
+    }).join('');
+
+    document.body.appendChild(nav);
+    document.body.classList.add('pc-has-bottomnav');
+    PC.bottomNav._mounted = true;
+  };
+
+  PC._initBottomNav = async function () {
+    if (PC._bottomNavSuppressed()) return;
+    let me = null;
+    try {
+      const res = await fetch('/api/staff/me', { credentials: 'include' });
+      if (!res.ok) return;            // 401 → logged-out or customer → no bar
+      me = await res.json();
+    } catch (_) { return; }
+    if (!me || !me.kind) return;
+    PC.mountBottomNav(me);
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function () { setTimeout(PC._initBottomNav, 300); });
+  } else {
+    setTimeout(PC._initBottomNav, 300);
   }
 
   // CSS-only additions: append a <style> with gate-related styling once on first use.

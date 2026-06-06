@@ -673,6 +673,9 @@
       <span class="customer-name" id="headerName"></span>
       <button class="logout-btn" onclick="openServiceRequest()" style="background:#22A08A;color:white;border-color:#22A08A;margin-right:8px;">+ Request Service</button>
       <button class="logout-btn" onclick="openAccountSecurity()" style="margin-right:8px;">🔒 Account</button>
+      <!-- Inline mount for the shared notification bell (pc_shared.js). Keeping
+           it in-flow shifts the buttons left so the bell never floats over them. -->
+      <span data-pc-notif-bell style="display:inline-flex;align-items:center;margin-right:8px;"></span>
       <button class="logout-btn" onclick="logout()">Sign out</button>
     </div>
   </header>

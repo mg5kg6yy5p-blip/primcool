@@ -135,10 +135,18 @@
       font-size:14px;
       color:var(--muted);
       max-width:560px;
-      cursor:pointer;
+      cursor:text;
       transition:background .14s var(--ease-out), border-color .14s var(--ease-out);
     }
     .search-pill:hover{background:var(--card);border-color:var(--border);}
+    .search-pill:focus-within{background:var(--card);border-color:var(--border);}
+    .search-pill svg{color:var(--muted);flex-shrink:0;}
+    .search-pill input{
+      flex:1;min-width:0;
+      background:transparent;border:none;outline:none;
+      font:inherit;font-size:14px;color:var(--ink);
+    }
+    .search-pill input::placeholder{color:var(--muted);}
     .topbar .right{display:flex;align-items:center;gap:6px;margin-left:auto;}
     .icon-btn{
       width:38px;height:38px;
@@ -208,6 +216,12 @@
     @media (min-width:768px){
       .search-pill{display:flex;margin:0 auto;}
       .topbar{padding:0 20px;}
+      /* The header search box is visible at this width and drives the Find
+         panel, so the panel's own search box would be a redundant second box.
+         Hide it here; below 768px the header pill is hidden, so the panel box
+         stays as the only search entry point. The #panel-find prefix outranks
+         the base `.find-search{display:flex}` rule that's defined later. */
+      #panel-find .find-search{display:none;}
     }
     @media (max-width:520px){
       .topbar{padding:0 12px;}
@@ -1053,7 +1067,10 @@
     }
   </style>
 </head>
-<body>
+<!-- data-pc-no-bell: this hub has its own header (Company Messages bell +
+     profile) and an "Awaiting Your Action" feed, so it opts out of the
+     shared floating notification bell (pc_shared.js) to avoid a duplicate. -->
+<body data-pc-no-bell>
 
   <!-- ─── Top bar ─────────────────────────────────────────────────── -->
   <header class="topbar">
@@ -1061,15 +1078,18 @@
       <span class="pc-snowflake" aria-hidden="true"></span>
       <span class="word">Prime<span>Cool</span></span>
     </a>
-    <button class="search-pill" onclick="showPanel('find')">
+    <!-- Header search is a real input now: typing here opens the Find panel and
+         drives the same search engine (headerSearch → findLive/runFind), so you
+         can search directly from the top bar instead of just jumping to Find. -->
+    <label class="search-pill" for="topSearch">
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-      <span>Search PrimeCool…</span>
-    </button>
+      <input id="topSearch" type="search" autocomplete="off" placeholder="Search PrimeCool…" aria-label="Search PrimeCool">
+    </label>
     <div class="right">
-      <button class="icon-btn" aria-label="Messages" onclick="showPanel('messages')" id="bell-btn">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
-        <span class="dot" id="bell-dot" style="display:none;"></span>
-      </button>
+      <!-- Company Messages bell removed from the header per request. Company
+           Messages stays reachable via the Announcements "View all" link, the
+           Find panel, and the menu. refreshBellDot() no-ops when #bell-dot
+           is absent, so leaving its calls in place is harmless. -->
       <button class="avatar" aria-label="My profile" onclick="showPanel('profile')" id="avatar-btn">…</button>
       <button class="icon-btn" aria-label="Sign out" title="Sign out" onclick="doSignOut()"
               style="color:var(--danger);">
@@ -1890,7 +1910,7 @@
     } else {
       const st = me.staff_type || 'tech';
       if (st === 'tech') {
-        chips.push({label:"Today's Jobs", href:'/tech',           count:tasks.open_jobs});
+        chips.push({label:'Open Jobs',    href:'/tech',           count:tasks.open_jobs});
         chips.push({label:'5S Audit',     href:'/tech?view=5s',   count:tasks.my_open_5s});
         chips.push({label:'My Schedule',  click:"showPanel('schedule')"});
         chips.push({label:'My Pay',       click:"showPanel('payHub')"});
@@ -1965,7 +1985,7 @@
       if (st === 'tech' && tasks.open_jobs > 0) {
         rows.push({
           ico:ICO.wrench, tone:'lime',
-          title:`${tasks.open_jobs} job${tasks.open_jobs===1?'':'s'} assigned today`,
+          title:`${tasks.open_jobs} open job${tasks.open_jobs===1?'':'s'}`,
           text:'Open the queue to start your next visit.',
           href:'/tech',
         });
@@ -2170,7 +2190,24 @@
         location.assign('/tech?view=5s&pending=signin');
         return;
       }
-      throw new Error(txt || ('HTTP ' + res.status));
+      // Server says today is a day off and a reason is required, but the card
+      // wasn't showing the reason field (e.g. stale overview). Reveal it and
+      // prompt — never leak the raw {"detail":...} JSON to the tech.
+      if (res.status === 409 && /dayoff_reason_required/i.test(txt)) {
+        _isDayOff = true;
+        const banner = document.getElementById('today-dayoff-banner');
+        const reason = document.getElementById('today-dayoff-reason');
+        if (banner) banner.style.display = '';
+        if (reason) { reason.style.display = ''; try { reason.focus(); } catch (_) {} }
+        cta.textContent = 'Sign In (day off)';
+        cta.classList.add('dayoff');
+        if (window.PC && PC.toast) PC.toast('Today is a day off — add a reason to sign in.', 'warning');
+        cta.disabled = false; return;
+      }
+      // Unwrap a JSON error body so we surface the message, not raw JSON.
+      let _msg = txt;
+      try { const j = JSON.parse(txt); if (j && j.detail) _msg = j.detail; } catch (_) {}
+      throw new Error(_msg || ('HTTP ' + res.status));
     } catch (e) {
       if (window.PC && PC.toast) PC.toast(e.message || 'Sign-in failed.', 'error');
     } finally {
@@ -4729,6 +4766,21 @@
   }
   window.runFind = runFind;
 
+  // Header search box: open the Find panel and drive the same engine, keeping
+  // the header input and the in-panel find-input in sync so the user can search
+  // straight from the top bar. `submit` (Enter) records the query in recents.
+  let _topDebounce = null;
+  function headerSearch(q, submit) {
+    if (!document.getElementById('panel-find').classList.contains('active')) {
+      showPanel('find');
+    }
+    const fi = document.getElementById('find-input');
+    if (fi && fi.value !== q) fi.value = q;
+    if (submit && q) runFind(q);
+    else findLive(q);
+  }
+  window.headerSearch = headerSearch;
+
   // ── Sign out ──────────────────────────────────────────────────────────
   async function doSignOut() {
     try {
@@ -4765,6 +4817,22 @@
         if (e.key === 'Enter') {
           const q = (fi.value || '').trim();
           if (q) runFind(q);
+        }
+      });
+    }
+
+    // Wire the header search box to the same engine.
+    const ts = document.getElementById('topSearch');
+    if (ts) {
+      ts.addEventListener('input', () => {
+        clearTimeout(_topDebounce);
+        const q = ts.value || '';
+        _topDebounce = setTimeout(() => headerSearch(q, false), 140);
+      });
+      ts.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          const q = (ts.value || '').trim();
+          if (q) headerSearch(q, true);
         }
       });
     }

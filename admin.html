@@ -1269,6 +1269,9 @@
       <button class="logout-btn" onclick="pcCmdkOpen()" title="Search anything (Cmd/Ctrl-K)">🔎 Search</button>
       <button class="logout-btn" id="pcDensityBtn" onclick="pcToggleDensity()" title="Toggle compact / comfortable density">▤ Density</button>
       <button class="logout-btn" id="securityBtn" onclick="openSecurityModal()" title="Account security">🔒 Security</button>
+      <!-- Inline mount for the shared notification bell (pc_shared.js). Keeping
+           it in-flow shifts the buttons left so the bell never floats over them. -->
+      <span data-pc-notif-bell style="display:inline-flex;align-items:center;"></span>
       <button class="logout-btn" onclick="adminLogout()">Sign out</button>
     </div>
   </header>

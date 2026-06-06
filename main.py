@@ -4407,6 +4407,47 @@ def tp1_tech_today_overview(request: Request):
     on_call = is_tech_on_call_today(tech_id)
     open_in = get_open_clock_in_today(tech_id)
     sign_in_status = "signed_in" if open_in else "not_signed_in"
+    # ── Day-off determination — MUST mirror the sign-in gate exactly ──────
+    # tp1_tech_sign_in() refuses a sign-in with 409 dayoff_reason_required
+    # when the tech is neither scheduled today nor on call. The landing card
+    # reads is_day_off to decide whether to surface the reason field, so it
+    # has to be derived from the *same* inputs — otherwise the two drift and
+    # the tech who is technically "off" (no weekday schedule row) but has
+    # jobs assigned gets an un-actionable raw-JSON error toast on sign-in,
+    # which is exactly what happened in the field. "Scheduled today" == there
+    # is an active schedule row with an end-time for today == sched_end set.
+    scheduled_today = sched_end is not None
+    is_day_off = (not scheduled_today) and (not on_call)
+
+    # Jamaica observes EST (UTC-5) year-round (no DST since 1983), so a fixed
+    # offset is correct here. Local labels are cosmetic — the client falls
+    # back gracefully if they're null.
+    def _hhmm_12h(hhmm):
+        try:
+            hh, mm = str(hhmm).split(":")[:2]
+            h = int(hh); suffix = "AM" if h < 12 else "PM"
+            return f"{h % 12 or 12}:{mm} {suffix}"
+        except Exception:
+            return hhmm or None
+
+    def _jm_time_label(iso):
+        if not iso:
+            return None
+        try:
+            d = _dt.fromisoformat(iso)
+            if d.tzinfo is None:
+                d = d.replace(tzinfo=_tz.utc)
+            return _hhmm_12h(d.astimezone(_tz(_td(hours=-5))).strftime("%H:%M"))
+        except Exception:
+            return None
+
+    today_schedule_label = None
+    if scheduled_today and today_sched:
+        _st = _hhmm_12h(today_sched.get("start_time"))
+        _en = _hhmm_12h(today_sched.get("end_time"))
+        today_schedule_label = f"Scheduled {_st}–{_en}" if (_st and _en) else None
+    elif on_call:
+        today_schedule_label = "On call today"
     in_overtime = bool(open_in and sched_end and not on_call and
                        _dt.now(_tz.utc).isoformat() > sched_end)
     ot_approved = is_overtime_approved(tech_id) if in_overtime else False
@@ -4423,15 +4464,21 @@ def tp1_tech_today_overview(request: Request):
     return {
         "jobs_today_total": len(rows),
         "pm_count": pm, "cm_count": cm,
+        # Aliases the landing card (staff_home.html) reads. Kept alongside the
+        # canonical *_count keys so existing consumers don't break.
+        "pm_today": pm, "cm_today": cm,
         "schedule_today": ({
             "start": (today_sched or {}).get("start_time"),
             "end":   (today_sched or {}).get("end_time"),
             "active": bool((today_sched or {}).get("active")),
             "on_call": bool((today_sched or {}).get("on_call")),
         } if today_sched else None),
+        "today_schedule_label": today_schedule_label,
         "on_call_today": on_call,
+        "is_day_off": is_day_off,
         "sign_in_status": sign_in_status,
         "signed_in_at": (open_in or {}).get("event_at"),
+        "signed_in_at_local": _jm_time_label((open_in or {}).get("event_at")),
         "in_overtime": in_overtime,
         "overtime_approved": ot_approved,
         "auto_signout_at": auto_signout_at,
