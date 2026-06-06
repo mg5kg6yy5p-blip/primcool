@@ -656,6 +656,15 @@
     </div>
   </header>
 
+  <!-- Offline / pending-sync banner (#4 field offline mode). Hidden until
+       the device goes offline or there are queued writes waiting to sync. -->
+  <div id="offlineBanner" role="status" aria-live="polite"
+       style="display:none;align-items:center;gap:8px;justify-content:center;
+              padding:7px 12px;font-size:12.5px;font-weight:600;
+              background:#92400e;color:#fff;text-align:center;">
+    <span id="offlineBannerText">Offline — changes will sync when you reconnect.</span>
+  </div>
+
   <!-- Back bar (only on detail view) -->
   <div class="back-bar" id="backBar" style="display:none;" onclick="showList()">
     ← Back to Jobs
@@ -920,6 +929,10 @@
     } catch (_) {}
     fsRefreshBadge();
     fsFlushQueue();
+    // Drain any job writes queued while offline in a previous session, and
+    // reflect current connectivity in the banner (#4).
+    updateOfflineBanner();
+    flushJobQueue();
     // ── Pattern A: re-render once the PC access-bundle resolves so PC.gateRow /
     //    PC.gateLinkHtml gating reflects the actual session-scoped permissions.
     if (typeof PC !== 'undefined' && PC.access) {
@@ -952,14 +965,30 @@
   }
 
   // ── Load jobs ───────────────────────────────────────────────────────────
+  // Caches the last good /api/tech/me payload so the field app still shows the
+  // tech's jobs when offline (#4). On a network failure we fall back to that
+  // cache rather than leaving the list blank.
   async function loadJobs() {
     try {
       const data = await api('GET', '/api/tech/me');
       techInfo = data.tech;
       allJobs  = data.jobs;
+      try { localStorage.setItem('pc.job.cache.me', JSON.stringify(data)); } catch (_) {}
       document.getElementById('hdrName').textContent = techInfo.name;
       renderList();
-    } catch {}
+    } catch (e) {
+      // Offline (or transient) — hydrate from the last cached snapshot.
+      try {
+        const cached = JSON.parse(localStorage.getItem('pc.job.cache.me') || 'null');
+        if (cached && cached.jobs) {
+          techInfo = cached.tech;
+          allJobs  = cached.jobs;
+          if (techInfo) document.getElementById('hdrName').textContent = techInfo.name;
+          renderList();
+        }
+      } catch (_) {}
+    }
+    updateOfflineBanner();
   }
 
   // ── List view ───────────────────────────────────────────────────────────
@@ -1093,11 +1122,21 @@
   async function openJob(id) {
     try {
       currentJob = await api('GET', `/api/tech/jobs/${id}`);
+      _cacheVisit(id, currentJob);
       renderDetail();
     } catch (e) {
       // Standardized access-denied path (stale token / scope drift).
       if (typeof PC !== 'undefined' && PC.handleAccessDenied && e && e.body) {
         if (PC.handleAccessDenied(e)) return;
+      }
+      // Offline fallback — open the last cached copy of this visit so the tech
+      // can keep working in the field even with no signal (#4).
+      const cached = _cachedVisit(id);
+      if (cached) {
+        currentJob = cached;
+        renderDetail();
+        toast('Offline — showing last saved copy of this job', 'ok');
+        return;
       }
       toast('Could not load job: ' + e.message, 'error');
     }
@@ -1445,8 +1484,16 @@
     if (partsCatalog.length) { fillPartPicker(); return; }
     try {
       partsCatalog = await api('GET', '/api/tech/parts');
+      try { localStorage.setItem('pc.job.cache.parts', JSON.stringify(partsCatalog)); } catch (_) {}
       fillPartPicker();
-    } catch {}
+    } catch {
+      // Offline — fall back to the last cached parts catalog so the tech can
+      // still pick parts to log against the job (#4).
+      try {
+        const cached = JSON.parse(localStorage.getItem('pc.job.cache.parts') || 'null');
+        if (Array.isArray(cached)) { partsCatalog = cached; fillPartPicker(); }
+      } catch (_) {}
+    }
   }
   function fillPartPicker() {
     const sel = document.getElementById('partPicker');
@@ -1501,9 +1548,10 @@
       <div style="display:flex;align-items:center;justify-content:space-between;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:13px;">
         <div style="min-width:0;flex:1;">
           <strong style="color:var(--ink);">${esc(p.sku)}</strong> — ${esc(p.part_name)}
+          ${p._tempQid ? '<span style="font-size:10px;color:#92400e;font-weight:700;margin-left:6px;">⏳ queued</span>' : ''}
           <div style="font-size:11px;color:var(--muted);margin-top:2px;">Qty ${formatQty(p.quantity)} ${esc(p.part_unit || '')}</div>
         </div>
-        <button onclick="removePartFromVisit(${p.id})" style="background:none;border:none;color:var(--red);font-size:20px;cursor:pointer;padding:0 4px;line-height:1;" title="Remove and return to inventory">×</button>
+        <button onclick="removePartFromVisit('${p.id}')" style="background:none;border:none;color:var(--red);font-size:20px;cursor:pointer;padding:0 4px;line-height:1;" title="Remove and return to inventory">×</button>
       </div>`).join('');
   }
 
@@ -1513,13 +1561,26 @@
     const qty    = parseFloat(document.getElementById('partQty').value);
     if (!partId) { toast('Pick a part first.', 'error'); return; }
     if (!qty || qty <= 0) { toast('Quantity must be positive.', 'error'); return; }
+    const cat = partsCatalog.find(x => x.id === partId) || {};
     try {
-      await api('POST', `/api/tech/jobs/${currentJob.id}/parts`, {
-        part_id: partId, quantity: qty,
+      const r = await submitJobWrite({
+        op: 'part_add', scope: 'job.part_add', method: 'POST',
+        url: `/api/tech/jobs/${currentJob.id}/parts`,
+        body: { part_id: partId, quantity: qty }, visit_id: currentJob.id,
       });
+      if (r.queued) {
+        // Optimistic: show the part with a temp id tied to the queue entry so
+        // an offline remove can simply cancel the queued add (no server id yet).
+        _applyOptimistic('part_add', {
+          _tempQid: r.entry.qid,
+          sku: cat.sku || ('#' + partId), part_name: cat.name || 'Part',
+          part_unit: cat.unit || '', quantity: qty,
+        });
+        toast('Saved offline — will sync', 'ok'); renderDetail(); return;
+      }
       toast('Part added to job', 'success');
       // Refresh job + catalog (stock changed)
-      currentJob = await api('GET', `/api/tech/jobs/${currentJob.id}`);
+      currentJob = await _refreshJob(currentJob.id);
       partsCatalog = [];
       renderDetail();
     } catch (e) {
@@ -1529,10 +1590,28 @@
 
   async function removePartFromVisit(vpId) {
     if (!confirm('Remove this part and return it to inventory?')) return;
+    // Offline-added part that hasn't synced yet → just cancel the queued add.
+    // There is no server-side row to delete, so we drop the pending write and
+    // remove the optimistic line item locally.
+    const sVpId = String(vpId);
+    if (sVpId.startsWith('tmp_')) {
+      // The temp id is 'tmp_' + entry.qid (entry.qid already starts 'jw_').
+      const qid = sVpId.slice(4);
+      _cancelQueuedWriteByQid(qid);
+      currentJob.parts_used = (currentJob.parts_used || []).filter(p => String(p.id) !== sVpId);
+      toast('Queued part removed', 'ok'); renderDetail(); return;
+    }
     try {
-      await api('DELETE', `/api/tech/jobs/${currentJob.id}/parts/${vpId}`);
+      const r = await submitJobWrite({
+        op: 'part_remove', scope: 'job.part_remove', method: 'DELETE',
+        url: `/api/tech/jobs/${currentJob.id}/parts/${vpId}`, visit_id: currentJob.id,
+      });
+      if (r.queued) {
+        _applyOptimistic('part_remove', { id: vpId });
+        toast('Saved offline — will sync', 'ok'); renderDetail(); return;
+      }
       toast('Part removed and returned to stock', 'success');
-      currentJob = await api('GET', `/api/tech/jobs/${currentJob.id}`);
+      currentJob = await _refreshJob(currentJob.id);
       partsCatalog = [];
       renderDetail();
     } catch (e) {
@@ -1563,9 +1642,16 @@
   async function startJob() {
     if (!confirm('Start this job now? Your start time will be recorded.')) return;
     try {
-      await api('PUT', `/api/tech/jobs/${currentJob.id}/start`);
+      const r = await submitJobWrite({
+        op: 'start', scope: 'job.start', method: 'PUT',
+        url: `/api/tech/jobs/${currentJob.id}/start`, visit_id: currentJob.id,
+      });
+      if (r.queued) {
+        _applyOptimistic('start', {});
+        toast('Saved offline — will sync', 'ok'); renderDetail(); return;
+      }
       toast('Job started', 'success');
-      currentJob = await api('GET', `/api/tech/jobs/${currentJob.id}`);
+      currentJob = await _refreshJob(currentJob.id);
       renderDetail();
     } catch (e) { toast(e.message, 'error'); }
   }
@@ -1590,9 +1676,16 @@
       toast('Enter at least one reading.', 'error'); return;
     }
     try {
-      await api('POST', `/api/tech/jobs/${currentJob.id}/readings`, body);
+      const r = await submitJobWrite({
+        op: 'reading', scope: 'job.reading', method: 'POST',
+        url: `/api/tech/jobs/${currentJob.id}/readings`, body, visit_id: currentJob.id,
+      });
+      if (r.queued) {
+        _applyOptimistic('reading', body);
+        toast('Saved offline — will sync', 'ok'); renderDetail(); return;
+      }
       toast('Reading saved', 'success');
-      currentJob = await api('GET', `/api/tech/jobs/${currentJob.id}`);
+      currentJob = await _refreshJob(currentJob.id);
       renderDetail();
     } catch (e) { toast(e.message, 'error'); }
   }
@@ -1636,11 +1729,17 @@
     if (!sigPad.hasInk) { toast('Please sign the canvas.', 'error'); return; }
     const dataUrl = c.toDataURL('image/png');
     try {
-      await api('POST', `/api/tech/jobs/${currentJob.id}/signature`, {
-        signer_name: name, signature_b64: dataUrl,
+      const r = await submitJobWrite({
+        op: 'signature', scope: 'job.signature', method: 'POST',
+        url: `/api/tech/jobs/${currentJob.id}/signature`,
+        body: { signer_name: name, signature_b64: dataUrl }, visit_id: currentJob.id,
       });
+      if (r.queued) {
+        _applyOptimistic('signature', { signer_name: name });
+        toast('Saved offline — will sync', 'ok'); renderDetail(); return;
+      }
       toast('Signature captured ✓', 'success');
-      currentJob = await api('GET', `/api/tech/jobs/${currentJob.id}`);
+      currentJob = await _refreshJob(currentJob.id);
       renderDetail();
     } catch (e) { toast(e.message, 'error'); }
   }
@@ -1659,11 +1758,18 @@
       if (!confirm('Submit this job report? Once submitted you cannot edit it.')) return;
     }
     try {
-      await api('PUT', `/api/tech/jobs/${currentJob.id}/complete`, {
-        work_done: work, parts_replaced: parts, notes, next_pm_due: nextPm
+      const body = { work_done: work, parts_replaced: parts, notes, next_pm_due: nextPm };
+      const r = await submitJobWrite({
+        op: 'complete', scope: 'job.complete', method: 'PUT',
+        url: `/api/tech/jobs/${currentJob.id}/complete`, body, visit_id: currentJob.id,
       });
+      if (r.queued) {
+        _applyOptimistic('complete', body);
+        toast('Saved offline — report will submit when you reconnect', 'ok');
+        renderDetail(); loadJobs(); return;
+      }
       toast('Job completed ✓', 'success');
-      currentJob = await api('GET', `/api/tech/jobs/${currentJob.id}`);
+      currentJob = await _refreshJob(currentJob.id);
       renderDetail();
       loadJobs();
     } catch (e) { toast(e.message, 'error'); }
@@ -1749,14 +1855,27 @@
     // use — handled by the browser, not by us.
     const meta = await _assembleClientMeta(null);
 
-    const fd = new FormData();
-    fd.append('category',   category);
-    fd.append('file',       file);
-    fd.append('client_meta', JSON.stringify(meta));
+    // Re-encode/downscale so the blob is small enough to stash in IndexedDB
+    // for offline queueing (reuses the 5S photo pipeline).
+    const shrunk = await _fsDownscalePhoto(file);
+    const blob = (shrunk && shrunk.blob) || file;
+    const mime = (shrunk && shrunk.mime) || file.type || 'image/jpeg';
+    const dataUrl = shrunk && shrunk.dataUrl;
     try {
-      await api('POST', `/api/tech/jobs/${currentJob.id}/photos`, fd);
+      const r = await submitJobWrite({
+        op: 'photo', scope: 'job.photo', method: 'POST',
+        url: `/api/tech/jobs/${currentJob.id}/photos`, visit_id: currentJob.id,
+        isForm: true,
+        formFields: [['category', category], ['client_meta', JSON.stringify(meta)]],
+        photoBlob: blob, photoMime: mime,
+      });
+      if (r.queued) {
+        if (dataUrl) _applyOptimistic('photo', { id: 'tmp_' + r.entry.qid, category, url: dataUrl });
+        toast('Saved offline — photo will upload when you reconnect', 'ok');
+        renderDetail(); return;
+      }
       toast(`${category === 'before' ? 'Before' : 'After'} photo added`, 'success');
-      currentJob = await api('GET', `/api/tech/jobs/${currentJob.id}`);
+      currentJob = await _refreshJob(currentJob.id);
       renderDetail();
     } catch (e) {
       toast(e.message, 'error');
@@ -3113,6 +3232,238 @@
   }
 
   window.addEventListener('online', () => { fsFlushQueue(); });
+
+  // ════════════════════════════════════════════════════════════════════════
+  //  #4 Field-app offline mode — job-write queue + replay
+  //
+  //  Mirrors the 5S offline pattern (localStorage queue + IndexedDB for photo
+  //  blobs + replay on `online`). Every queued write carries a stable
+  //  Idempotency-Key so a replay is safe even if the original request actually
+  //  reached the server before the connection dropped — the server returns its
+  //  cached response instead of mutating twice (see main.py _idem_begin).
+  //
+  //  Ordering matters: start → readings/parts/photos → signature → complete.
+  //  The queue is strict FIFO and we STOP replaying on the first network
+  //  failure, so a dependent write (e.g. complete, which the server rejects
+  //  without a signature) never runs ahead of its prerequisite.
+  // ════════════════════════════════════════════════════════════════════════
+  const JOB_QUEUE_KEY = 'pc.job.queue';
+
+  function _genUUID() {
+    try { if (crypto && crypto.randomUUID) return crypto.randomUUID(); } catch (_) {}
+    return 'idem-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10)
+                   + Math.random().toString(36).slice(2, 10);
+  }
+
+  function _jobQueueLoad() {
+    try { return JSON.parse(localStorage.getItem(JOB_QUEUE_KEY) || '[]'); }
+    catch (_) { return []; }
+  }
+  function _jobQueueSave(q) {
+    try { localStorage.setItem(JOB_QUEUE_KEY, JSON.stringify(q)); } catch (_) {}
+  }
+  function jobPendingCount() { return _jobQueueLoad().length; }
+
+  function _enqueueJobWrite(entry) {
+    const q = _jobQueueLoad();
+    q.push(entry);
+    _jobQueueSave(q);
+    updateOfflineBanner();
+  }
+
+  // Drop a queued write by its qid (used to cancel an offline part-add that the
+  // tech removes again before it ever syncs). Also clears any staged photo blob.
+  function _cancelQueuedWriteByQid(qid) {
+    const q = _jobQueueLoad();
+    const keep = q.filter(e => e.qid !== qid);
+    if (keep.length !== q.length) {
+      const dropped = q.find(e => e.qid === qid);
+      if (dropped && dropped.photoQid) { try { _fsIdbDelete(dropped.photoQid); } catch (_) {} }
+      _jobQueueSave(keep);
+      updateOfflineBanner();
+    }
+  }
+
+  // ── Per-visit read cache (so detail view works offline) ──
+  function _cacheVisit(id, job) {
+    try { localStorage.setItem('pc.job.cache.visit.' + id, JSON.stringify(job)); } catch (_) {}
+  }
+  function _cachedVisit(id) {
+    try { return JSON.parse(localStorage.getItem('pc.job.cache.visit.' + id) || 'null'); }
+    catch (_) { return null; }
+  }
+  // GET a fresh visit; on network failure fall back to the cached copy.
+  async function _refreshJob(id) {
+    try { const j = await api('GET', `/api/tech/jobs/${id}`); _cacheVisit(id, j); return j; }
+    catch (e) { const c = _cachedVisit(id); if (c) return c; throw e; }
+  }
+
+  // Low-level send for one queued entry. Distinguishes network failure (retry
+  // later) from an HTTP rejection (terminal). Rebuilds FormData from the staged
+  // IndexedDB blob for photo writes.
+  async function _jobRawSend(entry) {
+    const opts = { method: entry.method, headers: {
+      'Authorization': `Bearer ${token}`,
+      'Idempotency-Key': entry.idem_key,
+    }};
+    if (entry.isForm) {
+      const fd = new FormData();
+      for (const [k, v] of (entry.formFields || [])) fd.append(k, v);
+      if (entry.photoQid) {
+        const rec = await _fsIdbGet(entry.photoQid);
+        if (!rec || !rec.blob) return { ok: false, status: 0, drop: true, detail: 'photo blob missing' };
+        const ext = (entry.photoMime && entry.photoMime.split('/')[1]) || 'jpg';
+        fd.append('file', rec.blob, `job_${entry.visit_id}.${ext}`);
+      }
+      opts.body = fd;
+    } else if (entry.body != null) {
+      opts.headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify(entry.body);
+    }
+    let res;
+    try { res = await fetch(entry.url, opts); }
+    catch (e) { return { network: true }; }
+    if (res.status === 401) return { ok: false, status: 401, auth: true, detail: 'auth' };
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      return { ok: false, status: res.status, detail: d.detail || ('HTTP ' + res.status) };
+    }
+    const data = await res.json().catch(() => ({}));
+    return { ok: true, data };
+  }
+
+  // Unified write path: send live when online, queue when offline (or when the
+  // network drops mid-flight). Returns {queued:true,entry} or {ok:true,data}.
+  // Throws on a genuine server rejection while online.
+  async function submitJobWrite(spec) {
+    const qid = 'jw_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    const entry = {
+      qid, idem_key: _genUUID(), queued_at: new Date().toISOString(),
+      op: spec.op, scope: spec.scope, method: spec.method, url: spec.url,
+      visit_id: spec.visit_id,
+      body: spec.body != null ? spec.body : null,
+      isForm: !!spec.isForm,
+      formFields: spec.formFields || null,
+      photoQid: null, photoMime: spec.photoMime || null,
+    };
+    // Stash a photo blob in IndexedDB — survives reloads and keeps the
+    // localStorage queue small (it can't hold blobs anyway).
+    if (spec.photoBlob) {
+      const ok = await _fsIdbPut(qid, spec.photoBlob, spec.photoMime || 'image/jpeg');
+      if (!ok) throw new Error('Could not stage photo for offline upload');
+      entry.photoQid = qid;
+    }
+    if (!navigator.onLine) { _enqueueJobWrite(entry); return { queued: true, entry }; }
+    const r = await _jobRawSend(entry);
+    if (r.network) { _enqueueJobWrite(entry); return { queued: true, entry }; }
+    if (entry.photoQid) { try { await _fsIdbDelete(entry.photoQid); } catch (_) {} }
+    if (r.auth) { doLogout(); throw new Error('auth'); }
+    if (!r.ok) { throw new Error(r.detail || 'Request failed'); }
+    return { ok: true, data: r.data };
+  }
+
+  // Apply an optimistic local patch to currentJob so the field UI reflects a
+  // queued write immediately. Kept deliberately small — only the fields that
+  // renderDetail() reads to gate the workflow.
+  function _applyOptimistic(op, p) {
+    const j = currentJob;
+    if (!j) return;
+    const nowIso = new Date().toISOString();
+    if (op === 'start') {
+      j.status = 'in_progress';
+      if (!j.start_time) j.start_time = nowIso;
+    } else if (op === 'reading') {
+      j.readings = j.readings || [];
+      j.readings.push(Object.assign({ recorded_at: nowIso }, p));
+    } else if (op === 'signature') {
+      j.signature_captured = true;
+      if (p && p.signer_name) j.signer_name = p.signer_name;
+    } else if (op === 'checklist') {
+      j.checklist = (p && p.items) || j.checklist;
+    } else if (op === 'part_add') {
+      j.parts_used = j.parts_used || [];
+      j.parts_used.push({
+        id: 'tmp_' + p._tempQid, _tempQid: p._tempQid,
+        sku: p.sku, part_name: p.part_name, part_unit: p.part_unit, quantity: p.quantity,
+      });
+    } else if (op === 'part_remove') {
+      j.parts_used = (j.parts_used || []).filter(x => String(x.id) !== String(p.id));
+    } else if (op === 'photo') {
+      j.photos = j.photos || [];
+      j.photos.push({ id: p.id, category: p.category, url: p.url });
+    } else if (op === 'complete') {
+      j.status = 'completed';
+      j.submitted_at = nowIso; j.end_time = nowIso;
+      if (p) {
+        if (p.work_done != null)      j.work_done = p.work_done;
+        if (p.parts_replaced != null) j.parts_replaced = p.parts_replaced;
+        if (p.notes != null)          j.notes = p.notes;
+        if (p.next_pm_due != null)    j.next_pm_due = p.next_pm_due;
+      }
+    }
+    _cacheVisit(j.id, j);
+  }
+
+  // Replay the queue in FIFO order. Stops on the first network failure to keep
+  // dependent writes ordered; drops entries the server terminally rejects (4xx)
+  // or whose staged blob has vanished, so the queue can never wedge forever.
+  let _jobFlushing = false;
+  async function flushJobQueue() {
+    if (_jobFlushing) return;
+    _jobFlushing = true;
+    try {
+      let q = _jobQueueLoad();
+      let synced = 0;
+      while (q.length) {
+        const entry = q[0];
+        const r = await _jobRawSend(entry);
+        if (r.network) break;                 // still offline — preserve order
+        if (r.auth) break;                    // session gone — doLogout fires elsewhere
+        if (r.ok || r.drop || (r.status >= 400 && r.status < 500)) {
+          if (entry.photoQid) { try { await _fsIdbDelete(entry.photoQid); } catch (_) {} }
+          if (r.ok) synced++;
+          else { try { console.warn('queued job write dropped', entry.op, r.status, r.detail); } catch (_) {} }
+          q.shift();
+          _jobQueueSave(q);
+          continue;
+        }
+        break;                                // 5xx / status 0 — transient, retry later
+      }
+      updateOfflineBanner();
+      if (synced) {
+        toast(`Synced ${synced} field update${synced > 1 ? 's' : ''}`, 'ok');
+        if (currentJob && navigator.onLine) {
+          try { currentJob = await _refreshJob(currentJob.id); renderDetail(); } catch (_) {}
+        }
+        try { loadJobs(); } catch (_) {}
+      }
+    } finally {
+      _jobFlushing = false;
+    }
+  }
+
+  // Offline / pending-sync banner. Shows when offline, or when writes are
+  // still waiting to sync even though we're back online.
+  function updateOfflineBanner() {
+    const el = document.getElementById('offlineBanner');
+    const txt = document.getElementById('offlineBannerText');
+    if (!el || !txt) return;
+    const pending = jobPendingCount();
+    if (!navigator.onLine) {
+      txt.textContent = pending
+        ? `Offline — ${pending} change${pending > 1 ? 's' : ''} saved, will sync when you reconnect.`
+        : 'Offline — changes will sync when you reconnect.';
+      el.style.display = 'flex';
+    } else if (pending) {
+      txt.textContent = `Syncing ${pending} change${pending > 1 ? 's' : ''}…`;
+      el.style.display = 'flex';
+    } else {
+      el.style.display = 'none';
+    }
+  }
+
+  window.addEventListener('online',  () => { updateOfflineBanner(); flushJobQueue(); });
+  window.addEventListener('offline', () => { updateOfflineBanner(); });
 
 </script>
 

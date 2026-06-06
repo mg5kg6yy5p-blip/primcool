@@ -738,6 +738,13 @@
       </div>
     </section>
 
+    <!-- Estimates / Quotes — self-hides when none. Shown above invoices
+         because an estimate decision usually precedes an invoice. -->
+    <section id="estimatesSection" style="display:none;">
+      <div class="section-title">Estimates &amp; Quotes</div>
+      <div id="estimatesList" class="visit-list"></div>
+    </section>
+
     <!-- Invoices -->
     <section id="invoicesSection" style="display:none;">
       <div class="section-title">Invoices</div>
@@ -959,6 +966,20 @@
       <div class="modal-b" id="visitDetailBody"></div>
       <div class="modal-f">
         <button class="btn-ghost" onclick="closeVisitDetail()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Estimate detail / decision modal -->
+  <div class="modal-overlay" id="estimateDetailModal">
+    <div class="modal" style="max-width:620px;">
+      <div class="modal-h">
+        <h3 id="estimateDetailTitle">Estimate</h3>
+        <button class="modal-close" onclick="closeEstimateDetail()">×</button>
+      </div>
+      <div class="modal-b" id="estimateDetailBody"></div>
+      <div class="modal-f" id="estimateDetailFooter">
+        <button class="btn-ghost" onclick="closeEstimateDetail()">Close</button>
       </div>
     </div>
   </div>
@@ -1421,6 +1442,9 @@
         // Load customer invoices
         loadCustomerInvoices().catch(() => {});
 
+        // Load customer estimates (section self-hides when none)
+        loadCustomerEstimates().catch(() => {});
+
         // Load PM service contracts (section self-hides when none)
         loadCustomerContracts().catch(() => {});
 
@@ -1635,7 +1659,9 @@
               </div>
               <div class="visit-right">
                 <span class="badge pc-stop-prop" style="background:${statusBg};color:${statusFg};">${status}</span>
-                <span style="color:var(--teal);font-size:13px;font-weight:600;">View →</span>
+                ${(balance > 0.005 && i.status !== 'paid' && i.status !== 'cancelled')
+                  ? `<button class="btn-leave-small pc-stop-prop" onclick="event.stopPropagation();payInvoiceOnline(${i.id})" title="Pay this invoice online">Pay ${fmtMoney(balance, i.currency)} →</button>`
+                  : `<span style="color:var(--teal);font-size:13px;font-weight:600;">View →</span>`}
               </div>
             </div>
           </div>`;
@@ -1679,6 +1705,167 @@
         banner.addEventListener('keydown', function (e) {
           if (e.key === 'Enter' || e.key === ' ') goInvoices(e);
         });
+      }
+    }
+
+    // ── Estimates / Quotes ─────────────────────────────────────────────────
+    // Customers see sent/approved/declined/expired/converted estimates (the
+    // backend already excludes drafts and canceled ones). Sent estimates carry
+    // Approve / Decline actions; everything else is read-only.
+    let portalEstimates = [];
+    const _ESTSTATUS_STYLE = {
+      sent:     'background:var(--warn-bg);color:var(--warn-fg);',
+      approved: 'background:var(--ok-bg);color:var(--ok-fg);',
+      declined: 'background:var(--err-bg);color:var(--err-fg);',
+      expired:  'background:var(--surface-2);color:var(--muted);',
+      converted:'background:var(--surface-2);color:var(--ink);',
+    };
+
+    async function loadCustomerEstimates() {
+      const res = await fetch('/api/portal/estimates', {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      if (res.status === 403) {
+        try { const body = await res.json(); if (typeof PC !== 'undefined' && PC.handleAccessDenied) PC.handleAccessDenied({ body }); } catch (_) {}
+        return;
+      }
+      if (!res.ok) return;
+      portalEstimates = await res.json();
+      renderPortalEstimates();
+    }
+
+    function renderPortalEstimates() {
+      const list = portalEstimates || [];
+      if (!list.length) { document.getElementById('estimatesSection').style.display = 'none'; return; }
+      document.getElementById('estimatesSection').style.display = 'block';
+      const host = document.getElementById('estimatesList');
+      host.innerHTML = list.map(e => {
+        const stStyle = _ESTSTATUS_STYLE[e.status] || 'background:var(--surface-2);color:var(--ink);';
+        const needsDecision = e.status === 'sent';
+        const cta = needsDecision
+          ? '<span style="color:var(--teal);font-size:13px;font-weight:600;">Review &amp; respond →</span>'
+          : '<span style="color:var(--teal);font-size:13px;font-weight:600;">View →</span>';
+        return `
+          <div class="visit-card" data-est-id="${e.id}">
+            <div class="visit-header">
+              <div class="visit-left">
+                <div style="font-family:'Courier New',monospace;font-weight:700;color:var(--ink);background:var(--surface-2);padding:4px 10px;border-radius:6px;font-size:13px;">${e.estimate_number}</div>
+                <div class="visit-info">
+                  <div class="visit-date">${fmtMoney(e.total, e.currency)}</div>
+                  <div class="visit-sub">Issued ${fmt(e.issue_date)}${e.valid_until ? ' · Valid until ' + fmt(e.valid_until) : ''}</div>
+                </div>
+              </div>
+              <div class="visit-right">
+                <span class="badge" style="${stStyle}">${e.status}</span>
+                ${cta}
+              </div>
+            </div>
+          </div>`;
+      }).join('');
+      host.querySelectorAll('[data-est-id]').forEach(function (card) {
+        const eid = Number(card.getAttribute('data-est-id'));
+        card.style.cursor = 'pointer';
+        card.addEventListener('click', function () { openEstimateDetail(eid); });
+      });
+    }
+
+    async function openEstimateDetail(estimateId) {
+      const body = document.getElementById('estimateDetailBody');
+      const footer = document.getElementById('estimateDetailFooter');
+      document.getElementById('estimateDetailTitle').textContent = 'Estimate';
+      body.innerHTML = '<div class="spinner"></div>';
+      footer.innerHTML = '<button class="btn-ghost" onclick="closeEstimateDetail()">Close</button>';
+      document.getElementById('estimateDetailModal').classList.add('open');
+      let est;
+      try {
+        const res = await fetch(`/api/portal/estimates/${estimateId}`, { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!res.ok) { body.innerHTML = '<p style="color:var(--err-fg);">Could not load this estimate.</p>'; return; }
+        est = await res.json();
+      } catch (_) { body.innerHTML = '<p style="color:var(--err-fg);">Could not load this estimate.</p>'; return; }
+
+      document.getElementById('estimateDetailTitle').textContent = est.estimate_number || 'Estimate';
+      const lines = (est.line_items || []).map(li => `
+        <tr>
+          <td style="padding:8px 6px;border-bottom:1px solid var(--border);">${escEst(li.description || '')}</td>
+          <td style="padding:8px 6px;border-bottom:1px solid var(--border);text-align:right;font-variant-numeric:tabular-nums;">${Number(li.quantity)}</td>
+          <td style="padding:8px 6px;border-bottom:1px solid var(--border);text-align:right;font-variant-numeric:tabular-nums;">${fmtMoney(li.unit_price, est.currency)}</td>
+          <td style="padding:8px 6px;border-bottom:1px solid var(--border);text-align:right;font-variant-numeric:tabular-nums;font-weight:600;">${fmtMoney(li.line_total, est.currency)}</td>
+        </tr>`).join('');
+      const stStyle = _ESTSTATUS_STYLE[est.status] || 'background:var(--surface-2);color:var(--ink);';
+      body.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <span class="badge" style="${stStyle}">${est.status}</span>
+          <span style="font-size:12px;color:var(--muted);">Issued ${fmt(est.issue_date)}${est.valid_until ? ' · Valid until ' + fmt(est.valid_until) : ''}</span>
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+          <thead><tr style="text-align:left;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">
+            <th style="padding:6px;">Description</th><th style="padding:6px;text-align:right;">Qty</th><th style="padding:6px;text-align:right;">Unit</th><th style="padding:6px;text-align:right;">Total</th>
+          </tr></thead>
+          <tbody>${lines || '<tr><td colspan="4" style="padding:10px;color:var(--muted);">No line items.</td></tr>'}</tbody>
+        </table>
+        <div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--border);">
+          <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--muted);"><span>Subtotal</span><span>${fmtMoney(est.subtotal, est.currency)}</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--muted);margin-top:4px;"><span>GCT</span><span>${fmtMoney(est.tax_amount, est.currency)}</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:16px;font-weight:700;color:var(--ink);margin-top:8px;"><span>Total</span><span>${fmtMoney(est.total, est.currency)}</span></div>
+        </div>
+        ${est.notes ? `<div style="margin-top:14px;padding:12px;background:var(--surface);border-radius:8px;font-size:13px;color:var(--text);white-space:pre-wrap;">${escEst(est.notes)}</div>` : ''}
+        <div class="modal-error" id="estDecisionError" style="display:none;margin-top:10px;"></div>`;
+
+      if (est.status === 'sent') {
+        footer.innerHTML = `
+          <button class="btn-ghost" onclick="closeEstimateDetail()">Close</button>
+          <button class="btn-ghost" style="color:var(--err-fg);border-color:var(--err-fg);" onclick="declineEstimate(${est.id})">Decline</button>
+          <button class="btn-leave" onclick="approveEstimate(${est.id})">Approve</button>`;
+      } else {
+        footer.innerHTML = '<button class="btn-ghost" onclick="closeEstimateDetail()">Close</button>';
+      }
+    }
+
+    function closeEstimateDetail() { document.getElementById('estimateDetailModal').classList.remove('open'); }
+
+    function escEst(s) {
+      return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    async function approveEstimate(estimateId) {
+      if (!confirm('Approve this estimate? PrimeCool will be notified and may convert it into an invoice.')) return;
+      try {
+        const res = await fetch(`/api/portal/estimates/${estimateId}/approve`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        });
+        if (!res.ok) {
+          let msg = 'Could not approve this estimate.';
+          try { const b = await res.json(); msg = (b.detail && b.detail.detail) || b.detail || msg; } catch(_) {}
+          const el = document.getElementById('estDecisionError'); if (el) { el.textContent = msg; el.style.display = 'block'; }
+          return;
+        }
+        closeEstimateDetail();
+        await loadCustomerEstimates();
+      } catch (_) {
+        const el = document.getElementById('estDecisionError'); if (el) { el.textContent = 'Network error — please try again.'; el.style.display = 'block'; }
+      }
+    }
+
+    async function declineEstimate(estimateId) {
+      const reason = prompt('Optionally, let us know why you\'re declining (this helps us improve our quotes):', '');
+      if (reason === null) return; // user cancelled the prompt
+      try {
+        const res = await fetch(`/api/portal/estimates/${estimateId}/decline`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason: reason || '' }),
+        });
+        if (!res.ok) {
+          let msg = 'Could not decline this estimate.';
+          try { const b = await res.json(); msg = (b.detail && b.detail.detail) || b.detail || msg; } catch(_) {}
+          const el = document.getElementById('estDecisionError'); if (el) { el.textContent = msg; el.style.display = 'block'; }
+          return;
+        }
+        closeEstimateDetail();
+        await loadCustomerEstimates();
+      } catch (_) {
+        const el = document.getElementById('estDecisionError'); if (el) { el.textContent = 'Network error — please try again.'; el.style.display = 'block'; }
       }
     }
 
@@ -1939,6 +2126,42 @@
 
     // showToast delegated to PC.toast from /static/pc_shared.js.
     const showToast = (msg) => window.PC.toast(msg);
+
+    // ── Online payment (#1b) ────────────────────────────────────────────────
+    // Kicks off an online payment for one outstanding invoice. The backend
+    // returns a tokenised checkout URL (a self-hosted stub page locally, or a
+    // real gateway's hosted-checkout page once a provider is configured). We
+    // open it in a new tab; when the customer returns we refresh balances once
+    // so a completed payment reflects without a manual reload.
+    let _payRefreshArmed = false;
+    async function payInvoiceOnline(invoiceId) {
+      try {
+        const res = await fetch(`/api/portal/invoices/${invoiceId}/pay`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        });
+        const d = await res.json().catch(() => ({}));
+        if (res.status === 403) {
+          if (typeof PC !== 'undefined' && PC.handleAccessDenied) PC.handleAccessDenied({ body: d });
+          return;
+        }
+        if (!res.ok) { showToast(d.detail || 'Could not start payment.'); return; }
+        window.open(d.checkout_url, '_blank', 'noopener');
+        showToast('Opening secure payment…');
+        if (!_payRefreshArmed) {
+          _payRefreshArmed = true;
+          const onFocus = () => {
+            window.removeEventListener('focus', onFocus);
+            _payRefreshArmed = false;
+            setTimeout(() => {
+              try { loadCustomerInvoices().catch(() => {}); } catch (_) {}
+              try { if (typeof renderAcctInvoices === 'function' && document.getElementById('acctInvoices')) renderAcctInvoices(); } catch (_) {}
+            }, 500);
+          };
+          window.addEventListener('focus', onFocus);
+        }
+      } catch (e) { showToast('Network error starting payment.'); }
+    }
 
     function switchView(which) {
       const views = ['overview', 'account', 'settings'];
@@ -2386,6 +2609,9 @@
             <td><span class="badge ${s.cls}">${s.label}</span></td>
             <td>
               <span class="inv-actions pc-stop-prop">
+                ${(balance > 0.005 && i.status !== 'paid' && i.status !== 'cancelled')
+                  ? `<button class="btn-leave-small" onclick="event.stopPropagation();payInvoiceOnline(${i.id})" title="Pay this invoice online">Pay online</button>`
+                  : ''}
                 <a href="/portal/invoice/${i.id}" target="_blank" rel="noopener">View</a>
                 <a href="/portal/invoice/${i.id}?print=1" target="_blank" rel="noopener" onclick="event.stopPropagation();showToast('Opening print view…')">Print</a>
               </span>

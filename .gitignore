@@ -21,6 +21,10 @@ uploads/documents/*/*
 # Boot manifests — operational artifacts, not source
 boot_manifests/
 
+# Encrypted DB backups — recoverable copies of the whole database (PII + audit
+# chain). Never commit; they live off-box / on the host filesystem only.
+backups/
+
 # ─── Env files ─────────────────────────────────────────────────────────────
 # Dev env file — contains secrets
 .dev.env

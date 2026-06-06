@@ -165,6 +165,9 @@ _PII_RAND = {
     "invoice_payments":         ["notes"],
     "fx_rates":                 ["notes"],
     "invoices":                 ["canceled_reason"],
+    # Estimates / quotes — customer's decline rationale is free text (may name
+    # people / describe disputes), encrypted at rest like invoice cancellations.
+    "estimates":                ["decline_reason"],
     # Delegation module — free-text justification and review notes.
     "delegations":                  ["grantor_notes", "revoke_reason"],
     "delegation_regrant_requests":  ["review_notes"],
@@ -790,6 +793,110 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_invoices_status   ON invoices(status, due_date)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_invoice_lines     ON invoice_line_items(invoice_id, sort_order)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_invoice_payments  ON invoice_payments(invoice_id, payment_date)")
+
+    # ── Online payment links (#1b) ──────────────────────────────────────────
+    # A payment_link is a single-use checkout intent for one invoice. The
+    # customer creates one from the portal ("Pay online"); we hand them (or a
+    # real gateway) a tokenised checkout URL. Settlement — whether from the
+    # local stub confirm page or a real provider's webhook — flips the row to
+    # 'paid' and records the money against the invoice via the SAME append-only,
+    # chain-hashed record_invoice_payment_v2 path used by manual entry, reusing
+    # `idempotency_key` so a webhook retry / double-tap can never double-credit.
+    # Provider-agnostic by design: `provider` + `provider_ref` carry whatever a
+    # real gateway returns; the local default provider is 'stub'.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS payment_links (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            invoice_id      INTEGER NOT NULL REFERENCES invoices(id),
+            token           TEXT NOT NULL UNIQUE,
+            provider        TEXT NOT NULL DEFAULT 'stub',
+            provider_ref    TEXT,
+            amount          REAL NOT NULL,
+            currency        TEXT NOT NULL DEFAULT 'JMD',
+            status          TEXT NOT NULL DEFAULT 'pending',
+            idempotency_key TEXT NOT NULL,
+            payment_id      INTEGER REFERENCES invoice_payments(id),
+            created_at      TEXT NOT NULL,
+            expires_at      TEXT,
+            paid_at         TEXT,
+            canceled_at     TEXT,
+            created_by_customer INTEGER REFERENCES customers(id)
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_payment_links_invoice ON payment_links(invoice_id, status)")
+    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_payment_links_token ON payment_links(token)")
+
+    # ── Idempotency keys (#4 field-app offline replay) ───────────────────────
+    # The field PWA queues writes while offline and replays them on reconnect.
+    # A replay (or a double-tap on flaky signal) must NOT create a duplicate
+    # part line / reading / signature / completion. Each queued write carries a
+    # client-generated UUID in the `Idempotency-Key` header; the first time we
+    # see it we run the mutation and cache the response, and every later replay
+    # of the SAME key returns that cached response verbatim WITHOUT re-running.
+    # Scoped to the subject (tech) so one tech's key can never replay another's.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS idempotency_keys (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            idem_key      TEXT NOT NULL,
+            subject_type  TEXT NOT NULL DEFAULT 'tech',
+            subject_id    INTEGER NOT NULL,
+            scope         TEXT NOT NULL,
+            status_code   INTEGER NOT NULL DEFAULT 200,
+            response_json TEXT,
+            created_at    TEXT NOT NULL
+        )
+    """)
+    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_idem_key "
+                "ON idempotency_keys(idem_key, subject_type, subject_id)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_idem_created ON idempotency_keys(created_at)")
+
+    # ── Estimates / quotes (#3) ────────────────────────────────────────────
+    # The pre-invoice step: an estimate is sent to a customer, who approves or
+    # declines it in the portal; an approved estimate can be converted into a
+    # real invoice (carrying its line items across). Mirrors the invoices
+    # header/line shape so the existing UI/print patterns transfer cleanly.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS estimates (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            estimate_number  TEXT NOT NULL UNIQUE,
+            customer_id      INTEGER NOT NULL REFERENCES customers(id),
+            visit_id         INTEGER REFERENCES maintenance_visits(id),
+            issue_date       TEXT NOT NULL,
+            valid_until      TEXT,
+            status           TEXT NOT NULL DEFAULT 'draft',
+            subtotal         REAL NOT NULL DEFAULT 0,
+            tax_rate         REAL NOT NULL DEFAULT 0,
+            tax_amount       REAL NOT NULL DEFAULT 0,
+            total            REAL NOT NULL DEFAULT 0,
+            currency         TEXT NOT NULL DEFAULT 'TTD',
+            notes            TEXT,
+            sent_at          TEXT,
+            decided_at       TEXT,
+            decline_reason   TEXT,
+            converted_invoice_id INTEGER REFERENCES invoices(id),
+            canceled_at      TEXT,
+            canceled_by      INTEGER REFERENCES admin_users(id),
+            created_by       INTEGER REFERENCES admin_users(id),
+            created_at       TEXT NOT NULL,
+            updated_at       TEXT NOT NULL
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS estimate_line_items (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            estimate_id   INTEGER NOT NULL REFERENCES estimates(id) ON DELETE CASCADE,
+            line_type     TEXT NOT NULL,
+            part_id       INTEGER REFERENCES parts(id),
+            description   TEXT NOT NULL,
+            quantity      REAL NOT NULL DEFAULT 1,
+            unit_price    REAL NOT NULL DEFAULT 0,
+            line_total    REAL NOT NULL DEFAULT 0,
+            sort_order    INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_estimates_customer ON estimates(customer_id, created_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_estimates_status   ON estimates(status, valid_until)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_estimate_lines     ON estimate_line_items(estimate_id, sort_order)")
 
     # ── PrimeCool Invoicing Module additions ───────────────────────────────
     # Idempotent column additions on the existing invoices header.
@@ -4135,6 +4242,25 @@ def list_visits_for_contract(contract_id: int) -> list:
     return [dict(r) for r in rows]
 
 
+def list_scheduled_visits_on(date_iso: str) -> list:
+    """All still-scheduled visits whose scheduled_date matches date_iso
+    (YYYY-MM-DD). Used by the appointment-reminder cron to find visits that
+    are a fixed lead-time away. Only status='scheduled' rows are returned —
+    in_progress/completed visits are not reminded. Newest-time first is not
+    important; ordered by time for stable, readable logs."""
+    con = _con()
+    rows = con.execute(
+        "SELECT id, customer_id, equipment_id, visit_type, status, "
+        "scheduled_date, scheduled_time, assigned_tech_id, technician, "
+        "contact_person_name, contact_person_phone "
+        "FROM maintenance_visits "
+        "WHERE status = 'scheduled' AND scheduled_date = ? "
+        "ORDER BY scheduled_time", (str(date_iso),),
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
 def generate_due_pm_visits(now=None, lookahead_days: int = 30,
                            only_contract_id: int = None) -> dict:
     """Materialise upcoming PM visits from active contracts. Idempotent — a
@@ -5862,6 +5988,21 @@ def get_part_by_id(part_id: int):
     return dict(row) if row else None
 
 
+def list_low_stock_parts():
+    """Active parts at or below their reorder point. Only parts with a
+    reorder_point > 0 qualify — a part with no reorder point set never
+    triggers a low-stock alert (quantity 0 is normal for, e.g., a part the
+    shop doesn't stock). Returns the lightweight columns the alerter needs."""
+    con = _con()
+    rows = con.execute(
+        "SELECT id, sku, name, quantity, reorder_point, location "
+        "FROM parts WHERE active = 1 AND reorder_point > 0 "
+        "AND quantity <= reorder_point ORDER BY (quantity - reorder_point), sku"
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
 def create_part(data: dict) -> int:
     now = datetime.now(timezone.utc).isoformat()
     con = _con()
@@ -6645,6 +6786,289 @@ def delete_invoice(invoice_id: int):
     con.close()
 
 
+# ── Estimates / quotes (#3) ──────────────────────────────────────────────────
+# Status machine (enforced in transition_estimate_status):
+#   draft → sent | canceled
+#   sent  → approved | declined | expired | canceled
+#   approved → converted | expired
+#   (declined / expired / converted / canceled are terminal)
+_ESTIMATE_TRANSITIONS = {
+    "draft":     {"sent", "canceled"},
+    "sent":      {"approved", "declined", "expired", "canceled"},
+    "approved":  {"converted", "expired"},
+    "declined":  set(),
+    "expired":   set(),
+    "converted": set(),
+    "canceled":  set(),
+}
+
+
+def _next_estimate_number() -> str:
+    """Sequential year-prefixed: EST-2026-0001."""
+    year = datetime.now(timezone.utc).year
+    prefix = f"EST-{year}-"
+    con = _con()
+    row = con.execute(
+        "SELECT MAX(CAST(SUBSTR(estimate_number, ?) AS INTEGER)) AS max_seq "
+        "FROM estimates WHERE estimate_number LIKE ?",
+        (len(prefix) + 1, f"{prefix}%"),
+    ).fetchone()
+    con.close()
+    next_seq = (row["max_seq"] or 0) + 1
+    return f"{prefix}{next_seq:04d}"
+
+
+def _recompute_estimate_totals(con, estimate_id: int):
+    """Recompute subtotal, tax_amount, total from line items + tax_rate.
+    Caller commits."""
+    est = con.execute("SELECT tax_rate FROM estimates WHERE id = ?", (estimate_id,)).fetchone()
+    if not est:
+        return
+    tax_rate = float(est["tax_rate"] or 0)
+    subtotal = con.execute(
+        "SELECT COALESCE(SUM(line_total), 0) AS s FROM estimate_line_items WHERE estimate_id = ?",
+        (estimate_id,),
+    ).fetchone()["s"]
+    subtotal = round(float(subtotal), 2)
+    tax_amount = round(subtotal * tax_rate, 2)
+    total = round(subtotal + tax_amount, 2)
+    con.execute(
+        "UPDATE estimates SET subtotal=?, tax_amount=?, total=?, updated_at=? WHERE id=?",
+        (subtotal, tax_amount, total, datetime.now(timezone.utc).isoformat(), estimate_id),
+    )
+
+
+def _insert_estimate_lines(con, estimate_id: int, line_items: list):
+    for idx, li in enumerate(line_items or []):
+        qty = float(li.get("quantity") or 0)
+        price = float(li.get("unit_price") or 0)
+        con.execute(
+            "INSERT INTO estimate_line_items "
+            "(estimate_id, line_type, part_id, description, quantity, unit_price, line_total, sort_order) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (estimate_id, li.get("line_type", "other"), li.get("part_id") or None,
+             li.get("description", ""), qty, price, round(qty * price, 2), idx),
+        )
+
+
+def create_estimate(data: dict, created_by: int = None) -> int:
+    now = datetime.now(timezone.utc).isoformat()
+    est_no = _next_estimate_number()
+    con = _con()
+    cur = con.execute(
+        "INSERT INTO estimates "
+        "(estimate_number, customer_id, visit_id, issue_date, valid_until, "
+        " status, tax_rate, currency, notes, created_by, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?)",
+        (
+            est_no,
+            int(data["customer_id"]),
+            data.get("visit_id") or None,
+            data["issue_date"],
+            data.get("valid_until") or None,
+            float(data.get("tax_rate") or 0),
+            data.get("currency") or "TTD",
+            data.get("notes", ""),
+            created_by, now, now,
+        ),
+    )
+    estimate_id = cur.lastrowid
+    _insert_estimate_lines(con, estimate_id, data.get("line_items", []))
+    _recompute_estimate_totals(con, estimate_id)
+    con.commit()
+    con.close()
+    return estimate_id
+
+
+def update_estimate(estimate_id: int, data: dict):
+    """Replace line items wholesale + update header fields. Only valid while
+    the estimate is still editable (draft) — caller enforces."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    con.execute(
+        "UPDATE estimates SET customer_id=?, visit_id=?, issue_date=?, "
+        "valid_until=?, tax_rate=?, currency=?, notes=?, updated_at=? WHERE id=?",
+        (
+            int(data["customer_id"]),
+            data.get("visit_id") or None,
+            data["issue_date"],
+            data.get("valid_until") or None,
+            float(data.get("tax_rate") or 0),
+            data.get("currency") or "TTD",
+            data.get("notes", ""),
+            now, estimate_id,
+        ),
+    )
+    con.execute("DELETE FROM estimate_line_items WHERE estimate_id = ?", (estimate_id,))
+    _insert_estimate_lines(con, estimate_id, data.get("line_items", []))
+    _recompute_estimate_totals(con, estimate_id)
+    con.commit()
+    con.close()
+
+
+def get_estimate_by_id(estimate_id: int, with_lines: bool = True):
+    con = _con()
+    row = con.execute(
+        "SELECT e.*, c.name AS customer_name, c.company AS customer_company, "
+        "       c.customer_code "
+        "FROM estimates e JOIN customers c ON e.customer_id = c.id "
+        "WHERE e.id = ?", (estimate_id,),
+    ).fetchone()
+    if not row:
+        con.close()
+        return None
+    est = _dec_row("estimates", row)
+    if with_lines:
+        est["line_items"] = [dict(r) for r in con.execute(
+            "SELECT * FROM estimate_line_items WHERE estimate_id = ? ORDER BY sort_order, id",
+            (estimate_id,),
+        ).fetchall()]
+    con.close()
+    return est
+
+
+def get_all_estimates(status: str = None, customer_id: int = None):
+    con = _con()
+    sql = ("SELECT e.*, c.name AS customer_name, c.customer_code "
+           "FROM estimates e JOIN customers c ON e.customer_id = c.id")
+    args, where = [], []
+    if status:
+        where.append("e.status = ?"); args.append(status)
+    if customer_id is not None:
+        where.append("e.customer_id = ?"); args.append(customer_id)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY e.created_at DESC, e.id DESC"
+    rows = con.execute(sql, args).fetchall()
+    con.close()
+    return _dec_rows("estimates", rows)
+
+
+def get_customer_estimates(customer_id: int):
+    """Portal-facing: a customer's own estimates, excluding drafts (not yet
+    sent) and canceled rows. Newest first."""
+    con = _con()
+    rows = con.execute(
+        "SELECT e.*, c.name AS customer_name, c.customer_code "
+        "FROM estimates e JOIN customers c ON e.customer_id = c.id "
+        "WHERE e.customer_id = ? AND e.status NOT IN ('draft','canceled') "
+        "ORDER BY e.created_at DESC, e.id DESC", (customer_id,),
+    ).fetchall()
+    con.close()
+    return _dec_rows("estimates", rows)
+
+
+def transition_estimate_status(estimate_id: int, new_status: str,
+                               actor_id: int = None,
+                               decline_reason: str = None) -> bool:
+    """Enforce the estimate state machine. Returns True on success; raises
+    ValueError on an illegal transition or missing estimate."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    row = con.execute("SELECT status FROM estimates WHERE id = ?", (estimate_id,)).fetchone()
+    if not row:
+        con.close()
+        raise ValueError("Estimate not found")
+    cur_status = row["status"]
+    allowed = _ESTIMATE_TRANSITIONS.get(cur_status, set())
+    if new_status != cur_status and new_status not in allowed:
+        con.close()
+        raise ValueError(f"Illegal transition: {cur_status} → {new_status}")
+    if new_status == "sent":
+        con.execute("UPDATE estimates SET status='sent', sent_at=COALESCE(sent_at, ?), "
+                    "updated_at=? WHERE id=?", (now, now, estimate_id))
+    elif new_status in ("approved", "declined"):
+        enc = _enc_dict("estimates", {"decline_reason": (decline_reason or "")}) \
+            if new_status == "declined" else {"decline_reason": None}
+        con.execute("UPDATE estimates SET status=?, decided_at=?, decline_reason=?, "
+                    "updated_at=? WHERE id=?",
+                    (new_status, now, enc.get("decline_reason"), now, estimate_id))
+    elif new_status == "canceled":
+        con.execute("UPDATE estimates SET status='canceled', canceled_at=?, "
+                    "canceled_by=?, updated_at=? WHERE id=?",
+                    (now, actor_id, now, estimate_id))
+    else:
+        con.execute("UPDATE estimates SET status=?, updated_at=? WHERE id=?",
+                    (new_status, now, estimate_id))
+    con.commit()
+    con.close()
+    return True
+
+
+def expire_stale_estimates(now=None) -> list:
+    """Mark sent/approved estimates whose valid_until has passed as 'expired'.
+    Returns the list of expired estimate ids. Idempotent."""
+    from datetime import datetime as _dt, timezone as _tz
+    now = now or _dt.now(_tz.utc)
+    today = now.date().isoformat()
+    con = _con()
+    rows = con.execute(
+        "SELECT id FROM estimates WHERE status IN ('sent','approved') "
+        "AND valid_until IS NOT NULL AND valid_until < ?", (today,),
+    ).fetchall()
+    ids = [r["id"] for r in rows]
+    if ids:
+        con.execute(
+            f"UPDATE estimates SET status='expired', updated_at=? "
+            f"WHERE id IN ({','.join('?' for _ in ids)})",
+            (now.isoformat(), *ids),
+        )
+        con.commit()
+    con.close()
+    return ids
+
+
+def convert_estimate_to_invoice(estimate_id: int, created_by: int = None,
+                                due_days: int = 30) -> int:
+    """Create a draft invoice from an APPROVED estimate, carrying its line
+    items and header fields across, then mark the estimate 'converted' and
+    link it to the new invoice. Returns the new invoice id. Raises ValueError
+    if the estimate isn't approved or is already converted."""
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    est = get_estimate_by_id(estimate_id, with_lines=True)
+    if not est:
+        raise ValueError("Estimate not found")
+    if est["status"] != "approved":
+        raise ValueError(f"Only an approved estimate can be converted (is '{est['status']}')")
+    if est.get("converted_invoice_id"):
+        raise ValueError("Estimate already converted")
+    now = _dt.now(_tz.utc)
+    issue = now.date().isoformat()
+    due = (now.date() + _td(days=int(due_days))).isoformat()
+    invoice_id = create_invoice({
+        "customer_id": est["customer_id"],
+        "visit_id":    est.get("visit_id"),
+        "issue_date":  issue,
+        "due_date":    due,
+        "tax_rate":    est.get("tax_rate") or 0,
+        "currency":    est.get("currency") or "TTD",
+        "notes":       (f"Converted from estimate {est['estimate_number']}."
+                        + (f" {est.get('notes')}" if est.get("notes") else "")),
+        "line_items":  [
+            {"line_type": li.get("line_type", "other"),
+             "part_id": li.get("part_id"),
+             "description": li.get("description", ""),
+             "quantity": li.get("quantity", 0),
+             "unit_price": li.get("unit_price", 0)}
+            for li in est.get("line_items", [])
+        ],
+    }, created_by=created_by)
+    con = _con()
+    con.execute("UPDATE estimates SET status='converted', converted_invoice_id=?, "
+                "updated_at=? WHERE id=?", (invoice_id, now.isoformat(), estimate_id))
+    con.commit()
+    con.close()
+    return invoice_id
+
+
+def delete_estimate(estimate_id: int):
+    con = _con()
+    con.execute("DELETE FROM estimate_line_items WHERE estimate_id = ?", (estimate_id,))
+    con.execute("DELETE FROM estimates WHERE id = ?", (estimate_id,))
+    con.commit()
+    con.close()
+
+
 def record_invoice_payment(invoice_id: int, data: dict,
                             recorded_by: int = None,
                             recorded_by_label: str = None,
@@ -7272,7 +7696,8 @@ def resolve_security_alerts_bulk(alert_ids: list, admin_id: int,
 # Notifications — general per-recipient in-app feed (the notification centre)
 # ═══════════════════════════════════════════════════════════════════════════
 _NOTIF_KINDS     = {"invoice", "visit", "kpi", "payroll", "document",
-                    "contract", "delegation", "system", "message"}
+                    "contract", "delegation", "system", "message",
+                    "inventory", "estimate", "payment"}
 _NOTIF_SEVERITY  = {"info", "success", "warning", "critical"}
 
 
@@ -7429,9 +7854,18 @@ def list_push_subscriptions(recipient_type: str, recipient_id: int) -> list:
     return [dict(r) for r in rows]
 
 
-def delete_push_subscription(endpoint: str) -> bool:
+def delete_push_subscription(endpoint: str, recipient_type: str = None,
+                             recipient_id: int = None) -> bool:
+    """Delete a push subscription by endpoint. When recipient_type/recipient_id
+    are supplied the delete is owner-scoped so one subject can never remove
+    another subject's subscription on the shared unsubscribe route."""
     con = _con()
-    cur = con.execute("DELETE FROM push_subscriptions WHERE endpoint=?", (endpoint,))
+    sql = "DELETE FROM push_subscriptions WHERE endpoint=?"
+    args = [endpoint]
+    if recipient_type is not None and recipient_id is not None:
+        sql += " AND recipient_type=? AND recipient_id=?"
+        args += [recipient_type, int(recipient_id)]
+    cur = con.execute(sql, tuple(args))
     con.commit()
     changed = cur.rowcount
     con.close()
@@ -8946,6 +9380,7 @@ PAYROLL_RATES = {
     "paye_band2_min":      6_000_000.0,
     "paye_band2_rate":     0.30,          # above band2_min
     "nis_employee_rate":   0.03,
+    "nis_annual_ceiling":  1_500_000.0,   # NIS insurable-wage ceiling (annual); contributions capped here
     "nht_employee_rate":   0.02,
     "education_tax_rate":  0.0225,
 }
@@ -8963,6 +9398,7 @@ def set_payroll_rates(payroll_section: dict):
     PAYROLL_RATES["paye_band2_min"]     = float(paye.get("band2_min_annual",  PAYROLL_RATES["paye_band2_min"]))
     PAYROLL_RATES["paye_band2_rate"]    = float(paye.get("band2_rate",        PAYROLL_RATES["paye_band2_rate"]))
     PAYROLL_RATES["nis_employee_rate"]  = float(payroll_section.get("nis", {}).get("employee_rate",          PAYROLL_RATES["nis_employee_rate"]))
+    PAYROLL_RATES["nis_annual_ceiling"] = float(payroll_section.get("nis", {}).get("annual_insurable_ceiling", PAYROLL_RATES["nis_annual_ceiling"]))
     PAYROLL_RATES["nht_employee_rate"]  = float(payroll_section.get("nht", {}).get("employee_rate",          PAYROLL_RATES["nht_employee_rate"]))
     PAYROLL_RATES["education_tax_rate"] = float(payroll_section.get("education_tax", {}).get("employee_rate", PAYROLL_RATES["education_tax_rate"]))
 
@@ -8995,7 +9431,12 @@ def compute_payslip_amounts(hours_regular: float, hours_overtime: float,
     annualised = gross * pay_periods_per_year
     paye_annual = _calc_paye(annualised)
     paye_period = paye_annual / pay_periods_per_year if pay_periods_per_year else 0
-    nis           = gross * r["nis_employee_rate"]
+    # NIS is charged only on insurable earnings up to the statutory annual
+    # ceiling, prorated to this pay period (mirrors the employer-side cap so
+    # high earners' NIS isn't overstated).
+    nis_ceiling_period = (r["nis_annual_ceiling"] / pay_periods_per_year
+                          if pay_periods_per_year else r["nis_annual_ceiling"])
+    nis           = min(gross, nis_ceiling_period) * r["nis_employee_rate"]
     nht           = gross * r["nht_employee_rate"]
     education_tax = gross * r["education_tax_rate"]
     total_ded     = round(paye_period + nis + nht + education_tax + (other_deductions or 0), 2)
@@ -11408,9 +11849,10 @@ def get_gct_liability_report(from_date: str = None, to_date: str = None) -> dict
         on purchases / parts), so this is NOT a net GCT-payable figure — the
         operator must subtract their own input-tax credits when filing.
       * Excludes draft and cancelled invoices (no liability accrues on those).
-      * Grouped BY currency: GCT is filed in JMD, but invoices may be raised in
-        other currencies, so each currency is reported on its own line rather
-        than silently summed across denominations.
+      * AMOUNTS ARE JMD. net/output_gct/gross are stored and summed in JMD (the
+        base + filing currency). The `currency` column is the invoice's BILLING
+        currency and is only a grouping label — rows are split per billing
+        currency rather than blended, but every figure shown is JMD.
 
     Args:
       from_date / to_date — inclusive ISO (YYYY-MM-DD) issue-date bounds.
@@ -11473,6 +11915,11 @@ def get_gct_liability_report(from_date: str = None, to_date: str = None) -> dict
     return {
         "basis": "accrual",
         "gross_output_tax_only": True,
+        # All money figures (net / output_gct / gross) are stored and reported
+        # in JMD — the GCT filing currency. The `currency` key on each period is
+        # the invoice's BILLING currency (a grouping label), NOT the unit of the
+        # amounts. Clients must format amounts as JMD, not as `currency`.
+        "amounts_currency": "JMD",
         "from": from_date,
         "to": to_date,
         "periods": periods,
@@ -11758,6 +12205,143 @@ def record_invoice_payment_v2(invoice_id: int, data: dict,
     }
 
 
+# ── Online payment links (#1b) ─────────────────────────────────────────────
+def get_active_payment_link_for_invoice(invoice_id: int):
+    """Return the most recent still-payable ('pending') link for an invoice,
+    or None. Used so repeated 'Pay online' clicks reuse a live checkout rather
+    than spawning a pile of orphan tokens."""
+    con = _con()
+    row = con.execute(
+        "SELECT * FROM payment_links WHERE invoice_id = ? AND status = 'pending' "
+        "ORDER BY id DESC LIMIT 1",
+        (invoice_id,),
+    ).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
+def create_payment_link(invoice_id: int, *, amount: float, currency: str = "JMD",
+                        provider: str = "stub", token: str, idempotency_key: str,
+                        expires_at: str = None, created_by_customer: int = None,
+                        provider_ref: str = None) -> dict:
+    """Insert a new pending payment link. Token + idempotency_key are supplied
+    by the caller (both cryptographically random UUIDs/url-safe tokens)."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    cur = con.execute(
+        "INSERT INTO payment_links "
+        "(invoice_id, token, provider, provider_ref, amount, currency, status, "
+        " idempotency_key, created_at, expires_at, created_by_customer) "
+        "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
+        (invoice_id, token, provider, provider_ref, float(amount), currency,
+         idempotency_key, now, expires_at, created_by_customer),
+    )
+    link_id = cur.lastrowid
+    con.commit()
+    row = con.execute("SELECT * FROM payment_links WHERE id = ?", (link_id,)).fetchone()
+    con.close()
+    return dict(row)
+
+
+def get_payment_link_by_token(token: str):
+    con = _con()
+    row = con.execute("SELECT * FROM payment_links WHERE token = ?", (token,)).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
+def mark_payment_link_paid(link_id: int, *, payment_id: int, provider_ref: str = None) -> None:
+    """Flip a link to 'paid' and bind it to the invoice_payments row that
+    settled it. Idempotent: a link already 'paid' is left untouched."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    con.execute(
+        "UPDATE payment_links SET status='paid', paid_at = COALESCE(paid_at, ?), "
+        "payment_id = COALESCE(payment_id, ?), "
+        "provider_ref = COALESCE(provider_ref, ?) "
+        "WHERE id = ? AND status != 'paid'",
+        (now, payment_id, provider_ref, link_id),
+    )
+    con.commit()
+    con.close()
+
+
+def cancel_payment_link(link_id: int) -> None:
+    """Cancel a still-pending link (e.g. the customer backed out, or the
+    invoice was settled another way). No-op if not pending."""
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    con.execute(
+        "UPDATE payment_links SET status='canceled', canceled_at = ? "
+        "WHERE id = ? AND status = 'pending'",
+        (now, link_id),
+    )
+    con.commit()
+    con.close()
+
+
+# ── Idempotency keys (#4 offline replay) ───────────────────────────────────
+def idempotency_lookup(idem_key: str, subject_id: int,
+                       subject_type: str = "tech"):
+    """Return the cached {status_code, response} for a previously-seen key, or
+    None. Used to make replayed offline writes safe (return the original
+    result instead of mutating again)."""
+    con = _con()
+    row = con.execute(
+        "SELECT status_code, response_json FROM idempotency_keys "
+        "WHERE idem_key = ? AND subject_type = ? AND subject_id = ? LIMIT 1",
+        (idem_key, subject_type, subject_id),
+    ).fetchone()
+    con.close()
+    if not row:
+        return None
+    import json as _j
+    try:
+        resp = _j.loads(row["response_json"]) if row["response_json"] else None
+    except Exception:
+        resp = None
+    return {"status_code": row["status_code"], "response": resp}
+
+
+def idempotency_store(idem_key: str, subject_id: int, scope: str,
+                      response, status_code: int = 200,
+                      subject_type: str = "tech") -> bool:
+    """Persist the response for an idempotency key. Returns False (without
+    overwriting) if the key already existed — the caller should then return the
+    EXISTING cached response, not the new one. Survives a race via the unique
+    index: a concurrent INSERT that loses simply reports already-stored."""
+    import sqlite3 as _sqlite3, json as _j
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    try:
+        con.execute(
+            "INSERT INTO idempotency_keys "
+            "(idem_key, subject_type, subject_id, scope, status_code, response_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (idem_key, subject_type, subject_id, scope, int(status_code),
+             _j.dumps(response, default=str) if response is not None else None, now),
+        )
+        con.commit()
+        con.close()
+        return True
+    except _sqlite3.IntegrityError:
+        con.close()
+        return False
+
+
+def purge_stale_idempotency_keys(older_than_hours: int = 168) -> int:
+    """Housekeeping: drop idempotency keys older than the retention window
+    (default 7 days). Replays only matter for as long as a device might hold a
+    queued write; a week is generous. Returns rows deleted."""
+    con = _con()
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=older_than_hours)).isoformat()
+    cur = con.execute("DELETE FROM idempotency_keys WHERE created_at < ?", (cutoff,))
+    n = cur.rowcount
+    con.commit()
+    con.close()
+    return n
+
+
 # ── Customer account credit ledger ────────────────────────────────────────
 def _chain_hash_customer_credit(prior_hash: str, row: dict) -> str:
     """SHA-256 of (prior || canonical_json(row)) for the credit ledger.
@@ -11902,11 +12486,14 @@ def transition_invoice_status(invoice_id: int, new_status: str,
         con.close()
         raise ValueError(f"Illegal transition: {cur_status} → {new_status}")
     if new_status in ("cancelled", "canceled"):
+        # Normalize to the canonical UK spelling on write so the US spelling
+        # never re-enters the column (read filters exclude both, but this keeps
+        # the stored value single-spelling — see the canceled/cancelled cleanup).
         enc = _enc_dict("invoices", {"canceled_reason": (reason or "")})
         con.execute(
             "UPDATE invoices SET status = ?, canceled_at = ?, canceled_by = ?, "
             "canceled_reason = ?, updated_at = ? WHERE id = ?",
-            (new_status, now, actor_id, enc.get("canceled_reason"), now,
+            ("cancelled", now, actor_id, enc.get("canceled_reason"), now,
              invoice_id),
         )
     elif new_status == "sent":

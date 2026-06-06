@@ -1311,6 +1311,11 @@
         Invoices
         <span id="overdueBadge" style="margin-left:auto;background:var(--danger-solid);color:white;font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px;display:none;"></span>
       </div>
+      <div class="nav-item" onclick="showPanel('estimates')" id="nav-estimates" style="display:none;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15l2 2 4-4"/></svg>
+        Estimates
+        <span id="estPendingBadge" style="margin-left:auto;background:var(--teal-solid);color:white;font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px;display:none;"></span>
+      </div>
       <div class="nav-item" onclick="showPanel('documents')" id="nav-documents" style="display:none;">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
         Documents
@@ -1351,6 +1356,10 @@
       <div class="nav-item" onclick="showPanel('audit')" id="nav-audit" style="display:none;">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
         Audit Log
+      </div>
+      <div class="nav-item" onclick="showPanel('backups')" id="nav-backups" style="display:none;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg>
+        Backups
       </div>
       <div class="nav-item" onclick="showPanel('reviews')" id="nav-reviews">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
@@ -1570,6 +1579,41 @@
         <div style="margin-top:24px;padding:14px 16px;background:var(--teal-bg);border:1px solid var(--teal-bg);border-radius:8px;font-size:12px;color:var(--teal-deep);line-height:1.6;">
           <strong>Jamaica tax reference</strong> — GCT 15% is applied by default on new invoices. Payroll deductions (PAYE, NIS, NHT, Education Tax, HEART) reference values are stored for future paystub generation.
           <a href="#" onclick="event.preventDefault();showTaxReference();" style="color:var(--teal);font-weight:600;">View tax reference →</a>
+        </div>
+      </div>
+
+      <!-- ── Estimates / Quotes panel ── -->
+      <div class="panel" id="panel-estimates">
+        <div class="top-bar">
+          <h2>Estimates &amp; Quotes</h2>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-primary" id="addEstimateBtn" onclick="openEstimateModal()" style="display:none;">+ New Estimate</button>
+          </div>
+        </div>
+
+        <div id="est-totals" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:20px;"></div>
+
+        <div class="filter-bar" id="estimateFilters" style="gap:8px;">
+          <button class="filter-btn active" data-f="all"      onclick="setEstimateFilter('all',this)">All</button>
+          <button class="filter-btn"        data-f="draft"    onclick="setEstimateFilter('draft',this)">Drafts</button>
+          <button class="filter-btn"        data-f="sent"     onclick="setEstimateFilter('sent',this)">Sent</button>
+          <button class="filter-btn"        data-f="approved" onclick="setEstimateFilter('approved',this)">Approved</button>
+          <button class="filter-btn"        data-f="declined" onclick="setEstimateFilter('declined',this)">Declined</button>
+          <button class="filter-btn"        data-f="expired"  onclick="setEstimateFilter('expired',this)">Expired</button>
+          <button class="filter-btn"        data-f="converted" onclick="setEstimateFilter('converted',this)">Converted</button>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Estimate #</th><th>Customer</th><th>Issued</th><th>Valid Until</th><th>Total</th><th>Status</th><th>Actions</th>
+            </tr></thead>
+            <tbody id="estimateTableBody"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+
+        <div style="margin-top:24px;padding:14px 16px;background:var(--teal-bg);border:1px solid var(--teal-bg);border-radius:8px;font-size:12px;color:var(--teal-deep);line-height:1.6;">
+          <strong>How estimates flow</strong> — Draft → <em>Send</em> (customer sees it in their portal) → customer <em>Approves</em> or <em>Declines</em>. An approved estimate can be <em>Converted</em> into a draft invoice in one click, carrying over all line items. Sent estimates auto-expire after their valid-until date.
         </div>
       </div>
 
@@ -2157,6 +2201,30 @@
               <th>When</th><th>Actor</th><th>Action</th><th>Target</th><th>Detail</th>
             </tr></thead>
             <tbody id="auditTableBody"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ── Backups panel (super_admin only) ── -->
+      <div class="panel" id="panel-backups">
+        <div class="top-bar">
+          <h2>Database Backups</h2>
+          <button class="btn btn-primary" id="backupNowBtn" onclick="backupNow()">＋ Back up now</button>
+        </div>
+        <p style="color:var(--muted);font-size:13px;line-height:1.6;max-width:780px;margin:0 0 14px;">
+          Each backup is an <strong>encrypted</strong>, point-in-time snapshot of the entire
+          database — invoices, payroll, the chained audit trail. A daily backup runs
+          automatically; you can also take one on demand. <strong>Verify</strong> proves an
+          artifact is restorable without touching the live database. Restoring is a console
+          operation: <code>python3 backup.py restore &lt;name&gt; &lt;dest&gt;</code>.
+        </p>
+        <div id="backupHealth" style="margin-bottom:14px;"></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Created</th><th>Size</th><th>Encrypted</th><th>Reason</th><th style="text-align:right;">Actions</th>
+            </tr></thead>
+            <tbody id="backupTableBody"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -3115,6 +3183,73 @@
       <button class="btn btn-ghost" onclick="closeModal('invoice')">Cancel</button>
       <button class="btn btn-primary" id="invoiceSubmitBtn" onclick="submitInvoice('draft')">Save as Draft</button>
       <button class="btn btn-primary" id="invoiceSendBtn" onclick="submitInvoice('sent')" style="background:var(--teal-solid);">Save &amp; Send</button>
+    </div>
+  </div>
+</div>
+
+<!-- Estimate create/edit -->
+<div class="modal-overlay" id="modal-estimate">
+  <div class="modal" style="max-width:780px;">
+    <div class="modal-header">
+      <h3 id="estimateModalTitle">New Estimate</h3>
+      <button class="modal-close" onclick="closeModal('estimate')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field-row">
+        <div class="field">
+          <label>Customer *</label>
+          <select id="es-customer"><option value="">Select customer…</option></select>
+        </div>
+        <div class="field">
+          <label>Related Visit (optional)</label>
+          <select id="es-visit"><option value="">— none —</option></select>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Issue Date *</label><input id="es-issue" type="date"></div>
+        <div class="field"><label>Valid Until</label><input id="es-valid" type="date"></div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>GCT Rate</label>
+          <input id="es-tax" type="number" step="0.001" min="0" max="1" value="0.15" oninput="estRecalcTotals()">
+          <span style="font-size:11px;color:var(--muted);margin-top:3px;">Default Jamaica GCT = 0.15 (15%)</span>
+        </div>
+        <div class="field">
+          <label>Currency</label>
+          <input id="es-currency" value="JMD" maxlength="5" style="text-transform:uppercase;letter-spacing:1px;" oninput="estRecalcTotals()">
+        </div>
+      </div>
+
+      <div style="margin-top:8px;border-top:1px solid var(--border);padding-top:14px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <strong style="font-size:13px;color:var(--ink);">Line Items</strong>
+          <div style="display:flex;gap:6px;">
+            <button class="btn btn-ghost btn-sm" onclick="estAddLineItem('labour')">+ Labour</button>
+            <button class="btn btn-ghost btn-sm" onclick="estAddLineItem('part')">+ Part</button>
+            <button class="btn btn-ghost btn-sm" onclick="estAddLineItem('other')">+ Other</button>
+          </div>
+        </div>
+        <div id="es-lines" style="display:flex;flex-direction:column;gap:8px;"></div>
+      </div>
+
+      <div style="margin-top:14px;padding:12px 14px;background:var(--light);border-radius:8px;">
+        <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--muted);"><span>Subtotal</span><span id="es-subtotal">J$0.00</span></div>
+        <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--muted);margin-top:4px;"><span>GCT</span><span id="es-taxamt">J$0.00</span></div>
+        <div style="display:flex;justify-content:space-between;font-size:16px;font-weight:700;color:var(--ink);margin-top:8px;padding-top:8px;border-top:1px solid var(--border);"><span>Total</span><span id="es-total">J$0.00</span></div>
+      </div>
+
+      <div class="field" style="margin-top:14px;">
+        <label>Notes (optional)</label>
+        <textarea id="es-notes" placeholder="Scope of work, assumptions, terms…"></textarea>
+      </div>
+
+      <div class="form-error" id="err-estimate"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('estimate')">Cancel</button>
+      <button class="btn btn-primary" id="estimateSubmitBtn" onclick="submitEstimate('draft')">Save as Draft</button>
+      <button class="btn btn-primary" id="estimateSendBtn" onclick="submitEstimate('sent')" style="background:var(--teal-solid);">Save &amp; Send</button>
     </div>
   </div>
 </div>
@@ -4453,6 +4588,15 @@
     quality_manager: new Set(['customer:view','visit:view','visit:view_photos','visit:flag','review:view','review:approve','review:reject','review:delete','kpi:view_team','kpi:flag_view','kpi:flag_resolve','kpi:note_write_coaching','kpi:note_view','fs:report_view','documents:view','audit:view_self','company:read_messages']),
     marketing: new Set(['customer:view','review:view','documents:view','company:post_message','company:read_messages','audit:view_self']),
   };
+  // Derive estimate/quote permissions from the invoice permissions each role
+  // already holds — this MIRRORS the backend rule (main.py grants estimate:*
+  // off invoice:* at startup), so there is a single source of truth for who
+  // can touch estimates and we never drift from the server's enforcement.
+  Object.values(ADMIN_PERMS).forEach(function (set) {
+    if (set.has('invoice:view'))   set.add('estimate:view');
+    if (set.has('invoice:create')) { set.add('estimate:create'); set.add('estimate:update'); set.add('estimate:send'); set.add('estimate:convert'); }
+    if (set.has('invoice:delete')) set.add('estimate:delete');
+  });
   function can(perm) {
     return currentAdmin && ADMIN_PERMS[currentAdmin.role]?.has(perm);
   }
@@ -4667,12 +4811,19 @@
     }
     if (can('audit:view_all') || can('audit:view_self')) document.getElementById('nav-audit').style.display = 'flex';
     if (can('audit:view_all')) document.getElementById('auditVerifyBtn').style.display = '';
+    // Backups — super_admin only (artifact decrypts to the whole DB).
+    if (currentAdmin && currentAdmin.role === 'super_admin') {
+      const nb = document.getElementById('nav-backups');
+      if (nb) nb.style.display = 'flex';
+    }
     if (can('timesheet:view_all')) document.getElementById('nav-timesheets').style.display = 'flex';
     if (can('schedule:view')) document.getElementById('nav-schedule').style.display = 'flex';
     if (can('inventory:view')) document.getElementById('nav-inventory').style.display = 'flex';
     if (can('inventory:create')) document.getElementById('addPartBtn').style.display = '';
     if (can('invoice:view')) document.getElementById('nav-invoices').style.display = 'flex';
     if (can('invoice:create')) document.getElementById('addInvoiceBtn').style.display = '';
+    if (can('estimate:view')) document.getElementById('nav-estimates').style.display = 'flex';
+    if (can('estimate:create')) document.getElementById('addEstimateBtn').style.display = '';
     if (can('documents:view')) document.getElementById('nav-documents').style.display = 'flex';
     if (can('documents:upload')) document.getElementById('uploadDocBtn').style.display = '';
     if (can('documents:view_highly_sensitive')) document.getElementById('docHighlySensitiveBtn').style.display = 'inline-block';
@@ -5204,7 +5355,8 @@
     audit: 'Audit Log', reviews: 'Reviews', fs: '5S',
     delegations: 'Delegations', kpi: 'Performance KPI',
     companymsg: 'Company Messages', myprofile: 'My Profile',
-    contracts: 'PM Contracts',
+    contracts: 'PM Contracts', backups: 'Database Backups',
+    estimates: 'Estimates & Quotes',
   };
   function _setCrumbs(items) {
     const wrap = document.getElementById('pcCrumbs');
@@ -5517,6 +5669,8 @@
     if (name === 'warehouse') { _safeLoad('whInit', whInit); }
     if (name === 'myprofile') { _safeLoad('loadMpProfile', loadMpProfile); }
     if (name === 'inventory') { _safeLoad('loadInventoryStaffCard', loadInventoryStaffCard); }
+    if (name === 'backups') { _safeLoad('loadBackups', loadBackups); }
+    if (name === 'estimates') { _safeLoad('loadEstimates', loadEstimates); }
     // Auto-hide the global security-alert banner when the user is already
     // looking at the Audit Log (where the alerts live). Reappears as soon
     // as they navigate to any other panel and the alert is still open.
@@ -5545,6 +5699,117 @@
         history.replaceState(null, '', location.pathname + location.search + '#' + name);
       }
     } catch (_) { /* history API unavailable — non-fatal */ }
+  }
+
+  // ── Database Backups (super_admin) ───────────────────────────────────────
+  function _bkBytes(n) {
+    if (n == null) return '—';
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+    if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
+    return (n / 1073741824).toFixed(2) + ' GB';
+  }
+  async function loadBackups() {
+    const tbody = document.getElementById('backupTableBody');
+    const health = document.getElementById('backupHealth');
+    try {
+      const data = await api('GET', '/api/admin/backups');
+      const cfg = data.config || {};
+      const list = data.backups || [];
+      // Health card: age of newest backup + encryption / retention summary.
+      let ageTxt = 'No backups yet', ageColor = 'var(--danger-solid)';
+      if (list.length) {
+        const newest = new Date(list[0].created_at);
+        const hrs = (Date.now() - newest.getTime()) / 3600000;
+        if (hrs < 1)        { ageTxt = 'Last backup: under an hour ago'; ageColor = 'var(--teal-deep)'; }
+        else if (hrs < 36)  { ageTxt = `Last backup: ${Math.round(hrs)}h ago`; ageColor = 'var(--teal-deep)'; }
+        else                { ageTxt = `Last backup: ${Math.round(hrs/24)}d ago`; ageColor = 'var(--danger-solid)'; }
+      }
+      const encTxt = cfg.encryption_available
+        ? '<span style="color:var(--teal-deep);">🔒 Encryption ON</span>'
+        : '<span style="color:var(--danger-solid);">⚠ Encryption OFF (no key) — backups are plaintext</span>';
+      const offTxt = cfg.offsite_configured
+        ? 'Off-box push: configured' : 'Off-box push: not configured (local only)';
+      health.innerHTML =
+        `<div style="display:flex;gap:18px;flex-wrap:wrap;align-items:center;padding:12px 16px;background:var(--light);border:1px solid var(--border);border-radius:10px;font-size:13px;">`
+        + `<strong style="color:${ageColor};">${ageTxt}</strong>`
+        + `<span>${encTxt}</span>`
+        + `<span style="color:var(--muted);">Daily • keep ${cfg.retain_min}+ / ${cfg.retain_days}d</span>`
+        + `<span style="color:var(--muted);">${offTxt}</span>`
+        + `</div>`;
+      if (!list.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="empty">No backups yet. Click “Back up now”.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = list.map(b => {
+        const when = (b.created_at || '').replace('T', ' ').slice(0, 19) + ' UTC';
+        const enc = b.encrypted
+          ? '<span style="color:var(--teal-deep);">🔒 Yes</span>'
+          : '<span style="color:var(--danger-solid);">No</span>';
+        const nm = escHtml(b.name);
+        return `<tr>
+          <td>${when}</td>
+          <td>${_bkBytes(b.artifact_bytes)}</td>
+          <td>${enc}</td>
+          <td>${escHtml(b.reason || '—')}</td>
+          <td style="text-align:right;white-space:nowrap;">
+            <button class="btn btn-ghost btn-sm" onclick="verifyBackup('${nm}')">Verify</button>
+            <button class="btn btn-ghost btn-sm" onclick="downloadBackup('${nm}')">Download</button>
+          </td>
+        </tr>`;
+      }).join('');
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="5" class="empty">Error: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+  async function backupNow() {
+    const btn = document.getElementById('backupNowBtn');
+    btn.disabled = true; const orig = btn.textContent; btn.textContent = 'Backing up…';
+    try {
+      const meta = await api('POST', '/api/admin/backups');
+      await loadBackups();
+      alert(`Backup created: ${meta.name}\n${_bkBytes(meta.artifact_bytes)}, encrypted=${meta.encrypted}`);
+    } catch (e) {
+      alert('Backup failed: ' + e.message);
+    } finally {
+      btn.disabled = false; btn.textContent = orig;
+    }
+  }
+  async function verifyBackup(name) {
+    try {
+      const r = await api('POST', `/api/admin/backups/${encodeURIComponent(name)}/verify`);
+      const rows = Object.entries(r.tables || {}).map(([k, v]) => `${k}: ${v}`).join(', ');
+      alert((r.ok ? '✓ Restorable' : '✗ INTEGRITY FAILED')
+        + `\nintegrity_check: ${r.integrity}\n${rows}`);
+    } catch (e) {
+      alert('Verify failed: ' + e.message);
+    }
+  }
+  async function downloadBackup(name) {
+    try { await _doBackupDownload(name); }
+    catch (e) { alert('Error: ' + e.message); }
+  }
+  async function _doBackupDownload(name) {
+    const url = `/api/admin/backups/${encodeURIComponent(name)}/download`;
+    const res = await fetch(url, { headers: { 'Authorization': `Bearer ${adminToken}` } });
+    if (res.status === 401 && res.headers.get('X-Require-MFA-Reauth') === 'true') {
+      const code = await _promptMfaReauth();
+      if (!code) return;
+      const ok = await fetch('/api/admin/mfa/reauth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${adminToken}` },
+        body: JSON.stringify({ code }),
+      });
+      if (!ok.ok) { const d = await ok.json().catch(() => ({})); throw new Error(d.detail || 'MFA verification failed'); }
+      return _doBackupDownload(name);
+    }
+    if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.detail || `HTTP ${res.status}`); }
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
   }
 
   // ── Customers ──────────────────────────────────────────────────────────────
@@ -10110,6 +10375,280 @@
     } catch(e) { alert('Error: ' + e.message); }
   }
 
+  // ── Estimates / Quotes ─────────────────────────────────────────────────
+  // Mirrors the invoice flow but with its own line-item buffer (estLineItems)
+  // so opening an estimate never clobbers a half-built invoice draft.
+  let allEstimates = [];
+  let estimateFilter = 'all';
+  let editingEstimateId = null;
+  let estLineItems = [];
+
+  async function loadEstimates() {
+    if (!can('estimate:view')) return;
+    try {
+      allEstimates = await api('GET', '/api/admin/estimates');
+      renderEstimates();
+    } catch(e) {
+      const tb = document.getElementById('estimateTableBody');
+      if (tb) tb.innerHTML = `<tr><td colspan="7" class="empty">Could not load estimates: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  function setEstimateFilter(f, btn) {
+    estimateFilter = f;
+    document.querySelectorAll('#estimateFilters .filter-btn').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    renderEstimates();
+  }
+
+  function _estStatusStyle(status) {
+    const bg = { draft:'var(--surface-2)', sent:'var(--teal-bg)', approved:'var(--teal-bg)',
+      declined:'var(--err-bg)', expired:'var(--border)', converted:'var(--steel-bg)', canceled:'var(--border)' }[status] || 'var(--surface-2)';
+    const fg = { draft:'var(--text)', sent:'var(--teal-deep)', approved:'var(--teal-deep)',
+      declined:'var(--err-fg)', expired:'var(--muted)', converted:'var(--steel)', canceled:'var(--muted)' }[status] || 'var(--text)';
+    return `background:${bg};color:${fg};`;
+  }
+
+  function renderEstimates() {
+    let rows = allEstimates.slice();
+    if (estimateFilter !== 'all') rows = rows.filter(r => r.status === estimateFilter);
+
+    // Summary cards over ALL estimates (not filtered).
+    const pending = allEstimates.filter(e => e.status === 'sent');
+    const pendingVal = pending.reduce((s, e) => s + (e.total || 0), 0);
+    const approvedOpen = allEstimates.filter(e => e.status === 'approved');
+    const approvedVal = approvedOpen.reduce((s, e) => s + (e.total || 0), 0);
+    const thisMonth = new Date(); thisMonth.setDate(1); thisMonth.setHours(0,0,0,0);
+    const convertedMonth = allEstimates.filter(e => e.status === 'converted' && e.decided_at && new Date(e.decided_at) >= thisMonth).length;
+    const estCur = (allEstimates[0] && allEstimates[0].currency) || 'JMD';
+    document.getElementById('est-totals').innerHTML = `
+      ${summaryCard('Awaiting Decision', fmtMoney(pendingVal, estCur), pending.length ? 'var(--teal-deep)' : 'var(--muted-2)')}
+      ${summaryCard('Sent (count)',      pending.length, pending.length ? 'var(--steel)' : 'var(--muted-2)')}
+      ${summaryCard('Approved (open)',   fmtMoney(approvedVal, estCur), approvedOpen.length ? 'var(--teal-deep)' : 'var(--muted-2)')}
+      ${summaryCard('Converted (Month)', convertedMonth, 'var(--ink)')}
+    `;
+    const badge = document.getElementById('estPendingBadge');
+    if (badge) {
+      if (pending.length) { badge.textContent = pending.length; badge.style.display = 'inline-block'; }
+      else { badge.style.display = 'none'; }
+    }
+
+    const tbody = document.getElementById('estimateTableBody');
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="7" class="empty">No estimates match this filter.</td></tr>';
+      return;
+    }
+    const _gate = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    tbody.innerHTML = rows.map(e => {
+      const custLink = (_gate && e.customer_id)
+        ? PC.gateLinkHtml('customer', e.customer_id, e.customer_name || '', {})
+        : `<strong>${escHtml(e.customer_name || '')}</strong>`;
+      const companyLine = e.customer_company ? `<br><span style="font-size:11px;color:var(--muted);">${escHtml(e.customer_company)}</span>` : '';
+      const convLink = (e.status === 'converted' && e.converted_invoice_id)
+        ? `<br><span style="font-size:11px;color:var(--steel);">→ <a href="/admin/invoice/${e.converted_invoice_id}" target="_blank" style="color:var(--steel);">invoice</a></span>` : '';
+      const acts = [];
+      if ((e.status === 'draft' || e.status === 'sent') && can('estimate:update'))
+        acts.push(`<button class="btn btn-edit btn-sm" onclick="event.stopPropagation();openEstimateModal(${e.id})">Edit</button>`);
+      if (e.status === 'draft' && can('estimate:send'))
+        acts.push(`<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();sendEstimateCmd(${e.id})" style="background:var(--teal-solid);">Send</button>`);
+      if (e.status === 'approved' && can('estimate:convert'))
+        acts.push(`<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();convertEstimateCmd(${e.id},'${escHtml(e.estimate_number)}')">→ Invoice</button>`);
+      if ((e.status === 'draft' || e.status === 'sent') && can('estimate:update'))
+        acts.push(`<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();cancelEstimateCmd(${e.id},'${escHtml(e.estimate_number)}')">Cancel</button>`);
+      if ((e.status === 'draft' || e.status === 'canceled') && can('estimate:delete'))
+        acts.push(`<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();deleteEstimateCmd(${e.id},'${escHtml(e.estimate_number)}')">Delete</button>`);
+      return `
+        <tr>
+          <td><span class="code-pill">${escHtml(e.estimate_number)}</span>${convLink}</td>
+          <td>${custLink}${companyLine}</td>
+          <td style="white-space:nowrap;">${fmtDate(e.issue_date)}</td>
+          <td style="white-space:nowrap;">${e.valid_until ? fmtDate(e.valid_until) : '—'}</td>
+          <td style="white-space:nowrap;">${fmtMoney(e.total, e.currency)}</td>
+          <td><span class="badge" style="${_estStatusStyle(e.status)}">${escHtml(e.status)}</span></td>
+          <td style="white-space:nowrap;" onclick="event.stopPropagation();">${acts.join(' ') || '<span style="color:var(--muted);font-size:12px;">—</span>'}</td>
+        </tr>`;
+    }).join('');
+  }
+
+  // ── Estimate create/edit modal ──
+  async function openEstimateModal(estimateId) {
+    editingEstimateId = estimateId || null;
+    estLineItems = [];
+    document.getElementById('err-estimate').style.display = 'none';
+    document.getElementById('estimateModalTitle').textContent = estimateId ? 'Edit Estimate' : 'New Estimate';
+
+    const custSel = document.getElementById('es-customer');
+    custSel.innerHTML = '<option value="">Select customer…</option>' +
+      (allCustomers || []).map(c => `<option value="${c.id}">${escHtml(c.name)} (${escHtml(c.customer_code)})</option>`).join('');
+
+    document.getElementById('es-issue').value = new Date().toISOString().slice(0, 10);
+    const valid = new Date(); valid.setDate(valid.getDate() + 30);
+    document.getElementById('es-valid').value    = valid.toISOString().slice(0, 10);
+    document.getElementById('es-tax').value       = '0.15';
+    document.getElementById('es-currency').value  = 'JMD';
+    document.getElementById('es-notes').value     = '';
+    document.getElementById('es-visit').innerHTML = '<option value="">— none —</option>';
+
+    custSel.onchange = estLoadVisits;
+
+    if (estimateId) {
+      try {
+        const est = await api('GET', `/api/admin/estimates/${estimateId}`);
+        custSel.value = est.customer_id;
+        estLoadVisits(est.visit_id);
+        document.getElementById('es-issue').value    = est.issue_date || '';
+        document.getElementById('es-valid').value     = est.valid_until || '';
+        document.getElementById('es-tax').value        = est.tax_rate;
+        document.getElementById('es-currency').value   = est.currency || 'JMD';
+        document.getElementById('es-notes').value      = est.notes || '';
+        estLineItems = (est.line_items || []).map(li => ({
+          line_type: li.line_type, part_id: li.part_id, description: li.description,
+          quantity: li.quantity, unit_price: li.unit_price,
+        }));
+      } catch(e) { showErr('err-estimate', e.message); return; }
+    }
+
+    estRenderLineItems();
+    document.getElementById('modal-estimate').classList.add('open');
+  }
+
+  function estLoadVisits(selectVisitId) {
+    const cid = parseInt(document.getElementById('es-customer').value);
+    const sel = document.getElementById('es-visit');
+    sel.innerHTML = '<option value="">— none —</option>';
+    if (!cid) return;
+    (allVisits || []).filter(v => v.customer_id === cid).forEach(v => {
+      const opt = document.createElement('option');
+      opt.value = v.id;
+      opt.textContent = `${v.visit_type} · ${fmtDate(v.scheduled_date || v.completed_date || '')} · ${v.status}`;
+      if (v.id == selectVisitId) opt.selected = true;
+      sel.appendChild(opt);
+    });
+  }
+
+  function estAddLineItem(type) {
+    const li = { line_type: type, part_id: null, description: '', quantity: 1, unit_price: 0 };
+    if (type === 'labour') li.description = 'Labour — service work';
+    estLineItems.push(li);
+    estRenderLineItems();
+  }
+  function estRemoveLineItem(idx) { estLineItems.splice(idx, 1); estRenderLineItems(); }
+  function estUpdateLineItem(idx, field, value) { estLineItems[idx][field] = value; estRecalcTotals(); }
+  function estOnPartSelected(idx, partIdStr) {
+    const pid = parseInt(partIdStr) || null;
+    estLineItems[idx].part_id = pid;
+    if (pid) {
+      const p = (allParts || []).find(x => x.id === pid);
+      if (p) {
+        estLineItems[idx].description = `${p.sku} — ${p.name}`;
+        if (!estLineItems[idx].unit_price) estLineItems[idx].unit_price = p.unit_cost;
+      }
+    }
+    estRenderLineItems();
+  }
+
+  function estRenderLineItems() {
+    const wrap = document.getElementById('es-lines');
+    if (!estLineItems.length) {
+      wrap.innerHTML = '<div style="text-align:center;padding:20px;color:var(--muted);font-size:12px;border:1px dashed var(--border);border-radius:8px;">No line items yet — add labour, parts, or other charges above.</div>';
+      estRecalcTotals();
+      return;
+    }
+    const partOptions = '<option value="">Pick a part…</option>' +
+      (allParts || []).filter(p => p.active).map(p => `<option value="${p.id}">${escHtml(p.sku)} — ${escHtml(p.name)} (${formatQty(p.quantity)} ${escHtml(p.unit||'')} avail, J$${Number(p.unit_cost).toFixed(2)})</option>`).join('');
+    wrap.innerHTML = estLineItems.map((li, idx) => {
+      const partRow = li.line_type === 'part' ? `
+        <select onchange="estOnPartSelected(${idx}, this.value)" style="grid-column:1/-1;padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;margin-bottom:4px;">
+          ${partOptions.replace(`value="${li.part_id || ''}"`, `value="${li.part_id || ''}" selected`)}
+        </select>` : '';
+      const total = (Number(li.quantity) || 0) * (Number(li.unit_price) || 0);
+      return `
+        <div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:var(--card);">
+          <div style="display:grid;grid-template-columns:auto 1fr 80px 110px 110px 30px;gap:8px;align-items:center;">
+            <span class="badge type-${li.line_type}" style="font-size:9px;padding:2px 8px;text-transform:uppercase;font-weight:700;">${escHtml(li.line_type)}</span>
+            ${partRow}
+            <input type="text" placeholder="Description" value="${escHtml(li.description)}" oninput="estUpdateLineItem(${idx}, 'description', this.value)" style="grid-column:${li.line_type === 'part' ? '1/-5' : '2/-5'};padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
+            <input type="number" step="0.01" min="0" value="${li.quantity}" oninput="estUpdateLineItem(${idx}, 'quantity', parseFloat(this.value)||0)" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;text-align:right;" title="Quantity">
+            <input type="number" step="0.01" min="0" value="${li.unit_price}" oninput="estUpdateLineItem(${idx}, 'unit_price', parseFloat(this.value)||0)" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;text-align:right;" title="Unit price">
+            <span style="text-align:right;font-weight:700;color:var(--ink);font-size:13px;">${fmtMoney(total, 'JMD')}</span>
+            <button onclick="estRemoveLineItem(${idx})" style="background:none;border:none;color:var(--danger);font-size:18px;cursor:pointer;padding:0;line-height:1;">×</button>
+          </div>
+        </div>`;
+    }).join('');
+    estRecalcTotals();
+  }
+
+  function estRecalcTotals() {
+    const subtotal = estLineItems.reduce((s, li) => s + (Number(li.quantity) || 0) * (Number(li.unit_price) || 0), 0);
+    const rate = parseFloat(document.getElementById('es-tax').value) || 0;
+    const tax = subtotal * rate;
+    const cur = document.getElementById('es-currency').value || 'JMD';
+    document.getElementById('es-subtotal').textContent = fmtMoney(subtotal, cur);
+    document.getElementById('es-taxamt').textContent   = fmtMoney(tax, cur);
+    document.getElementById('es-total').textContent    = fmtMoney(subtotal + tax, cur);
+  }
+
+  async function submitEstimate(saveAs) {
+    document.getElementById('err-estimate').style.display = 'none';
+    const body = {
+      customer_id: parseInt(document.getElementById('es-customer').value),
+      visit_id:    parseInt(document.getElementById('es-visit').value) || null,
+      issue_date:  document.getElementById('es-issue').value,
+      valid_until: document.getElementById('es-valid').value || null,
+      tax_rate:    parseFloat(document.getElementById('es-tax').value) || 0,
+      currency:    (document.getElementById('es-currency').value || 'JMD').trim().toUpperCase(),
+      notes:       document.getElementById('es-notes').value.trim(),
+      line_items:  estLineItems.map(li => ({
+        line_type: li.line_type, part_id: li.part_id || null,
+        description: li.description, quantity: Number(li.quantity) || 0, unit_price: Number(li.unit_price) || 0,
+      })),
+    };
+    if (!body.customer_id) { showErr('err-estimate', 'Select a customer.'); return; }
+    if (!body.issue_date)  { showErr('err-estimate', 'Issue date is required.'); return; }
+    if (!body.line_items.length) { showErr('err-estimate', 'Add at least one line item.'); return; }
+    try {
+      let eid = editingEstimateId;
+      if (editingEstimateId) {
+        await api('PUT', `/api/admin/estimates/${editingEstimateId}`, body);
+      } else {
+        const res = await api('POST', '/api/admin/estimates', body);
+        eid = res.id;
+      }
+      if (saveAs === 'sent') await api('POST', `/api/admin/estimates/${eid}/send`);
+      closeModal('estimate');
+      await loadEstimates();
+    } catch(e) { showErr('err-estimate', e.message); }
+  }
+
+  async function sendEstimateCmd(id) {
+    if (!confirm('Send this estimate to the customer? They will see it in their portal and receive an email.')) return;
+    try { await api('POST', `/api/admin/estimates/${id}/send`); await loadEstimates(); }
+    catch(e) { alert('Error: ' + e.message); }
+  }
+
+  async function convertEstimateCmd(id, num) {
+    if (!confirm(`Convert ${num} into a draft invoice? Line items carry over; you can edit the invoice before sending.`)) return;
+    try {
+      const res = await api('POST', `/api/admin/estimates/${id}/convert`);
+      await loadEstimates();
+      if (res && res.invoice_id && confirm(`Created ${res.invoice_number}. Open it now?`)) {
+        window.open(`/admin/invoice/${res.invoice_id}`, '_blank');
+      }
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  async function cancelEstimateCmd(id, num) {
+    if (!confirm(`Cancel estimate ${num}? It will be withdrawn from the customer.`)) return;
+    try { await api('POST', `/api/admin/estimates/${id}/cancel`); await loadEstimates(); }
+    catch(e) { alert('Error: ' + e.message); }
+  }
+
+  async function deleteEstimateCmd(id, num) {
+    if (!confirm(`Delete estimate ${num}? This cannot be undone.`)) return;
+    try { await api('DELETE', `/api/admin/estimates/${id}`); await loadEstimates(); }
+    catch(e) { alert('Error: ' + e.message); }
+  }
+
   // ── Record payment ──
   function openPaymentModal(invoiceId) {
     payingInvoice = allInvoices.find(i => i.id === invoiceId);
@@ -13532,7 +14071,7 @@
         ${summaryCard('Overdue',             _invFmt(m.overdue,'JMD'),             m.overdue>0?'var(--red)':'var(--muted-2)')}
         ${summaryCard('Invoiced This Month', _invFmt(m.invoiced_this_month,'JMD'), 'var(--ink)')}
         ${summaryCard('Collected This Month',_invFmt(m.collected_this_month,'JMD'),'var(--teal-deep)')}
-        ${summaryCard('GCT Collected (Output Tax)', _invFmt(m.gct_output_this_month,'JMD'), 'var(--steel)')}`;
+        ${summaryCard('GCT Output (Accrued)', _invFmt(m.gct_output_this_month,'JMD'), 'var(--steel)')}`;
     } catch(e) { /* fallback to client-side computation in renderInvoices */ }
   }
 
@@ -13572,37 +14111,40 @@
       host.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:8px 0;">No invoices issued between ${escHtml(rep.from)} and ${escHtml(rep.to)}.</div>`;
       return;
     }
+    // Amounts are JMD (the filing currency); `currency` is the billing
+    // currency shown only as a grouping label. Always format money as JMD.
+    const amtCur = rep.amounts_currency || 'JMD';
     const rows = periods.map(p => `
       <tr>
         <td>${escHtml(p.month)}</td>
         <td>${escHtml(p.currency)}</td>
         <td style="text-align:right;">${p.invoice_count}</td>
-        <td style="text-align:right;">${_invFmt(p.net, p.currency)}</td>
-        <td style="text-align:right;font-weight:700;">${_invFmt(p.output_gct, p.currency)}</td>
-        <td style="text-align:right;">${_invFmt(p.gross, p.currency)}</td>
+        <td style="text-align:right;">${_invFmt(p.net, amtCur)}</td>
+        <td style="text-align:right;font-weight:700;">${_invFmt(p.output_gct, amtCur)}</td>
+        <td style="text-align:right;">${_invFmt(p.gross, amtCur)}</td>
       </tr>`).join('');
     const totalRows = Object.keys(totals).sort().map(cur => {
       const t = totals[cur];
       return `
       <tr style="border-top:2px solid var(--border);font-weight:700;">
-        <td colspan="2">Total ${escHtml(cur)}</td>
+        <td colspan="2">Total (billed in ${escHtml(cur)})</td>
         <td style="text-align:right;">${t.invoice_count}</td>
-        <td style="text-align:right;">${_invFmt(t.net, cur)}</td>
-        <td style="text-align:right;color:var(--steel-deep,var(--steel));">${_invFmt(t.output_gct, cur)}</td>
-        <td style="text-align:right;">${_invFmt(t.gross, cur)}</td>
+        <td style="text-align:right;">${_invFmt(t.net, amtCur)}</td>
+        <td style="text-align:right;color:var(--steel-deep,var(--steel));">${_invFmt(t.output_gct, amtCur)}</td>
+        <td style="text-align:right;">${_invFmt(t.gross, amtCur)}</td>
       </tr>`; }).join('');
     host.innerHTML = `
       <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">
-        Period ${escHtml(rep.from)} → ${escHtml(rep.to)} · basis: ${escHtml(rep.basis)} · gross output tax only
+        Period ${escHtml(rep.from)} → ${escHtml(rep.to)} · basis: ${escHtml(rep.basis)} · gross output tax only · amounts in ${escHtml(amtCur)} (filing currency)
       </div>
       <div class="table-wrap">
         <table>
           <thead><tr>
-            <th>Month</th><th>Currency</th>
+            <th>Month</th><th>Billed in</th>
             <th style="text-align:right;">Invoices</th>
-            <th style="text-align:right;">Net (ex-GCT)</th>
-            <th style="text-align:right;">Output GCT</th>
-            <th style="text-align:right;">Gross</th>
+            <th style="text-align:right;">Net ex-GCT (${escHtml(amtCur)})</th>
+            <th style="text-align:right;">Output GCT (${escHtml(amtCur)})</th>
+            <th style="text-align:right;">Gross (${escHtml(amtCur)})</th>
           </tr></thead>
           <tbody>${rows}${totalRows}</tbody>
         </table>

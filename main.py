@@ -29,13 +29,14 @@ if not logger.handlers:
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form, Response, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import jwt
 import pyotp
 import qrcode
 import resend as resend_lib
+import backup as _backup
 
 from database import (
     init_db, save_submission, bootstrap_super_admin,
@@ -91,6 +92,9 @@ from database import (
     adjust_part_quantity, get_part_movements,
     create_invoice, update_invoice, get_invoice_by_id, get_all_invoices,
     get_customer_invoices, set_invoice_status, delete_invoice, record_invoice_payment,
+    create_estimate, update_estimate, get_estimate_by_id, get_all_estimates,
+    get_customer_estimates, transition_estimate_status, convert_estimate_to_invoice,
+    delete_estimate, expire_stale_estimates, list_scheduled_visits_on,
     get_visit_parts, add_visit_part, remove_visit_part, get_visit_part_by_id,
     build_invoice_lines_from_visit,
     # Admin users + audit
@@ -164,6 +168,11 @@ from database import (
     get_invoice_full, record_invoice_payment_v2,
     transition_invoice_status, create_invoice_with_lines,
     update_invoice_with_lines,
+    # Online payment links (#1b)
+    create_payment_link, get_payment_link_by_token, mark_payment_link_paid,
+    cancel_payment_link, get_active_payment_link_for_invoice,
+    # Idempotency keys (#4 offline replay)
+    idempotency_lookup, idempotency_store, purge_stale_idempotency_keys,
     StaleWriteError,
     # Employee KPI Tracking Module
     get_or_create_period, ensure_period_exists, close_period,
@@ -583,6 +592,23 @@ ADMIN_PERMS["marketing"] = {
 }
 
 
+# ── Estimate / quote permissions (#3) ─────────────────────────────────────────
+# Estimates are the pre-invoice step in the same sales → billing flow, so their
+# permissions track the invoice permissions a role already holds. No role gains
+# estimate powers it wouldn't reasonably have given its invoice scope:
+#   invoice:view   → estimate:view
+#   invoice:create → estimate:create, estimate:update, estimate:send, estimate:convert
+#   invoice:delete → estimate:delete
+for _erole, _eperms in ADMIN_PERMS.items():
+    if "invoice:view" in _eperms:
+        _eperms.add("estimate:view")
+    if "invoice:create" in _eperms:
+        _eperms.update({"estimate:create", "estimate:update",
+                        "estimate:send", "estimate:convert"})
+    if "invoice:delete" in _eperms:
+        _eperms.add("estimate:delete")
+
+
 def _admin_can(role: str, perm: str) -> bool:
     return perm in ADMIN_PERMS.get(role, set())
 
@@ -847,6 +873,10 @@ JAMAICA_TAX_REFERENCE = {
         "nis": {
             "employee_rate":      0.03,
             "employer_rate":      0.03,
+            # NIS is charged only on insurable earnings up to this annual
+            # ceiling. Both employee (payslip) and employer (cost report) caps
+            # read from this single value — verify with TAJ when it changes.
+            "annual_insurable_ceiling": 1_500_000,
             "label":              "National Insurance Scheme (NIS)",
         },
         "nht": {
@@ -1365,6 +1395,50 @@ def _require_tech(request: Request) -> int:
     return tid
 
 
+# ── Idempotency helpers (#4 offline replay) ─────────────────────────────────
+# The field PWA attaches an `Idempotency-Key` header to every queued write so a
+# reconnect-replay (or double-tap) can't create duplicates. Usage in an
+# endpoint, AFTER the ownership/404 check but BEFORE state guards:
+#     key, cached = _idem_begin(request, tech_id, "job.start")
+#     if cached is not None:
+#         return cached
+#     ... do the mutation, build `result` ...
+#     return _idem_finish(key, tech_id, "job.start", result)
+def _idem_key_from(request: Request) -> Optional[str]:
+    k = (request.headers.get("Idempotency-Key")
+         or request.headers.get("X-Idempotency-Key") or "").strip()
+    # Bound it and keep it to safe characters — it's a client UUID, not free text.
+    if not k or len(k) > 200:
+        return None
+    return k
+
+
+def _idem_begin(request: Request, subject_id: int, scope: str):
+    """Returns (key_or_None, cached_response_or_None). A non-None cached value
+    means this exact write already succeeded — return it unchanged."""
+    key = _idem_key_from(request)
+    if not key:
+        return None, None
+    hit = idempotency_lookup(key, subject_id)
+    if hit is not None:
+        return key, hit.get("response")
+    return key, None
+
+
+def _idem_finish(key: Optional[str], subject_id: int, scope: str, response):
+    """Persist the response under the key (first writer wins). If another
+    request stored first (race), return THEIR cached response so both callers
+    agree. Keyless callers pass through unchanged."""
+    if not key:
+        return response
+    stored = idempotency_store(key, subject_id, scope, response)
+    if not stored:
+        hit = idempotency_lookup(key, subject_id)
+        if hit is not None and hit.get("response") is not None:
+            return hit["response"]
+    return response
+
+
 def _require_admin(request: Request):
     """Returns the admin_user dict for the authenticated admin."""
     try:
@@ -1753,6 +1827,208 @@ def _notify(recipient_type: str, recipient_id: int, kind: str, title: str, *,
     except Exception as _e:
         logger.warning(f"[notif] push fanout failed: {_e}")
     return nid
+
+
+# ── Low-stock alerting (#6) ──────────────────────────────────────────────────
+# Inventory had a reorder_point and a passive dashboard counter but nothing
+# proactively told anyone when stock crossed it. These helpers notify every
+# admin who can see inventory, deduped per part for 24h, both in real time
+# (right after a stock-decrementing write) and via a daily safety-net sweep.
+def _admins_for_inventory_alerts() -> list:
+    """Active admin ids whose role can view inventory — the audience for
+    low-stock alerts. Best-effort; [] on any error."""
+    try:
+        from database import get_all_admin_users
+        return [a["id"] for a in get_all_admin_users()
+                if a.get("active") and _admin_can(a.get("role"), "inventory:view")]
+    except Exception as _e:
+        logger.warning(f"[lowstock] admin audience lookup failed: {_e}")
+        return []
+
+
+def _emit_low_stock_alert(part: dict, admin_ids: list):
+    sku = part.get("sku") or f"#{part.get('id')}"
+    qty = part.get("quantity")
+    rp = part.get("reorder_point") or 0
+    title = f"Low stock: {sku}"
+    body = f"{part.get('name') or ''} is at {qty:g} (reorder point {rp:g}). Time to reorder."
+    for aid in admin_ids:
+        _notify("admin", aid, "inventory", title, body=body,
+                link="/admin#inventory", severity="warning",
+                dedupe_key=f"lowstock:{part.get('id')}", dedupe_window_minutes=1440)
+
+
+def _check_low_stock(part_id: int):
+    """If a part is at/below its reorder point, alert inventory admins. Never
+    raises — a stock write must not fail because alerting hiccupped."""
+    try:
+        part = get_part_by_id(part_id)
+        if not part or not part.get("active"):
+            return
+        rp = part.get("reorder_point") or 0
+        qty = part.get("quantity")
+        if rp <= 0 or qty is None or qty > rp:
+            return
+        _emit_low_stock_alert(part, _admins_for_inventory_alerts())
+    except Exception as _e:
+        logger.warning(f"[lowstock] check failed for part {part_id}: {_e}")
+
+
+# ── Appointment reminders (#5) ───────────────────────────────────────────────
+# Scheduled visits existed but customers got no heads-up before one. These
+# helpers remind the billed customer (in-app + push + best-effort email) at
+# fixed lead times before a still-scheduled visit, deduped per (visit, lead)
+# so each wave fires at most once even though the sweep runs several times/day.
+def _appt_when_label(visit: dict) -> str:
+    date = (visit.get("scheduled_date") or "").strip()
+    time = (visit.get("scheduled_time") or "").strip()
+    return date + (f" at {time}" if time else "")
+
+
+def _appt_lead_label(lead_days: int) -> str:
+    if lead_days <= 0:
+        return "today"
+    if lead_days == 1:
+        return "tomorrow"
+    return f"in {lead_days} days"
+
+
+def _send_appointment_reminder_email(customer: dict, visit: dict, lead_label: str) -> None:
+    """Best-effort email reminder of an upcoming visit. No-op without
+    RESEND_API_KEY (the local default) or a customer email. Never raises —
+    the in-app notification is the source of truth."""
+    api_key = os.environ.get("RESEND_API_KEY")
+    to_addr = (customer or {}).get("email")
+    if not (api_key and to_addr):
+        return
+    try:
+        resend_lib.api_key = api_key
+        vt = "maintenance" if (visit.get("visit_type") == "PM") else "service"
+        when = _appt_when_label(visit)
+        subject = f"Reminder: PrimeCool {vt} visit {lead_label}"
+        tech_line = (f"<p style='margin:4px 0'><strong>Technician:</strong> "
+                     f"{visit.get('technician')}</p>") if visit.get("technician") else ""
+        html = (
+            f"<h2 style='color:#0B2545'>Upcoming {vt} visit</h2>"
+            f"<p>Hello {(customer or {}).get('name') or 'there'},</p>"
+            f"<p>This is a friendly reminder that PrimeCool Services has a "
+            f"<strong>{vt} visit</strong> scheduled for <strong>{when}</strong>.</p>"
+            f"{tech_line}"
+            f"<p>Need to reschedule? Reply to this email or call us and we'll "
+            f"find a better time.</p>"
+            f"<p style='color:#6b7280;font-size:12px'>PrimeCool Services</p>"
+        )
+        resend_lib.Emails.send({
+            "from":    "PrimeCool Services <onboarding@resend.dev>",
+            "to":      to_addr,
+            "subject": subject,
+            "html":    html,
+        })
+    except Exception as e:
+        logger.warning(f"[apptreminder] email failed for visit {visit.get('id')}: {e}")
+
+
+def _emit_appointment_reminder(visit: dict, lead_days: int) -> None:
+    """In-app + push + best-effort email reminder for one upcoming visit,
+    deduped per (visit, lead) so the same wave never double-fires."""
+    cust_id = visit.get("customer_id")
+    if not cust_id:
+        return
+    lead_label = _appt_lead_label(lead_days)
+    vt = "maintenance" if (visit.get("visit_type") == "PM") else "service"
+    title = f"Upcoming {vt} visit {lead_label}"
+    body = f"Your PrimeCool {vt} visit is scheduled for {_appt_when_label(visit)}."
+    _notify("customer", int(cust_id), "visit", title, body=body,
+            link="/portal", severity="info",
+            dedupe_key=f"apptreminder:{visit.get('id')}:{lead_days}d",
+            dedupe_window_minutes=14 * 24 * 60)
+    try:
+        cust = get_customer_by_id(int(cust_id))
+        _send_appointment_reminder_email(cust, visit, lead_label)
+    except Exception as _e:
+        logger.warning(f"[apptreminder] customer lookup failed for visit "
+                       f"{visit.get('id')}: {_e}")
+
+
+def _send_invoice_email(customer: dict, inv: dict) -> None:
+    """Best-effort email delivery of a sent invoice. No-op without
+    RESEND_API_KEY (the local default) or a customer email. Never raises —
+    the status transition + in-app notification are the source of truth, so
+    a mail hiccup must not fail the send."""
+    api_key = os.environ.get("RESEND_API_KEY")
+    to_addr = (customer or {}).get("email")
+    if not (api_key and to_addr):
+        return
+    try:
+        resend_lib.api_key = api_key
+        cur = (inv.get("currency") or "USD").upper()
+        try:
+            total = float(inv.get("total") or 0)
+            paid = float(inv.get("amount_paid") or 0)
+        except (TypeError, ValueError):
+            total, paid = 0.0, 0.0
+        balance = total - paid
+        due = inv.get("due_date") or ""
+        due_line = (f"<p style='margin:4px 0'><strong>Due:</strong> {due}</p>"
+                    if due else "")
+        subject = f"Invoice {inv.get('invoice_number')} from PrimeCool Services"
+        html = (
+            f"<h2 style='color:#0B2545'>Invoice {inv.get('invoice_number')}</h2>"
+            f"<p>Hello {(customer or {}).get('name') or 'there'},</p>"
+            f"<p>A new invoice has been issued to your account.</p>"
+            f"<p style='margin:4px 0'><strong>Total:</strong> {cur} {total:,.2f}</p>"
+            f"<p style='margin:4px 0'><strong>Balance due:</strong> {cur} {balance:,.2f}</p>"
+            f"{due_line}"
+            f"<p>Sign in to your customer portal to review the full invoice"
+            f" and payment options.</p>"
+            f"<p style='color:#6b7280;font-size:12px'>PrimeCool Services</p>"
+        )
+        resend_lib.Emails.send({
+            "from":    "PrimeCool Services <onboarding@resend.dev>",
+            "to":      to_addr,
+            "subject": subject,
+            "html":    html,
+        })
+    except Exception as e:
+        logger.warning(f"[invoice] email failed for invoice {inv.get('id')}: {e}")
+
+
+def _send_estimate_email(customer: dict, est: dict) -> None:
+    """Best-effort email delivery of a sent estimate. No-op without
+    RESEND_API_KEY (local default) or a customer email. Never raises."""
+    api_key = os.environ.get("RESEND_API_KEY")
+    to_addr = (customer or {}).get("email")
+    if not (api_key and to_addr) or not est:
+        return
+    try:
+        resend_lib.api_key = api_key
+        cur = (est.get("currency") or "USD").upper()
+        try:
+            total = float(est.get("total") or 0)
+        except (TypeError, ValueError):
+            total = 0.0
+        valid = est.get("valid_until") or ""
+        valid_line = (f"<p style='margin:4px 0'><strong>Valid until:</strong> {valid}</p>"
+                      if valid else "")
+        subject = f"Estimate {est.get('estimate_number')} from PrimeCool Services"
+        html = (
+            f"<h2 style='color:#0B2545'>Estimate {est.get('estimate_number')}</h2>"
+            f"<p>Hello {(customer or {}).get('name') or 'there'},</p>"
+            f"<p>We've prepared an estimate for your review.</p>"
+            f"<p style='margin:4px 0'><strong>Estimated total:</strong> {cur} {total:,.2f}</p>"
+            f"{valid_line}"
+            f"<p>Sign in to your customer portal to review the line items and"
+            f" <strong>approve or decline</strong> this estimate.</p>"
+            f"<p style='color:#6b7280;font-size:12px'>PrimeCool Services</p>"
+        )
+        resend_lib.Emails.send({
+            "from":    "PrimeCool Services <onboarding@resend.dev>",
+            "to":      to_addr,
+            "subject": subject,
+            "html":    html,
+        })
+    except Exception as e:
+        logger.warning(f"[estimate] email failed for estimate {est.get('id')}: {e}")
 
 
 def _send_security_alert_email(alert: dict):
@@ -2475,6 +2751,41 @@ class InvoicePayment(BaseModel):
     idempotency_key: Optional[str] = None
 
 
+# ── Estimate / quote models (#3) ──────────────────────────────────────────────
+class EstimateLineItem(BaseModel):
+    line_type:   str = "other"   # 'labor' | 'part' | 'other'
+    part_id:     Optional[int] = None
+    description: str
+    quantity:    float = 1
+    unit_price:  float = 0
+
+
+class EstimateCreate(BaseModel):
+    customer_id: int
+    visit_id:    Optional[int] = None
+    issue_date:  str
+    valid_until: Optional[str] = None
+    tax_rate:    float = INVOICE_TAX_RATE
+    currency:    str = "JMD"
+    notes:       str = ""
+    line_items:  List[EstimateLineItem] = []
+
+
+class EstimateUpdate(BaseModel):
+    customer_id: int
+    visit_id:    Optional[int] = None
+    issue_date:  str
+    valid_until: Optional[str] = None
+    tax_rate:    float = INVOICE_TAX_RATE
+    currency:    str = "JMD"
+    notes:       str = ""
+    line_items:  List[EstimateLineItem] = []
+
+
+class EstimateDecline(BaseModel):
+    reason: str = ""
+
+
 class TechForgotPin(BaseModel):
     tech_code: str
     email:     str
@@ -2497,6 +2808,7 @@ class ReviewCreate(BaseModel):
 # ── Existing routes ───────────────────────────────────────────────────────────
 
 @app.get("/health")
+@app.get("/api/health")
 def health():
     return {"status": "ok"}
 
@@ -3665,6 +3977,9 @@ def tech_add_part(request: Request, visit_id: int, body: TechAddPart):
     # Lead OR crew: all_tech_ids is the merged set computed by get_visit_by_id.
     if not visit or tech_id not in (visit.get("all_tech_ids") or []):
         raise HTTPException(404, "Job not found")
+    key, cached = _idem_begin(request, tech_id, "job.part_add")
+    if cached is not None:
+        return cached
     if visit["status"] == "completed":
         raise HTTPException(400, "Cannot add parts after job is completed")
     tech = get_tech_by_id(tech_id)
@@ -3678,7 +3993,9 @@ def tech_add_part(request: Request, visit_id: int, body: TechAddPart):
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return {"id": vp_id}
+    # A tech consuming parts on a job can drop stock below reorder — alert.
+    _check_low_stock(body.part_id)
+    return _idem_finish(key, tech_id, "job.part_add", {"id": vp_id})
 
 
 @app.delete("/api/tech/jobs/{visit_id}/parts/{vp_id}")
@@ -3688,8 +4005,15 @@ def tech_remove_part(request: Request, visit_id: int, vp_id: int):
     # Lead OR crew: all_tech_ids is the merged set computed by get_visit_by_id.
     if not visit or tech_id not in (visit.get("all_tech_ids") or []):
         raise HTTPException(404, "Job not found")
+    key, cached = _idem_begin(request, tech_id, "job.part_remove")
+    if cached is not None:
+        return cached
     vp = get_visit_part_by_id(vp_id)
     if not vp or vp["visit_id"] != visit_id:
+        # On a replay the part may already be gone — treat as idempotent success
+        # if this key was the one that removed it. (No key → genuine 404.)
+        if key:
+            return _idem_finish(key, tech_id, "job.part_remove", {"ok": True})
         raise HTTPException(404, "Visit part not found")
     tech = get_tech_by_id(tech_id)
     remove_visit_part(
@@ -3698,7 +4022,7 @@ def tech_remove_part(request: Request, visit_id: int, vp_id: int):
         tech_prid=tech.get("prid") if tech else None,
         tech_label=tech.get("name") if tech else None,
     )
-    return {"ok": True}
+    return _idem_finish(key, tech_id, "job.part_remove", {"ok": True})
 
 
 @app.put("/api/tech/jobs/{visit_id}/start")
@@ -3708,6 +4032,9 @@ def tech_start_job(request: Request, visit_id: int):
     # Lead OR crew: all_tech_ids is the merged set computed by get_visit_by_id.
     if not visit or tech_id not in (visit.get("all_tech_ids") or []):
         raise HTTPException(404, "Job not found")
+    key, cached = _idem_begin(request, tech_id, "job.start")
+    if cached is not None:
+        return cached
     if visit["status"] == "completed":
         raise HTTPException(400, "Job already completed")
 
@@ -3719,7 +4046,7 @@ def tech_start_job(request: Request, visit_id: int):
         "status":      "in_progress",
         "visit_type":  visit["visit_type"],
     })
-    return {"ok": True, "start_time": now_iso}
+    return _idem_finish(key, tech_id, "job.start", {"ok": True, "start_time": now_iso})
 
 
 @app.put("/api/tech/jobs/{visit_id}/complete")
@@ -3729,6 +4056,9 @@ def tech_complete_job(request: Request, visit_id: int, body: TechCompleteVisit):
     # Lead OR crew: all_tech_ids is the merged set computed by get_visit_by_id.
     if not visit or tech_id not in (visit.get("all_tech_ids") or []):
         raise HTTPException(404, "Job not found")
+    key, cached = _idem_begin(request, tech_id, "job.complete")
+    if cached is not None:
+        return cached
     # Submission lock — once submitted_at is set, the tech can't re-submit.
     # Manager can flag-for-review (separate endpoint) but no edits from here.
     if visit.get("submitted_at"):
@@ -3758,7 +4088,8 @@ def tech_complete_job(request: Request, visit_id: int, body: TechCompleteVisit):
                               triggered_by_id=tech_id)
     except Exception as e:
         logger.warning(f"kpi recompute deferred: {e}")
-    return {"ok": True, "end_time": end_iso, "submitted_at": end_iso}
+    return _idem_finish(key, tech_id, "job.complete",
+                        {"ok": True, "end_time": end_iso, "submitted_at": end_iso})
 
 
 @app.post("/api/tech/jobs/{visit_id}/readings")
@@ -3768,10 +4099,13 @@ def tech_add_reading(request: Request, visit_id: int, body: TechReadingCreate):
     # Lead OR crew: all_tech_ids is the merged set computed by get_visit_by_id.
     if not visit or tech_id not in (visit.get("all_tech_ids") or []):
         raise HTTPException(404, "Job not found")
+    key, cached = _idem_begin(request, tech_id, "job.reading")
+    if cached is not None:
+        return cached
     if visit.get("submitted_at"):
         raise HTTPException(409, "Job locked — cannot add readings after submission")
     rid = add_visit_reading(visit_id, tech_id, body.model_dump())
-    return {"id": rid}
+    return _idem_finish(key, tech_id, "job.reading", {"id": rid})
 
 
 @app.post("/api/tech/jobs/{visit_id}/signature")
@@ -3781,6 +4115,9 @@ def tech_capture_signature(request: Request, visit_id: int, body: TechSignatureC
     # Lead OR crew: all_tech_ids is the merged set computed by get_visit_by_id.
     if not visit or tech_id not in (visit.get("all_tech_ids") or []):
         raise HTTPException(404, "Job not found")
+    key, cached = _idem_begin(request, tech_id, "job.signature")
+    if cached is not None:
+        return cached
     if visit.get("submitted_at"):
         raise HTTPException(409, "Job locked — signature cannot be replaced")
     if get_visit_signature(visit_id):
@@ -3792,7 +4129,7 @@ def tech_capture_signature(request: Request, visit_id: int, body: TechSignatureC
     if len(body.signature_b64) > 200_000:
         raise HTTPException(413, "signature payload too large")
     sid = set_visit_signature(visit_id, body.signer_name, body.signature_b64, tech_id)
-    return {"id": sid}
+    return _idem_finish(key, tech_id, "job.signature", {"id": sid})
 
 
 @app.post("/api/tech/jobs/{visit_id}/checklist")
@@ -3802,10 +4139,13 @@ def tech_set_checklist(request: Request, visit_id: int, body: TechChecklistSet):
     # Lead OR crew: all_tech_ids is the merged set computed by get_visit_by_id.
     if not visit or tech_id not in (visit.get("all_tech_ids") or []):
         raise HTTPException(404, "Job not found")
+    key, cached = _idem_begin(request, tech_id, "job.checklist")
+    if cached is not None:
+        return cached
     if visit.get("submitted_at"):
         raise HTTPException(409, "Job locked")
     set_visit_checklist(visit_id, body.items, tech_id)
-    return {"ok": True}
+    return _idem_finish(key, tech_id, "job.checklist", {"ok": True})
 
 
 @app.post("/api/tech/jobs/{visit_id}/photos")
@@ -3825,6 +4165,9 @@ async def tech_upload_photo(
     # Lead OR crew: all_tech_ids is the merged set computed by get_visit_by_id.
     if not visit or tech_id not in (visit.get("all_tech_ids") or []):
         raise HTTPException(404, "Job not found")
+    key, cached = _idem_begin(request, tech_id, "job.photo")
+    if cached is not None:
+        return cached
 
     if category not in ("before", "after"):
         raise HTTPException(400, "Invalid category — must be 'before' or 'after'")
@@ -3890,8 +4233,9 @@ async def tech_upload_photo(
             meta["client_meta_json"] = _json.dumps(leftover)[:8000]
 
     photo_id = create_photo(visit_id, category, fname, tech_id, metadata=meta)
-    return {"id": photo_id, "filename": fname,
-            "url": _sign_photo_url(fname), "category": category}
+    return _idem_finish(key, tech_id, "job.photo",
+                        {"id": photo_id, "filename": fname,
+                         "url": _sign_photo_url(fname), "category": category})
 
 
 @app.delete("/api/tech/photos/{photo_id}")
@@ -6557,7 +6901,7 @@ def admin_mark_pay_period_paid(request: Request, period_id: int):
 # When the Ministry of Finance updates them, change the constants here.
 _JM_NIS_EE_RATE   = 0.03      # Employee NIS  3 %
 _JM_NIS_ER_RATE   = 0.03      # Employer NIS  3 %
-_JM_NIS_CEILING_MO = 125_000  # Insurable ceiling ~ J$1.5M / yr → 125k / mo
+_JM_NIS_CEILING_MO = JAMAICA_TAX_REFERENCE["payroll"]["nis"]["annual_insurable_ceiling"] / 12  # Insurable ceiling → monthly (single source: JAMAICA_TAX_REFERENCE)
 _JM_NHT_EE_RATE   = 0.02      # Employee NHT  2 %
 _JM_NHT_ER_RATE   = 0.03      # Employer NHT  3 %
 _JM_EDTAX_EE_RATE = 0.0225    # Employee Ed-Tax  2.25 %
@@ -6928,6 +7272,7 @@ def admin_adjust_part(request: Request, part_id: int, body: PartAdjust):
                 before={"quantity": part["quantity"]},
                 after={"quantity": result["new_quantity"], "delta": body.quantity_delta,
                        "reason": body.reason})
+    _check_low_stock(part_id)
     return result
 
 
@@ -7497,6 +7842,76 @@ DEFAULT_FX_FEE_PCT = 2.0
 _INVOICE_CURRENCIES = ("JMD", "USD", "GBP")
 _PAYMENT_METHODS    = ("cash", "bank_transfer", "cheque", "card", "other")
 
+# ── Online payment provider (#1b) ────────────────────────────────────────────
+# Provider-agnostic. The active provider is chosen by env so a real gateway
+# (Stripe/Fygaro/WiPay/etc.) can be swapped in WITHOUT code changes — the agent
+# cannot create gateway accounts, accept ToS, or make external calls, so the
+# default 'stub' provider keeps the WHOLE loop functional locally: it issues a
+# self-hosted checkout page and settles through the same chain-hashed payment
+# path a real webhook would use. Real keys/secret live in env only.
+PAYMENT_PROVIDER       = (os.environ.get("PAYMENT_PROVIDER", "stub") or "stub").lower()
+PAYMENT_LINK_TTL_HOURS = int(os.environ.get("PAYMENT_LINK_TTL_HOURS", "72"))
+# Shared secret a REAL provider signs its webhook with. Unset locally → the
+# webhook endpoint refuses (503) rather than accepting unauthenticated settle
+# requests. The stub never uses the webhook; it settles via the confirm route
+# which is gated by the unguessable per-link token instead.
+PAYMENT_WEBHOOK_SECRET = os.environ.get("PAYMENT_WEBHOOK_SECRET", "")
+
+
+def _payment_link_outstanding(inv: dict) -> float:
+    """JMD outstanding on an invoice (total − amount_paid), rounded to cents."""
+    return round(float(inv["total"]) - float(inv.get("amount_paid") or 0), 2)
+
+
+def _settle_payment_link(link: dict, *, provider_ref: str = None,
+                         actor_label: str = "online") -> dict:
+    """Settle a pending payment link: record the money against its invoice via
+    the append-only, chain-hashed record_invoice_payment_v2 path (method='card',
+    reusing the link's idempotency_key so a webhook retry / double-confirm can
+    never double-credit), then flip the link to 'paid'. Idempotent end-to-end.
+
+    Returns {already_paid|settled, payment_id, invoice_status, ...}. Raises
+    HTTPException on a link that's not payable."""
+    if link["status"] == "paid":
+        return {"already_paid": True, "payment_id": link.get("payment_id"),
+                "link_status": "paid"}
+    if link["status"] != "pending":
+        raise HTTPException(409, f"Payment link is '{link['status']}', not payable.")
+    inv = get_invoice_by_id(link["invoice_id"], with_lines=False)
+    if not inv:
+        raise HTTPException(404, "Invoice not found")
+    outstanding = _payment_link_outstanding(inv)
+    # Cap the recorded amount at the live outstanding so a stale link (invoice
+    # partly paid by other means after the link was issued) can't overpay.
+    amount = min(float(link["amount"]), outstanding) if outstanding > 0 else 0.0
+    if amount <= 0.005:
+        # Nothing left to pay — treat as already settled and close the link.
+        mark_payment_link_paid(link["id"], payment_id=0, provider_ref=provider_ref)
+        return {"already_paid": True, "payment_id": None, "link_status": "paid",
+                "invoice_status": inv["status"]}
+    payload = {
+        "amount_jmd":      amount,
+        "payment_method":  "card",
+        "payment_date":    datetime.now(timezone.utc).date().isoformat(),
+        "notes":           f"Online payment ({link['provider']}) · link {link['token'][:8]}…",
+        "idempotency_key": link["idempotency_key"],
+    }
+    result = record_invoice_payment_v2(
+        link["invoice_id"], payload,
+        recorded_by=None, recorded_by_label=actor_label, recorded_by_prid=None,
+    )
+    mark_payment_link_paid(link["id"], payment_id=result["id"],
+                           provider_ref=provider_ref)
+    after = get_invoice_by_id(link["invoice_id"], with_lines=False)
+    return {
+        "settled":        not result.get("duplicate", False),
+        "duplicate":      result.get("duplicate", False),
+        "payment_id":     result["id"],
+        "amount":         amount,
+        "invoice_status": after["status"],
+        "link_status":    "paid",
+    }
+
 
 def _redact_pii_for_audit_safe(payload):
     """Wrapper that uses the existing _redact_pii_for_audit helper if it
@@ -7633,6 +8048,15 @@ def admin_invoice_send(request: Request, invoice_id: int):
                 dedupe_window_minutes=1440)
     except Exception as _e:
         logger.warning(f"[notif] invoice.sent customer notify failed: {_e}")
+    # Best-effort email delivery (no-op locally without RESEND_API_KEY). Uses
+    # get_customer_by_id for the DECRYPTED email — the invoice join carries
+    # the ciphertext, not the plaintext address.
+    try:
+        cust_id = inv.get("customer_id")
+        if cust_id:
+            _send_invoice_email(get_customer_by_id(int(cust_id)), inv)
+    except Exception as _e:
+        logger.warning(f"[invoice] email dispatch failed for {invoice_id}: {_e}")
     return {"ok": True, "status": "sent"}
 
 
@@ -7798,6 +8222,185 @@ def admin_invoice_payments_list(request: Request, invoice_id: int):
     return inv.get("payments", [])
 
 
+# ── Estimates / quotes — admin endpoints (#3) ────────────────────────────────
+def _emit_estimate_customer_notify(estimate_id: int, kind_title: str, body: str,
+                                   dedupe_suffix: str):
+    """Best-effort in-app + push to the estimate's customer."""
+    try:
+        est = get_estimate_by_id(estimate_id, with_lines=False)
+        if est and est.get("customer_id"):
+            _notify("customer", int(est["customer_id"]), "estimate", kind_title,
+                    body=body, link="/portal", severity="info",
+                    dedupe_key=f"estimate_{dedupe_suffix}:{estimate_id}",
+                    dedupe_window_minutes=1440)
+    except Exception as _e:
+        logger.warning(f"[estimate] customer notify failed for {estimate_id}: {_e}")
+
+
+def _admins_for_estimate_alerts() -> list:
+    """Active admin ids whose role can view estimates."""
+    try:
+        from database import get_all_admin_users
+        return [a["id"] for a in get_all_admin_users()
+                if a.get("active") and _admin_can(a.get("role"), "estimate:view")]
+    except Exception as _e:
+        logger.warning(f"[estimate] admin audience lookup failed: {_e}")
+        return []
+
+
+def _notify_admins_estimate_decision(est: dict, decision: str, reason: str = None):
+    """Tell the estimate's creator (or, failing that, estimate-viewing admins)
+    that the customer approved/declined. Best-effort — never raises."""
+    try:
+        est_no = est.get("estimate_number") or f"#{est.get('id')}"
+        sev = "success" if decision == "approved" else "warning"
+        title = f"Estimate {est_no} {decision}"
+        body = f"The customer has {decision} estimate {est_no}."
+        if decision == "declined" and reason:
+            body += f" Reason: {reason[:160]}"
+        elif decision == "approved":
+            body += " You can now convert it into an invoice."
+        creator = est.get("created_by")
+        recipients = [int(creator)] if creator else _admins_for_estimate_alerts()
+        for aid in recipients:
+            _notify("admin", aid, "estimate", title, body=body,
+                    link="/admin#estimates", severity=sev,
+                    dedupe_key=f"estimate_decision:{est.get('id')}",
+                    dedupe_window_minutes=1440)
+    except Exception as _e:
+        logger.warning(f"[estimate] decision notify failed: {_e}")
+
+
+@app.get("/api/admin/estimates")
+def admin_list_estimates(request: Request, status: Optional[str] = None):
+    _require_perm(request, "estimate:view")
+    return get_all_estimates(status=status)
+
+
+@app.get("/api/admin/estimates/{estimate_id}", response_model=Dict[str, Any])
+def admin_get_estimate(request: Request, estimate_id: int):
+    _require_perm(request, "estimate:view")
+    est = get_estimate_by_id(estimate_id)
+    if not est:
+        raise HTTPException(404, "Estimate not found")
+    return est
+
+
+@app.post("/api/admin/estimates")
+def admin_create_estimate(request: Request, body: EstimateCreate):
+    admin = _require_perm(request, "estimate:create")
+    data = body.model_dump()
+    data["line_items"] = [li if isinstance(li, dict) else li.model_dump()
+                          for li in data.get("line_items", [])]
+    estimate_id = create_estimate(data, created_by=admin["id"])
+    est = get_estimate_by_id(estimate_id, with_lines=False)
+    _audit_from(admin, "estimate.create", request,
+                target_type="estimate", target_id=estimate_id,
+                target_label=est["estimate_number"],
+                after={"customer_id": body.customer_id, "total": est["total"]})
+    return {"id": estimate_id, "estimate_number": est["estimate_number"]}
+
+
+@app.put("/api/admin/estimates/{estimate_id}", response_model=Dict[str, Any])
+def admin_update_estimate(request: Request, estimate_id: int, body: EstimateUpdate):
+    admin = _require_perm(request, "estimate:update")
+    before = get_estimate_by_id(estimate_id, with_lines=False)
+    if not before:
+        raise HTTPException(404, "Estimate not found")
+    if before["status"] != "draft":
+        raise HTTPException(400, f"Cannot edit a {before['status']} estimate")
+    data = body.model_dump()
+    data["line_items"] = [li if isinstance(li, dict) else li.model_dump()
+                          for li in data.get("line_items", [])]
+    update_estimate(estimate_id, data)
+    after = get_estimate_by_id(estimate_id, with_lines=False)
+    _audit_from(admin, "estimate.update", request,
+                target_type="estimate", target_id=estimate_id,
+                target_label=before["estimate_number"],
+                before={"total": before["total"]}, after={"total": after["total"]})
+    return {"ok": True}
+
+
+@app.post("/api/admin/estimates/{estimate_id}/send", response_model=Dict[str, Any])
+def admin_estimate_send(request: Request, estimate_id: int):
+    """draft → sent. Notifies the customer (in-app + push + best-effort email)."""
+    admin = _require_perm(request, "estimate:send")
+    est = get_estimate_by_id(estimate_id, with_lines=False)
+    if not est:
+        raise HTTPException(404, "Estimate not found")
+    try:
+        transition_estimate_status(estimate_id, "sent", actor_id=admin["id"])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    _audit_from(admin, "estimate.sent", request,
+                target_type="estimate", target_id=estimate_id,
+                target_label=est["estimate_number"],
+                before={"status": est["status"]}, after={"status": "sent"})
+    _emit_estimate_customer_notify(
+        estimate_id, f"Estimate {est['estimate_number']} for your review",
+        "A new estimate is waiting in your portal. Review it to approve or decline.",
+        "sent")
+    try:
+        cust = get_customer_by_id(int(est["customer_id"]))
+        _send_estimate_email(cust, get_estimate_by_id(estimate_id, with_lines=False))
+    except Exception as _e:
+        logger.warning(f"[estimate] email dispatch failed for {estimate_id}: {_e}")
+    return {"ok": True, "status": "sent"}
+
+
+@app.post("/api/admin/estimates/{estimate_id}/cancel", response_model=Dict[str, Any])
+def admin_estimate_cancel(request: Request, estimate_id: int):
+    admin = _require_perm(request, "estimate:update")
+    est = get_estimate_by_id(estimate_id, with_lines=False)
+    if not est:
+        raise HTTPException(404, "Estimate not found")
+    try:
+        transition_estimate_status(estimate_id, "canceled", actor_id=admin["id"])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    _audit_from(admin, "estimate.canceled", request,
+                target_type="estimate", target_id=estimate_id,
+                target_label=est["estimate_number"],
+                before={"status": est["status"]}, after={"status": "canceled"})
+    return {"ok": True, "status": "canceled"}
+
+
+@app.post("/api/admin/estimates/{estimate_id}/convert", response_model=Dict[str, Any])
+def admin_estimate_convert(request: Request, estimate_id: int):
+    """Convert an APPROVED estimate into a draft invoice."""
+    admin = _require_perm(request, "estimate:convert")
+    est = get_estimate_by_id(estimate_id, with_lines=False)
+    if not est:
+        raise HTTPException(404, "Estimate not found")
+    try:
+        invoice_id = convert_estimate_to_invoice(estimate_id, created_by=admin["id"])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    inv = get_invoice_by_id(invoice_id, with_lines=False)
+    _audit_from(admin, "estimate.converted", request,
+                target_type="estimate", target_id=estimate_id,
+                target_label=est["estimate_number"],
+                after={"invoice_id": invoice_id,
+                       "invoice_number": inv["invoice_number"] if inv else None})
+    return {"ok": True, "invoice_id": invoice_id,
+            "invoice_number": inv["invoice_number"] if inv else None}
+
+
+@app.delete("/api/admin/estimates/{estimate_id}", response_model=OkResponse)
+def admin_delete_estimate(request: Request, estimate_id: int):
+    admin = _require_perm(request, "estimate:delete")
+    est = get_estimate_by_id(estimate_id, with_lines=False)
+    if not est:
+        raise HTTPException(404, "Estimate not found")
+    if est["status"] not in ("draft", "canceled"):
+        raise HTTPException(400, "Only draft or canceled estimates can be deleted")
+    delete_estimate(estimate_id)
+    _audit_from(admin, "estimate.delete", request,
+                target_type="estimate", target_id=estimate_id,
+                target_label=est["estimate_number"], before=est)
+    return {"ok": True}
+
+
 # Customer-side invoice access
 @app.get("/api/portal/invoices")
 def portal_invoices(request: Request):
@@ -7845,6 +8448,288 @@ def portal_invoice_detail(request: Request, invoice_id: int):
                     target_type="invoice", target_id=invoice_id,
                     target_label=inv.get("invoice_number"))
     return inv
+
+
+@app.post("/api/portal/invoices/{invoice_id}/pay", response_model=Dict[str, Any])
+def portal_invoice_pay(request: Request, invoice_id: int):
+    """Customer kicks off an online payment for one of their OWN outstanding
+    invoices. Creates (or reuses) a pending payment link and returns a
+    tokenised checkout URL.
+
+    With the local 'stub' provider the checkout_url is a self-hosted page that
+    simulates a gateway; swapping PAYMENT_PROVIDER + keys to a real gateway
+    would instead create a remote checkout session and return ITS url here —
+    no other code changes. IDOR-safe: a foreign/unknown invoice 404s."""
+    customer_id = _require_customer(request)
+    _enforce_rate(request, "invpay", str(customer_id),
+                  max_attempts=20, window_seconds=3600,
+                  message="Too many payment attempts in the last hour. Please try later.")
+    inv = get_invoice_by_id(invoice_id, with_lines=False)
+    if not inv or inv["customer_id"] != customer_id or inv["status"] == "draft":
+        raise HTTPException(404, "Invoice not found")
+    if inv["status"] in ("paid", "cancelled"):
+        raise HTTPException(400, f"This invoice is '{inv['status']}' — nothing to pay.")
+    outstanding = _payment_link_outstanding(inv)
+    if outstanding <= 0.005:
+        raise HTTPException(400, "This invoice has no outstanding balance.")
+
+    # Reuse a still-live link rather than minting a fresh token on every click.
+    link = get_active_payment_link_for_invoice(invoice_id)
+    if not link:
+        token = _secrets.token_urlsafe(32)
+        idem  = "pl_" + _secrets.token_hex(16)
+        expires = (datetime.now(timezone.utc)
+                   + timedelta(hours=PAYMENT_LINK_TTL_HOURS)).isoformat()
+        link = create_payment_link(
+            invoice_id, amount=outstanding,
+            currency=(inv.get("currency") or "JMD"),
+            provider=PAYMENT_PROVIDER, token=token, idempotency_key=idem,
+            expires_at=expires, created_by_customer=customer_id,
+        )
+    cust = get_customer_by_id(customer_id)
+    _audit_customer(cust, "portal.payment_initiated", request,
+                    target_type="invoice", target_id=invoice_id,
+                    target_label=inv.get("invoice_number"),
+                    after={"amount": outstanding, "provider": PAYMENT_PROVIDER,
+                           "link_id": link["id"]})
+    return {
+        "ok": True,
+        "provider": link["provider"],
+        "amount": link["amount"],
+        "currency": link["currency"],
+        "invoice_number": inv.get("invoice_number"),
+        # For the stub provider this is our own checkout page. A real provider
+        # would put its hosted-checkout URL here instead.
+        "checkout_url": f"/pay/{link['token']}",
+    }
+
+
+# ── Stub checkout page + settlement (local provider only) ────────────────────
+@app.get("/pay/{token}", response_class=HTMLResponse)
+def stub_checkout_page(token: str):
+    """Self-hosted checkout page for the LOCAL STUB provider. Stands in for a
+    real gateway's hosted-checkout screen so the whole pay loop works offline.
+    The unguessable token is the bearer of authority (same model as a real
+    gateway checkout link). With a real provider configured this route is moot —
+    the customer is sent to the provider's own page instead."""
+    link = get_payment_link_by_token(token)
+    if not link:
+        return HTMLResponse("<h1>Payment link not found</h1>", status_code=404)
+    inv = get_invoice_by_id(link["invoice_id"], with_lines=False)
+    inv_no = (inv or {}).get("invoice_number", "—")
+    cur = link["currency"]
+    amt = f"{float(link['amount']):,.2f}"
+    if link["status"] == "paid":
+        body = ('<div class="state ok"><h1>✓ Already paid</h1>'
+                f'<p>Invoice {inv_no} has been settled. You can close this window.</p></div>')
+    elif link["status"] != "pending":
+        body = (f'<div class="state"><h1>Link {link["status"]}</h1>'
+                '<p>This payment link is no longer active.</p></div>')
+    else:
+        body = f'''
+        <div class="card">
+          <div class="badge">TEST / STUB PROVIDER</div>
+          <h1>Pay invoice {inv_no}</h1>
+          <div class="amt">{cur}&nbsp;${amt}</div>
+          <p class="sub">This is a local simulation of an online card payment.
+             No real card is charged. Clicking “Pay now” settles the invoice
+             through the same recorded-payment path a real gateway webhook uses.</p>
+          <button id="payBtn" onclick="pay()">Pay now</button>
+          <div id="msg" class="msg"></div>
+        </div>
+        <script>
+          async function pay() {{
+            var b = document.getElementById('payBtn'),
+                m = document.getElementById('msg');
+            b.disabled = true; b.textContent = 'Processing…';
+            try {{
+              var r = await fetch('/api/pay/{token}/confirm', {{ method:'POST' }});
+              var d = await r.json();
+              if (r.ok) {{
+                document.querySelector('.card').innerHTML =
+                  '<div class="state ok"><h1>✓ Payment complete</h1>'
+                  + '<p>Thank you! Invoice {inv_no} is now '
+                  + (d.invoice_status === 'paid' ? 'fully paid' : 'updated')
+                  + '. You can close this window and return to your portal.</p></div>';
+              }} else {{
+                m.textContent = (d.detail || 'Payment failed. Please try again.');
+                b.disabled = false; b.textContent = 'Pay now';
+              }}
+            }} catch (e) {{
+              m.textContent = 'Network error — please try again.';
+              b.disabled = false; b.textContent = 'Pay now';
+            }}
+          }}
+        </script>'''
+    html = f'''<!doctype html><html lang="en"><head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PrimeCool — Secure Payment</title>
+    <style>
+      :root {{ --navy:#0B2545; --steel:#1B4F82; --teal:#22A08A; --teal-deep:#1A7A6A; }}
+      * {{ box-sizing:border-box; }}
+      body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+              background:linear-gradient(135deg,var(--navy),var(--steel));
+              min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }}
+      .card,.state {{ background:#fff; border-radius:16px; padding:36px 32px; max-width:420px; width:100%;
+               box-shadow:0 20px 60px rgba(0,0,0,.3); text-align:center; }}
+      .badge {{ display:inline-block; background:#fff4e5; color:#9a5b00; font-size:11px; font-weight:800;
+               letter-spacing:.6px; padding:5px 10px; border-radius:6px; margin-bottom:14px; }}
+      h1 {{ font-size:20px; color:var(--navy); margin:0 0 8px; }}
+      .amt {{ font-size:38px; font-weight:800; color:var(--teal-deep); margin:10px 0 14px; }}
+      .sub {{ font-size:13px; color:#5b6b7b; line-height:1.55; margin:0 0 22px; }}
+      button {{ background:var(--teal); color:#fff; border:0; border-radius:10px; font-size:16px;
+               font-weight:700; padding:14px 22px; width:100%; cursor:pointer; }}
+      button:hover {{ background:var(--teal-deep); }}
+      button:disabled {{ opacity:.6; cursor:default; }}
+      .msg {{ color:#b00020; font-size:13px; margin-top:14px; min-height:18px; }}
+      .state.ok h1 {{ color:var(--teal-deep); }}
+      .state p {{ color:#5b6b7b; font-size:14px; line-height:1.6; }}
+    </style></head><body>{body}</body></html>'''
+    return HTMLResponse(html)
+
+
+@app.post("/api/pay/{token}/confirm", response_model=Dict[str, Any])
+def stub_payment_confirm(token: str, request: Request):
+    """STUB-provider settlement. Stands in for the gateway callback: the
+    unguessable token authorises the settle. Only valid while the active
+    provider is 'stub' — a real deployment settles via /api/payments/webhook
+    instead, and this route refuses so a stub confirm can't be replayed against
+    a real-provider link."""
+    link = get_payment_link_by_token(token)
+    if not link:
+        raise HTTPException(404, "Payment link not found")
+    if link["provider"] != "stub" or PAYMENT_PROVIDER != "stub":
+        raise HTTPException(409, "This link is settled by the payment provider, "
+                                 "not by the stub confirm route.")
+    # Expiry check — a stale pending link can't be settled.
+    if link["status"] == "pending" and link.get("expires_at") \
+            and link["expires_at"] < datetime.now(timezone.utc).isoformat():
+        cancel_payment_link(link["id"])
+        raise HTTPException(410, "This payment link has expired. Please start a new payment.")
+    out = _settle_payment_link(link, provider_ref=f"stub_{_secrets.token_hex(6)}",
+                               actor_label="online (stub)")
+    inv = get_invoice_by_id(link["invoice_id"], with_lines=False)
+    # Audit under the owning customer so it threads into their portal history.
+    cust = get_customer_by_id(link["created_by_customer"]) if link.get("created_by_customer") else None
+    if cust and not out.get("already_paid"):
+        _audit_customer(cust, "portal.payment_settled", request,
+                        target_type="invoice", target_id=link["invoice_id"],
+                        target_label=(inv or {}).get("invoice_number"),
+                        after={"amount": out.get("amount"), "provider": "stub",
+                               "payment_id": out.get("payment_id"),
+                               "invoice_status": out.get("invoice_status")})
+    return {"ok": True, **out,
+            "invoice_status": out.get("invoice_status") or (inv or {}).get("status")}
+
+
+@app.post("/api/payments/webhook", response_model=Dict[str, Any])
+async def payments_webhook(request: Request):
+    """Real-provider settlement entry point. Provider-agnostic shell:
+      • Requires PAYMENT_WEBHOOK_SECRET to be configured (else 503) — we never
+        accept an unauthenticated settle.
+      • Verifies an HMAC-SHA256 signature over the raw body, sent in the
+        `X-PrimeCool-Signature` header. (A specific gateway's header/scheme is
+        adapted here when its keys are wired in.)
+      • Looks up the link by the `token` (or `provider_ref`) in the payload and
+        settles it through the same idempotent path as the stub.
+    Locally — with no secret set — this returns 503, which is correct: there is
+    no real provider to receive callbacks from."""
+    if not PAYMENT_WEBHOOK_SECRET:
+        raise HTTPException(503, "No payment provider webhook configured.")
+    raw = await request.body()
+    sig = request.headers.get("X-PrimeCool-Signature", "")
+    expected = hmac.new(PAYMENT_WEBHOOK_SECRET.encode(), raw, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        raise HTTPException(401, "Invalid webhook signature")
+    try:
+        payload = _json.loads(raw.decode("utf-8") or "{}")
+    except Exception:
+        raise HTTPException(400, "Malformed webhook body")
+    token = payload.get("token") or payload.get("client_reference_id") or ""
+    if not token:
+        raise HTTPException(400, "Webhook missing payment token")
+    link = get_payment_link_by_token(token)
+    if not link:
+        raise HTTPException(404, "Unknown payment link")
+    # Only settle on a success-type event. Unknown event types ack with 200 so
+    # the provider doesn't retry, but take no action.
+    event = (payload.get("event") or payload.get("type") or "").lower()
+    if event and "succ" not in event and "paid" not in event and "complete" not in event:
+        return {"ok": True, "ignored": event}
+    out = _settle_payment_link(link, provider_ref=payload.get("provider_ref"),
+                               actor_label=f"online ({link['provider']})")
+    return {"ok": True, **out}
+
+
+# ── Estimates / quotes — customer portal endpoints (#3) ──────────────────────
+@app.get("/api/portal/estimates")
+def portal_estimates(request: Request):
+    """The logged-in customer's own estimates (drafts/canceled excluded)."""
+    customer_id = _require_customer(request)
+    return get_customer_estimates(customer_id)
+
+
+def _portal_estimate_or_404(request: Request, estimate_id: int):
+    """Fetch an estimate that belongs to the caller and is visible to them
+    (not a draft / canceled). IDOR-safe indistinguishable 404. Returns
+    (customer_id, estimate)."""
+    customer_id = _require_customer(request)
+    est = get_estimate_by_id(estimate_id)
+    if (not est or est["customer_id"] != customer_id
+            or est["status"] in ("draft", "canceled")):
+        raise HTTPException(404, "Estimate not found")
+    return customer_id, est
+
+
+@app.get("/api/portal/estimates/{estimate_id}", response_model=Dict[str, Any])
+def portal_estimate_detail(request: Request, estimate_id: int):
+    customer_id, est = _portal_estimate_or_404(request, estimate_id)
+    cust = get_customer_by_id(customer_id)
+    _audit_customer(cust, "portal.viewed_estimate", request,
+                    target_type="estimate", target_id=estimate_id,
+                    target_label=est.get("estimate_number"))
+    # Drop the internal decline_reason from the customer-facing payload — it's
+    # their own input but we don't echo it back as part of the quote view.
+    est.pop("decline_reason", None)
+    return est
+
+
+@app.post("/api/portal/estimates/{estimate_id}/approve", response_model=Dict[str, Any])
+def portal_estimate_approve(request: Request, estimate_id: int):
+    """Customer approves a sent estimate (sent → approved)."""
+    customer_id, est = _portal_estimate_or_404(request, estimate_id)
+    if est["status"] != "sent":
+        raise HTTPException(400, f"This estimate cannot be approved (it is '{est['status']}').")
+    try:
+        transition_estimate_status(estimate_id, "approved")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    cust = get_customer_by_id(customer_id)
+    _audit_customer(cust, "portal.approved_estimate", request,
+                    target_type="estimate", target_id=estimate_id,
+                    target_label=est.get("estimate_number"))
+    _notify_admins_estimate_decision(est, "approved", reason=None)
+    return {"ok": True, "status": "approved"}
+
+
+@app.post("/api/portal/estimates/{estimate_id}/decline", response_model=Dict[str, Any])
+def portal_estimate_decline(request: Request, estimate_id: int, body: EstimateDecline):
+    """Customer declines a sent estimate (sent → declined). Reason optional,
+    encrypted at rest."""
+    customer_id, est = _portal_estimate_or_404(request, estimate_id)
+    if est["status"] != "sent":
+        raise HTTPException(400, f"This estimate cannot be declined (it is '{est['status']}').")
+    reason = (body.reason or "").strip()[:1000]
+    try:
+        transition_estimate_status(estimate_id, "declined", decline_reason=reason)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    cust = get_customer_by_id(customer_id)
+    _audit_customer(cust, "portal.declined_estimate", request,
+                    target_type="estimate", target_id=estimate_id,
+                    target_label=est.get("estimate_number"))
+    _notify_admins_estimate_decision(est, "declined", reason=reason)
+    return {"ok": True, "status": "declined"}
 
 
 # ── Service requests (client-portal triage queue) ────────────────────────────
@@ -8165,6 +9050,69 @@ def admin_delete_document(request: Request, doc_id: int):
     return {"ok": True}
 
 
+# ── Database backups (super_admin only) ─────────────────────────────────────
+# A backup artifact is an encrypted, gzipped, point-in-time snapshot of the
+# ENTIRE database (invoices, payroll, the chained audit trail). It therefore
+# carries every secret the app holds, so the surface is locked to super_admin
+# and every create/download/verify is audit-logged. Restore is deliberately
+# NOT an HTTP action — overwriting the live DB is a console operation
+# (`python3 backup.py restore <name> <dest>`); the API only proves a backup is
+# restorable via verify.
+@app.get("/api/admin/backups")
+def admin_backups_list(request: Request):
+    admin = _require_super_admin(request)
+    _audit_from(admin, "backup.list", request, target_type="backup", target_id=None)
+    return {"backups": _backup.list_backups(), "config": _backup.config_summary()}
+
+
+@app.post("/api/admin/backups")
+def admin_backups_create(request: Request):
+    admin = _require_super_admin(request)
+    try:
+        meta = _backup.create_backup(reason="manual",
+                                     actor=f"admin:{admin['id']}")
+    except Exception as e:
+        logger.error(f"[backup] manual create failed: {e}")
+        raise HTTPException(500, f"backup failed: {e}")
+    _audit_from(admin, "backup.create", request,
+                target_type="backup", target_id=None, target_label=meta["name"],
+                after={"encrypted": meta["encrypted"],
+                       "artifact_bytes": meta["artifact_bytes"],
+                       "sha256": meta["artifact_sha256"]})
+    return meta
+
+
+@app.get("/api/admin/backups/{name}/download")
+def admin_backups_download(request: Request, name: str):
+    admin = _require_super_admin(request)
+    # Step-up: downloading the whole DB demands a fresh MFA proof, same bar as
+    # a Highly Sensitive document.
+    _require_recent_mfa(request, admin)
+    try:
+        path = _backup._safe_path(name)
+    except (ValueError, FileNotFoundError):
+        raise HTTPException(404, "backup not found")
+    _audit_from(admin, "backup.download", request,
+                target_type="backup", target_id=None, target_label=name)
+    return FileResponse(path, media_type="application/octet-stream", filename=name)
+
+
+@app.post("/api/admin/backups/{name}/verify")
+def admin_backups_verify(request: Request, name: str):
+    admin = _require_super_admin(request)
+    try:
+        result = _backup.verify_backup(name)
+    except (ValueError, FileNotFoundError):
+        raise HTTPException(404, "backup not found")
+    except Exception as e:
+        logger.error(f"[backup] verify failed for {name}: {e}")
+        raise HTTPException(500, f"verify failed: {e}")
+    _audit_from(admin, "backup.verify", request,
+                target_type="backup", target_id=None, target_label=name,
+                after={"ok": result["ok"], "integrity": result["integrity"]})
+    return result
+
+
 @app.get("/documents/{tier}/{filename}")
 def serve_document(tier: str, filename: str, exp: int = 0, sig: str = ""):
     """Time-limited signed document fetch. URLs generated by
@@ -8397,41 +9345,47 @@ def push_vapid_public_key():
     return {"key": key, "configured": bool(key), "enabled": _wp.is_enabled()}
 
 
-class PushSubscribeBody(BaseModel):
-    endpoint: str
-    keys: Dict[str, str]   # {"p256dh": "...", "auth": "..."}
-
-
 @app.post("/api/push/subscribe")
-def push_subscribe(request: Request, body: PushSubscribeBody):
+async def push_subscribe(request: Request):
     """Store a browser push subscription for the current signed-in subject.
     Identity-gated only (any admin/tech/customer may subscribe their own
-    browser) — never a feature permission."""
+    browser) — never a feature permission. Auth is checked BEFORE the body is
+    parsed so an unauthenticated caller gets 401 (not a 422 schema probe)."""
     v = _require_viewer(request)
-    p256dh = (body.keys or {}).get("p256dh")
-    auth = (body.keys or {}).get("auth")
-    if not (body.endpoint and p256dh and auth):
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "invalid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "invalid body")
+    keys = body.get("keys") or {}
+    endpoint = body.get("endpoint")
+    p256dh = keys.get("p256dh") if isinstance(keys, dict) else None
+    auth = keys.get("auth") if isinstance(keys, dict) else None
+    if not (endpoint and p256dh and auth):
         raise HTTPException(400, "endpoint, keys.p256dh and keys.auth are required")
     from database import upsert_push_subscription
     ua = (request.headers.get("user-agent", "") or "")[:255]
-    sid = upsert_push_subscription(v["type"], v["id"], endpoint=body.endpoint,
+    sid = upsert_push_subscription(v["type"], v["id"], endpoint=endpoint,
                                    p256dh=p256dh, auth=auth, user_agent=ua)
     return {"ok": True, "id": sid}
 
 
-class PushUnsubscribeBody(BaseModel):
-    endpoint: str
-
-
 @app.post("/api/push/unsubscribe")
-def push_unsubscribe(request: Request, body: PushUnsubscribeBody):
-    """Remove a push subscription. Requires a signed-in subject; the
-    subscription is keyed by its globally-unique endpoint."""
-    _require_viewer(request)
-    if not body.endpoint:
+async def push_unsubscribe(request: Request):
+    """Remove a push subscription. Requires a signed-in subject; the delete is
+    owner-scoped so a subject can only remove its own subscriptions. Auth is
+    checked before the body is parsed (401, not a 422 schema probe)."""
+    v = _require_viewer(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "invalid JSON body")
+    endpoint = body.get("endpoint") if isinstance(body, dict) else None
+    if not endpoint:
         raise HTTPException(400, "endpoint is required")
     from database import delete_push_subscription
-    delete_push_subscription(body.endpoint)
+    delete_push_subscription(endpoint, recipient_type=v["type"], recipient_id=v["id"])
     return {"ok": True}
 
 
@@ -11385,6 +12339,7 @@ def admin_warehouse_record_movement(request: Request,
                        "to_location_id":   body.to_location_id,
                        "reference_kind":   body.reference_kind,
                        "reference_id":     body.reference_id})
+    _check_low_stock(body.part_id)
     return {"ok": True, "id": mid}
 
 
@@ -13890,6 +14845,130 @@ async def _pm_contract_gen_loop():
 async def _start_pm_contract_gen_loop():
     _asyncio.create_task(_pm_contract_gen_loop())
 _LIFESPAN_STARTERS.append(_start_pm_contract_gen_loop)
+
+
+# ── Encrypted DB backup cron (default: daily) ──────────────────────────────
+# Disaster recovery: everything the business needs lives in one SQLite file.
+# This loop takes an online-backup snapshot, gzips + encrypts it, prunes old
+# artifacts, and (when BACKUP_OFFSITE_CMD is set) pushes it off-box. It runs
+# in-process like every other cron here — no external scheduler required.
+async def _backup_loop():
+    await _asyncio.sleep(90)  # let init_db settle, stagger after PM gen
+    interval = max(1, _backup.INTERVAL_HOURS) * 60 * 60
+    while True:
+        try:
+            meta = _backup.create_backup(reason="cron")
+            try:
+                log_audit(actor_type="system", action="backup.cron_create",
+                          target_type="backup",
+                          after_value={"name": meta["name"],
+                                       "encrypted": meta["encrypted"],
+                                       "artifact_bytes": meta["artifact_bytes"],
+                                       "pruned": len(meta.get("pruned") or [])})
+            except Exception as _e:
+                logger.warning(f"[backup] audit-write failed: {_e}")
+            logger.info(f"backup cron: wrote {meta['name']} "
+                        f"({meta['artifact_bytes']} bytes, encrypted={meta['encrypted']})")
+        except Exception as _e:
+            logger.error(f"backup cron error: {_e}")
+        await _asyncio.sleep(interval)
+
+
+async def _start_backup_loop():
+    _asyncio.create_task(_backup_loop())
+_LIFESPAN_STARTERS.append(_start_backup_loop)
+
+
+# ── Low-stock sweep cron (daily safety net) ────────────────────────────────
+# Real-time hooks fire on stock-decrementing writes; this sweep catches parts
+# that were already low, or that crossed the line because a reorder_point was
+# raised. Deduped per part (24h) so it never floods the bell.
+async def _low_stock_sweep_loop():
+    await _asyncio.sleep(120)  # let init_db settle, stagger after backup
+    while True:
+        try:
+            from database import list_low_stock_parts
+            low = list_low_stock_parts()
+            if low:
+                admins = _admins_for_inventory_alerts()
+                for p in low:
+                    _emit_low_stock_alert(p, admins)
+                logger.info(f"low-stock sweep: {len(low)} part(s) at/below reorder")
+        except Exception as _e:
+            logger.error(f"low-stock sweep error: {_e}")
+        await _asyncio.sleep(24 * 60 * 60)
+
+
+async def _start_low_stock_loop():
+    _asyncio.create_task(_low_stock_sweep_loop())
+_LIFESPAN_STARTERS.append(_start_low_stock_loop)
+
+
+# ── Appointment reminder cron (#5) ─────────────────────────────────────────
+# Remind customers of upcoming scheduled visits at fixed lead times. Deduped
+# per (visit, lead) so each wave fires once even though the loop runs 4x/day
+# (which keeps reminders timely without depending on a single fragile run).
+def _appt_reminder_leads() -> list:
+    """Lead-day offsets to remind at, from APPT_REMINDER_LEAD_DAYS (default
+    '3,1' → three days out and the day before). Non-negative ints only."""
+    raw = os.environ.get("APPT_REMINDER_LEAD_DAYS", "3,1")
+    leads = []
+    for tok in raw.replace(" ", "").split(","):
+        try:
+            d = int(tok)
+        except ValueError:
+            continue
+        if d >= 0 and d not in leads:
+            leads.append(d)
+    return leads or [1]
+
+
+async def _appointment_reminder_loop():
+    await _asyncio.sleep(150)  # let init_db settle, stagger after low-stock
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    from database import list_scheduled_visits_on
+    while True:
+        try:
+            today = _dt.now(_tz.utc).date()
+            leads = _appt_reminder_leads()
+            total = 0
+            for lead in leads:
+                target = (today + _td(days=lead)).isoformat()
+                for v in list_scheduled_visits_on(target):
+                    _emit_appointment_reminder(v, lead)
+                    total += 1
+            if total:
+                logger.info(f"appointment reminders: {total} visit-reminder(s) "
+                            f"across leads {leads}")
+        except Exception as _e:
+            logger.error(f"appointment reminder cron error: {_e}")
+        await _asyncio.sleep(6 * 60 * 60)  # 4x/day; dedupe prevents repeats
+
+
+async def _start_appointment_reminders():
+    _asyncio.create_task(_appointment_reminder_loop())
+_LIFESPAN_STARTERS.append(_start_appointment_reminders)
+
+
+# ── Estimate expiry cron (#3) ──────────────────────────────────────────────
+# Sent/approved estimates past their valid_until are flipped to 'expired' so
+# stale quotes can't be approved or converted. Idempotent daily sweep.
+async def _estimate_expiry_loop():
+    await _asyncio.sleep(180)  # let init_db settle, stagger after appt reminders
+    from database import expire_stale_estimates
+    while True:
+        try:
+            ids = expire_stale_estimates()
+            if ids:
+                logger.info(f"estimate expiry: marked {len(ids)} estimate(s) expired")
+        except Exception as _e:
+            logger.error(f"estimate expiry cron error: {_e}")
+        await _asyncio.sleep(24 * 60 * 60)
+
+
+async def _start_estimate_expiry():
+    _asyncio.create_task(_estimate_expiry_loop())
+_LIFESPAN_STARTERS.append(_start_estimate_expiry)
 
 
 # ── TP-1b: per-tech EOD enforcement cron ─────────────────────────────────
