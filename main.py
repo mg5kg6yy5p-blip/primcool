@@ -1,13 +1,14 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import os
+import secrets
 import resend as resend_lib
 
-from database import init_db, save_submission
+from database import init_db, save_submission, list_submissions
 
 TIER_LABELS = {
     "residential": "Residential — Home & Property",
@@ -108,6 +109,19 @@ async def submit_consult(req: ConsultRequest):
             print(f"EMAIL ERROR: {e}")
 
     return {"ok": True}
+
+
+@app.get("/api/submissions")
+def get_submissions(authorization: str = Header(default="")):
+    admin_token = os.environ.get("ADMIN_TOKEN")
+    if not admin_token:
+        raise HTTPException(status_code=503, detail="Admin endpoint not configured")
+
+    expected = f"Bearer {admin_token}"
+    if not secrets.compare_digest(authorization, expected):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    return {"submissions": list_submissions()}
 
 
 @app.get("/")

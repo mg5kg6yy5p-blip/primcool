@@ -43,3 +43,14 @@ def save_submission(data: dict):
     )
     con.commit()
     con.close()
+
+
+def list_submissions():
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    rows = con.execute(
+        "SELECT id, fname, lname, email, phone, company, tier, msg, created_at "
+        "FROM submissions ORDER BY id DESC"
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
