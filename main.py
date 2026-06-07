@@ -616,6 +616,48 @@ PHOTOS_DIR = Path(os.environ.get("PHOTOS_DIR", "uploads/photos"))
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 MAX_PHOTO_SIZE = 12 * 1024 * 1024  # 12 MB
 ALLOWED_PHOTO_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
+# Magic-byte prefixes for the simple image formats. webp/heic are container
+# formats (RIFF/ISO-BMFF) sniffed separately below.
+_PHOTO_MAGIC = {
+    ".jpg":  [b"\xff\xd8\xff"],
+    ".jpeg": [b"\xff\xd8\xff"],
+    ".png":  [b"\x89PNG\r\n\x1a\n"],
+}
+
+
+def _photo_content_ok(ext: str, body: bytes) -> bool:
+    """Returns True if `body` actually looks like the image type `ext` claims.
+    Stops attackers from smuggling HTML/SVG/scripts behind a .jpg/.png name.
+    webp = RIFF....WEBP; heic = ISO-BMFF 'ftyp' box with a heic-family brand."""
+    if not body:
+        return False
+    if ext in _PHOTO_MAGIC:
+        return any(body.startswith(p) for p in _PHOTO_MAGIC[ext])
+    if ext == ".webp":
+        return len(body) >= 12 and body[0:4] == b"RIFF" and body[8:12] == b"WEBP"
+    if ext == ".heic":
+        if len(body) < 12 or body[4:8] != b"ftyp":
+            return False
+        brand = body[8:12]
+        return brand in (b"heic", b"heix", b"heim", b"heis", b"hevc",
+                         b"hevx", b"mif1", b"msf1")
+    return False
+
+
+def _validate_photo_upload(filename: str, body: bytes) -> str:
+    """Shared validation for visit/part/avatar photo uploads. Returns the
+    lower-cased extension. Raises HTTPException on bad ext, size, or content
+    that doesn't match the claimed image type."""
+    ext = (Path(filename or "").suffix or "").lower()
+    if ext not in ALLOWED_PHOTO_EXTS:
+        raise HTTPException(400, f"Unsupported file type {ext or '(none)'}")
+    if not body:
+        raise HTTPException(400, "Empty file")
+    if len(body) > MAX_PHOTO_SIZE:
+        raise HTTPException(413, f"File too large (max {MAX_PHOTO_SIZE // (1024*1024)} MB)")
+    if not _photo_content_ok(ext, body):
+        raise HTTPException(400, f"File content does not match a {ext} image")
+    return ext
 
 # Profile-photo (avatar) settings — uploads are re-encoded via Pillow to a
 # fixed-size JPEG. That gives us three things at once:
@@ -2169,6 +2211,44 @@ async def no_store_api_responses(request: Request, call_next):
     elif response.headers.get("content-type", "").startswith("text/html"):
         response.headers["Cache-Control"] = "no-cache, must-revalidate, private"
         response.headers["Pragma"] = "no-cache"
+
+    # ── Security headers (defense-in-depth) ──────────────────────────────
+    # Applied to every response. These are cheap and don't change behaviour:
+    #   • nosniff   — stop MIME-sniffing an upload/response into something
+    #                 executable.
+    #   • frame     — the app is never framed (no <iframe> usage), so deny
+    #                 framing outright to kill clickjacking.
+    #   • referrer  — never leak full URLs (which carry ids) to third parties.
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+
+    # HSTS only over real HTTPS — never on local/LAN http dev, where it would
+    # pin the browser to https for the dev host.
+    if request.url.scheme == "https":
+        response.headers.setdefault(
+            "Strict-Transport-Security",
+            "max-age=31536000; includeSubDomains")
+
+    # Full CSP only on the HTML shells. Inline scripts + inline event handlers
+    # are used throughout, so script/style must allow 'unsafe-inline'; there are
+    # no external scripts and no eval, so we keep it as tight as the app allows.
+    # frame-ancestors 'none' is the modern clickjacking guard (pairs with XFO).
+    # Google Fonts (style+font), data:/blob: images, and same-origin everything
+    # else cover the app's actual needs.
+    if response.headers.get("content-type", "").startswith("text/html"):
+        response.headers.setdefault("Content-Security-Policy", (
+            "default-src 'self'; "
+            "base-uri 'self'; "
+            "object-src 'none'; "
+            "frame-ancestors 'none'; "
+            "form-action 'self'; "
+            "img-src 'self' data: blob:; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src 'self' https://fonts.gstatic.com; "
+            "connect-src 'self'"
+        ))
     return response
 
 
@@ -4172,13 +4252,8 @@ async def tech_upload_photo(
     if category not in ("before", "after"):
         raise HTTPException(400, "Invalid category — must be 'before' or 'after'")
 
-    ext = Path(file.filename or "").suffix.lower()
-    if ext not in ALLOWED_PHOTO_EXTS:
-        raise HTTPException(400, f"Unsupported file type {ext}")
-
     body = await file.read()
-    if len(body) > MAX_PHOTO_SIZE:
-        raise HTTPException(413, "File too large (max 12 MB)")
+    ext  = _validate_photo_upload(file.filename, body)
 
     fname = f"v{visit_id}_{category}_{uuid.uuid4().hex[:12]}{ext}"
     out_path = PHOTOS_DIR / fname
@@ -7564,13 +7639,7 @@ async def admin_upload_part_image(request: Request, part_id: int, file: UploadFi
     if not part:
         raise HTTPException(404, "Part not found")
     body = await file.read()
-    if not body:
-        raise HTTPException(400, "empty upload")
-    if len(body) > MAX_PHOTO_SIZE:
-        raise HTTPException(413, f"file too large (max {MAX_PHOTO_SIZE // (1024*1024)} MB)")
-    ext = (Path(file.filename or "").suffix or "").lower()
-    if ext not in ALLOWED_PHOTO_EXTS:
-        raise HTTPException(400, f"unsupported file type: {ext}")
+    ext  = _validate_photo_upload(file.filename, body)
     filename = f"part-{part_id}-{uuid.uuid4().hex}{ext}"
     (PHOTOS_DIR / filename).write_bytes(body)
     set_part_image(part_id, filename)
@@ -9410,6 +9479,30 @@ def push_vapid_public_key():
     return {"key": key, "configured": bool(key), "enabled": _wp.is_enabled()}
 
 
+# Recognised Web Push service host suffixes. A subscription endpoint is just a
+# URL the server later POSTs to, so we constrain it to known push providers to
+# avoid storing an attacker-chosen URL (mild SSRF / abuse vector).
+_PUSH_HOST_SUFFIXES = (
+    ".googleapis.com",              # FCM (Chrome, Edge, Android)
+    ".push.services.mozilla.com",  # Firefox
+    ".notify.windows.com",         # WNS (legacy Edge)
+    ".push.apple.com",             # Safari / Apple
+)
+
+
+def _is_valid_push_endpoint(endpoint: str) -> bool:
+    from urllib.parse import urlparse
+    try:
+        u = urlparse(endpoint)
+    except Exception:
+        return False
+    if u.scheme != "https" or not u.hostname:
+        return False
+    host = u.hostname.lower()
+    return any(host == s.lstrip(".") or host.endswith(s)
+               for s in _PUSH_HOST_SUFFIXES)
+
+
 @app.post("/api/push/subscribe")
 async def push_subscribe(request: Request):
     """Store a browser push subscription for the current signed-in subject.
@@ -9429,6 +9522,8 @@ async def push_subscribe(request: Request):
     auth = keys.get("auth") if isinstance(keys, dict) else None
     if not (endpoint and p256dh and auth):
         raise HTTPException(400, "endpoint, keys.p256dh and keys.auth are required")
+    if not _is_valid_push_endpoint(endpoint):
+        raise HTTPException(400, "endpoint is not a recognised push service URL")
     from database import upsert_push_subscription
     ua = (request.headers.get("user-agent", "") or "")[:255]
     sid = upsert_push_subscription(v["type"], v["id"], endpoint=endpoint,
@@ -12649,6 +12744,15 @@ CHECKSHEET_DIR.mkdir(parents=True, exist_ok=True)
 MAX_CHECKSHEET_SIZE = int(os.environ.get(
     "MAX_CHECKSHEET_SIZE_BYTES", str(10 * 1024 * 1024)))  # 10 MB
 ALLOWED_CHECKSHEET_EXTS = {".pdf", ".jpg", ".jpeg", ".png", ".heic"}
+# Server-derived media types for download. Never echo the client-supplied
+# content_type back as the response media_type — a stored "text/html" would
+# let a browser render an uploaded file inline. Derive from the (whitelisted)
+# stored extension instead.
+_CHECKSHEET_MEDIA = {
+    ".pdf":  "application/pdf",
+    ".jpg":  "image/jpeg", ".jpeg": "image/jpeg",
+    ".png":  "image/png",  ".heic": "image/heic",
+}
 
 
 @app.post("/api/admin/warehouse/checksheets")
@@ -12773,8 +12877,10 @@ def admin_download_checksheet(request: Request, upload_id: int):
     path = CHECKSHEET_DIR / row["filename"]
     if not path.exists():
         raise HTTPException(404, "File missing from disk")
+    media = _CHECKSHEET_MEDIA.get(Path(row["filename"]).suffix.lower(),
+                                  "application/octet-stream")
     return FileResponse(str(path),
-                        media_type=row["content_type"] or "application/octet-stream",
+                        media_type=media,
                         filename=row["filename"])
 
 
@@ -13032,20 +13138,23 @@ def me_org_chart(request: Request, as_kind: str = None, as_id: int = None):
     """Returns the org context for the signed-in user: who they report to,
     who reports to them, and their peers. Works for both admins and techs.
 
-    Super-admins (or anyone with admin:view_all) may pass ?as_kind=
-    {admin|tech}&as_id=<id> to see the org chart as if they were that
-    person — useful for the "view another employee's position" picker."""
+    Any signed-in staff member may pass ?as_kind={admin|tech}&as_id=<id> to
+    re-root the chart on another person — this powers the org-chart drill-down
+    that lives on the Profile panel of EVERY staff surface (admin + tech). The
+    payload is purely structural (name / role / PRID / department / avatar);
+    it carries no contact info, salary, or other PII, and only ACTIVE people
+    are ever resolved."""
     from database import _con
     kind, me = _resolve_any_staff(request)
-    # Optional "view as someone else" — used by the org-chart drill-down on
-    # every staff surface (admin + tech). The payload is purely structural
-    # (name / role / PRID / avatar), so any signed-in staff may navigate it.
+    # Optional "view as someone else". Restricted to active staff so the
+    # drill-down can't be used to resolve terminated/deactivated employees.
     if as_kind and as_id:
         if as_kind not in ('admin', 'tech'):
             raise HTTPException(422, "as_kind must be 'admin' or 'tech'")
         c = _con(); c.row_factory = __import__('sqlite3').Row
         tbl = 'admin_users' if as_kind == 'admin' else 'technicians'
-        row = c.execute(f"SELECT * FROM {tbl} WHERE id = ?", (int(as_id),)).fetchone()
+        row = c.execute(f"SELECT * FROM {tbl} WHERE id = ? AND active = 1",
+                        (int(as_id),)).fetchone()
         c.close()
         if not row:
             raise HTTPException(404, "Person not found")
