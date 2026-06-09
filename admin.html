@@ -837,6 +837,62 @@
       border-color: var(--navy);
       box-shadow: var(--shadow-sm);
     }
+    /* Status pills in EXCLUDE mode read as a struck-through negative match. */
+    .filter-btn.active.excluding {
+      background: var(--danger, #c0392b); border-color: var(--danger, #c0392b);
+      color: #fff; text-decoration: line-through;
+    }
+    /* ── Visit list toolbar (SAP IW38-style: variants, status, layout) ──── */
+    .vlist-toolbar {
+      display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+      margin-bottom: 12px;
+    }
+    .vlist-toolbar .vl-group {
+      display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+    }
+    .vlist-toolbar .vl-sep {
+      width: 1px; align-self: stretch; background: var(--border); margin: 2px 2px;
+    }
+    .vlist-toolbar .vl-label {
+      font-size: 11px; font-weight: 700; letter-spacing: .04em;
+      text-transform: uppercase; color: var(--muted); margin-right: 2px;
+    }
+    .vlist-toolbar select, .vlist-toolbar .vl-mini {
+      padding: 5px 10px; border: 1px solid var(--border); border-radius: 8px;
+      font-size: 12px; background: var(--white); color: var(--ink);
+      font-family: var(--font-body); cursor: pointer;
+    }
+    /* User-status chip + its inline editor */
+    .ustat-chip {
+      display: inline-block; padding: 2px 9px; border-radius: 999px;
+      font-size: 11px; font-weight: 700; letter-spacing: .02em;
+      background: var(--amber-bg, #fdf0e3); color: var(--amber-deep, #9a5a1e);
+      border: 1px solid var(--amber, #e3a564);
+    }
+    .ustat-none { color: var(--muted); font-size: 12px; }
+    .ustat-edit {
+      padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px;
+      font-size: 11px; background: var(--white); color: var(--ink); max-width: 150px;
+    }
+    /* Column picker popover */
+    .vl-colmenu {
+      position: absolute; z-index: 50; background: var(--card, #fff);
+      border: 1px solid var(--border); border-radius: 10px;
+      box-shadow: var(--shadow-md, 0 8px 24px rgba(0,0,0,.12));
+      padding: 8px; min-width: 200px;
+    }
+    .vl-colmenu label {
+      display: flex; align-items: center; gap: 8px; padding: 5px 8px;
+      font-size: 13px; color: var(--ink); border-radius: 6px; cursor: pointer;
+    }
+    .vl-colmenu label:hover { background: var(--hover, #f2f5f7); }
+    /* Confirmation-event ledger rows in the reverse modal */
+    .vce-row {
+      border-left: 3px solid var(--border); padding: 8px 12px; margin: 8px 0;
+      background: var(--hover, #f7f9fa); border-radius: 0 8px 8px 0; font-size: 13px;
+    }
+    .vce-row.vce-reversal { border-left-color: var(--danger, #c0392b); }
+    .vce-row .vce-meta { color: var(--muted); font-size: 11px; margin-top: 3px; }
 
     /* ── A11y: brand-coloured keyboard focus ring ────────────────────────
        Default browser focus rings vary by OS/browser; standardise on a
@@ -2458,18 +2514,55 @@
           <div id="cm-margin-body" style="margin-top:12px;color:var(--muted);font-size:13px;">Loading…</div>
         </details>
 
-        <div class="filter-bar" id="visitFilters">
-          <button class="filter-btn active" onclick="setFilter('all',this)">All</button>
-          <button class="filter-btn" onclick="setFilter('PM',this)">PM Only</button>
-          <button class="filter-btn" onclick="setFilter('CM',this)">CM Only</button>
-          <button class="filter-btn" onclick="setFilter('scheduled',this)">Scheduled</button>
-          <button class="filter-btn" onclick="setFilter('confirmed',this)">Confirmed</button>
-          <button class="filter-btn" onclick="setFilter('completed',this)">Completed</button>
+        <!-- SAP IW38-style list toolbar: saved Variants/Layouts, multi-select
+             status with include/exclude, type filter, user-status filter, and
+             a column (Layout) picker. The old single-select bar is replaced by
+             this richer one — every prior filter (All/PM/CM/Scheduled/etc.) is
+             still reachable here, just multi-selectable. -->
+        <div class="vlist-toolbar" id="visitToolbar">
+          <div class="vl-group">
+            <span class="vl-label">View</span>
+            <select id="vlSavedViews" onchange="vlApplySavedView(this.value)" title="Load a saved view (filters + columns)">
+              <option value="">— Saved views —</option>
+            </select>
+            <button class="filter-btn vl-mini" onclick="vlSaveCurrentView()" title="Save the current filters and columns as a named view">💾 Save</button>
+            <button class="filter-btn vl-mini" id="vlDeleteViewBtn" onclick="vlDeleteSelectedView()" title="Delete the selected saved view" style="display:none;">🗑</button>
+          </div>
+          <div class="vl-sep"></div>
+          <div class="vl-group" id="vlTypePills">
+            <span class="vl-label">Type</span>
+            <button class="filter-btn active" data-vtype="all" onclick="vlSetType('all')">All</button>
+            <button class="filter-btn" data-vtype="PM" onclick="vlSetType('PM')">PM</button>
+            <button class="filter-btn" data-vtype="CM" onclick="vlSetType('CM')">CM</button>
+          </div>
+          <div class="vl-sep"></div>
+          <div class="vl-group" id="vlStatusPills">
+            <span class="vl-label">Status</span>
+            <button class="filter-btn" data-vstatus="scheduled"   onclick="vlToggleStatus('scheduled',this)">Scheduled</button>
+            <button class="filter-btn" data-vstatus="confirmed"   onclick="vlToggleStatus('confirmed',this)">Confirmed</button>
+            <button class="filter-btn" data-vstatus="in_progress" onclick="vlToggleStatus('in_progress',this)">In progress</button>
+            <button class="filter-btn" data-vstatus="completed"   onclick="vlToggleStatus('completed',this)">Completed</button>
+            <button class="filter-btn" data-vstatus="cancelled"   onclick="vlToggleStatus('cancelled',this)">Cancelled</button>
+            <button class="filter-btn vl-mini" id="vlStatusModeBtn" onclick="vlToggleStatusMode()" title="Switch between matching the selected statuses (Include) and hiding them (Exclude)">Match: Include</button>
+          </div>
+          <div class="vl-sep"></div>
+          <div class="vl-group">
+            <span class="vl-label">User status</span>
+            <select id="vlUserStatusFilter" onchange="renderVisitTable()" title="Filter by the manual User Status tag">
+              <option value="">Any</option>
+              <option value="__none__">— Not set —</option>
+            </select>
+          </div>
+          <div class="vl-sep"></div>
+          <div class="vl-group" style="position:relative;">
+            <button class="filter-btn vl-mini" onclick="vlToggleColMenu(event)" title="Choose which columns are shown (Layout)">⚙ Columns</button>
+            <div id="vlColMenu" class="vl-colmenu" style="display:none;"></div>
+          </div>
         </div>
         <div class="table-wrap">
-          <table>
-            <thead><tr><th>Customer</th><th>Type</th><th>Status</th><th>Scheduled</th><th>Completed</th><th>Assigned Tech</th><th>Equipment</th><th>Actions</th></tr></thead>
-            <tbody id="visitTableBody"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+          <table id="visitTable">
+            <thead><tr id="visitTableHead"></tr></thead>
+            <tbody id="visitTableBody"><tr><td colspan="9" class="empty">Loading…</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -3118,6 +3211,48 @@
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('uploadDoc')">Cancel</button>
       <button class="btn btn-primary" id="uploadDocSubmitBtn" onclick="submitUploadDoc()">Upload</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Reverse Confirmation (SAP IW45 reversal-by-append) ──
+     A completed/submitted visit's confirmation is never deleted. Reversing it
+     snapshots the current completion into an append-only ledger and re-opens
+     the visit (clears the submission lock, reverts status to scheduled) so the
+     work can be re-confirmed. Shows the running history of confirmations &
+     reversals for the visit. -->
+<div class="modal-overlay" id="modal-reverseConfirm">
+  <div class="modal" style="max-width:560px;">
+    <div class="modal-header">
+      <h3>Reverse Confirmation</h3>
+      <button class="modal-close" onclick="closeModal('reverseConfirm')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:13px;color:var(--text);margin-bottom:6px;">
+        Visit <strong id="rcVisitLabel">—</strong>
+      </div>
+      <p style="font-size:12.5px;color:var(--muted);margin:0 0 14px;line-height:1.5;">
+        This unlocks the visit and reverts it to <strong>Scheduled</strong> so it can be
+        re-done and re-confirmed. The current confirmation is preserved in the
+        history below — nothing is deleted.
+      </p>
+      <div class="field">
+        <label>Reason for reversal <span style="color:var(--danger);">*</span></label>
+        <textarea id="rcReason" rows="2" maxlength="300"
+                  placeholder="e.g. confirmation logged against the wrong visit"
+                  style="width:100%;padding:9px 11px;border:1px solid var(--border);border-radius:8px;font:14px var(--font-body);resize:vertical;"></textarea>
+      </div>
+      <div id="rcErr" class="form-error" style="display:none;color:var(--danger);font-size:13px;margin-top:4px;"></div>
+      <div style="margin-top:16px;">
+        <div class="vl-label" style="margin-bottom:4px;">Confirmation history</div>
+        <div id="rcHistory" style="max-height:220px;overflow-y:auto;">
+          <div class="ustat-none">Loading…</div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('reverseConfirm')">Cancel</button>
+      <button class="btn btn-danger" id="rcSubmitBtn" onclick="submitReverseConfirmation()">↩ Reverse confirmation</button>
     </div>
   </div>
 </div>
@@ -4561,7 +4696,28 @@
   let allVisits    = [];
   let currentCustomer = null;
   let currentVisitId  = null;
-  let visitFilter  = 'all';
+  let visitFilter  = 'all';                 // legacy; kept for back-compat shim
+  // ── Visit-list (IW38-style) state ──────────────────────────────────────
+  let vlType       = 'all';                 // 'all' | 'PM' | 'CM'
+  let vlStatuses   = new Set();             // selected lifecycle statuses
+  let vlStatusMode = 'include';             // 'include' | 'exclude'
+  let vlSavedViewList = [];                 // [{id,name,payload,is_default}]
+  let vlUserStatusVocab = [];               // whitelist from the API
+  // Column (Layout) registry. key → {label, always}. `always` cols can't be
+  // hidden. Order here is the render order.
+  const VL_COLUMNS = [
+    { key:'customer',   label:'Customer',       always:true  },
+    { key:'type',       label:'Type',           always:false },
+    { key:'status',     label:'Status',         always:false },
+    { key:'userstatus', label:'User Status',    always:false },
+    { key:'scheduled',  label:'Scheduled',      always:false },
+    { key:'completed',  label:'Completed',      always:false },
+    { key:'tech',       label:'Assigned Tech',  always:false },
+    { key:'equipment',  label:'Equipment',      always:false },
+    { key:'actions',    label:'Actions',        always:true  },
+  ];
+  let vlVisibleCols = VL_COLUMNS.map(c => c.key);   // default: all visible
+  let rcVisitId    = null;                  // visit being reversed
   let allReviews   = [];
   let reviewFilter = 'pending';
   let allTechs     = [];
@@ -8742,9 +8898,16 @@
   }
 
   // ── Visits ─────────────────────────────────────────────────────────────────
+  let _vlToolbarInit = false;
   async function loadAllVisits() {
     try {
       allVisits = await api('GET', '/api/admin/visits');
+      // One-time toolbar bootstrap: user-status vocabulary + saved views.
+      if (!_vlToolbarInit) {
+        _vlToolbarInit = true;
+        await vlLoadUserStatusVocab();
+        await vlLoadSavedViews();
+      }
       renderVisitTable();
       if (currentCustomer) loadCustomerVisits();
       if (can && can('schedule:view')) loadSchedule();
@@ -8834,17 +8997,49 @@
     }
   }
 
+  // Apply the IW38-style toolbar filters to allVisits.
+  function vlFilteredVisits() {
+    let rows = allVisits || [];
+    if (vlType === 'PM' || vlType === 'CM') rows = rows.filter(v => v.visit_type === vlType);
+    if (vlStatuses.size) {
+      rows = rows.filter(v => {
+        const hit = vlStatuses.has(v.status);
+        return vlStatusMode === 'exclude' ? !hit : hit;
+      });
+    }
+    const us = document.getElementById('vlUserStatusFilter');
+    const usVal = us ? us.value : '';
+    if (usVal === '__none__')      rows = rows.filter(v => !v.user_status);
+    else if (usVal)                rows = rows.filter(v => v.user_status === usVal);
+    return rows;
+  }
+
+  function vlColVisible(key) {
+    const c = VL_COLUMNS.find(x => x.key === key);
+    if (c && c.always) return true;
+    return vlVisibleCols.includes(key);
+  }
+
+  function vlRenderHead() {
+    const tr = document.getElementById('visitTableHead');
+    if (!tr) return;
+    tr.innerHTML = VL_COLUMNS.filter(c => vlColVisible(c.key))
+      .map(c => `<th>${escHtml(c.label)}</th>`).join('');
+  }
+
   function renderVisitTable() {
     const tbody = document.getElementById('visitTableBody');
-    let rows = allVisits;
-    if (visitFilter === 'PM' || visitFilter === 'CM') rows = rows.filter(v => v.visit_type === visitFilter);
-    else if (['scheduled','confirmed','completed'].includes(visitFilter)) rows = rows.filter(v => v.status === visitFilter);
+    if (!tbody) return;
+    vlRenderHead();
+    const visibleCount = VL_COLUMNS.filter(c => vlColVisible(c.key)).length;
+    const rows = vlFilteredVisits();
     if (!rows.length) {
-      tbody.innerHTML = '<tr><td colspan="8" class="empty">No visits match this filter.</td></tr>';
+      tbody.innerHTML = `<tr><td colspan="${visibleCount}" class="empty">No visits match this filter.</td></tr>`;
       return;
     }
     const isSuper = (currentAdmin && currentAdmin.role === 'super_admin');
     const _gate = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    const canSetUserStatus = can('visit:update');
     tbody.innerHTML = rows.map(v => {
       const tech = allTechs.find(t => t.id === v.assigned_tech_id);
       const techLinked = tech
@@ -8858,23 +9053,38 @@
       const equipLinked = (v.equipment_id && _gate)
         ? PC.gateLinkHtml('equipment', v.equipment_id, v.equipment_name || '—', {onClick: 'function(){ pcOpenEquipment(' + v.customer_id + ',' + v.equipment_id + '); }'})
         : (v.equipment_name || '—');
-      return `
-      <tr data-pc-row-visit="${v.id}">
-        <td>${custLinked}</td>
-        <td><span class="badge badge-${v.visit_type.toLowerCase()}">${v.visit_type}</span></td>
-        <td><span class="badge badge-${v.status}">${v.status.replace('_',' ')}</span></td>
-        <td>${fmtDateTime(v.scheduled_date, v.scheduled_time)}</td>
-        <td>${fmtDate(v.completed_date)}</td>
-        <td>${techLinked}</td>
-        <td>${equipLinked}</td>
-        <td style="white-space:nowrap;" onclick="event.stopPropagation();">
+      // User-status cell: inline editor for those who can update, read-only chip otherwise.
+      let userStatusCell;
+      if (canSetUserStatus) {
+        const opts = ['<option value="">— none —</option>']
+          .concat(vlUserStatusVocab.map(s =>
+            `<option value="${escHtml(s)}" ${v.user_status === s ? 'selected' : ''}>${escHtml(s)}</option>`));
+        userStatusCell = `<select class="ustat-edit" onclick="event.stopPropagation();" onchange="event.stopPropagation();setVisitUserStatus(${v.id}, this.value)">${opts.join('')}</select>`;
+      } else {
+        userStatusCell = v.user_status
+          ? `<span class="ustat-chip">${escHtml(v.user_status)}</span>`
+          : '<span class="ustat-none">—</span>';
+      }
+      const cells = {
+        customer:   `<td>${custLinked}</td>`,
+        type:       `<td><span class="badge badge-${v.visit_type.toLowerCase()}">${v.visit_type}</span></td>`,
+        status:     `<td><span class="badge badge-${v.status}">${v.status.replace('_',' ')}</span></td>`,
+        userstatus: `<td>${userStatusCell}</td>`,
+        scheduled:  `<td>${fmtDateTime(v.scheduled_date, v.scheduled_time)}</td>`,
+        completed:  `<td>${fmtDate(v.completed_date)}</td>`,
+        tech:       `<td>${techLinked}</td>`,
+        equipment:  `<td>${equipLinked}</td>`,
+        actions:    `<td style="white-space:nowrap;" onclick="event.stopPropagation();">
           ${isSuper ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();routeVisitDetail(${v.id})" aria-label="View visit detail">View →</button>` : ''}
           <button class="btn btn-edit btn-sm" onclick="event.stopPropagation();openEditVisit(${v.id})" style="margin-left:6px;">Edit</button>
           ${v.status === 'completed' && can('visit:flag') ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();toggleVisitFlag(${v.id}, ${v.flagged_for_review ? 'false' : 'true'})" style="margin-left:6px;${v.flagged_for_review ? 'background:var(--teal-bg);color:var(--teal-deep);border-color:var(--teal);' : ''}">${v.flagged_for_review ? '🚩 Flagged' : 'Flag for review'}</button>` : ''}
+          ${(v.status === 'completed' || v.submitted_at) && can('visit:update') ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openReverseConfirmation(${v.id})" title="Reverse this confirmation (SAP IW45-style — re-opens the visit, keeps history)" style="margin-left:6px;">↩ Reverse</button>` : ''}
           ${v.status === 'completed' && can('invoice:create') ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();generateInvoiceFromVisit(${v.id})" style="margin-left:6px;background:var(--teal-solid);">+ Invoice</button>` : ''}
           <button class="btn btn-danger btn-sm pc-stop-prop" onclick="event.stopPropagation();deleteVisit(${v.id})" style="margin-left:6px;">Delete</button>
-        </td>
-      </tr>`;
+        </td>`,
+      };
+      const tds = VL_COLUMNS.filter(c => vlColVisible(c.key)).map(c => cells[c.key]).join('');
+      return `<tr data-pc-row-visit="${v.id}">${tds}</tr>`;
     }).join('');
     if (typeof PC !== 'undefined' && PC.gateRow) {
       tbody.querySelectorAll('tr[data-pc-row-visit]').forEach(function (tr) {
@@ -8909,11 +9119,240 @@
     } catch(e) { alert('Error: ' + e.message); }
   }
 
-  function setFilter(f, btn) {
-    visitFilter = f;
-    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
+  // ── Visit-list toolbar handlers (SAP IW38 Variant/Layout/status) ─────────
+  function vlSetType(t) {
+    vlType = t;
+    document.querySelectorAll('#vlTypePills [data-vtype]').forEach(b =>
+      b.classList.toggle('active', b.getAttribute('data-vtype') === t));
     renderVisitTable();
+  }
+
+  function vlToggleStatus(status, btn) {
+    if (vlStatuses.has(status)) vlStatuses.delete(status);
+    else vlStatuses.add(status);
+    vlSyncStatusPills();
+    renderVisitTable();
+  }
+
+  function vlToggleStatusMode() {
+    vlStatusMode = (vlStatusMode === 'include') ? 'exclude' : 'include';
+    document.getElementById('vlStatusModeBtn').textContent =
+      'Match: ' + (vlStatusMode === 'include' ? 'Include' : 'Exclude');
+    vlSyncStatusPills();
+    renderVisitTable();
+  }
+
+  function vlSyncStatusPills() {
+    document.querySelectorAll('#vlStatusPills [data-vstatus]').forEach(b => {
+      const on = vlStatuses.has(b.getAttribute('data-vstatus'));
+      b.classList.toggle('active', on);
+      b.classList.toggle('excluding', on && vlStatusMode === 'exclude');
+    });
+  }
+
+  // Back-compat shim: anything still calling setFilter() maps onto the new model.
+  function setFilter(f, btn) {
+    if (f === 'all') { vlSetType('all'); vlStatuses.clear(); vlSyncStatusPills(); }
+    else if (f === 'PM' || f === 'CM') vlSetType(f);
+    else { vlStatuses = new Set([f]); vlStatusMode = 'include'; vlSyncStatusPills(); }
+    renderVisitTable();
+  }
+
+  // ── Column (Layout) picker ──────────────────────────────────────────────
+  function vlToggleColMenu(ev) {
+    if (ev) ev.stopPropagation();
+    const menu = document.getElementById('vlColMenu');
+    if (!menu) return;
+    if (menu.style.display === 'block') { menu.style.display = 'none'; return; }
+    menu.innerHTML = VL_COLUMNS.map(c => {
+      const checked = vlColVisible(c.key) ? 'checked' : '';
+      const disabled = c.always ? 'disabled' : '';
+      return `<label><input type="checkbox" ${checked} ${disabled}
+                onchange="vlToggleColumn('${c.key}', this.checked)">${escHtml(c.label)}${c.always ? ' <span class="ustat-none">(always)</span>' : ''}</label>`;
+    }).join('');
+    menu.style.display = 'block';
+    // close on outside click
+    setTimeout(() => document.addEventListener('click', vlCloseColMenuOnce), 0);
+  }
+  function vlCloseColMenuOnce(e) {
+    const menu = document.getElementById('vlColMenu');
+    if (menu && !menu.contains(e.target)) {
+      menu.style.display = 'none';
+      document.removeEventListener('click', vlCloseColMenuOnce);
+    }
+  }
+  function vlToggleColumn(key, on) {
+    const c = VL_COLUMNS.find(x => x.key === key);
+    if (c && c.always) return;
+    if (on && !vlVisibleCols.includes(key)) vlVisibleCols.push(key);
+    else if (!on) vlVisibleCols = vlVisibleCols.filter(k => k !== key);
+    renderVisitTable();
+  }
+
+  // ── Saved Views (Variant + Layout) ──────────────────────────────────────
+  function vlCurrentViewPayload() {
+    return {
+      filters: {
+        type:        vlType,
+        statuses:    Array.from(vlStatuses),
+        statusMode:  vlStatusMode,
+        userStatus:  (document.getElementById('vlUserStatusFilter') || {}).value || '',
+      },
+      columns: vlVisibleCols.slice(),
+    };
+  }
+
+  async function vlLoadSavedViews() {
+    try {
+      const res = await api('GET', '/api/admin/saved-views?scope=visits');
+      vlSavedViewList = (res && res.views) || [];
+    } catch { vlSavedViewList = []; }
+    const sel = document.getElementById('vlSavedViews');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">— Saved views —</option>' +
+      vlSavedViewList.map(v =>
+        `<option value="${v.id}">${escHtml(v.name)}${v.is_default ? ' ★' : ''}</option>`).join('');
+    document.getElementById('vlDeleteViewBtn').style.display = 'none';
+    // Auto-apply the default view on first load.
+    const def = vlSavedViewList.find(v => v.is_default);
+    if (def && !vlSavedViewList._applied) {
+      vlSavedViewList._applied = true;
+      sel.value = String(def.id);
+      vlApplySavedView(String(def.id));
+    }
+  }
+
+  function vlApplySavedView(idStr) {
+    const delBtn = document.getElementById('vlDeleteViewBtn');
+    if (!idStr) { if (delBtn) delBtn.style.display = 'none'; return; }
+    const view = vlSavedViewList.find(v => String(v.id) === String(idStr));
+    if (!view) return;
+    const p = view.payload || {};
+    const f = p.filters || {};
+    vlType       = f.type || 'all';
+    vlStatuses   = new Set(Array.isArray(f.statuses) ? f.statuses : []);
+    vlStatusMode = (f.statusMode === 'exclude') ? 'exclude' : 'include';
+    if (Array.isArray(p.columns) && p.columns.length) vlVisibleCols = p.columns.slice();
+    // reflect into the controls
+    document.querySelectorAll('#vlTypePills [data-vtype]').forEach(b =>
+      b.classList.toggle('active', b.getAttribute('data-vtype') === vlType));
+    document.getElementById('vlStatusModeBtn').textContent =
+      'Match: ' + (vlStatusMode === 'include' ? 'Include' : 'Exclude');
+    vlSyncStatusPills();
+    const us = document.getElementById('vlUserStatusFilter');
+    if (us) us.value = f.userStatus || '';
+    if (delBtn) delBtn.style.display = '';
+    renderVisitTable();
+  }
+
+  async function vlSaveCurrentView() {
+    const name = prompt('Name this view (filters + columns):', '');
+    if (name === null) return;
+    const trimmed = name.trim();
+    if (!trimmed) { toast('A name is required', 'error'); return; }
+    const makeDefault = confirm('Make this your default view for the Visits list?\n\nOK = default, Cancel = just save.');
+    try {
+      await api('POST', '/api/admin/saved-views', {
+        scope: 'visits', name: trimmed,
+        payload: vlCurrentViewPayload(), is_default: makeDefault,
+      });
+      toast('View saved', 'success');
+      vlSavedViewList._applied = true;   // don't auto-jump after manual save
+      await vlLoadSavedViews();
+      // select the one we just saved
+      const sel = document.getElementById('vlSavedViews');
+      const saved = vlSavedViewList.find(v => v.name === trimmed);
+      if (sel && saved) { sel.value = String(saved.id); document.getElementById('vlDeleteViewBtn').style.display = ''; }
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function vlDeleteSelectedView() {
+    const sel = document.getElementById('vlSavedViews');
+    const id = sel && sel.value;
+    if (!id) return;
+    const view = vlSavedViewList.find(v => String(v.id) === String(id));
+    if (!confirm(`Delete saved view "${view ? view.name : ''}"?`)) return;
+    try {
+      await api('DELETE', `/api/admin/saved-views/${id}`);
+      toast('View deleted', 'success');
+      vlSavedViewList._applied = true;
+      await vlLoadSavedViews();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  // ── User Status (manual tag alongside lifecycle status) ──────────────────
+  async function vlLoadUserStatusVocab() {
+    try {
+      const res = await api('GET', '/api/admin/visit-user-statuses');
+      vlUserStatusVocab = (res && res.statuses) || [];
+    } catch { vlUserStatusVocab = []; }
+    // populate the filter dropdown (keep Any / Not set)
+    const sel = document.getElementById('vlUserStatusFilter');
+    if (sel) {
+      sel.innerHTML = '<option value="">Any</option><option value="__none__">— Not set —</option>' +
+        vlUserStatusVocab.map(s => `<option value="${escHtml(s)}">${escHtml(s)}</option>`).join('');
+    }
+  }
+
+  async function setVisitUserStatus(visitId, value) {
+    try {
+      await api('PUT', `/api/admin/visits/${visitId}/user-status`, { user_status: value || '' });
+      const v = allVisits.find(x => x.id === visitId);
+      if (v) v.user_status = value || null;
+      toast(value ? 'User status set' : 'User status cleared', 'success');
+    } catch (e) { toast(e.message, 'error'); renderVisitTable(); }
+  }
+
+  // ── Reverse confirmation (SAP IW45 reversal-by-append) ───────────────────
+  async function openReverseConfirmation(visitId) {
+    rcVisitId = visitId;
+    const v = allVisits.find(x => x.id === visitId);
+    document.getElementById('rcVisitLabel').textContent =
+      v ? `${v.visit_type} — ${v.customer_name} (#${v.id})` : `#${visitId}`;
+    document.getElementById('rcReason').value = '';
+    document.getElementById('rcErr').style.display = 'none';
+    document.getElementById('rcHistory').innerHTML = '<div class="ustat-none">Loading…</div>';
+    document.getElementById('modal-reverseConfirm').classList.add('open');
+    await rcLoadHistory(visitId);
+  }
+
+  async function rcLoadHistory(visitId) {
+    const box = document.getElementById('rcHistory');
+    try {
+      const res = await api('GET', `/api/admin/visits/${visitId}/confirmation-events`);
+      const events = (res && res.events) || [];
+      if (!events.length) {
+        box.innerHTML = '<div class="ustat-none">No reversals yet — this confirmation is original.</div>';
+        return;
+      }
+      box.innerHTML = events.map(e => {
+        const snap = e.snapshot || {};
+        const when = e.created_at ? fmtDateTime(e.created_at, '') : '';
+        return `<div class="vce-row vce-reversal">
+          <div><strong>Reversal</strong> — ${escHtml(e.reason || '')}</div>
+          <div class="vce-meta">by ${escHtml(e.actor_label || 'admin')} · ${escHtml(when)}
+            ${snap.work_done ? '· had logged: “' + escHtml(String(snap.work_done).slice(0,80)) + '”' : ''}</div>
+        </div>`;
+      }).join('');
+    } catch (e) {
+      box.innerHTML = `<div class="ustat-none">Couldn't load history: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  async function submitReverseConfirmation() {
+    const reason = document.getElementById('rcReason').value.trim();
+    const err = document.getElementById('rcErr');
+    if (!reason) { err.textContent = 'A reason is required.'; err.style.display = 'block'; return; }
+    const btn = document.getElementById('rcSubmitBtn');
+    btn.disabled = true;
+    try {
+      await api('POST', `/api/admin/visits/${rcVisitId}/reverse-confirmation`, { reason });
+      toast('Confirmation reversed — visit re-opened', 'success');
+      closeModal('reverseConfirm');
+      await loadAllVisits();
+    } catch (e) {
+      err.textContent = e.message; err.style.display = 'block';
+    } finally { btn.disabled = false; }
   }
 
   // ── PM Contracts ─────────────────────────────────────────────────────────

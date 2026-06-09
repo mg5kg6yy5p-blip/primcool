@@ -217,6 +217,9 @@ from database import (
     list_released_periods_for_tech, release_kpi_period_to_tech,
     create_company_message, list_active_company_messages,
     list_all_company_messages, hide_company_message,
+    list_saved_views, upsert_saved_view, delete_saved_view,
+    set_visit_user_status,
+    list_visit_confirmation_events, reverse_visit_confirmation,
 )
 import imghdr as _imghdr
 import mimetypes as _mimetypes
@@ -2676,6 +2679,25 @@ class VisitUpdate(BaseModel):
     # This split lets the existing edit modal (which doesn't yet send a
     # crew array) keep working without wiping prior assignments.
     crew_tech_ids:    Optional[List[int]] = None
+
+
+class VisitUserStatus(BaseModel):
+    # SAP "User Status" layer. Empty string clears it. Validated against the
+    # _VISIT_USER_STATUSES whitelist at the route.
+    user_status: str = ""
+
+
+class ReverseConfirmation(BaseModel):
+    # SAP IW45 reversal-by-append. A reason is required so the append-only
+    # ledger always records WHY a confirmation was undone.
+    reason: str
+
+
+class SavedViewIn(BaseModel):
+    scope:      str
+    name:       str
+    payload:    Dict[str, Any] = {}
+    is_default: bool = False
 
 
 class TechLogin(BaseModel):
@@ -7662,6 +7684,127 @@ def admin_flag_visit(request: Request, visit_id: int, body: FlagForReview):
                 "visit.flag" if body.flagged else "visit.unflag",
                 request, target_type="visit", target_id=visit_id,
                 target_label=body.note or "")
+    return {"ok": True}
+
+
+# ── Visit User Status (SAP "User Status" layer) ───────────────────────────────
+# A free, operator-defined tag that rides alongside the lifecycle `status`.
+# Whitelisted vocabulary keeps it consistent across the fleet. Empty clears it.
+_VISIT_USER_STATUSES = [
+    "Awaiting parts",
+    "Awaiting customer",
+    "Awaiting quote approval",
+    "On hold",
+    "Needs follow-up",
+    "Warranty job",
+    "Return visit required",
+    "Ready to invoice",
+]
+
+
+@app.get("/api/admin/visit-user-statuses")
+def admin_visit_user_statuses(request: Request):
+    """The whitelisted User-Status vocabulary for the picker. Read-only;
+    available to anyone who can view visits."""
+    _require_perm(request, "visit:view")
+    return {"statuses": _VISIT_USER_STATUSES}
+
+
+@app.put("/api/admin/visits/{visit_id}/user-status", response_model=OkResponse)
+def admin_set_visit_user_status(request: Request, visit_id: int,
+                                body: VisitUserStatus):
+    """Set/clear the manual User Status on a visit. Independent of the
+    lifecycle status — does not unlock or re-open the visit."""
+    admin = _require_record_access(request, "visit", visit_id, write=True)
+    before = get_visit_by_id(visit_id)
+    if not before:
+        raise HTTPException(404, "Visit not found")
+    val = (body.user_status or "").strip()
+    if val and val not in _VISIT_USER_STATUSES:
+        raise HTTPException(422, "Unknown user status")
+    set_visit_user_status(visit_id, val or None)
+    _audit_from(admin, "visit.user_status", request,
+                target_type="visit", target_id=visit_id,
+                target_label=val or "(cleared)",
+                before={"user_status": before.get("user_status")},
+                after={"user_status": val or None})
+    return {"ok": True}
+
+
+# ── Confirmation reversal (SAP IW45 reversal-by-append) ───────────────────────
+
+@app.get("/api/admin/visits/{visit_id}/confirmation-events",
+         response_model=Dict[str, Any])
+def admin_visit_confirmation_events(request: Request, visit_id: int):
+    """Append-only confirmation/reversal history for a visit."""
+    _require_record_access(request, "visit", visit_id, write=False)
+    return {"events": list_visit_confirmation_events(visit_id)}
+
+
+@app.post("/api/admin/visits/{visit_id}/reverse-confirmation",
+          response_model=Dict[str, Any])
+def admin_reverse_visit_confirmation(request: Request, visit_id: int,
+                                     body: ReverseConfirmation):
+    """SAP IW45-style reversal. Snapshots the current confirmation into an
+    append-only ledger and re-opens the visit (clears the submission lock,
+    reverts status to 'scheduled') so it can be re-confirmed. The original
+    confirmation data is preserved in the snapshot — nothing is deleted."""
+    admin = _require_record_access(request, "visit", visit_id, write=True)
+    reason = (body.reason or "").strip()
+    if not reason:
+        raise HTTPException(422, "A reason is required to reverse a confirmation")
+    if not get_visit_by_id(visit_id):
+        raise HTTPException(404, "Visit not found")
+    try:
+        result = reverse_visit_confirmation(
+            visit_id, reason,
+            actor_kind="admin", actor_id=admin["id"],
+            actor_label=admin.get("name") or admin.get("username") or f"admin#{admin['id']}",
+        )
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    _audit_from(admin, "visit.confirmation_reverse", request,
+                target_type="visit", target_id=visit_id,
+                target_label=reason,
+                after={"event_id": result["event_id"]})
+    return {"ok": True, **result}
+
+
+# ── Saved Views (SAP Variant + Layout, per-user) ──────────────────────────────
+
+@app.get("/api/admin/saved-views", response_model=Dict[str, Any])
+def admin_list_saved_views(request: Request, scope: str):
+    """List the current admin's saved views for a list screen (scope)."""
+    admin = _require_admin(request)
+    return {"views": list_saved_views("admin", admin["id"], scope)}
+
+
+@app.post("/api/admin/saved-views", response_model=Dict[str, Any])
+def admin_save_view(request: Request, body: SavedViewIn):
+    """Create or overwrite (by name) one of the admin's saved views."""
+    admin = _require_admin(request)
+    scope = (body.scope or "").strip()
+    name = (body.name or "").strip()
+    if not scope or not name:
+        raise HTTPException(422, "scope and name are required")
+    if len(name) > 60:
+        raise HTTPException(422, "Name too long (max 60)")
+    # Guard payload size so a saved view can't be used as arbitrary storage.
+    import json as _json
+    if len(_json.dumps(body.payload or {})) > 8000:
+        raise HTTPException(422, "View payload too large")
+    view_id = upsert_saved_view("admin", admin["id"], scope, name,
+                                body.payload or {}, bool(body.is_default))
+    return {"ok": True, "id": view_id}
+
+
+@app.delete("/api/admin/saved-views/{view_id}", response_model=OkResponse)
+def admin_delete_saved_view(request: Request, view_id: int):
+    """Delete one of the admin's own saved views."""
+    admin = _require_admin(request)
+    ok = delete_saved_view(view_id, "admin", admin["id"])
+    if not ok:
+        raise HTTPException(404, "Saved view not found")
     return {"ok": True}
 
 

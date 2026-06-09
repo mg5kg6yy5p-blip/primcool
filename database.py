@@ -1331,6 +1331,13 @@ def init_db():
         # originating pm_contracts row. NULL for ad-hoc / CM visits. SQLite
         # ALTER can't add an FK, so the helper layer validates the target.
         ("pm_contract_id",         "ALTER TABLE maintenance_visits ADD COLUMN pm_contract_id INTEGER"),
+        # SAP-PM "User Status" layer — a free, operator-defined status tag that
+        # rides ALONGSIDE the lifecycle `status` (scheduled→in_progress→
+        # completed). SAP keeps System status (auto, lifecycle) and User status
+        # (manual, business-meaning) as two independent columns; this mirrors
+        # that. NULL/'' means no user status set. Vocabulary is whitelisted in
+        # main.py (_VISIT_USER_STATUSES) so the DB stays a dumb store.
+        ("user_status",            "ALTER TABLE maintenance_visits ADD COLUMN user_status TEXT"),
     ):
         if col_sql[0] not in existing_cols:
             try: con.execute(col_sql[1])
@@ -2740,6 +2747,56 @@ def init_db():
             PRIMARY KEY (subject_type, subject_id)
         )
     """)
+
+    # ── Saved Views (SAP "Selection Variant" + "Layout", unified) ──────────
+    # A per-user, named bundle of {filters, columns, sort} for a given list
+    # screen (scope, e.g. 'visits'). Lets any user save a filter+column setup
+    # and reload it later — the SAP Variant/Layout pattern from IW38. Available
+    # to every identity kind (subject_type ∈ {'admin','tech','customer'}); we
+    # gate by DATA access at the route layer, not by feature. The payload is a
+    # small whitelisted JSON object (validated in main.py). One user may mark
+    # one view per scope as their default (is_default).
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS saved_views (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            subject_type TEXT    NOT NULL,
+            subject_id   INTEGER NOT NULL,
+            scope        TEXT    NOT NULL,
+            name         TEXT    NOT NULL,
+            payload      TEXT    NOT NULL DEFAULT '{}',
+            is_default   INTEGER NOT NULL DEFAULT 0,
+            created_at   TEXT    NOT NULL,
+            updated_at   TEXT
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_saved_views_owner "
+                "ON saved_views(subject_type, subject_id, scope)")
+    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_saved_views_uniq "
+                "ON saved_views(subject_type, subject_id, scope, name)")
+
+    # ── Visit confirmation events (SAP IW41/IW45 reversal-by-append) ───────
+    # An append-only ledger of confirmation lifecycle events for a visit.
+    # SAP never deletes a confirmation; a cancellation (IW45) posts a counter
+    # entry that reverses it while the original stays on the record. We mirror
+    # that: completing a visit can post a 'confirmation' event, and reversing
+    # it posts a 'reversal' event that snapshots the pre-reversal completion
+    # data (so nothing is lost) and re-opens the visit. Rows are never updated
+    # or deleted — this matches PrimeCool's append-only audit_log ethos.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS visit_confirmation_events (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            visit_id      INTEGER NOT NULL,
+            event_type    TEXT    NOT NULL,          -- 'confirmation' | 'reversal'
+            reason        TEXT,                       -- why (reversals)
+            snapshot_json TEXT,                       -- pre-reversal completion fields
+            actor_kind    TEXT,
+            actor_id      INTEGER,
+            actor_label   TEXT,
+            created_at    TEXT    NOT NULL
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_vce_visit "
+                "ON visit_confirmation_events(visit_id, id)")
 
     con.commit()
     con.close()
@@ -17326,3 +17383,189 @@ def set_user_settings(subject_type: str, subject_id: int, settings: dict) -> Non
     )
     con.commit()
     con.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Saved Views  (SAP "Selection Variant" + "Layout", unified per-user)
+# ─────────────────────────────────────────────────────────────────────────
+# Storage layer only. Payload validation/whitelisting lives in main.py.
+# subject_type ∈ {'admin','tech','customer'}; scope is the list screen id
+# (e.g. 'visits'). A view bundles {filters, columns, sort} as opaque JSON.
+
+def list_saved_views(subject_type: str, subject_id: int, scope: str) -> list:
+    """All saved views owned by this subject for this scope, default first
+    then alphabetical. payload is parsed back into a dict."""
+    con = _con()
+    rows = con.execute(
+        "SELECT id, name, payload, is_default, created_at, updated_at "
+        "FROM saved_views WHERE subject_type = ? AND subject_id = ? AND scope = ? "
+        "ORDER BY is_default DESC, name COLLATE NOCASE ASC",
+        (subject_type, int(subject_id), scope),
+    ).fetchall()
+    con.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["payload"] = _json.loads(d["payload"]) if d["payload"] else {}
+        except Exception:
+            d["payload"] = {}
+        d["is_default"] = bool(d["is_default"])
+        out.append(d)
+    return out
+
+
+def upsert_saved_view(subject_type: str, subject_id: int, scope: str,
+                      name: str, payload: dict, is_default: bool = False) -> int:
+    """Create or overwrite (by name) a saved view for this subject+scope.
+    Returns the row id. If is_default, clears the default flag on the
+    subject's other views in this scope first (one default per scope)."""
+    now = datetime.now(timezone.utc).isoformat()
+    body = _json.dumps(payload or {})
+    con = _con()
+    if is_default:
+        con.execute(
+            "UPDATE saved_views SET is_default = 0 "
+            "WHERE subject_type = ? AND subject_id = ? AND scope = ?",
+            (subject_type, int(subject_id), scope),
+        )
+    con.execute(
+        "INSERT INTO saved_views "
+        "  (subject_type, subject_id, scope, name, payload, is_default, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(subject_type, subject_id, scope, name) DO UPDATE SET "
+        "  payload    = excluded.payload, "
+        "  is_default = excluded.is_default, "
+        "  updated_at = excluded.updated_at",
+        (subject_type, int(subject_id), scope, name, body,
+         1 if is_default else 0, now, now),
+    )
+    row = con.execute(
+        "SELECT id FROM saved_views "
+        "WHERE subject_type = ? AND subject_id = ? AND scope = ? AND name = ?",
+        (subject_type, int(subject_id), scope, name),
+    ).fetchone()
+    con.commit()
+    con.close()
+    return int(row["id"]) if row else 0
+
+
+def delete_saved_view(view_id: int, subject_type: str, subject_id: int) -> bool:
+    """Delete a saved view, but ONLY if it belongs to the requesting subject.
+    Returns True if a row was removed."""
+    con = _con()
+    cur = con.execute(
+        "DELETE FROM saved_views WHERE id = ? AND subject_type = ? AND subject_id = ?",
+        (int(view_id), subject_type, int(subject_id)),
+    )
+    con.commit()
+    n = cur.rowcount
+    con.close()
+    return n > 0
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Visit User Status  (SAP "User Status" layer)
+# ─────────────────────────────────────────────────────────────────────────
+
+def set_visit_user_status(visit_id: int, user_status) -> None:
+    """Set (or clear, when falsy) the manual user-status tag on a visit. The
+    lifecycle `status` column is untouched — this rides alongside it."""
+    con = _con()
+    con.execute(
+        "UPDATE maintenance_visits SET user_status = ? WHERE id = ?",
+        ((user_status or None), int(visit_id)),
+    )
+    con.commit()
+    con.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Visit confirmation events  (SAP IW41/IW45 reversal-by-append)
+# ─────────────────────────────────────────────────────────────────────────
+
+def list_visit_confirmation_events(visit_id: int) -> list:
+    """Append-only confirmation/reversal history for a visit, newest first.
+    snapshot_json is parsed back into a dict (or {})."""
+    con = _con()
+    rows = con.execute(
+        "SELECT id, event_type, reason, snapshot_json, actor_kind, actor_id, "
+        "       actor_label, created_at "
+        "FROM visit_confirmation_events WHERE visit_id = ? ORDER BY id DESC",
+        (int(visit_id),),
+    ).fetchall()
+    con.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["snapshot"] = _json.loads(d.pop("snapshot_json")) if d.get("snapshot_json") else {}
+        except Exception:
+            d["snapshot"] = {}
+        out.append(d)
+    return out
+
+
+def reverse_visit_confirmation(visit_id: int, reason: str,
+                               actor_kind: str = None, actor_id: int = None,
+                               actor_label: str = None) -> dict:
+    """SAP IW45-style reversal-by-append. Captures the current completion data
+    as a snapshot in an append-only event row, then re-opens the visit:
+    clears the submitted_at lock and sets status back to 'scheduled' so the
+    work can be re-confirmed. The original completion data is NOT deleted from
+    the ledger snapshot. Returns the inserted event row id + snapshot.
+
+    Raises ValueError if the visit isn't currently a confirmed/completed
+    record (nothing to reverse)."""
+    con = _con()
+    v = con.execute(
+        "SELECT id, status, submitted_at, work_done, parts_replaced, notes, "
+        "       end_time, completed_date, next_pm_due "
+        "FROM maintenance_visits WHERE id = ?",
+        (int(visit_id),),
+    ).fetchone()
+    if v is None:
+        con.close()
+        raise ValueError("Visit not found")
+    if v["status"] != "completed" and not v["submitted_at"]:
+        con.close()
+        raise ValueError("Visit has no confirmation to reverse")
+
+    def _safe_dec(val):
+        if val is None or val == "":
+            return val
+        try:
+            return _dec(val)
+        except Exception:
+            return val
+    snapshot = {
+        "status":         v["status"],
+        "submitted_at":   v["submitted_at"],
+        "work_done":      _safe_dec(v["work_done"]),
+        "parts_replaced": _safe_dec(v["parts_replaced"]),
+        "notes":          _safe_dec(v["notes"]),
+        "end_time":       v["end_time"],
+        "completed_date": v["completed_date"],
+        "next_pm_due":    v["next_pm_due"],
+    }
+    now = datetime.now(timezone.utc).isoformat()
+    cur = con.execute(
+        "INSERT INTO visit_confirmation_events "
+        "  (visit_id, event_type, reason, snapshot_json, actor_kind, actor_id, "
+        "   actor_label, created_at) "
+        "VALUES (?, 'reversal', ?, ?, ?, ?, ?, ?)",
+        (int(visit_id), (reason or None), _json.dumps(snapshot),
+         actor_kind, actor_id, actor_label, now),
+    )
+    event_id = cur.lastrowid
+    # Re-open the visit: drop the submission lock and revert lifecycle status.
+    # Completion content stays on the row (still visible) but is now editable
+    # again; the snapshot preserves exactly what was confirmed at reversal.
+    con.execute(
+        "UPDATE maintenance_visits SET status = 'scheduled', submitted_at = NULL "
+        "WHERE id = ?",
+        (int(visit_id),),
+    )
+    con.commit()
+    con.close()
+    return {"event_id": event_id, "snapshot": snapshot, "created_at": now}
