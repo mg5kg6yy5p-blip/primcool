@@ -9136,9 +9136,7 @@
 
   function vlToggleStatusMode() {
     vlStatusMode = (vlStatusMode === 'include') ? 'exclude' : 'include';
-    document.getElementById('vlStatusModeBtn').textContent =
-      'Match: ' + (vlStatusMode === 'include' ? 'Include' : 'Exclude');
-    vlSyncStatusPills();
+    vlSyncStatusPills();   // also refreshes the mode-button label
     renderVisitTable();
   }
 
@@ -9148,6 +9146,11 @@
       b.classList.toggle('active', on);
       b.classList.toggle('excluding', on && vlStatusMode === 'exclude');
     });
+    // Keep the mode-button label as the single source of truth for vlStatusMode
+    // so the label can never drift from the actual filter behaviour.
+    const modeBtn = document.getElementById('vlStatusModeBtn');
+    if (modeBtn) modeBtn.textContent =
+      'Match: ' + (vlStatusMode === 'include' ? 'Include' : 'Exclude');
   }
 
   // Back-compat shim: anything still calling setFilter() maps onto the new model.
@@ -9236,9 +9239,7 @@
     // reflect into the controls
     document.querySelectorAll('#vlTypePills [data-vtype]').forEach(b =>
       b.classList.toggle('active', b.getAttribute('data-vtype') === vlType));
-    document.getElementById('vlStatusModeBtn').textContent =
-      'Match: ' + (vlStatusMode === 'include' ? 'Include' : 'Exclude');
-    vlSyncStatusPills();
+    vlSyncStatusPills();   // also refreshes the mode-button label
     const us = document.getElementById('vlUserStatusFilter');
     if (us) us.value = f.userStatus || '';
     if (delBtn) delBtn.style.display = '';
