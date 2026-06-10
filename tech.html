@@ -1341,6 +1341,20 @@
           </div>
 
           <div class="detail-card">
+            <h3>Checklist</h3>
+            <p style="font-size:11px;color:var(--muted);margin:0 0 10px;line-height:1.4;">Tick off each step as you complete it. Add a note if something needs attention.</p>
+            <div id="checklistRows" style="display:flex;flex-direction:column;gap:8px;"></div>
+            <div style="display:grid;grid-template-columns:1fr auto;gap:6px;align-items:end;margin-top:10px;">
+              <div>
+                <label style="display:block;font-size:10px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:var(--ink);margin-bottom:4px;">Add an item</label>
+                <input id="clNewLabel" type="text" placeholder="e.g. Check refrigerant charge" style="width:100%;padding:9px 10px;border:2px solid var(--border);border-radius:8px;font-size:13px;outline:none;">
+              </div>
+              <button onclick="clAddItem()" style="padding:9px 16px;background:var(--teal);color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;height:38px;">Add</button>
+            </div>
+            <button onclick="saveChecklist()" style="padding:9px 16px;background:var(--navy);color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;margin-top:10px;">Save checklist</button>
+          </div>
+
+          <div class="detail-card">
             <h3>Parts Used</h3>
             <div id="partsUsedList" style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px;"></div>
             <div style="display:grid;grid-template-columns:1fr 80px auto;gap:6px;align-items:end;">
@@ -1456,6 +1470,18 @@
                   ${r.approach_temp != null ? `Approach: ${r.approach_temp}°F ` : ''}
                 </div>`).join('')}
             </div>` : ''}
+          ${(j.checklist || []).length ? `
+            <div class="detail-card">
+              <h3>Checklist</h3>
+              ${(j.checklist || []).map(it => `
+                <div style="display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;">
+                  <span style="flex:none;color:${it.checked ? 'var(--ok-fg,#1b7f3b)' : 'var(--muted)'};font-weight:700;">${it.checked ? '✓' : '○'}</span>
+                  <div style="min-width:0;">
+                    <div style="${it.checked ? '' : 'color:var(--muted);'}">${esc(it.label || '')}</div>
+                    ${it.note ? `<div style="font-size:11px;color:var(--muted);margin-top:2px;">${esc(it.note)}</div>` : ''}
+                  </div>
+                </div>`).join('')}
+            </div>` : ''}
           ${j.signature_captured ? `<div class="detail-card"><h3>Client Signature</h3><p style="font-size:14px;">Signed by <strong>${esc(j.signer_name||'')}</strong></p></div>` : ''}
           ${j.next_pm_due ? `<div class="detail-card"><h3>Next PM Due</h3><p style="font-size:14px;">${fmtDate(j.next_pm_due)}</p></div>` : ''}
           ${(photosBefore.length || photosAfter.length) ? `
@@ -1481,6 +1507,7 @@
       renderPartsUsed();
       loadPartsCatalog();
       initSigPad();
+      renderChecklistRows();
     }
 
     // Customer Equipment card on the visit detail screen is populated
@@ -1697,6 +1724,84 @@
         toast('Saved offline — will sync', 'ok'); renderDetail(); return;
       }
       toast('Reading saved', 'success');
+      currentJob = await _refreshJob(currentJob.id);
+      renderDetail();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  // ── Visit checklist ────────────────────────────────────────────────────
+  // Free-form list of [{label, checked, note}] stored against the visit.
+  // We render rows from currentJob.checklist, let the tech tick/note/add/
+  // remove, then POST the whole list. Re-rendering only the rows (not the
+  // full detail) preserves unsaved Work-Performed/Readings form fields.
+  function _clItems() {
+    if (!Array.isArray(currentJob.checklist)) currentJob.checklist = [];
+    return currentJob.checklist;
+  }
+  function renderChecklistRows() {
+    const wrap = document.getElementById('checklistRows');
+    if (!wrap) return;
+    const items = _clItems();
+    if (!items.length) {
+      wrap.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:6px 0;">No checklist items yet. Add one below.</div>';
+      return;
+    }
+    wrap.innerHTML = items.map((it, i) => `
+      <div class="cl-row" data-idx="${i}" style="display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:center;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:8px 10px;">
+        <input type="checkbox" class="cl-check" ${it.checked ? 'checked' : ''} style="width:20px;height:20px;flex:none;">
+        <div style="min-width:0;">
+          <div style="font-size:13px;font-weight:600;color:var(--ink);word-break:break-word;">${esc(it.label || '')}</div>
+          <input type="text" class="cl-note" value="${esc(it.note || '')}" placeholder="Note (optional)…" style="width:100%;margin-top:5px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;outline:none;">
+        </div>
+        <button onclick="clRemove(${i})" title="Remove" style="flex:none;width:30px;height:30px;background:var(--card);color:var(--err-fg,#c0392b);border:1px solid var(--border);border-radius:6px;font-size:16px;line-height:1;cursor:pointer;">×</button>
+      </div>`).join('');
+  }
+  // Pull current DOM state back into the model before any mutation/save so
+  // in-flight ticks and notes aren't lost on re-render.
+  function _clSyncFromDom() {
+    const items = _clItems();
+    document.querySelectorAll('#checklistRows .cl-row').forEach(row => {
+      const i = parseInt(row.getAttribute('data-idx'), 10);
+      if (isNaN(i) || !items[i]) return;
+      const chk = row.querySelector('.cl-check');
+      const note = row.querySelector('.cl-note');
+      if (chk)  items[i].checked = chk.checked;
+      if (note) items[i].note = note.value;
+    });
+  }
+  function clAddItem() {
+    const inp = document.getElementById('clNewLabel');
+    const label = (inp?.value || '').trim();
+    if (!label) { toast('Type an item first.', 'error'); return; }
+    _clSyncFromDom();
+    _clItems().push({ label, checked: false, note: '' });
+    if (inp) inp.value = '';
+    renderChecklistRows();
+  }
+  function clRemove(i) {
+    _clSyncFromDom();
+    const items = _clItems();
+    if (items[i]) items.splice(i, 1);
+    renderChecklistRows();
+  }
+  async function saveChecklist() {
+    _clSyncFromDom();
+    const items = _clItems().map(it => ({
+      label: String(it.label || ''),
+      checked: !!it.checked,
+      note: String(it.note || ''),
+    }));
+    try {
+      const r = await submitJobWrite({
+        op: 'checklist', scope: 'job.checklist', method: 'POST',
+        url: `/api/tech/jobs/${currentJob.id}/checklist`, body: { items },
+        visit_id: currentJob.id,
+      });
+      if (r.queued) {
+        _applyOptimistic('checklist', { items });
+        toast('Saved offline — will sync', 'ok'); return;
+      }
+      toast('Checklist saved', 'success');
       currentJob = await _refreshJob(currentJob.id);
       renderDetail();
     } catch (e) { toast(e.message, 'error'); }
@@ -2065,6 +2170,7 @@
     try {
       const sc = await api('GET', '/api/tech/me/kpi');
       const fl = await api('GET', '/api/tech/me/kpi/flags').catch(() => ({flags: []}));
+      const hist = await api('GET', '/api/tech/me/kpi/history').catch(() => ({released_periods: []}));
       const comp = (sc.current && sc.current.composite) || {};
       const kpis = (sc.current && sc.current.kpis) || {};
       const trend = sc.trend || [];
@@ -2086,6 +2192,12 @@
         </tr>`;
       }).join('');
       const _g = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+      const released = (hist.released_periods || []);
+      const releasedItems = released.map(r => `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;background:var(--card);font-size:13px;">
+          <span style="font-weight:600;color:var(--ink);">${esc(r.period_key)}</span>
+          <span style="font-size:11px;color:var(--muted);">Shared ${PC.fmtDate(r.released_at)}</span>
+        </div>`).join('');
       const flagItems = (fl.flags || []).map(f => {
         const respondable = !['resolved','overridden'].includes(f.status);
         const scoreRef = (f.score_id && _g) ? PC.gateLinkHtml('kpi_score', f.score_id, esc(f.period_key), {}) : esc(f.period_key);
@@ -2127,6 +2239,11 @@
           ${flagItems ? `
             <h4 style="margin:16px 0 8px 0;color:var(--ink);">My coaching flags</h4>
             ${flagItems}
+          ` : ''}
+          ${releasedItems ? `
+            <h4 style="margin:16px 0 8px 0;color:var(--ink);">Released scorecards</h4>
+            <p style="font-size:11px;color:var(--muted);margin:0 0 8px;">Periods your manager has officially shared with you.</p>
+            ${releasedItems}
           ` : ''}
           <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap;">
             <button class="btn btn-ghost pc-stop-prop" onclick="techViewNotes()">View notes about me</button>

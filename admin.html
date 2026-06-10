@@ -1448,6 +1448,11 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
         Company Messages
       </div>
+      <div class="nav-item" onclick="showPanel('svcreq')" id="nav-svcreq" style="display:none;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+        Service Requests
+        <span id="svcReqBadge" style="margin-left:auto;background:var(--danger-solid);color:white;font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px;display:none;"></span>
+      </div>
       <!-- Warehouse Ops sidebar entry removed — the Staff / Receiving /
            Stock / Shipping / Checklists / Month-end tabs now live inside
            the Warehouse (Inventory) panel as an "Operations" sub-section. -->
@@ -2100,6 +2105,23 @@
           <h2>Timesheets</h2>
           <button class="btn btn-ghost" onclick="exportTimesheetCsv()">↓ Export CSV</button>
         </div>
+
+        <!-- Approval Queue (weekly timesheet workflow: submitted → supervisor → super_admin) -->
+        <div id="ts-queue-card" style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px 18px;margin-bottom:20px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+            <h3 style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.8px;margin:0;">Approval Queue</h3>
+            <button class="btn btn-ghost btn-sm" onclick="loadTimesheetQueue()" style="font-size:12px;">↻ Refresh</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr>
+                <th>Technician</th><th>Period</th><th>Submitted</th><th>Status</th><th></th>
+              </tr></thead>
+              <tbody id="ts-queue"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+
         <div class="filter-bar" style="gap:10px;align-items:center;">
           <button class="filter-btn" onclick="shiftWeek(-1)">← Prev Week</button>
           <input type="date" id="ts-week-start" onchange="loadTimesheets()" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;">
@@ -2226,7 +2248,19 @@
             <option value="aggregate">Aggregate (who viewed what)</option>
             <option value="alerts">Security alerts</option>
             <option value="dormant">Dormant accounts</option>
+            <option value="denied" id="auditModeDenied" style="display:none;">Access denied (forbidden)</option>
+            <option value="entity">Entity history</option>
           </select>
+          <select id="auditEntityType" onchange="loadAudit()" style="display:none;padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;" title="Entity type">
+            <option value="customer">Customer</option>
+            <option value="visit">Visit</option>
+            <option value="equipment">Equipment</option>
+            <option value="admin_user">Admin user</option>
+            <option value="tech">Technician</option>
+            <option value="invoice">Invoice</option>
+            <option value="part">Part</option>
+          </select>
+          <input type="number" id="auditEntityId" min="1" onchange="loadAudit()" style="display:none;width:90px;padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;" title="Entity id" placeholder="Entity id">
           <select id="auditAction" onchange="loadAudit()" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
             <option value="">All actions</option>
             <option value="admin">Admin actions</option>
@@ -2461,7 +2495,14 @@
 
           <!-- CV edit-request approval queue -->
           <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:18px;">
-            <h3 style="margin:0 0 12px;color:var(--ink);font-size:16px;">CV Edit Requests</h3>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+              <h3 style="margin:0;color:var(--ink);font-size:16px;">CV Edit Requests</h3>
+              <div id="tdf-cv-grant-direct" style="display:none;align-items:center;gap:6px;">
+                <input id="tdf-cv-grant-entry" type="number" min="1" placeholder="Entry #" style="width:90px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;">
+                <input id="tdf-cv-grant-mins" type="number" min="5" value="60" title="Minutes of edit access" style="width:70px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;">
+                <button class="btn btn-ghost btn-sm" onclick="tdfGrantCvDirect()">Grant edit</button>
+              </div>
+            </div>
             <div id="tdf-cv-requests"><div class="empty" style="padding:14px;">Loading…</div></div>
           </div>
 
@@ -2479,6 +2520,9 @@
             <button class="btn btn-ghost" onclick="showTechList()">← Back to Technicians</button>
             <button class="btn btn-primary" onclick="openEditTechProfile()">✎ Edit Info</button>
             <button class="btn btn-edit" id="tdf-reset-pin-btn" onclick="tdfResetPin()">Reset PIN</button>
+            <button class="btn btn-edit" id="tdf-reset-mfa-btn" onclick="tdfResetMfa()" style="display:none;">Reset MFA</button>
+            <button class="btn btn-edit" id="tdf-approve-ot-btn" onclick="tdfApproveOvertime()" style="display:none;">Approve Overtime</button>
+            <button class="btn btn-edit" id="tdf-release-kpi-btn" onclick="tdfReleaseKpiPeriod()" style="display:none;">Release KPI Scorecard</button>
             <button class="btn btn-edit" id="tdf-promote-btn" onclick="openPromoteTech()" style="display:none;">↗ Promote to Office Role</button>
             <button class="btn btn-danger" id="tdf-offboard-btn" onclick="tdfOffboard()" style="margin-left:auto;">🚪 Offboard</button>
           </div>
@@ -2627,6 +2671,38 @@
         <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px 20px;">
           <h3 style="margin:0 0 12px;color:var(--ink);font-size:16px;">Recent messages</h3>
           <div id="cm-list"><div class="empty" style="padding:14px;">Loading…</div></div>
+        </div>
+      </div>
+
+      <!-- ── Service Requests (client-portal triage queue) ── -->
+      <div class="panel" id="panel-svcreq">
+        <div class="top-bar">
+          <h2>Service Requests</h2>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <label style="font-size:13px;color:var(--muted);">Status
+              <select id="svcReqStatusFilter" onchange="svcReqLoad()" style="margin-left:4px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;">
+                <option value="">All open</option>
+                <option value="new">New</option>
+                <option value="triaged">Triaged</option>
+                <option value="scheduled">Scheduled</option>
+                <option value="closed">Closed</option>
+              </select>
+            </label>
+            <button class="btn btn-ghost btn-sm" onclick="svcReqLoad()">Refresh</button>
+          </div>
+        </div>
+        <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:6px 0;">
+          <table style="width:100%;border-collapse:collapse;font-size:13px;">
+            <thead><tr style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.4px;text-align:left;">
+              <th style="padding:10px 14px;">Submitted</th>
+              <th style="padding:10px 14px;">Customer</th>
+              <th style="padding:10px 14px;">Type</th>
+              <th style="padding:10px 14px;">Subject</th>
+              <th style="padding:10px 14px;">Status</th>
+              <th style="padding:10px 14px;">Actions</th>
+            </tr></thead>
+            <tbody id="svcReqBody"><tr><td colspan="6" class="empty" style="padding:16px;">Loading…</td></tr></tbody>
+          </table>
         </div>
       </div>
 
@@ -2797,6 +2873,7 @@
           <button class="filter-btn"        onclick="fsSetTab('exceptions',this)">Exceptions</button>
           <button class="filter-btn" id="fsAssetsTabBtn" onclick="fsSetTab('assets',this)">Assets</button>
           <button class="filter-btn"        onclick="fsSetTab('compliance',this)">Compliance</button>
+          <button class="filter-btn"        onclick="fsSetTab('coaching',this)">Coaching</button>
         </div>
         <div id="fsBody" style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px;min-height:200px;">Loading…</div>
       </div>
@@ -2888,6 +2965,7 @@
             <button class="btn btn-ghost"   id="kpiBtnPipQueue"  onclick="kpiOpenHrPipQueue()"        style="display:none;" title="PIPs awaiting HR acknowledgement">PIP Approvals</button>
             <button class="btn btn-ghost"   id="kpiBtnManual"    onclick="kpiOpenManualEntry(document.getElementById('kpiPeriodSelect').value)" style="display:none;" title="Manually enter KPI raw values for this period">Manual Entry</button>
             <button class="btn btn-ghost"   id="kpiBtnCustomKpi" onclick="kpiOpenCustomKpiCreate()"   style="display:none;" title="Define a custom KPI">+ Custom KPI</button>
+            <button class="btn btn-ghost"   id="kpiBtnClosePeriod" onclick="kpiClosePeriod(document.getElementById('kpiPeriodSelect').value)" style="display:none;" title="Close the selected period — closed periods are immutable">Close Period</button>
             <button class="btn btn-primary" id="kpiRecomputeBtn" onclick="kpiRecomputeAll()" style="display:none;">Recompute All</button>
           </div>
         </div>
@@ -3253,6 +3331,58 @@
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('reverseConfirm')">Cancel</button>
       <button class="btn btn-danger" id="rcSubmitBtn" onclick="submitReverseConfirmation()">↩ Reverse confirmation</button>
+    </div>
+  </div>
+</div>
+
+<!-- Timesheet approval detail -->
+<div class="modal-overlay" id="modal-tsApprove">
+  <div class="modal" style="max-width:720px;">
+    <div class="modal-header">
+      <h3 id="tsApproveTitle">Timesheet</h3>
+      <button class="modal-close" onclick="closeModal('tsApprove')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="tsApproveMeta" style="font-size:13px;color:var(--text);margin-bottom:10px;"></div>
+      <div id="tsApproveReject" style="display:none;color:var(--danger);font-size:13px;margin-bottom:12px;padding:9px 11px;background:var(--light);border-radius:8px;"></div>
+      <div class="table-wrap" style="margin-bottom:14px;">
+        <table>
+          <thead><tr><th>Date</th><th>Start</th><th>End</th><th>Worked</th><th>Paid</th><th></th></tr></thead>
+          <tbody id="tsApproveDays"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+        </table>
+      </div>
+      <div class="field">
+        <label>Tech notes</label>
+        <textarea id="tsApproveNotes" rows="2" maxlength="500"
+                  style="width:100%;padding:9px 11px;border:1px solid var(--border);border-radius:8px;font:14px var(--font-body);resize:vertical;"></textarea>
+        <button class="btn btn-ghost btn-sm" id="tsApproveNotesBtn" onclick="saveTsApproveNotes()" style="margin-top:6px;font-size:12px;">Save notes</button>
+      </div>
+      <div id="tsApproveErr" class="form-error" style="display:none;color:var(--danger);font-size:13px;margin-top:8px;"></div>
+    </div>
+    <div class="modal-footer" id="tsApproveFooter"></div>
+  </div>
+</div>
+
+<!-- Timesheet per-day override edit -->
+<div class="modal-overlay" id="modal-tsDayEdit">
+  <div class="modal" style="max-width:420px;">
+    <div class="modal-header">
+      <h3>Edit Day — <span id="tsDayLabel"></span></h3>
+      <button class="modal-close" onclick="closeModal('tsDayEdit')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:12px;color:var(--muted);margin:0 0 12px;line-height:1.5;">
+        Overrides sit on top of the immutable clock events. Leave a field blank to keep the recorded value.
+      </p>
+      <div class="field"><label>Start time</label><input type="time" id="tsDayStart" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;"></div>
+      <div class="field"><label>End time</label><input type="time" id="tsDayEnd" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;"></div>
+      <div class="field"><label>Break (minutes)</label><input type="number" id="tsDayBreak" min="0" placeholder="e.g. 30" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;"></div>
+      <div class="field"><label>Note</label><input type="text" id="tsDayNote" maxlength="200" placeholder="reason for the correction" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;"></div>
+      <div id="tsDayErr" class="form-error" style="display:none;color:var(--danger);font-size:13px;"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('tsDayEdit')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveTsDayEdit()">Save day</button>
     </div>
   </div>
 </div>
@@ -4217,6 +4347,107 @@
   </div>
 </div>
 
+<!-- ── 5S Asset Items (tools / parts / consumables on an asset) ── -->
+<div class="modal-overlay" id="modal-fsItems">
+  <div class="modal" style="max-width:680px;width:96%;">
+    <div class="modal-header">
+      <h3 style="margin:0;">Asset Items — <span id="fsItemsTitle"></span></h3>
+      <button class="modal-close" onclick="closeModal('fsItems')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body" style="max-height:70vh;overflow:auto;">
+      <div class="table-wrap" style="margin-bottom:14px;">
+        <table>
+          <thead><tr><th>Type</th><th>Label</th><th>SOP</th><th>Location</th><th>Expiry</th><th></th></tr></thead>
+          <tbody id="fsItemsList"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+        </table>
+      </div>
+      <div id="fsItemsAddBox" style="border-top:1px solid var(--border);padding-top:12px;">
+        <h4 style="margin:0 0 8px;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.6px;">Add item</h4>
+        <div style="display:grid;grid-template-columns:1fr 2fr;gap:8px;margin-bottom:8px;">
+          <select id="fsItemType" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;">
+            <option value="tool">tool</option>
+            <option value="part">part</option>
+            <option value="consumable">consumable</option>
+          </select>
+          <input type="text" id="fsItemLabel" placeholder="Item label *" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;">
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+          <input type="text" id="fsItemLoc" placeholder="Location code (optional)" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;">
+          <input type="date" id="fsItemExpiry" title="Expiry date (optional)" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;">
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:10px;">
+          <input type="checkbox" id="fsItemSop" checked> SOP required for this item
+        </label>
+        <button class="btn btn-primary btn-sm" onclick="fsAddItem()">+ Add item</button>
+        <div id="fsItemsErr" style="display:none;color:var(--danger);font-size:13px;margin-top:8px;"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('fsItems')">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── 5S Asset Edit ── -->
+<div class="modal-overlay" id="modal-fsAssetEdit">
+  <div class="modal" style="max-width:480px;width:96%;">
+    <div class="modal-header">
+      <h3 style="margin:0;">Edit Asset — <span id="fsAssetEditTitle"></span></h3>
+      <button class="modal-close" onclick="closeModal('fsAssetEdit')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field"><label>Label</label><input type="text" id="fsAeLabel" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;"></div>
+      <div class="field"><label>Assigned technician</label><select id="fsAeTech" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;"><option value="">— none —</option></select></div>
+      <div class="field"><label>Static location</label><input type="text" id="fsAeLoc" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;"></div>
+      <div class="field"><label>Notes</label><textarea id="fsAeNotes" rows="2" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;resize:vertical;"></textarea></div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;"><input type="checkbox" id="fsAeActive"> Active</label>
+      <div id="fsAssetEditErr" style="display:none;color:var(--danger);font-size:13px;margin-top:8px;"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('fsAssetEdit')">Cancel</button>
+      <button class="btn btn-primary" onclick="fsSaveAssetEdit()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── 5S Exception Photos ── -->
+<div class="modal-overlay" id="modal-fsExPhotos">
+  <div class="modal" style="max-width:680px;width:96%;">
+    <div class="modal-header">
+      <h3 style="margin:0;">Exception Photos — #<span id="fsExPhotosTitle"></span></h3>
+      <button class="modal-close" onclick="closeModal('fsExPhotos')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body" style="max-height:70vh;overflow:auto;">
+      <div id="fsExPhotosBody" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;">Loading…</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('fsExPhotos')">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── 5S Open Coaching ── -->
+<div class="modal-overlay" id="modal-fsCoaching">
+  <div class="modal" style="max-width:480px;width:96%;">
+    <div class="modal-header">
+      <h3 style="margin:0;">Open Coaching Log</h3>
+      <button class="modal-close" onclick="closeModal('fsCoaching')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:12px;color:var(--muted);margin:0 0 12px;line-height:1.5;">
+        Opens a coaching record anchored to the tech's current 5S compliance band. Use the plan field to record the agreed corrective actions.
+      </p>
+      <div class="field"><label>Technician *</label><select id="fsCoachTech" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;"><option value="">Select…</option></select></div>
+      <div class="field"><label>Plan / agreed actions</label><textarea id="fsCoachPlan" rows="3" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;resize:vertical;"></textarea></div>
+      <div id="fsCoachingErr" style="display:none;color:var(--danger);font-size:13px;margin-top:8px;"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('fsCoaching')">Cancel</button>
+      <button class="btn btn-primary" onclick="fsSaveCoaching()">Open coaching</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Equipment Detail (stub, super_admin sees sensitive) ── -->
 <div class="modal-overlay" id="modal-equipmentDetail">
   <div class="modal" style="max-width:560px;width:96%;">
@@ -4327,6 +4558,11 @@
   <div style="text-align:center;max-width:92vw;max-height:92vh;">
     <img id="vdf-lightbox-img" alt="" style="max-width:92vw;max-height:80vh;border-radius:6px;">
     <div id="vdf-lightbox-caption" style="color:#fff;margin-top:10px;font-size:13px;"></div>
+    <div style="margin-top:10px;display:flex;gap:8px;justify-content:center;">
+      <button class="btn btn-ghost btn-sm" id="vdf-photo-meta-btn" onclick="vdfPhotoMeta()" style="background:rgba(255,255,255,0.12);color:#fff;border-color:rgba(255,255,255,0.3);">Chain-of-custody</button>
+      <button class="btn btn-danger btn-sm" id="vdf-photo-del-btn" onclick="vdfPhotoDelete()" style="display:none;">Delete photo</button>
+    </div>
+    <div id="vdf-lightbox-meta" style="color:#ddd;margin-top:10px;font-size:12px;text-align:left;max-width:560px;white-space:pre-wrap;display:none;background:rgba(0,0,0,0.4);padding:10px 12px;border-radius:6px;"></div>
   </div>
 </div>
 
@@ -4656,7 +4892,7 @@
       </div>
       <div class="field">
         <label>Assigned Technician</label>
-        <select id="v-tech"><option value="">— Unassigned —</option></select>
+        <select id="v-tech" onchange="if(document.getElementById('visitCrewSection').style.display!=='none') renderVisitCrewChips();"><option value="">— Unassigned —</option></select>
       </div>
       <div class="field-row">
         <div class="field"><label>Scheduled Date *</label><input id="v-scheduled-date" type="date"></div>
@@ -4678,8 +4914,28 @@
       </fieldset>
 
       <div class="field"><label>Work Performed</label><textarea id="v-work-done" placeholder="Describe work carried out…"></textarea></div>
+      <div class="field">
+        <label>Customer-facing work summary</label>
+        <textarea id="v-work-summary" placeholder="Plain-language summary the customer sees on their portal…"></textarea>
+        <div style="font-size:11px;color:var(--muted);margin-top:3px;">Shown to the customer. Keep it concise and free of internal jargon.</div>
+      </div>
       <div class="field"><label>Parts Replaced</label><textarea id="v-parts" placeholder="List any parts replaced…"></textarea></div>
+      <div class="field" id="visitPartsLoggedSection" style="display:none;">
+        <label>Parts logged by tech <span style="font-weight:400;color:var(--muted);">(from inventory — read only)</span></label>
+        <div id="v-parts-logged" style="font-size:13px;"></div>
+      </div>
       <div class="field"><label>Notes</label><textarea id="v-notes" placeholder="Additional notes…"></textarea></div>
+
+      <div class="field" id="visitCrewSection" style="display:none;">
+        <label>Additional crew <span style="font-weight:400;color:var(--muted);">(besides the lead technician)</span></label>
+        <div id="v-crew-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;"></div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <select id="v-crew-add" style="flex:1;"><option value="">Add crew member…</option></select>
+          <button type="button" class="btn btn-ghost" onclick="addVisitCrewMember()">Add</button>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px;">Crew changes save immediately.</div>
+      </div>
+
       <div class="form-error" id="err-addVisit"></div>
     </div>
     <div class="modal-footer">
@@ -4696,6 +4952,7 @@
   let allVisits    = [];
   let currentCustomer = null;
   let currentVisitId  = null;
+  let visitCrewState  = [];   // [{id,name}] extra crew (excludes lead) for the edit modal
   let visitFilter  = 'all';                 // legacy; kept for back-compat shim
   // ── Visit-list (IW38-style) state ──────────────────────────────────────
   let vlType       = 'all';                 // 'all' | 'PM' | 'CM'
@@ -4910,7 +5167,7 @@
     loadTechs();
     if (can('admin:view_all')) loadAdmins();
     if (can('audit:view_all') || can('audit:view_self')) loadAudit();
-    if (can('timesheet:view_all')) { initTimesheetWeek(); loadTimesheets(); }
+    if (can('timesheet:view_all')) { initTimesheetWeek(); loadTimesheets(); loadTimesheetQueue(); }
     if (can('schedule:view')) { initScheduleWeek(); loadSchedule(); }
     if (can('inventory:view')) loadInventory();
     if (can('invoice:view')) loadInvoices();
@@ -4970,6 +5227,11 @@
     }
     if (can('audit:view_all') || can('audit:view_self')) document.getElementById('nav-audit').style.display = 'flex';
     if (can('audit:view_all')) document.getElementById('auditVerifyBtn').style.display = '';
+    // Access-denied trail is super_admin-only (sensitive enumeration evidence).
+    if (currentAdmin && currentAdmin.role === 'super_admin') {
+      const dOpt = document.getElementById('auditModeDenied');
+      if (dOpt) dOpt.style.display = '';
+    }
     // Backups — super_admin only (artifact decrypts to the whole DB).
     if (currentAdmin && currentAdmin.role === 'super_admin') {
       const nb = document.getElementById('nav-backups');
@@ -5009,6 +5271,13 @@
     if (can('company:post_message')) {
       const ncm = document.getElementById('nav-companymsg');
       if (ncm) ncm.style.display = 'flex';
+    }
+    // Service Requests triage queue — anyone with visit:view can read the
+    // queue; triage actions additionally require visit:update (gated below).
+    if (can('visit:view')) {
+      const nsr = document.getElementById('nav-svcreq');
+      if (nsr) nsr.style.display = 'flex';
+      refreshSvcReqBadge();
     }
     // Warehouse — anyone with warehouse:view_queue can see the staff
     // roster + checksheet archive. Editing per-asset checklists +
@@ -5515,7 +5784,7 @@
     delegations: 'Delegations', kpi: 'Performance KPI',
     companymsg: 'Company Messages', myprofile: 'My Profile',
     contracts: 'PM Contracts', backups: 'Database Backups',
-    estimates: 'Estimates & Quotes',
+    estimates: 'Estimates & Quotes', svcreq: 'Service Requests',
   };
   function _setCrumbs(items) {
     const wrap = document.getElementById('pcCrumbs');
@@ -5752,6 +6021,7 @@
     'customers','visits','techs','invoices','documents','inventory',
     'schedule','timesheets','payroll','mypay','admins','audit','reviews',
     'fs','delegations','kpi','companymsg','warehouse','myprofile','onboarding',
+    'svcreq',
   ]);
   function _maybeOpenPanelFromHash() {
     let h = (location.hash || '').replace(/^#/, '').trim();
@@ -5825,6 +6095,7 @@
     if (name === 'delegations') { _safeLoad('loadDelegationsPanel', loadDelegationsPanel); }
     if (name === 'contracts') { _safeLoad('loadPmContracts', loadPmContracts); }
     if (name === 'companymsg') { _safeLoad('cmLoad', cmLoad); }
+    if (name === 'svcreq') { _safeLoad('svcReqLoad', svcReqLoad); }
     if (name === 'warehouse') { _safeLoad('whInit', whInit); }
     if (name === 'myprofile') { _safeLoad('loadMpProfile', loadMpProfile); }
     if (name === 'inventory') { _safeLoad('loadInventoryStaffCard', loadInventoryStaffCard); }
@@ -6998,6 +7269,58 @@
     document.getElementById('vdf-lightbox-img').src = p.url || '';
     document.getElementById('vdf-lightbox-caption').textContent =
       (p.label || '') + ' — ' + (p.uploader_name || '') + ' — ' + (PC.fmtDateTime(p.timestamp));
+    // Reset the metadata panel each time the visible photo changes.
+    const meta = document.getElementById('vdf-lightbox-meta');
+    if (meta) { meta.style.display = 'none'; meta.textContent = ''; }
+    const delBtn = document.getElementById('vdf-photo-del-btn');
+    if (delBtn) delBtn.style.display = can('visit:view_photos') ? '' : 'none';
+  }
+  async function vdfPhotoMeta() {
+    const p = vdfState.photos[vdfState.lightboxIndex];
+    const pid = p && (p.photo_id != null ? p.photo_id : p.id);
+    if (pid == null) { toast('No photo id available.', 'error'); return; }
+    const meta = document.getElementById('vdf-lightbox-meta');
+    meta.style.display = 'block';
+    meta.textContent = 'Loading chain-of-custody…';
+    try {
+      const m = await api('GET', `/api/admin/photos/${pid}/meta`);
+      const lines = [];
+      const add = (k, v) => { if (v !== null && v !== undefined && v !== '') lines.push(k + ': ' + v); };
+      add('Photo id', m.id);
+      add('Category', m.category);
+      add('File', m.filename);
+      add('— Server stamps —', ' ');
+      add('Uploaded at', PC.fmtDateTime(m.uploaded_at));
+      add('Server IP', m.server_ip);
+      add('Server UA', m.server_ua);
+      add('— Client claims —', ' ');
+      add('Client captured at', PC.fmtDateTime(m.client_captured_at));
+      add('Geo (claimed)', (m.geo_lat != null && m.geo_lng != null)
+            ? `${m.geo_lat}, ${m.geo_lng}` + (m.geo_accuracy_m != null ? ` (±${m.geo_accuracy_m}m)` : '') : null);
+      add('Geo captured at', PC.fmtDateTime(m.geo_captured_at));
+      add('Device', [m.device_platform, m.device_model].filter(Boolean).join(' / '));
+      add('Screen', m.device_screen);
+      add('Camera', [m.camera_facing, (m.camera_width && m.camera_height) ? `${m.camera_width}×${m.camera_height}` : ''].filter(Boolean).join(' '));
+      add('Network', m.network_type);
+      add('App version', m.app_version);
+      meta.textContent = lines.length ? lines.join('\n') : 'No metadata recorded for this photo.';
+    } catch (e) {
+      meta.textContent = 'Unable to load metadata: ' + e.message;
+    }
+  }
+  async function vdfPhotoDelete() {
+    const p = vdfState.photos[vdfState.lightboxIndex];
+    const pid = p && (p.photo_id != null ? p.photo_id : p.id);
+    if (pid == null) { toast('No photo id available.', 'error'); return; }
+    if (!confirm(`Delete this photo (${p.label || 'untitled'})? This permanently removes the file and cannot be undone.`)) return;
+    try {
+      await api('DELETE', `/api/admin/photos/${pid}`);
+      toast('Photo deleted.', 'success');
+      vdfLightboxClose();
+      await loadVdfPhotos();
+    } catch (e) {
+      toast('Delete failed: ' + e.message, 'error');
+    }
   }
 
   function _maybeOpenVisitFromHash() {
@@ -7140,6 +7463,13 @@
       const isActive = !(t.active === 0 || t.active === false);
       promoBtn.style.display = (isActive && can('admin:create')) ? '' : 'none';
     }
+
+    // Technician action buttons — gated by perm (DATA-scoped, not feature-gated)
+    const isActiveTech = !(t.active === 0 || t.active === false);
+    const _toggle = (id, show) => { const b = document.getElementById(id); if (b) b.style.display = show ? '' : 'none'; };
+    _toggle('tdf-reset-mfa-btn',   isActiveTech && can('tech:reset_pin'));
+    _toggle('tdf-approve-ot-btn',  isActiveTech && can('tech:approve_overtime'));
+    _toggle('tdf-release-kpi-btn', can('tech:release_kpi_period'));
   }
 
   // ── KPI section ───────────────────────────────────────────────────────────
@@ -7823,6 +8153,8 @@
   // ── CV edit-request approval queue (per tech) ─────────────────────
   async function loadTdfCvRequests() {
     if (!tdfState.tech) return;
+    const grantBox = document.getElementById('tdf-cv-grant-direct');
+    if (grantBox) grantBox.style.display = can('tech:grant_cv_edit') ? 'flex' : 'none';
     const el = document.getElementById('tdf-cv-requests');
     let list = [];
     try {
@@ -7862,6 +8194,21 @@
       toast('Denied.', 'success');
       loadTdfCvRequests();
     } catch (e) { toast('Deny failed: ' + e.message, 'error'); }
+  }
+  async function tdfGrantCvDirect() {
+    const t = tdfState.tech; if (!t) return;
+    const entryId = parseInt(document.getElementById('tdf-cv-grant-entry').value, 10);
+    const mins = parseInt(document.getElementById('tdf-cv-grant-mins').value, 10) || 60;
+    if (!entryId) { toast('Enter a CV entry number.', 'error'); return; }
+    const grantUntil = new Date(Date.now() + mins * 60000).toISOString();
+    try {
+      await api('POST', `/api/admin/technicians/${t.id}/cv/${entryId}/grant-edit`, { grant_until: grantUntil });
+      toast(`Edit access granted on entry #${entryId} for ${mins} min.`, 'success');
+      document.getElementById('tdf-cv-grant-entry').value = '';
+      loadTdfCvRequests();
+    } catch (e) {
+      toast('Grant failed: ' + (e.message === 'not_found' ? 'no such CV entry' : e.message), 'error');
+    }
   }
 
   // ── Company Messages panel ────────────────────────────────────────
@@ -7914,6 +8261,98 @@
     } catch (e) {
       toast('Hide failed: ' + e.message, 'error');
     }
+  }
+
+  // ── Service Requests triage queue ─────────────────────────────────
+  const SVCREQ_STATUS_COLORS = {
+    new:       { bg: 'var(--err-bg)',   fg: 'var(--err-fg)' },
+    triaged:   { bg: 'var(--steel-bg)', fg: 'var(--steel)' },
+    scheduled: { bg: 'var(--teal-bg)',  fg: 'var(--teal-deep)' },
+    closed:    { bg: 'var(--surface-2)', fg: 'var(--muted)' },
+  };
+  function _svcReqStatusBadge(s) {
+    const c = SVCREQ_STATUS_COLORS[s] || { bg: 'var(--surface-2)', fg: 'var(--muted)' };
+    return `<span class="badge" style="background:${c.bg};color:${c.fg};">${escHtml(s || '—')}</span>`;
+  }
+  async function svcReqLoad() {
+    const tbody = document.getElementById('svcReqBody');
+    if (!tbody) return;
+    const status = document.getElementById('svcReqStatusFilter').value;
+    let list = [];
+    try {
+      list = await api('GET', '/api/admin/service-requests' + (status ? '?status=' + encodeURIComponent(status) : ''));
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="6" class="empty" style="padding:16px;color:var(--err-fg);">Could not load: ${escHtml(e.message)}</td></tr>`;
+      return;
+    }
+    if (!list.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty" style="padding:16px;">No service requests' + (status ? ' with status “' + escHtml(status) + '”' : '') + '.</td></tr>';
+      return;
+    }
+    const canTriage = can('visit:update');
+    tbody.innerHTML = list.map(r => {
+      const cust = r.customer_name || ('Customer #' + r.customer_id);
+      const code = r.customer_code ? ` <span class="muted" style="font-size:11px;">(${escHtml(r.customer_code)})</span>` : '';
+      const eq = r.equipment_name ? `<div class="muted" style="font-size:11px;">Equipment: ${escHtml(r.equipment_name)}</div>` : '';
+      const pref = r.preferred_date ? `<div class="muted" style="font-size:11px;">Preferred: ${escHtml(r.preferred_date)}</div>` : '';
+      const actions = canTriage && r.status !== 'closed'
+        ? `<div style="display:flex;gap:6px;flex-wrap:wrap;">
+             ${r.status === 'new' ? `<button class="btn btn-ghost btn-sm" onclick="svcReqTriage(${r.id},'triaged')">Mark triaged</button>` : ''}
+             <button class="btn btn-primary btn-sm" onclick="svcReqScheduleToVisit(${r.id})">Schedule visit</button>
+             <button class="btn btn-ghost btn-sm" onclick="svcReqTriage(${r.id},'closed')">Close</button>
+           </div>`
+        : (r.visit_id ? `<span class="muted" style="font-size:11px;">Visit #${r.visit_id}</span>` : '<span class="muted" style="font-size:11px;">—</span>');
+      return `<tr style="border-top:1px solid var(--border);">
+        <td style="padding:10px 14px;white-space:nowrap;color:var(--muted);font-size:12px;">${PC.fmtDateTime(r.created_at)}</td>
+        <td style="padding:10px 14px;"><strong>${escHtml(cust)}</strong>${code}${eq}</td>
+        <td style="padding:10px 14px;">${escHtml(r.request_type || '—')}</td>
+        <td style="padding:10px 14px;"><div>${escHtml(r.subject || '—')}</div><div class="muted" style="font-size:12px;white-space:pre-wrap;max-width:340px;">${escHtml((r.body || '').slice(0, 180))}${(r.body || '').length > 180 ? '…' : ''}</div>${pref}</td>
+        <td style="padding:10px 14px;">${_svcReqStatusBadge(r.status)}</td>
+        <td style="padding:10px 14px;">${actions}</td>
+      </tr>`;
+    }).join('');
+  }
+  async function svcReqTriage(reqId, status, visitId) {
+    const verb = status === 'closed' ? 'Close' : (status === 'scheduled' ? 'Mark scheduled' : 'Mark triaged');
+    const note = prompt(`${verb} this request — optional note for the audit trail:`, '');
+    if (note === null) return; // cancelled
+    try {
+      await api('PUT', `/api/admin/service-requests/${reqId}/triage`,
+                { status, visit_id: visitId || null, note: note.trim() });
+      toast('Request updated → ' + status + '.', 'success');
+      svcReqLoad();
+      refreshSvcReqBadge();
+    } catch (e) {
+      toast('Triage failed: ' + e.message, 'error');
+    }
+  }
+  async function svcReqScheduleToVisit(reqId) {
+    // The request becomes 'scheduled' once a visit exists. We let the admin
+    // optionally link an existing visit id; creating a brand-new visit from
+    // here is left to the Visits panel (this only records the linkage).
+    const vid = prompt('Link to an existing Visit #? Leave blank to mark scheduled without a link:', '');
+    if (vid === null) return; // cancelled
+    const visitId = vid.trim() ? parseInt(vid.trim(), 10) : null;
+    if (vid.trim() && (!visitId || visitId < 1)) { toast('Enter a valid visit number.', 'error'); return; }
+    try {
+      await api('PUT', `/api/admin/service-requests/${reqId}/triage`,
+                { status: 'scheduled', visit_id: visitId, note: visitId ? ('Linked to visit #' + visitId) : '' });
+      toast('Request marked scheduled.', 'success');
+      svcReqLoad();
+      refreshSvcReqBadge();
+    } catch (e) {
+      toast('Update failed: ' + e.message, 'error');
+    }
+  }
+  async function refreshSvcReqBadge() {
+    const badge = document.getElementById('svcReqBadge');
+    if (!badge || !can('visit:view')) return;
+    try {
+      const list = await api('GET', '/api/admin/service-requests?status=new');
+      const n = (list || []).length;
+      if (n > 0) { badge.textContent = String(n); badge.style.display = ''; }
+      else { badge.style.display = 'none'; }
+    } catch { /* silent — badge is best-effort */ }
   }
 
   // ── Warehouse panel (Pass A) ──────────────────────────────────────
@@ -8654,7 +9093,7 @@
       const _labelLink = function (r) {
         const label = escHtml(r.label || '');
         if (r.payslip_id && typeof PC !== 'undefined' && PC.gateLinkHtml) {
-          return PC.gateLinkHtml('payslip', r.payslip_id, r.label || '', {});
+          return PC.gateLinkHtml('payslip', r.payslip_id, r.label || '', {onClick: 'function(){ adminOpenPayslip(' + r.payslip_id + '); }'});
         }
         return label;
       };
@@ -8689,6 +9128,54 @@
     openOffboard('tech', tdfState.tech.id, tdfState.tech.name);
   }
 
+  async function tdfResetMfa() {
+    const t = tdfState.tech; if (!t) return;
+    if (!confirm(`Reset MFA for ${t.name}? Their authenticator is removed and they'll be forced to re-enrol on next login.`)) return;
+    try {
+      await api('POST', `/api/admin/technicians/${t.id}/mfa/reset`, {});
+      toast('MFA reset — tech must re-enrol at next login.', 'success');
+    } catch (e) {
+      toast('MFA reset failed: ' + e.message, 'error');
+    }
+  }
+
+  async function tdfApproveOvertime() {
+    const t = tdfState.tech; if (!t) return;
+    const notes = prompt(`Approve overtime for ${t.name}? Optional note for the record:`, '');
+    if (notes === null) return; // cancelled
+    try {
+      await api('POST', `/api/admin/technicians/${t.id}/overtime/approve`, { notes: notes.trim() });
+      toast('Overtime approved.', 'success');
+    } catch (e) {
+      toast('Overtime approval failed: ' + e.message, 'error');
+    }
+  }
+
+  async function tdfReleaseKpiPeriod() {
+    const t = tdfState.tech; if (!t) return;
+    let periods = [];
+    try {
+      const r = await api('GET', '/api/admin/kpi/periods');
+      periods = (r.periods || r || []);
+    } catch (e) {
+      toast('Could not load KPI periods: ' + e.message, 'error');
+      return;
+    }
+    if (!periods.length) { toast('No KPI periods exist yet.', 'error'); return; }
+    const keys = periods.map(p => p.period_key);
+    const def = keys[0];
+    const pk = prompt(`Release which KPI period to ${t.name}?\nAvailable: ${keys.join(', ')}`, def);
+    if (pk === null) return;
+    const chosen = pk.trim();
+    if (!keys.includes(chosen)) { toast('Unknown period key: ' + chosen, 'error'); return; }
+    try {
+      await api('POST', `/api/admin/technicians/${t.id}/kpi-period/${encodeURIComponent(chosen)}/release`, {});
+      toast(`Scorecard for ${chosen} released to ${t.name}.`, 'success');
+    } catch (e) {
+      toast('Release failed: ' + e.message, 'error');
+    }
+  }
+
   function _maybeOpenTechnicianFromHash() {
     const m = (location.hash || '').match(/^#technician\/(\d+)$/);
     if (!m) return;
@@ -8707,17 +9194,21 @@
         tbody.innerHTML = '<tr><td class="empty">No equipment on record.</td></tr>';
         return;
       }
-      tbody.innerHTML = eq.map(e => `
-        <tr>
-          <td><strong>${e.name}</strong></td>
-          <td>${e.type || '—'}</td>
-          <td>${e.model || '—'}</td>
-          <td>${e.serial_number || '—'}</td>
-          <td>${e.location || '—'}</td>
-          <td>
+      const canUpd = can('customer:update');
+      tbody.innerHTML = eq.map(e => {
+        const inactive = (e.active === 0 || e.active === false);
+        return `
+        <tr${inactive ? ' style="opacity:0.55;"' : ''}>
+          <td><strong>${esc(e.name)}</strong>${inactive ? ' <span class="badge" style="background:var(--surface-2);color:var(--muted);">inactive</span>' : ''}</td>
+          <td>${esc(e.type) || '—'}</td>
+          <td>${esc(e.model) || '—'}</td>
+          <td>${esc(e.serial_number) || '—'}</td>
+          <td>${esc(e.location) || '—'}</td>
+          <td style="white-space:nowrap;">
+            ${(canUpd && !inactive) ? `<button class="btn btn-ghost btn-sm" onclick="deactivateEquipment(${e.id},'${esc(e.name)}')">Deactivate</button> ` : ''}
             <button class="btn btn-danger btn-sm" onclick="deleteEquipment(${e.id},'${esc(e.name)}')">Remove</button>
           </td>
-        </tr>`).join('');
+        </tr>`; }).join('');
     } catch {}
   }
 
@@ -8895,6 +9386,17 @@
       loadCustomerEquipment();
       await loadAllVisits();
     } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  // Soft-delete: hides the unit from everyday pick-lists while preserving
+  // the visit_id → equipment_id history (vs. the hard "Remove" above).
+  async function deactivateEquipment(id, name) {
+    if (!confirm(`Deactivate equipment "${name}"?\n\nIt will be hidden from new-visit pick-lists but its visit history is kept. This is reversible by re-activating the unit.`)) return;
+    try {
+      await api('POST', `/api/admin/equipment/${id}/deactivate`);
+      toast('Equipment deactivated.', 'success');
+      loadCustomerEquipment();
+    } catch(e) { toast('Deactivate failed: ' + e.message, 'error'); }
   }
 
   // ── Visits ─────────────────────────────────────────────────────────────────
@@ -9650,6 +10152,8 @@
       await populateCustomerSelect(null);
       await loadEquipmentForVisit(null);
       populateTechSelect();
+      document.getElementById('visitCrewSection').style.display = 'none';
+      document.getElementById('visitPartsLoggedSection').style.display = 'none';
     }
     document.getElementById(`modal-${name}`).classList.add('open');
   }
@@ -9662,6 +10166,8 @@
     clearVisitForm();
     loadEquipmentForVisitForCustomer();
     populateTechSelect();
+    document.getElementById('visitCrewSection').style.display = 'none';
+    document.getElementById('visitPartsLoggedSection').style.display = 'none';
     document.getElementById('modal-addVisit').classList.add('open');
   }
 
@@ -9706,7 +10212,21 @@
     document.getElementById('v-contact-phone').value  = v.contact_person_phone || '';
     document.getElementById('v-hazards').value        = v.hazards        || '';
     document.getElementById('v-access').value         = v.access_codes   || '';
+    document.getElementById('v-work-summary').value   = v.work_done_summary || '';
+    // Crew picker is edit-only (incremental endpoints need a visit id).
+    document.getElementById('visitCrewSection').style.display = 'block';
+    // Seed from the cached list, then refresh from the canonical crew endpoint
+    // (returns lead + extras with a `lead` flag — we keep only the extras).
+    visitCrewState = (v.crew_tech_ids || []).map((cid, i) => ({
+      id: cid, name: (v.crew_tech_names || [])[i] || ('#' + cid) }));
+    renderVisitCrewChips();
     document.getElementById('modal-addVisit').classList.add('open');
+    try {
+      const crew = await api('GET', `/api/admin/visits/${id}/crew`);
+      visitCrewState = (crew || []).filter(c => !c.lead).map(c => ({ id: c.id, name: c.name }));
+      renderVisitCrewChips();
+    } catch (_) { /* keep cached crew on failure */ }
+    loadVisitPartsLogged(id);
   }
 
   async function submitVisit() {
@@ -9745,6 +10265,9 @@
     try {
       if (currentVisitId) {
         await api('PUT', `/api/admin/visits/${currentVisitId}`, body);
+        // Customer-facing work summary lives on a dedicated endpoint.
+        await api('PUT', `/api/admin/visits/${currentVisitId}/work-summary`,
+                  { summary: document.getElementById('v-work-summary').value.trim() });
       } else {
         await api('POST', '/api/admin/visits', body);
       }
@@ -9760,6 +10283,91 @@
       await api('DELETE', `/api/admin/visits/${id}`);
       await loadAllVisits();
     } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  // ── Visit crew picker (incremental add/remove) ───────────────────────────────
+  function renderVisitCrewChips() {
+    const wrap = document.getElementById('v-crew-chips');
+    if (!wrap) return;
+    if (!visitCrewState.length) {
+      wrap.innerHTML = '<span style="font-size:12px;color:var(--muted);">No additional crew assigned.</span>';
+    } else {
+      wrap.innerHTML = visitCrewState.map(c => `
+        <span class="badge" style="display:inline-flex;align-items:center;gap:6px;background:var(--steel-bg);color:var(--steel);">
+          ${escHtml(c.name)}
+          <button type="button" title="Remove" onclick="removeVisitCrewMember(${c.id})"
+                  style="border:0;background:transparent;color:inherit;cursor:pointer;font-size:14px;line-height:1;padding:0;">×</button>
+        </span>`).join('');
+    }
+    // Rebuild the add-dropdown excluding lead + already-assigned crew.
+    const sel = document.getElementById('v-crew-add');
+    if (sel) {
+      const leadId = parseInt(document.getElementById('v-tech').value) || null;
+      const taken = new Set(visitCrewState.map(c => c.id));
+      if (leadId) taken.add(leadId);
+      sel.innerHTML = '<option value="">Add crew member…</option>' +
+        allTechs.filter(t => t.active && !taken.has(t.id))
+          .map(t => `<option value="${t.id}">${escHtml(t.name)} (${t.tech_code})</option>`).join('');
+    }
+  }
+
+  async function addVisitCrewMember() {
+    if (!currentVisitId) return;
+    const sel = document.getElementById('v-crew-add');
+    const techId = parseInt(sel.value);
+    if (!techId) return;
+    try {
+      await api('POST', `/api/admin/visits/${currentVisitId}/crew/${techId}`);
+      const t = allTechs.find(x => x.id === techId);
+      if (t && !visitCrewState.some(c => c.id === techId)) {
+        visitCrewState.push({ id: techId, name: t.name });
+      }
+      renderVisitCrewChips();
+    } catch(e) { showErr('err-addVisit', e.message); }
+  }
+
+  async function removeVisitCrewMember(techId) {
+    if (!currentVisitId) return;
+    try {
+      await api('DELETE', `/api/admin/visits/${currentVisitId}/crew/${techId}`);
+      visitCrewState = visitCrewState.filter(c => c.id !== techId);
+      renderVisitCrewChips();
+    } catch(e) { showErr('err-addVisit', e.message); }
+  }
+
+  // Read-only reference: parts the tech logged against inventory for this visit.
+  async function loadVisitPartsLogged(visitId) {
+    const sec  = document.getElementById('visitPartsLoggedSection');
+    const host = document.getElementById('v-parts-logged');
+    if (!sec || !host) return;
+    sec.style.display = 'block';
+    host.innerHTML = '<span style="color:var(--muted);">Loading…</span>';
+    try {
+      const parts = await api('GET', `/api/admin/visits/${visitId}/parts`);
+      if (!parts || !parts.length) {
+        host.innerHTML = '<span style="color:var(--muted);">No parts logged against inventory for this visit.</span>';
+        return;
+      }
+      const rows = parts.map(p => {
+        const qty = (p.quantity != null ? p.quantity : '') + (p.part_unit ? ' ' + p.part_unit : '');
+        const line = (p.line_total != null) ? ('J$' + Number(p.line_total).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})) : '';
+        return `<tr>
+          <td style="padding:3px 8px 3px 0;">${escHtml(p.sku || '')}</td>
+          <td style="padding:3px 8px;">${escHtml(p.part_name || '')}</td>
+          <td style="padding:3px 8px;text-align:right;">${escHtml(String(qty))}</td>
+          <td style="padding:3px 0 3px 8px;text-align:right;">${line}</td>
+        </tr>`;
+      }).join('');
+      host.innerHTML = `<table style="width:100%;border-collapse:collapse;">
+        <thead><tr style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">
+          <th style="text-align:left;padding:0 8px 4px 0;">SKU</th>
+          <th style="text-align:left;padding:0 8px 4px;">Part</th>
+          <th style="text-align:right;padding:0 8px 4px;">Qty</th>
+          <th style="text-align:right;padding:0 0 4px 8px;">Line total</th>
+        </tr></thead><tbody>${rows}</tbody></table>`;
+    } catch (e) {
+      host.innerHTML = '<span style="color:var(--muted);">Unable to load logged parts.</span>';
+    }
   }
 
   // ── Reviews ────────────────────────────────────────────────────────────────
@@ -12033,6 +12641,221 @@
     document.body.removeChild(a); URL.revokeObjectURL(url);
   }
 
+  // ── Timesheet approval workflow (biweekly: submitted → supervisor → super_admin) ──
+  let _tsAgg = null;            // currently-open aggregate {timesheet, days, ...}
+  const _TS_STATUS_LABEL = {
+    draft: 'Draft', submitted: 'Submitted',
+    supervisor_approved: 'Supervisor approved',
+    super_admin_approved: 'Fully approved',
+  };
+  function _tsMin(m) {            // minutes → "8h 30m"
+    if (m == null) return '—';
+    const h = Math.floor(m / 60), mm = m % 60;
+    return h ? `${h}h ${mm}m` : `${mm}m`;
+  }
+  function _isoToHm(iso) {        // ISO datetime → "HH:MM" (local-naive, server stores UTC-ish)
+    if (!iso) return '';
+    const m = String(iso).match(/T(\d{2}:\d{2})/);
+    return m ? m[1] : '';
+  }
+  function _hmToIso(date, hm) {   // ("2026-06-08","08:30") → "2026-06-08T08:30:00"
+    if (!hm) return null;
+    return `${date}T${hm}:00`;
+  }
+
+  async function loadTimesheetQueue() {
+    const tbody = document.getElementById('ts-queue');
+    if (!tbody) return;
+    if (!can('timesheet:view_all')) {
+      document.getElementById('ts-queue-card').style.display = 'none';
+      return;
+    }
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">Loading…</td></tr>';
+    try {
+      const rows = await api('GET', '/api/admin/timesheets/pending');
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="empty">Nothing waiting for approval.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = rows.map(r => {
+        const period = `${PC.fmtDate(r.period_start)} – ${PC.fmtDate(r.period_end)}`;
+        const sub = r.submitted_at ? PC.fmtDateTime(r.submitted_at) : '—';
+        return `
+          <tr>
+            <td><strong>${escHtml(r.tech_name || 'Unknown')}</strong>
+                <br><span class="code-pill">${escHtml(r.tech_prid || r.tech_code || '')}</span></td>
+            <td style="white-space:nowrap;">${period}</td>
+            <td style="white-space:nowrap;">${sub}</td>
+            <td><span class="badge">${_TS_STATUS_LABEL[r.status] || r.status}</span></td>
+            <td><button class="btn btn-sm btn-primary" onclick="openTsApprove(${r.id})">Review</button></td>
+          </tr>`;
+      }).join('');
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="5" class="empty">Error: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  async function openTsApprove(id) {
+    document.getElementById('tsApproveErr').style.display = 'none';
+    openModal('tsApprove');
+    document.getElementById('tsApproveDays').innerHTML = '<tr><td colspan="6" class="empty">Loading…</td></tr>';
+    document.getElementById('tsApproveFooter').innerHTML = '';
+    try {
+      _tsAgg = await api('GET', `/api/admin/timesheets/${id}`);
+      renderTsApprove();
+    } catch (e) {
+      document.getElementById('tsApproveDays').innerHTML =
+        `<tr><td colspan="6" class="empty">Error: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  function renderTsApprove() {
+    if (!_tsAgg) return;
+    const ts = _tsAgg.timesheet;
+    const locked = ts.status === 'super_admin_approved';
+    document.getElementById('tsApproveTitle').textContent =
+      `Timesheet — ${escHtml(ts.tech_name || ('tech #' + ts.tech_id))}`;
+    document.getElementById('tsApproveMeta').innerHTML =
+      `<strong>${PC.fmtDate(ts.period_start)} – ${PC.fmtDate(ts.period_end)}</strong> · ` +
+      `Status: <span class="badge">${_TS_STATUS_LABEL[ts.status] || ts.status}</span> · ` +
+      `Worked ${_tsMin(_tsAgg.total_minutes)} · Paid ${_tsMin(_tsAgg.total_paid_minutes)}` +
+      (_tsAgg.total_holiday_minutes ? ` · Holiday ${_tsMin(_tsAgg.total_holiday_minutes)}` : '');
+
+    // Prior rejection reason banner
+    const rej = document.getElementById('tsApproveReject');
+    if (ts.reject_reason) {
+      rej.style.display = 'block';
+      rej.innerHTML = `<strong>Sent back:</strong> ${escHtml(ts.reject_reason)}`;
+    } else { rej.style.display = 'none'; }
+
+    // Days
+    document.getElementById('tsApproveDays').innerHTML = (_tsAgg.days || []).map(d => {
+      const note = d.override_note ? ` <span title="${escHtml(d.override_note)}" style="color:var(--muted);">✎</span>` : '';
+      const hol  = d.is_holiday ? ` <span class="badge" title="${escHtml(d.holiday_name||'')}" style="font-size:9px;">HOL</span>` : '';
+      const editBtn = locked ? '' :
+        `<button class="btn btn-sm btn-ghost" onclick="openTsDayEdit('${d.work_date}')">Edit</button>`;
+      return `
+        <tr${d.has_override ? ' style="background:var(--light);"' : ''}>
+          <td style="white-space:nowrap;">${escHtml(d.weekday)} ${PC.fmtDate(d.work_date)}${hol}</td>
+          <td>${_isoToHm(d.eff_start) || '—'}</td>
+          <td>${_isoToHm(d.eff_end) || '—'}</td>
+          <td>${_tsMin(d.worked_minutes)}${note}</td>
+          <td><strong>${_tsMin(d.paid_minutes)}</strong></td>
+          <td>${editBtn}</td>
+        </tr>`;
+    }).join('');
+
+    // Tech notes
+    const notesEl = document.getElementById('tsApproveNotes');
+    notesEl.value = ts.tech_notes || '';
+    notesEl.disabled = locked;
+    document.getElementById('tsApproveNotesBtn').style.display = locked ? 'none' : '';
+
+    // Footer buttons — role + status gated
+    const isSuper = (currentAdmin && (currentAdmin.role || '').toLowerCase() === 'super_admin');
+    const f = [];
+    f.push(`<button class="btn btn-ghost" onclick="closeModal('tsApprove')">Close</button>`);
+    if (ts.status === 'draft') {
+      f.push(`<button class="btn btn-navy" onclick="tsApproveAction('submit-as-tech')">Submit as tech</button>`);
+    } else if (ts.status === 'submitted') {
+      f.push(`<button class="btn btn-danger" onclick="tsApproveAction('reject')">Send back</button>`);
+      // Stage-1 approval is the supervisor's job. A super_admin can't take
+      // the supervisor pass on a 'submitted' sheet (backend 409s) — they
+      // use force-approve to bypass straight to final.
+      if (isSuper) f.push(`<button class="btn btn-lime" onclick="tsApproveAction('force-approve')">Force approve</button>`);
+      else         f.push(`<button class="btn btn-primary" onclick="tsApproveAction('approve')">Approve (1 of 2)</button>`);
+    } else if (ts.status === 'supervisor_approved') {
+      f.push(`<button class="btn btn-danger" onclick="tsApproveAction('reject')">Send back</button>`);
+      if (isSuper) f.push(`<button class="btn btn-primary" onclick="tsApproveAction('approve')">Final approve</button>`);
+    }
+    document.getElementById('tsApproveFooter').innerHTML = f.join('');
+  }
+
+  async function tsApproveAction(action) {
+    if (!_tsAgg) return;
+    const id = _tsAgg.timesheet.id;
+    const err = document.getElementById('tsApproveErr');
+    err.style.display = 'none';
+    let body = null;
+    if (action === 'reject') {
+      const reason = (prompt('Reason for sending this timesheet back (the tech will see it):') || '').trim();
+      if (!reason) return;
+      body = { reason };
+    } else if (action === 'force-approve') {
+      const reason = (prompt('Force-approve reason (loudly audit-logged):') || '').trim();
+      if (!reason) return;
+      body = { reason };
+    }
+    try {
+      await api('POST', `/api/admin/timesheets/${id}/${action}`, body);
+      toast('Timesheet updated', 'success');
+      closeModal('tsApprove');
+      loadTimesheetQueue();
+      loadTimesheets();
+    } catch (e) {
+      err.style.display = 'block';
+      err.textContent = e.message;
+    }
+  }
+
+  async function saveTsApproveNotes() {
+    if (!_tsAgg) return;
+    const id = _tsAgg.timesheet.id;
+    const err = document.getElementById('tsApproveErr');
+    err.style.display = 'none';
+    try {
+      await api('PATCH', `/api/admin/timesheets/${id}/notes`,
+                { tech_notes: document.getElementById('tsApproveNotes').value });
+      toast('Notes saved', 'success');
+    } catch (e) {
+      err.style.display = 'block';
+      err.textContent = e.message;
+    }
+  }
+
+  let _tsDayDate = null;
+  function openTsDayEdit(date) {
+    if (!_tsAgg) return;
+    const d = (_tsAgg.days || []).find(x => x.work_date === date);
+    if (!d) return;
+    _tsDayDate = date;
+    document.getElementById('tsDayLabel').textContent = `${d.weekday} ${PC.fmtDate(date)}`;
+    document.getElementById('tsDayStart').value = _isoToHm(d.eff_start);
+    document.getElementById('tsDayEnd').value   = _isoToHm(d.eff_end);
+    document.getElementById('tsDayBreak').value = d.manual_break_minutes || '';
+    document.getElementById('tsDayNote').value  = d.override_note || '';
+    document.getElementById('tsDayErr').style.display = 'none';
+    openModal('tsDayEdit');
+  }
+
+  async function saveTsDayEdit() {
+    if (!_tsAgg || !_tsDayDate) return;
+    const id = _tsAgg.timesheet.id;
+    const err = document.getElementById('tsDayErr');
+    err.style.display = 'none';
+    const hmS = document.getElementById('tsDayStart').value;
+    const hmE = document.getElementById('tsDayEnd').value;
+    const brk = document.getElementById('tsDayBreak').value;
+    const note = document.getElementById('tsDayNote').value.trim();
+    const body = {
+      work_date: _tsDayDate,
+      manual_start_time: _hmToIso(_tsDayDate, hmS),
+      manual_end_time:   _hmToIso(_tsDayDate, hmE),
+      manual_break_minutes: brk === '' ? null : parseInt(brk, 10),
+      note: note || null,
+    };
+    try {
+      await api('PUT', `/api/admin/timesheets/${id}/day`, body);
+      toast('Day updated', 'success');
+      closeModal('tsDayEdit');
+      _tsAgg = await api('GET', `/api/admin/timesheets/${id}`);
+      renderTsApprove();
+    } catch (e) {
+      err.style.display = 'block';
+      err.textContent = e.message;
+    }
+  }
+
   // ── Audit Log ──────────────────────────────────────────────────────────────
   // ── Offboarding (access-lifecycle UI) ─────────────────────────────────
   let offboardCtx = null;
@@ -12191,6 +13014,11 @@
     const until = document.getElementById('auditUntil')?.value;
     const minViewsEl = document.getElementById('auditMinViews');
     if (minViewsEl) minViewsEl.style.display = (mode === 'aggregate') ? '' : 'none';
+    // Entity-history lookup inputs only matter in 'entity' mode.
+    const entTypeEl = document.getElementById('auditEntityType');
+    const entIdEl   = document.getElementById('auditEntityId');
+    if (entTypeEl) entTypeEl.style.display = (mode === 'entity') ? '' : 'none';
+    if (entIdEl)   entIdEl.style.display   = (mode === 'entity') ? '' : 'none';
     // Switching out of alerts mode → restore the default thead and
     // hide the bulk-resolve bar so they don't bleed into the audit /
     // access / dormant renderers (which all assume the 5-col shape).
@@ -12224,6 +13052,17 @@
       } else if (mode === 'dormant') {
         const data = await api('GET', '/api/admin/access-lifecycle/dormant?days=90');
         renderDormant(data);
+      } else if (mode === 'denied') {
+        // Forbidden-attempt trail (super_admin) — same row shape as the
+        // mutation chain, so renderAudit handles it directly.
+        const rows = await api('GET', '/api/admin/audit/access-denied?' + params.toString());
+        renderAudit(rows);
+      } else if (mode === 'entity') {
+        const et = entTypeEl?.value || 'customer';
+        const id = parseInt(entIdEl?.value || '', 10);
+        if (!id) { renderAudit([]); return; }
+        const rows = await api('GET', `/api/admin/history/${encodeURIComponent(et)}/${id}?limit=500`);
+        renderAudit(rows);
       } else {
         if (ap) params.set('action_prefix', ap + '.');
         const rows = await api('GET', '/api/admin/audit?' + params.toString());
@@ -12477,6 +13316,8 @@
     document.getElementById('auditUntil').value = '';
     const mv = document.getElementById('auditMinViews');
     if (mv) mv.value = '1';
+    const eid = document.getElementById('auditEntityId');
+    if (eid) eid.value = '';
     loadAudit();
   }
 
@@ -12984,8 +13825,10 @@
       if (el && el.tagName === 'SELECT') el.selectedIndex = 0;
     });
     ['v-scheduled-date','v-scheduled-time','v-completed-date','v-technician','v-work-done','v-parts','v-notes',
-     'v-scope','v-duration','v-contact-name','v-contact-phone','v-hazards','v-access']
+     'v-scope','v-duration','v-contact-name','v-contact-phone','v-hazards','v-access','v-work-summary']
       .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+    visitCrewState = [];
+    const chips = document.getElementById('v-crew-chips'); if (chips) chips.innerHTML = '';
     document.getElementById('err-addVisit').style.display = 'none';
   }
   function clearForm(ids) { ids.forEach(id => { document.getElementById(id).value = ''; }); }
@@ -13121,7 +13964,7 @@
               subjLink = PC.gateLinkHtml(targetType, p.subject_id, p.subject_name || '', {});
             }
             const psLink = (_gateOP && p.id)
-              ? PC.gateLinkHtml('payslip', p.id, '#'+p.id, {})
+              ? PC.gateLinkHtml('payslip', p.id, '#'+p.id, {onClick: 'function(){ adminOpenPayslip(' + p.id + '); }'})
               : '#'+p.id;
             return `
             <tr style="border-top:1px solid var(--border);">
@@ -13690,14 +14533,19 @@
   // the breakdown, then offers Print / Save-as-PDF via a popup window so
   // the browser's native print dialog can route to a printer OR to a PDF.
   let _apCurrent = null;
-  async function apOpenModal(id) {
+  // adminView=true uses the privileged /api/admin/payslips/{id} endpoint
+  // (Director / payroll:view_all / delegation) so the same modal can show
+  // ANY employee's payslip from the tech-detail payroll list and the pay-
+  // period roster — not just the viewer's own ("My pay") payslips.
+  async function adminOpenPayslip(id) { return apOpenModal(id, true); }
+  async function apOpenModal(id, adminView) {
     document.getElementById('modal-adminPayslip').classList.add('open');
     document.getElementById('ap-title').textContent = 'Payslip';
     document.getElementById('ap-body').innerHTML = '<div class="empty" style="padding:14px;">Loading…</div>';
     document.getElementById('ap-print-btn').style.display = 'none';
     document.getElementById('ap-save-btn').style.display  = 'none';
     try {
-      const p = await api('GET', `/api/admin/me/payslips/${id}`);
+      const p = await api('GET', adminView ? `/api/admin/payslips/${id}` : `/api/admin/me/payslips/${id}`);
       _apCurrent = p;
       const cur = p.currency || 'JMD';
       document.getElementById('ap-title').textContent = `Payslip — ${p.period_label || ''}`;
@@ -14040,6 +14888,7 @@
       else if (fsCurrentTab === 'exceptions') await fsRenderExceptions(body);
       else if (fsCurrentTab === 'assets')     await fsRenderAssets(body);
       else if (fsCurrentTab === 'compliance') await fsRenderCompliance(body);
+      else if (fsCurrentTab === 'coaching')   await fsRenderCoaching(body);
     } catch (e) {
       body.innerHTML = `<div style="color:var(--danger);">Failed to load: ${esc(String(e.message||e))}</div>`;
     }
@@ -14370,7 +15219,8 @@
         <td>${_exVis ? esc((e.description||'').slice(0,80)) : '<span style="color:var(--muted);">—</span>'}</td>
         <td>${resolutionCell}</td>
         <td style="white-space:nowrap;">
-          ${e.status !== 'resolved' && can('fs:exception_resolve') ? `<button class="btn btn-edit btn-sm pc-stop-prop" onclick="event.stopPropagation();fsResolve(${e.id})">Resolve</button>` : ''}
+          <button class="btn btn-ghost btn-sm pc-stop-prop" onclick="event.stopPropagation();fsViewExPhotos(${e.id})">Photos</button>
+          ${e.status !== 'resolved' && can('fs:exception_resolve') ? `<button class="btn btn-edit btn-sm pc-stop-prop" style="margin-left:4px;" onclick="event.stopPropagation();fsResolve(${e.id})">Resolve</button>` : ''}
           ${e.status !== 'resolved' && can('fs:exception_escalate_director') ? `<button class="btn btn-danger btn-sm pc-stop-prop" style="margin-left:4px;" onclick="event.stopPropagation();fsEscalate(${e.id})">Escalate</button>` : ''}
         </td>
       </tr>`;
@@ -14412,11 +15262,14 @@
       throw e;
     });
     if (!assets) return;
+    _fsAssetsCache = {};
+    assets.forEach(a => { _fsAssetsCache[a.id] = a; });
     const _gateFS = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    const canManage = can('fs:asset_manage');
     body.innerHTML = `
-      ${can('fs:asset_manage') ? '<button class="btn btn-primary btn-sm pc-stop-prop" onclick="fsAddAsset()" style="margin-bottom:10px;">+ Add Asset</button>' : ''}
+      ${canManage ? '<button class="btn btn-primary btn-sm pc-stop-prop" onclick="fsAddAsset()" style="margin-bottom:10px;">+ Add Asset</button>' : ''}
       <table>
-        <thead><tr><th>Code</th><th>Type</th><th>Label</th><th>Tech</th><th>Active</th></tr></thead>
+        <thead><tr><th>Code</th><th>Type</th><th>Label</th><th>Tech</th><th>Active</th><th>Actions</th></tr></thead>
         <tbody>${assets.length ? assets.map(a => {
           const codeCell = (_gateFS)
             ? PC.gateLinkHtml('fs_asset', a.id, a.asset_code || ('#'+a.id), {})
@@ -14431,8 +15284,12 @@
             <td>${esc(a.label)}</td>
             <td>${techCell}</td>
             <td>${a.active ? 'yes' : 'no'}</td>
+            <td style="white-space:nowrap;">
+              <button class="btn btn-ghost btn-sm pc-stop-prop" onclick="fsManageItems(${a.id})">Items</button>
+              ${canManage ? `<button class="btn btn-edit btn-sm pc-stop-prop" style="margin-left:4px;" onclick="fsEditAsset(${a.id})">Edit</button>` : ''}
+            </td>
           </tr>`;
-        }).join('') : '<tr><td colspan="5" class="empty">No assets.</td></tr>'}
+        }).join('') : '<tr><td colspan="6" class="empty">No assets.</td></tr>'}
         </tbody>
       </table>
     `;
@@ -14448,6 +15305,199 @@
           toast('Asset created','success'); fsLoadCurrentTab(); }
     catch (e) { toast(e.message,'error'); }
   }
+
+  // ── 5S Asset Items (tools/parts/consumables on an asset) ──
+  let _fsAssetsCache = {};
+  let _fsItemsAssetId = null;
+  function _fsTechOptions(selectedId) {
+    const opts = (allTechs || []).filter(t => t.active).map(t =>
+      `<option value="${t.id}"${String(t.id)===String(selectedId)?' selected':''}>${escHtml(t.name)} (${escHtml(t.tech_code||'')})</option>`).join('');
+    return opts;
+  }
+  async function fsManageItems(assetId) {
+    _fsItemsAssetId = assetId;
+    const a = _fsAssetsCache[assetId] || {};
+    document.getElementById('fsItemsTitle').textContent = (a.asset_code || ('#'+assetId)) + (a.label ? ' · ' + a.label : '');
+    // Only managers can add items — hide the add box otherwise.
+    document.getElementById('fsItemsAddBox').style.display = can('fs:asset_manage') ? '' : 'none';
+    document.getElementById('fsItemsErr').style.display = 'none';
+    document.getElementById('fsItemLabel').value = '';
+    document.getElementById('fsItemLoc').value = '';
+    document.getElementById('fsItemExpiry').value = '';
+    document.getElementById('fsItemSop').checked = true;
+    openModal('fsItems');
+    await fsLoadItems();
+  }
+  async function fsLoadItems() {
+    const tb = document.getElementById('fsItemsList');
+    tb.innerHTML = '<tr><td colspan="6" class="empty">Loading…</td></tr>';
+    try {
+      const items = await api('GET', `/api/admin/5s/assets/${_fsItemsAssetId}/items`);
+      const canManage = can('fs:asset_manage');
+      tb.innerHTML = (items && items.length) ? items.map(it => `
+        <tr>
+          <td>${escHtml(it.item_type||'')}</td>
+          <td>${escHtml(it.item_label||'')}</td>
+          <td>${it.sop_required ? 'yes' : 'no'}</td>
+          <td>${escHtml(it.location_code||'—')}</td>
+          <td>${it.expiry_date ? escHtml(it.expiry_date) : '—'}</td>
+          <td style="white-space:nowrap;">${canManage ? `<button class="btn btn-danger btn-sm" onclick="fsRemoveItem(${it.id})">Remove</button>` : ''}</td>
+        </tr>`).join('') : '<tr><td colspan="6" class="empty">No items on this asset.</td></tr>';
+    } catch (e) {
+      tb.innerHTML = `<tr><td colspan="6" class="empty" style="color:var(--danger);">${escHtml(String(e.message||e))}</td></tr>`;
+    }
+  }
+  async function fsAddItem() {
+    const err = document.getElementById('fsItemsErr');
+    err.style.display = 'none';
+    const label = document.getElementById('fsItemLabel').value.trim();
+    if (!label) { err.textContent = 'Item label is required.'; err.style.display = 'block'; return; }
+    const body = {
+      item_type: document.getElementById('fsItemType').value,
+      item_label: label,
+      sop_required: document.getElementById('fsItemSop').checked,
+      location_code: document.getElementById('fsItemLoc').value.trim() || null,
+      expiry_date: document.getElementById('fsItemExpiry').value || null
+    };
+    try {
+      await api('POST', `/api/admin/5s/assets/${_fsItemsAssetId}/items`, body);
+      toast('Item added','success');
+      document.getElementById('fsItemLabel').value = '';
+      document.getElementById('fsItemLoc').value = '';
+      document.getElementById('fsItemExpiry').value = '';
+      document.getElementById('fsItemSop').checked = true;
+      await fsLoadItems();
+    } catch (e) { err.textContent = String(e.message||e); err.style.display = 'block'; }
+  }
+  async function fsRemoveItem(itemId) {
+    if (!confirm('Remove this item from the asset?')) return;
+    try {
+      await api('DELETE', `/api/admin/5s/assets/${_fsItemsAssetId}/items/${itemId}`);
+      toast('Item removed','success');
+      await fsLoadItems();
+    } catch (e) { toast(e.message,'error'); }
+  }
+
+  // ── 5S Asset Edit ──
+  let _fsEditAssetId = null;
+  function fsEditAsset(assetId) {
+    const a = _fsAssetsCache[assetId];
+    if (!a) { toast('Asset not loaded','error'); return; }
+    _fsEditAssetId = assetId;
+    document.getElementById('fsAssetEditTitle').textContent = a.asset_code || ('#'+assetId);
+    document.getElementById('fsAeLabel').value = a.label || '';
+    document.getElementById('fsAeTech').innerHTML = '<option value="">— none —</option>' + _fsTechOptions(a.assigned_tech_id);
+    document.getElementById('fsAeLoc').value = a.static_location || '';
+    document.getElementById('fsAeNotes').value = a.notes || '';
+    document.getElementById('fsAeActive').checked = !!a.active;
+    document.getElementById('fsAssetEditErr').style.display = 'none';
+    openModal('fsAssetEdit');
+  }
+  async function fsSaveAssetEdit() {
+    const err = document.getElementById('fsAssetEditErr');
+    err.style.display = 'none';
+    const techVal = document.getElementById('fsAeTech').value;
+    const body = {
+      label: document.getElementById('fsAeLabel').value.trim(),
+      assigned_tech_id: techVal ? parseInt(techVal, 10) : null,
+      static_location: document.getElementById('fsAeLoc').value.trim() || null,
+      notes: document.getElementById('fsAeNotes').value.trim() || null,
+      active: document.getElementById('fsAeActive').checked
+    };
+    try {
+      await api('PATCH', `/api/admin/5s/assets/${_fsEditAssetId}`, body);
+      toast('Asset updated','success');
+      closeModal('fsAssetEdit');
+      fsLoadCurrentTab();
+    } catch (e) { err.textContent = String(e.message||e); err.style.display = 'block'; }
+  }
+
+  // ── 5S Exception Photos ──
+  async function fsViewExPhotos(excId) {
+    document.getElementById('fsExPhotosTitle').textContent = excId;
+    const box = document.getElementById('fsExPhotosBody');
+    box.innerHTML = 'Loading…';
+    openModal('fsExPhotos');
+    try {
+      const photos = await api('GET', `/api/admin/5s/exceptions/${excId}/photos`);
+      if (!photos || !photos.length) { box.innerHTML = '<div style="color:var(--muted);grid-column:1/-1;">No photos attached to this exception.</div>'; return; }
+      box.innerHTML = photos.map(p => {
+        const src = p.signed_url || p.url || '';
+        return `<a href="${escHtml(src)}" target="_blank" rel="noopener noreferrer" style="display:block;border:1px solid var(--border);border-radius:8px;overflow:hidden;">
+          <img src="${escHtml(src)}" alt="exception photo" style="width:100%;height:130px;object-fit:cover;display:block;">
+        </a>`;
+      }).join('');
+    } catch (e) {
+      box.innerHTML = `<div style="color:var(--danger);grid-column:1/-1;">${escHtml(String(e.message||e))}</div>`;
+    }
+  }
+
+  // ── 5S Coaching ──
+  async function fsRenderCoaching(body) {
+    const list = await api('GET', '/api/admin/5s/coaching').catch(function(e){
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return null;
+      throw e;
+    });
+    if (!list) return;
+    const canManage = can('fs:coaching_manage');
+    const addBtn = canManage ? '<button class="btn btn-primary btn-sm" onclick="fsOpenCoachingModal()" style="margin-bottom:10px;">+ Open Coaching</button>' : '';
+    const _gateFS = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    const rowsHtml = (list && list.length) ? list.map(c => {
+      const techCell = (_gateFS && c.tech_id)
+        ? PC.gateLinkHtml('technician', c.tech_id, c.tech_name || ('tech '+c.tech_id), {})
+        : (c.tech_name || ('tech '+c.tech_id));
+      const bandDot = c.band_at_open
+        ? `<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${fsBandColor(c.band_at_open)};margin-right:5px;vertical-align:middle;"></span>${escHtml(c.band_at_open)}`
+        : '—';
+      const isOpen = c.status === 'open';
+      return `
+      <tr style="${isOpen?'':'opacity:0.65;'}">
+        <td>#${c.id}</td>
+        <td>${techCell}</td>
+        <td>${escHtml(PC.fmtDateTime(c.opened_at))}</td>
+        <td>${bandDot}</td>
+        <td>${escHtml((c.plan_text||'').slice(0,80) || '—')}</td>
+        <td><span class="badge ${isOpen?'badge-in_progress':'badge-completed'}">${escHtml(c.status)}</span></td>
+        <td style="white-space:nowrap;">
+          ${isOpen && canManage ? `<button class="btn btn-edit btn-sm" onclick="fsCloseCoaching(${c.id})">Close</button>` : ''}
+        </td>
+      </tr>`;
+    }).join('') : '<tr><td colspan="7" class="empty">No coaching records.</td></tr>';
+    body.innerHTML = addBtn + `<table>
+      <thead><tr><th>ID</th><th>Tech</th><th>Opened</th><th>Band</th><th>Plan</th><th>Status</th><th>Actions</th></tr></thead>
+      <tbody>${rowsHtml}</tbody></table>`;
+  }
+  function fsOpenCoachingModal() {
+    document.getElementById('fsCoachTech').innerHTML = '<option value="">Select…</option>' + _fsTechOptions(null);
+    document.getElementById('fsCoachPlan').value = '';
+    document.getElementById('fsCoachingErr').style.display = 'none';
+    openModal('fsCoaching');
+  }
+  async function fsSaveCoaching() {
+    const err = document.getElementById('fsCoachingErr');
+    err.style.display = 'none';
+    const techVal = document.getElementById('fsCoachTech').value;
+    if (!techVal) { err.textContent = 'Select a technician.'; err.style.display = 'block'; return; }
+    try {
+      await api('POST', '/api/admin/5s/coaching', {
+        tech_id: parseInt(techVal, 10),
+        plan_text: document.getElementById('fsCoachPlan').value.trim()
+      });
+      toast('Coaching opened','success');
+      closeModal('fsCoaching');
+      if (fsCurrentTab === 'coaching') fsLoadCurrentTab();
+    } catch (e) { err.textContent = String(e.message||e); err.style.display = 'block'; }
+  }
+  async function fsCloseCoaching(id) {
+    const note = prompt('Close note (optional):', '');
+    if (note === null) return;
+    try {
+      await api('POST', `/api/admin/5s/coaching/${id}/close`, { close_note: note || '' });
+      toast('Coaching closed','success');
+      fsLoadCurrentTab();
+    } catch (e) { toast(e.message,'error'); }
+  }
+
   async function fsRenderCompliance(body) {
     const list = await api('GET', '/api/admin/5s/compliance').catch(function(e){
       if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return null;
@@ -15261,11 +16311,35 @@
             <textarea id="fx-notes" maxlength="500" rows="2" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;"></textarea>
           </div>
         </div>
+        <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px;">
+          <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Recent rates (${currency} → JMD)</div>
+          <div id="fx-history" style="font-size:12px;color:var(--muted);">Loading…</div>
+        </div>
         <div style="margin-top:14px;display:flex;justify-content:flex-end;gap:8px;">
           <button class="btn btn-ghost" onclick="document.getElementById('inv-fx-modal').remove()">Cancel</button>
           <button class="btn btn-primary" onclick="_fxSubmit('${currency}')" style="background:var(--navy);color:white;">Save Rate</button>
         </div>
       </div>`;
+    _fxLoadHistory(currency);
+  }
+  // Recent manual/auto FX rates so the operator can sanity-check the rate
+  // they're about to enter against what was used before (GET fx-rates/history).
+  async function _fxLoadHistory(currency) {
+    const host = document.getElementById('fx-history');
+    if (!host) return;
+    try {
+      const rows = await api('GET', `/api/admin/fx-rates/history?currency=${encodeURIComponent(currency)}&limit=10`);
+      if (!rows || !rows.length) { host.textContent = 'No rate history recorded yet.'; return; }
+      host.innerHTML = '<table style="width:100%;border-collapse:collapse;">' +
+        '<thead><tr style="text-align:left;color:var(--muted);"><th style="padding:3px 4px;">Effective</th><th style="padding:3px 4px;">Buy rate</th><th style="padding:3px 4px;">Source</th></tr></thead><tbody>' +
+        rows.map(r => `<tr style="border-top:1px solid var(--border);">
+          <td style="padding:3px 4px;">${escHtml(PC.fmtDate(r.effective_date || r.fetched_at) || '—')}</td>
+          <td style="padding:3px 4px;">${escHtml(String(r.buy_rate != null ? r.buy_rate : '—'))}</td>
+          <td style="padding:3px 4px;">${escHtml(r.source || '—')}</td>
+        </tr>`).join('') + '</tbody></table>';
+    } catch (e) {
+      host.textContent = 'Could not load history: ' + e.message;
+    }
   }
   async function _fxSubmit(currency) {
     const rate = parseFloat(document.getElementById('fx-rate').value||0);
@@ -15544,7 +16618,7 @@
     if (!q || q.length < 2) { box.style.display = 'none'; return; }
     _delegRecipientTimer = setTimeout(async () => {
       try {
-        const rows = await api('GET', '/api/admin/admins');
+        const rows = await api('GET', '/api/admin/users');
         // Filter client-side: exclude self, exclude techs (admin list only)
         const ql = q.toLowerCase();
         const matches = (rows || []).filter(a =>
@@ -15782,10 +16856,47 @@
     _show('kpiBtnPipQueue',  'kpi:pip_acknowledge');
     _show('kpiBtnManual',    'kpi:manual_value_set');
     _show('kpiBtnCustomKpi', 'kpi:def_create');
+    _show('kpiBtnClosePeriod', 'kpi:close_period');
+    kpiSyncClosePeriodBtn();
+  }
+
+  // Disable/relabel the Close-Period button when the selected period is
+  // already closed (the backend 409s on a double-close).
+  function kpiSyncClosePeriodBtn() {
+    const btn = document.getElementById('kpiBtnClosePeriod');
+    if (!btn || btn.style.display === 'none') return;
+    const key = document.getElementById('kpiPeriodSelect').value;
+    const p = kpiAllPeriods.find(x => x.period_key === key);
+    const closed = p && p.status === 'closed';
+    btn.disabled = !!closed;
+    btn.textContent = closed ? 'Period Closed' : 'Close Period';
+    btn.style.opacity = closed ? '0.55' : '';
+  }
+
+  async function kpiClosePeriod(periodKey) {
+    if (!periodKey) return;
+    if (!confirm(`Close period ${periodKey}? Closed periods become immutable and can no longer be recomputed.`)) return;
+    try {
+      await api('POST', `/api/admin/kpi/periods/${encodeURIComponent(periodKey)}/close`, {});
+      toast(`Period ${periodKey} closed.`);
+      // Refresh the cached period list so the dropdown + button reflect it.
+      const r = await api('GET', '/api/admin/kpi/periods?limit=12');
+      kpiAllPeriods = r.periods || [];
+      const sel = document.getElementById('kpiPeriodSelect');
+      const cur = sel.value;
+      sel.innerHTML = kpiAllPeriods.map(p =>
+        `<option value="${p.period_key}">${p.period_key}${p.status === 'closed' ? ' (closed)' : ''}</option>`
+      ).join('');
+      sel.value = cur;
+      kpiSyncClosePeriodBtn();
+    } catch (e) {
+      toast('Failed to close period: ' + e.message, 'error');
+    }
   }
 
   function kpiOnPeriodChange() {
     kpiCurrentPeriod = document.getElementById('kpiPeriodSelect').value;
+    kpiSyncClosePeriodBtn();
     kpiLoadCurrentSubtab();
   }
 
@@ -15943,6 +17054,7 @@
     const annotateBtn = (f.score_id && can('kpi:note_write_score_annotation'))
       ? `<button class="btn btn-ghost btn-sm" onclick="kpiOpenScoreAnnotation(${f.score_id}, ${f.tech_id})" title="Add an annotation to this KPI score">Annotate</button>`
       : '';
+    const detailBtn = `<button class="btn btn-ghost btn-sm" onclick="kpiOpenFlagDetail(${f.id})" title="View the full flag detail and audit trail">Details</button>`;
     const _gate = (typeof PC !== 'undefined' && PC.gateLinkHtml);
     const techRef = _gate
       ? PC.gateLinkHtml('technician', f.tech_id, f.tech_name || ('tech #' + f.tech_id), {onClick: 'function(){ kpiOpenScorecard(' + f.tech_id + '); }'})
@@ -15959,7 +17071,7 @@
           <div style="margin-top:8px;font-size:12px;color:var(--muted);">Period: ${esc(f.period_key)} · Created ${created} · ${daysOpen} open · Status: <strong>${esc(f.status)}</strong></div>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;max-width:340px;">
-          ${annotateBtn}${actions}
+          ${detailBtn}${annotateBtn}${actions}
         </div>
       </div>
     </div>`;
@@ -16041,6 +17153,43 @@
       toast('Overridden (audit logged).');
       kpiLoadFlagQueue(); refreshKpiFlagBadge();
     } catch (e) { toast('Failed: ' + e.message, 'error'); }
+  }
+
+  // Full flag detail + chain-hashed audit trail (GET /kpi/flags/{id}).
+  async function kpiOpenFlagDetail(flagId) {
+    kpiAddonOpen('Flag #' + flagId, '<div style="color:var(--muted);">Loading…</div>');
+    try {
+      const d = await api('GET', '/api/admin/kpi/flags/' + flagId);
+      const sevColor = KPI_SEV_COLORS[d.severity] || 'var(--muted)';
+      const row = (lbl, val) => val == null || val === ''
+        ? '' : `<div style="display:flex;gap:10px;padding:4px 0;border-bottom:1px solid var(--border-light,var(--border));">
+            <div style="min-width:140px;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.4px;">${lbl}</div>
+            <div style="flex:1;">${val}</div></div>`;
+      const audit = (d.audit || []).map(a => `
+        <div style="padding:6px 0;border-bottom:1px solid var(--border-light,var(--border));font-size:13px;">
+          <div><strong>${esc(a.action || '')}</strong> <span style="color:var(--muted);">— ${esc(a.actor_label || '')}${a.actor_role ? ' ('+esc(a.actor_role)+')' : ''}</span></div>
+          <div style="color:var(--muted);font-size:12px;">${PC.fmtDateTime(a.created_at)}</div>
+        </div>`).join('') || '<div style="color:var(--muted);">No audit entries.</div>';
+      const html = `
+        <div style="margin-bottom:10px;">
+          <span style="font-weight:700;color:${sevColor};text-transform:uppercase;font-size:12px;letter-spacing:.3px;">${KPI_SEV_LABELS[d.severity] || esc(d.severity || '')}</span>
+        </div>
+        ${row('Technician', esc(d.tech_name || ('tech #' + d.tech_id)) + (d.tech_role ? ' <span style="color:var(--muted);">('+esc(d.tech_role)+')</span>' : ''))}
+        ${row('KPI', esc(KPI_KEY_LABELS[d.kpi_key] || d.kpi_key || ''))}
+        ${row('Period', esc(d.period_key || ''))}
+        ${row('Status', '<strong>'+esc(d.status || '')+'</strong>')}
+        ${row('Reason', esc(d.reason || ''))}
+        ${row('Override reason', esc(d.override_reason || ''))}
+        ${row('Resolution notes', esc(d.resolution_notes || ''))}
+        ${row('Acknowledged', d.acknowledged_at ? PC.fmtDateTime(d.acknowledged_at) : '')}
+        ${row('Resolved', d.resolved_at ? PC.fmtDateTime(d.resolved_at) : '')}
+        ${row('Created', PC.fmtDateTime(d.created_at))}
+        <h4 style="margin:16px 0 6px 0;">Audit trail</h4>
+        ${audit}`;
+      kpiAddonOpen('Flag #' + flagId, html);
+    } catch (e) {
+      kpiAddonOpen('Flag #' + flagId, '<div style="color:var(--red);">Failed to load: ' + esc(e.message) + '</div>');
+    }
   }
 
   // ── Scorecard ────────────────────────────────────────────────────────────
@@ -16184,10 +17333,10 @@
       const tiers = ['level_1','level_2','level_3'];
       const grid = document.getElementById('kpiThresholdsGrid');
       grid.innerHTML = `<div class="table-wrap"><table>
-        <thead><tr><th>KPI</th>${tiers.map(t => `<th>${t}</th>`).join('')}</tr></thead>
+        <thead><tr><th>KPI</th>${tiers.map(t => `<th>${t}</th>`).join('')}<th>Actions</th></tr></thead>
         <tbody>${kpiThresholdDefs.map(d => `
           <tr>
-            <td><strong>${esc(d.display_name || d.kpi_key)}</strong><div style="color:var(--muted);font-size:11px;">${esc(d.direction || '')}</div></td>
+            <td><strong>${esc(d.display_name || d.kpi_key)}</strong><div style="color:var(--muted);font-size:11px;">${esc(d.direction || '')}${d.compute_kind === 'manual' ? ' · manual' : ''}</div></td>
             ${tiers.map(t => {
               const thr = (d.thresholds || {})[t] || {};
               const g = thr.green_threshold ?? '—';
@@ -16208,6 +17357,11 @@
                 </div>
               </td>`;
             }).join('')}
+            <td>
+              ${d.compute_kind === 'manual' ? `<button class="btn btn-ghost btn-sm" onclick="kpiOpenManualHistory('${d.kpi_key}','${esc(d.display_name||d.kpi_key)}')" title="Manual value entry history">History</button>` : ''}
+              ${(d.compute_kind === 'manual' && can('kpi:def_archive')) ? `<button class="btn btn-danger btn-sm" onclick="kpiArchiveDefinition('${d.kpi_key}','${esc(d.display_name||d.kpi_key)}')" title="Archive this custom KPI">Archive</button>` : ''}
+              ${d.compute_kind !== 'manual' ? '<span style="color:var(--muted-2);font-size:11px;">built-in</span>' : ''}
+            </td>
           </tr>`).join('')}
         </tbody></table></div>`;
     } catch (e) {
@@ -16239,6 +17393,52 @@
 
   function kpiThresholdResetConfirm() {
     toast('Defaults reset is a manual ops task — contact the DBA.', 'info');
+  }
+
+  // Manual value entry history for a manually-scored KPI.
+  async function kpiOpenManualHistory(kpiKey, label) {
+    kpiAddonOpen('Manual history · ' + (label || kpiKey), '<div style="color:var(--muted);">Loading…</div>');
+    try {
+      const r = await api('GET', `/api/admin/kpi/definitions/${encodeURIComponent(kpiKey)}/manual-history?limit=200`);
+      const hist = r.history || [];
+      if (!hist.length) {
+        kpiAddonOpen('Manual history · ' + (label || kpiKey), '<div style="color:var(--muted);">No manual values recorded for this KPI.</div>');
+        return;
+      }
+      const rows = hist.map(h => `
+        <tr>
+          <td style="padding:4px 10px 4px 0;">${esc(h.period_key || '')}</td>
+          <td style="padding:4px 10px;">${esc(h.tech_name || ('tech #' + (h.tech_id||'')))}</td>
+          <td style="padding:4px 10px;text-align:right;">${esc(String(h.raw_value ?? ''))}</td>
+          <td style="padding:4px 10px;text-align:right;">${esc(String(h.sample_size ?? ''))}</td>
+          <td style="padding:4px 10px;">${h.band ? `<span style="color:${KPI_SEV_COLORS[h.band]||'var(--muted)'};">${esc(h.band)}</span>` : ''}</td>
+          <td style="padding:4px 0 4px 10px;color:var(--muted);font-size:12px;">${PC.fmtDateTime(h.computed_at)}</td>
+        </tr>`).join('');
+      const html = `<table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead><tr style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.4px;">
+          <th style="text-align:left;padding:0 10px 4px 0;">Period</th>
+          <th style="text-align:left;padding:0 10px 4px;">Technician</th>
+          <th style="text-align:right;padding:0 10px 4px;">Value</th>
+          <th style="text-align:right;padding:0 10px 4px;">Sample</th>
+          <th style="text-align:left;padding:0 10px 4px;">Band</th>
+          <th style="text-align:left;padding:0 0 4px 10px;">Computed</th>
+        </tr></thead><tbody>${rows}</tbody></table>`;
+      kpiAddonOpen('Manual history · ' + (label || kpiKey), html);
+    } catch (e) {
+      kpiAddonOpen('Manual history · ' + (label || kpiKey), '<div style="color:var(--red);">Failed: ' + esc(e.message) + '</div>');
+    }
+  }
+
+  async function kpiArchiveDefinition(kpiKey, label) {
+    if (!confirm(`Archive the custom KPI "${label || kpiKey}"? It will no longer be scored or appear in scorecards.`)) return;
+    try {
+      await api('POST', `/api/admin/kpi/definitions/${encodeURIComponent(kpiKey)}/archive`, {});
+      toast('KPI archived.');
+      kpiThresholdDefs = [];
+      kpiLoadThresholds();
+    } catch (e) {
+      toast('Failed to archive: ' + e.message, 'error');
+    }
   }
 
   // ── Weekly Flash Report ──────────────────────────────────────────────────
@@ -16393,11 +17593,20 @@
   window.kpiOpenCoachingLog = async function(techId){
     try {
       const r = await kpiAddonApi('GET', `/api/admin/kpi/notes?tech_id=${techId}&note_kind=coaching&limit=50`);
-      const items = (r.notes || []).map(n => `
-        <div style="border-left:3px solid var(--steel);padding:8px 12px;margin-bottom:8px;background:var(--surface-2);">
-          <div style="font-size:11px;color:var(--muted);">${_h(n.created_at||'')} · ${_h(n.status||'')}</div>
+      const items = (r.notes || []).map(n => {
+        const archived = (n.status || '') === 'archived';
+        const archiveBtn = archived
+          ? '<span style="font-size:11px;color:var(--muted-2);">archived</span>'
+          : `<button class="btn btn-ghost btn-sm" onclick="kpiArchiveNote(${n.id}, ${techId})" title="Archive this note">Archive</button>`;
+        return `
+        <div style="border-left:3px solid var(--steel);padding:8px 12px;margin-bottom:8px;background:var(--surface-2);${archived ? 'opacity:.6;' : ''}">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+            <div style="font-size:11px;color:var(--muted);">${_h(n.created_at||'')} · ${_h(n.status||'')}</div>
+            ${archiveBtn}
+          </div>
           <div style="white-space:pre-wrap;margin-top:4px;">${_h(n.body||'')}</div>
-        </div>`).join('') || '<div style="color:var(--muted-2);">No coaching notes yet.</div>';
+        </div>`;
+      }).join('') || '<div style="color:var(--muted-2);">No coaching notes yet.</div>';
       kpiAddonOpen('Coaching Log',
         items +
         `<hr/><textarea id="kpi_coach_body" rows="4" maxlength="2000" placeholder="Add a coaching note..." style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;"></textarea>
@@ -16413,6 +17622,13 @@
       await kpiAddonApi('POST', '/api/admin/kpi/notes', { note_kind:'coaching', tech_id:techId, body });
       kpiAddonClose(); kpiOpenCoachingLog(techId);
     } catch(e){ alert(e.message); }
+  };
+  window.kpiArchiveNote = async function(noteId, techId){
+    if (!confirm('Archive this note? It will be hidden from the active log.')) return;
+    try {
+      await kpiAddonApi('POST', `/api/admin/kpi/notes/${noteId}/archive`, {});
+      kpiAddonClose(); kpiOpenCoachingLog(techId);
+    } catch(e){ alert('Failed: ' + e.message); }
   };
 
   // ── Recognition (any role with note_view) ───────────────────────────────

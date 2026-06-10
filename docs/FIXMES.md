@@ -20,6 +20,24 @@ marker text in source if the line has drifted.
 | `must_enrol_mfa` flag now vestigial at runtime | Cosmetic | The login gate hard-requires MFA for every account regardless of the flag (`commit 2e8ead0`). The column + `bootstrap_super_admin` setter remain as explicit ops-tracking signal. Future cleanup may drop the column if no admin tooling reads it. |
 | Receive flow allows "(no location)" fallback | Functional | The Pass C Receive modal exposes a "(no location)" option that triggers the legacy GRN path (no chain-hashed `part_movement`). Useful during transition; should be removed once warehouse staff are trained on the location-aware flow. |
 
+## Backend routes intentionally WITHOUT admin UI (disposition log)
+
+During the 2026-06 "wire every unwired endpoint" sweep, the routes below
+were reviewed and **deliberately left without a new admin-UI surface**.
+They are NOT dead code and MUST NOT be silently deleted — each is either
+superseded by a canonical equivalent the UI already uses, or reserved for
+a future module. Documented here so a future dev knows the call was made.
+
+| Route | Disposition | Rationale |
+|---|---|---|
+| `GET /api/company/messages` (main.py ~4953) | **Superseded** | Viewer feed (admin-or-tech). The staff landing reads messages from the `/api/staff/me/home` embed (`staff_home.html` `loadMessagesPanel`) and the admin board is the `cm*` UI on `/api/admin/company/messages`. Standalone feed has no live consumer. |
+| `GET /api/admin/hubs` (main.py ~7819) | **Future-stub** | Returns the single current hub. Self-described as "UI when 2nd hub opens" — a multi-hub picker is premature with one location. |
+| `GET /api/admin/invoices/list` (main.py ~7911) | **Superseded** | Paged "v2" listing. The Invoices panel renders from `GET /api/admin/invoices`; CSV via `GET /api/admin/invoices/export` (`exportResource('invoices')`). Wiring a second list path would split the source of truth. |
+| `GET /api/admin/invoices/export.csv` (main.py ~7925) | **Superseded** | Duplicate of the `/invoices/export` CSV that the Export CSV button already uses. |
+| `GET /api/admin/staff` (main.py ~12560) | **Superseded** | Unified staff listing. The admin UI reads technicians via `/api/admin/technicians` and warehouse staff via `/api/admin/warehouse/staff`; the merged view has no distinct screen. |
+| `PUT /api/admin/users/{id}/supervisor` (main.py ~9804) | **Superseded** | Org reassignment goes through the canonical `POST /api/admin/org/people/{kind}/{id}/supervisor` (cycle-safe, both kinds, `admin:update`) used by the Org panel (`admin.html` ~14440). This older per-kind PUT lacks the cycle check. |
+| `PUT /api/admin/techs/{id}/supervisor` (main.py ~9818) | **Superseded** | Same as above for the `tech` kind. |
+
 ## Pre-Launch Locks (do NOT change until the pre-launch cleanup)
 
 These are deliberate dev-only values that the operator has frozen until

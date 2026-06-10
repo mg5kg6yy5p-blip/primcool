@@ -1278,6 +1278,17 @@
             and grants a one-time edit window.
           </div>
         </div>
+        <!-- Certifications — tech-only, populated by loadProfileCerts() -->
+        <div class="card" id="profileCertCard" style="margin-top:14px;display:none;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+            <h3 style="margin:0;">Certifications</h3>
+          </div>
+          <div id="cert-list"><div class="empty">Loading…</div></div>
+          <div style="margin-top:10px;font-size:11.5px;color:var(--muted);line-height:1.5;">
+            Certifications are added and verified by your supervisor. If something is missing
+            or about to expire, let them know so your record stays current.
+          </div>
+        </div>
       </section>
 
       <!-- ─── Menu panel ──────────────────────────────────────────── -->
@@ -2420,6 +2431,62 @@
       } else {
         cvCard.style.display = 'none';
       }
+    }
+    // Tech-only: Certifications card (verified by supervisor; read-only here).
+    const certCard = document.getElementById('profileCertCard');
+    if (certCard) {
+      if (_me && _me.kind === 'tech') {
+        certCard.style.display = 'block';
+        loadProfileCerts();
+      } else {
+        certCard.style.display = 'none';
+      }
+    }
+  }
+
+  // ── Certifications (tech-side, read-only) ────────────────────────
+  async function loadProfileCerts() {
+    const host = document.getElementById('cert-list');
+    if (!host) return;
+    host.innerHTML = '<div class="empty">Loading…</div>';
+    try {
+      const [certs, expiring] = await Promise.all([
+        api('/api/tech/me/certifications'),
+        api('/api/tech/me/certifications/expiring?days=60').catch(() => []),
+      ]);
+      if (!certs.length) {
+        host.innerHTML = '<div class="empty">No certifications on file yet.</div>';
+        return;
+      }
+      const expIds = new Set((expiring || []).map(c => c.id));
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      host.innerHTML = certs.map(c => {
+        let badge = '';
+        if (c.expiry_date) {
+          const exp = new Date(c.expiry_date + 'T00:00:00');
+          if (exp < today) {
+            badge = '<span style="background:var(--err-bg,#fde8e8);color:var(--err-fg,#c0392b);padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;">Expired</span>';
+          } else if (expIds.has(c.id)) {
+            badge = '<span style="background:var(--warn-bg,#fdf3e0);color:var(--warn-fg,#b7791f);padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;">Expiring soon</span>';
+          } else {
+            badge = '<span style="background:var(--ok-bg,#e6f6ec);color:var(--ok-fg,#1b7f3b);padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;">Valid</span>';
+          }
+        }
+        const meta = [];
+        if (c.issuer) meta.push(esc(c.issuer));
+        if (c.issued_date) meta.push('Issued ' + PC.fmtDate(c.issued_date));
+        if (c.expiry_date) meta.push('Expires ' + PC.fmtDate(c.expiry_date));
+        return `
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;padding:10px 0;border-bottom:1px solid var(--border-light);">
+            <div style="min-width:0;">
+              <div style="font-weight:700;color:var(--text);">${esc(c.name || '')}</div>
+              ${meta.length ? `<div style="font-size:11.5px;color:var(--muted);margin-top:3px;">${meta.join(' · ')}</div>` : ''}
+            </div>
+            ${badge}
+          </div>`;
+      }).join('');
+    } catch (e) {
+      host.innerHTML = `<div class="empty">Could not load certifications: ${esc(e.message || String(e))}</div>`;
     }
   }
 

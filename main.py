@@ -7834,7 +7834,7 @@ def admin_invoice_prefill(request: Request, visit_id: int):
     return payload
 
 
-@app.get("/api/admin/visits/{visit_id}/parts", response_model=Dict[str, Any])
+@app.get("/api/admin/visits/{visit_id}/parts", response_model=List[Dict[str, Any]])
 def admin_visit_parts(request: Request, visit_id: int):
     _require_perm(request, "visit:update")
     return get_visit_parts(visit_id)
