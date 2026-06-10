@@ -13650,11 +13650,39 @@
     });
     // Same opt-in for non-table lists.
     root.querySelectorAll('[data-pc-subfield="1"] > ul, [data-pc-subfield="1"] > ol, .subfield-scroll-host > ul, .subfield-scroll-host > ol').forEach(l => candidates.push({ wrap: l, table: l, kind: 'list' }));
+    // ── Phase 1: decide (NO layout writes, NO layout reads here) ──────────
+    // Walk every candidate and work out whether it should be capped, the
+    // current row count, and whether it still needs measuring. Crucially we
+    // do NOT touch style/getBoundingClientRect in this pass: mixing a style
+    // WRITE (style.maxHeight) on one table with a layout READ
+    // (getBoundingClientRect) on the next forces a full-document reflow on
+    // EVERY iteration. With ~40 tables — one of which (All Visits) holds
+    // thousands of rows — that read-after-write thrash balloons a single
+    // scan into multiple seconds and, because the observer re-fires on each
+    // panel render during boot, made the whole page hang ("Page
+    // Unresponsive"). We split into decide → batched-reads → batched-writes
+    // so all reads see one clean layout and all writes happen together.
+    const toMeasure = [];   // tables needing a fresh height measurement
+    const toReset   = [];   // wraps that should drop the cap
     candidates.forEach(c => {
-      const rows = c.kind === 'table'
-        ? c.table.querySelectorAll('tbody tr').length
-        : c.table.children.length;
       if (!c.wrap) return;
+      // Cheap row count: a live HTMLCollection (tBodies[0].rows / children)
+      // costs O(1) to read, whereas querySelectorAll('tbody tr') rebuilds a
+      // fresh NodeList over the whole table on EVERY scan — ~35ms on the
+      // 2.6k-row All Visits table, multiplied by every observer fire.
+      const rows = c.kind === 'table'
+        ? (c.table.tBodies && c.table.tBodies[0] ? c.table.tBodies[0].rows.length : 0)
+        : c.table.children.length;
+      // Fast path: we already evaluated this wrap at this exact row count,
+      // so the cap decision cannot have changed — skip ALL the expensive
+      // checks below (the ancestor walk, the paginated-card button scan that
+      // can enumerate ~17k per-row buttons across the big panels, and the
+      // getBoundingClientRect measurement). This is what stops the
+      // MutationObserver's repeat fires from re-doing O(rows) work on every
+      // render during boot. Stamp the count now; the decision below is
+      // deterministic for a given row count.
+      if (c.wrap.dataset.pcScanRows === String(rows)) return;
+      c.wrap.dataset.pcScanRows = String(rows);
       // Skip if an ancestor already has its own scroll cap (we don't
       // want to double-cap and shrink the operator's deliberate
       // 560px Parts & Inventory pane down to 324px).
@@ -13676,30 +13704,42 @@
         if (paginated) return;
       }
       if (rows > _PC_SUBFIELD_ROW_LIMIT) {
-        c.wrap.classList.add('subfield-scroll');
-        // Per-table row-height measurement so the cap actually shows
-        // 7 rows. A fixed 324px clipped Customers to 5 because that
-        // table renders ~55px rows (stacked code/name/pill cells).
-        // Measure the first row + thead and size max-height to match.
-        if (c.kind === 'table') {
-          try {
-            const thead = c.table.querySelector('thead');
-            const firstRow = c.table.querySelector('tbody tr');
-            if (firstRow) {
-              const headH = thead ? thead.getBoundingClientRect().height : 44;
-              const rowH  = firstRow.getBoundingClientRect().height;
-              if (rowH > 0) {
-                // Add a couple px so the 7th row doesn't appear half-cut.
-                const target = Math.round(headH + (_PC_SUBFIELD_ROW_LIMIT * rowH) + 2);
-                c.wrap.style.maxHeight = target + 'px';
-              }
-            }
-          } catch (_) {}
-        }
-      } else {
-        c.wrap.classList.remove('subfield-scroll');
-        c.wrap.style.maxHeight = '';
+        toMeasure.push({ c, rows });
+      } else if (c.wrap.classList.contains('subfield-scroll') || c.wrap.style.maxHeight) {
+        toReset.push(c.wrap);
       }
+    });
+
+    // ── Phase 2: batched READS ───────────────────────────────────────────
+    // All getBoundingClientRect calls happen here, back-to-back, against a
+    // single clean layout → at most ONE reflow for the whole scan instead
+    // of one per table.
+    toMeasure.forEach(m => {
+      const c = m.c;
+      let maxH = '';
+      if (c.kind === 'table') {
+        try {
+          const thead = c.table.querySelector('thead');
+          const firstRow = c.table.querySelector('tbody tr');
+          if (firstRow) {
+            const headH = thead ? thead.getBoundingClientRect().height : 44;
+            const rowH  = firstRow.getBoundingClientRect().height;
+            // Add a couple px so the 7th row doesn't appear half-cut.
+            if (rowH > 0) maxH = Math.round(headH + (_PC_SUBFIELD_ROW_LIMIT * rowH) + 2) + 'px';
+          }
+        } catch (_) {}
+      }
+      m.maxH = maxH;
+    });
+
+    // ── Phase 3: batched WRITES ──────────────────────────────────────────
+    toReset.forEach(wrap => {
+      wrap.classList.remove('subfield-scroll');
+      wrap.style.maxHeight = '';
+    });
+    toMeasure.forEach(m => {
+      m.c.wrap.classList.add('subfield-scroll');
+      if (m.maxH) m.c.wrap.style.maxHeight = m.maxH;
     });
   }
   window.pcAutoScrollSubfields = pcAutoScrollSubfields;
