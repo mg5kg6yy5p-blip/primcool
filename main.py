@@ -13748,6 +13748,212 @@ def api_staff_sessions_revoke_others(request: Request):
     return {"revoked": n, **_sessions_payload(kind, int(who["id"]), request)}
 
 
+# ── Unified staff "My Profile" (Workday-style self-service) ───────────────
+# One profile surface for EVERY staff member (admin + tech). The subject is
+# always resolved from the signed-in cookie via _resolve_any_staff, so a user
+# can only ever read/write their OWN profile. Each tab on profile.html maps to
+# one of these endpoints; list-type sections share a generic collection store.
+
+def _profile_subject(request: Request):
+    """(kind, id) for the signed-in staff member, or 401. Thin wrapper so the
+    profile endpoints don't each re-derive the id shape."""
+    kind, who = _resolve_any_staff(request)
+    return kind, int(who["id"]), who
+
+
+@app.get("/api/staff/me/job")
+def api_staff_me_job(request: Request):
+    """Employment / job-info tab. Read-only — sourced from the base staff
+    record (techs in technicians, admins in admin_users) plus a supervisor
+    name + hub lookup where available. No self-edit: org data is managed by
+    HR/admin, the employee only views it (matches Workday's Job tab)."""
+    kind, sid, who = _profile_subject(request)
+    supervisor_name = None
+    sup_id = who.get("supervisor_id")
+    if sup_id:
+        try:
+            sup = get_admin_user_by_id(int(sup_id))
+            if sup:
+                supervisor_name = sup.get("name")
+        except Exception:
+            pass
+    hub_name = None
+    if who.get("hub_id"):
+        try:
+            hub = get_hub_by_id(int(who["hub_id"]))
+            if hub:
+                hub_name = hub.get("name")
+        except Exception:
+            pass
+    if kind == "admin":
+        title = (who.get("role") or "").replace("_", " ").title()
+        department = who.get("department") or "Administration"
+        emp_status = "terminated" if who.get("terminated_at") else "active"
+        worker_id = who.get("prid")
+    else:
+        staff_type = who.get("staff_type") or "tech"
+        title = {
+            "tech": "Technician", "warehouse_floor": "Warehouse Floor",
+            "warehouse_manager": "Warehouse Manager", "parts_runner": "Parts Runner",
+            "driver": "Delivery Driver",
+        }.get(staff_type, "Technician")
+        department = who.get("department") or (
+            "Warehouse" if staff_type.startswith(("warehouse_", "parts_")) else "Field Services")
+        emp_status = who.get("employment_status") or "active"
+        worker_id = who.get("prid") or who.get("tech_code")
+    return {
+        "kind": kind,
+        "title": title,
+        "department": department,
+        "employment_status": emp_status,
+        "hire_date": who.get("hire_date"),
+        "worker_id": worker_id,
+        "supervisor": supervisor_name,
+        "hub": hub_name,
+        "role": who.get("role"),
+        # Own compensation basis. Techs are hourly (rate on the record);
+        # admins are salaried and have no per-hour rate stored — the
+        # Compensation tab falls back to the latest payslip for them.
+        "hourly_rate": (float(who.get("hourly_rate")) if kind == "tech"
+                        and who.get("hourly_rate") is not None else None),
+        "pay_basis": "hourly" if kind == "tech" else "salary",
+    }
+
+
+@app.get("/api/staff/me/personal")
+def api_staff_me_personal_get(request: Request):
+    """Personal + home-contact singleton (DOB, IDs, nationality, home
+    address, personal phone/email). Always returns a full field set so the
+    form renders even when nothing's been saved yet."""
+    from database import get_staff_personal
+    kind, sid, who = _profile_subject(request)
+    data = get_staff_personal(kind, sid)
+    # Surface the read-only work contact alongside, so the Contact tab can show
+    # work + home together without a second call.
+    data["work_email"] = who.get("email")
+    data["work_phone"] = who.get("phone")
+    data["legal_name"] = who.get("name")
+    return data
+
+
+@app.put("/api/staff/me/personal")
+async def api_staff_me_personal_put(request: Request):
+    """Upsert the personal/home-contact singleton. Whitelisted fields only."""
+    from database import upsert_staff_personal
+    kind, sid, who = _profile_subject(request)
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "expected an object")
+    saved = upsert_staff_personal(kind, sid, body)
+    saved["work_email"] = who.get("email")
+    saved["work_phone"] = who.get("phone")
+    saved["legal_name"] = who.get("name")
+    return saved
+
+
+@app.get("/api/staff/me/profile/{collection}")
+def api_staff_me_collection_list(collection: str, request: Request):
+    """List all items in one profile collection (emergency_contacts,
+    languages, achievements, development_items, career_interests,
+    mentorships, education, skills, job_history)."""
+    from database import list_staff_profile_items, STAFF_PROFILE_COLLECTIONS
+    kind, sid, who = _profile_subject(request)
+    if collection not in STAFF_PROFILE_COLLECTIONS:
+        raise HTTPException(404, "unknown profile collection")
+    return {"collection": collection,
+            "items": list_staff_profile_items(kind, sid, collection)}
+
+
+@app.post("/api/staff/me/profile/{collection}")
+async def api_staff_me_collection_add(collection: str, request: Request):
+    """Append one item to a collection. Body = the item's fields (stored as a
+    JSON payload). Returns the new item id."""
+    from database import (add_staff_profile_item, list_staff_profile_items,
+                          STAFF_PROFILE_COLLECTIONS)
+    kind, sid, who = _profile_subject(request)
+    if collection not in STAFF_PROFILE_COLLECTIONS:
+        raise HTTPException(404, "unknown profile collection")
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "expected an object")
+    # Drop client-managed/meta keys so they can't shadow row columns.
+    payload = {k: v for k, v in body.items()
+               if k not in ("id", "sort_order", "created_at", "updated_at")}
+    rid = add_staff_profile_item(kind, sid, collection, payload)
+    return {"ok": True, "id": rid,
+            "items": list_staff_profile_items(kind, sid, collection)}
+
+
+@app.patch("/api/staff/me/profile/{collection}/{item_id}")
+async def api_staff_me_collection_update(collection: str, item_id: int,
+                                         request: Request):
+    """Replace one owned item's payload."""
+    from database import (update_staff_profile_item, list_staff_profile_items,
+                          STAFF_PROFILE_COLLECTIONS)
+    kind, sid, who = _profile_subject(request)
+    if collection not in STAFF_PROFILE_COLLECTIONS:
+        raise HTTPException(404, "unknown profile collection")
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "expected an object")
+    payload = {k: v for k, v in body.items()
+               if k not in ("id", "sort_order", "created_at", "updated_at")}
+    if not update_staff_profile_item(kind, sid, collection, item_id, payload):
+        raise HTTPException(404, "item not found")
+    return {"ok": True,
+            "items": list_staff_profile_items(kind, sid, collection)}
+
+
+@app.delete("/api/staff/me/profile/{collection}/{item_id}")
+def api_staff_me_collection_delete(collection: str, item_id: int,
+                                   request: Request):
+    """Delete one owned item."""
+    from database import (delete_staff_profile_item, list_staff_profile_items,
+                          STAFF_PROFILE_COLLECTIONS)
+    kind, sid, who = _profile_subject(request)
+    if collection not in STAFF_PROFILE_COLLECTIONS:
+        raise HTTPException(404, "unknown profile collection")
+    if not delete_staff_profile_item(kind, sid, collection, item_id):
+        raise HTTPException(404, "item not found")
+    return {"ok": True,
+            "items": list_staff_profile_items(kind, sid, collection)}
+
+
+@app.get("/api/staff/me/talent-card")
+def api_staff_me_talent_card(request: Request):
+    """Aggregated "Talent Card" payload — a one-glance snapshot pulling the
+    identity, job info, skills, languages, achievements and development items
+    together so profile.html can render a printable card. Read-only."""
+    from database import (get_staff_personal, list_staff_profile_items)
+    kind, sid, who = _profile_subject(request)
+    avatar_fn = who.get("avatar_filename")
+    job = api_staff_me_job(request)  # reuse the same shaping
+    return {
+        "name": who.get("name"),
+        "avatar_url": _sign_photo_url(avatar_fn) if avatar_fn else None,
+        "title": job.get("title"),
+        "department": job.get("department"),
+        "worker_id": job.get("worker_id"),
+        "hire_date": job.get("hire_date"),
+        "supervisor": job.get("supervisor"),
+        "skills": list_staff_profile_items(kind, sid, "skills"),
+        "languages": list_staff_profile_items(kind, sid, "languages"),
+        "achievements": list_staff_profile_items(kind, sid, "achievements"),
+        "development_items": list_staff_profile_items(kind, sid, "development_items"),
+        "career_interests": list_staff_profile_items(kind, sid, "career_interests"),
+        "education": list_staff_profile_items(kind, sid, "education"),
+    }
+
+
+@app.get("/profile")
+def staff_profile_page():
+    """The unified Workday-style "My Profile" page — one shell for admins and
+    techs alike. Auth bootstraps client-side from the stored token (same model
+    as admin.html / tech.html); every tab calls the /api/staff/me/* endpoints
+    above, which resolve the subject from the cookie."""
+    return FileResponse("profile.html")
+
+
 @app.get("/api/portal/me/sessions")
 def api_portal_sessions_get(request: Request):
     customer_id = _require_customer(request)

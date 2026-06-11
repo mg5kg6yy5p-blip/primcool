@@ -2798,6 +2798,65 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_vce_visit "
                 "ON visit_confirmation_events(visit_id, id)")
 
+    # ── Unified staff self-service profile (Workday-style "My Profile") ────
+    # ONE profile surface for EVERY staff member, admin or tech. Keyed by
+    # (staff_kind, staff_id) where staff_kind ∈ {'admin','tech'} so a single
+    # set of tables/endpoints serves both identity types — the subject is
+    # always taken from the signed-in cookie, never the request body, so a
+    # user can only ever read/write their OWN profile.
+    #
+    # staff_personal is the SINGLETON record (one row per staff): the
+    # Personal + home-Contact info that has exactly one value each.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS staff_personal (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            staff_kind        TEXT NOT NULL,          -- 'admin' | 'tech'
+            staff_id          INTEGER NOT NULL,
+            preferred_name    TEXT,
+            pronouns          TEXT,
+            sex               TEXT,
+            date_of_birth     TEXT,                   -- ISO yyyy-mm-dd
+            country_of_birth  TEXT,
+            marital_status    TEXT,
+            primary_nationality      TEXT,
+            additional_nationalities TEXT,
+            national_id       TEXT,                   -- e.g. Jamaica national ID
+            trn               TEXT,                   -- tax reg number
+            gender_identity   TEXT,
+            -- home contact (work phone/email live on the base staff record)
+            home_address      TEXT,
+            home_city         TEXT,
+            home_parish       TEXT,
+            home_country      TEXT,
+            personal_phone    TEXT,
+            personal_email    TEXT,
+            updated_at        TEXT NOT NULL,
+            UNIQUE(staff_kind, staff_id)
+        )
+    """)
+
+    # staff_profile_items is the GENERIC collection store: every list-type
+    # profile section (emergency contacts, languages, achievements, career
+    # development items, interests, mentorships, education, skills, job
+    # history) is a set of rows here, discriminated by `collection`. The
+    # per-item payload is a small JSON blob so we never need a migration to
+    # add a field to one collection. The endpoint layer whitelists which
+    # collection names are accepted.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS staff_profile_items (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            staff_kind    TEXT NOT NULL,              -- 'admin' | 'tech'
+            staff_id      INTEGER NOT NULL,
+            collection    TEXT NOT NULL,              -- e.g. 'emergency_contacts'
+            data_json     TEXT NOT NULL DEFAULT '{}',
+            sort_order    INTEGER NOT NULL DEFAULT 0,
+            created_at    TEXT NOT NULL,
+            updated_at    TEXT NOT NULL
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_staff_profile_items "
+                "ON staff_profile_items(staff_kind, staff_id, collection, sort_order)")
+
     con.commit()
     con.close()
     _backfill_prids()
@@ -4778,6 +4837,173 @@ def get_tech_by_id(tech_id: int):
     row = con.execute("SELECT * FROM technicians WHERE id = ?", (tech_id,)).fetchone()
     con.close()
     return _dec_row("technicians", row)
+
+
+# ── Unified staff self-service profile helpers ────────────────────────────
+# All keyed by (staff_kind, staff_id) — see the staff_personal /
+# staff_profile_items CREATE blocks in init_db. The caller always passes the
+# kind/id resolved from the signed-in cookie, so these never trust a body.
+
+# Singleton-record columns the Personal/home-Contact tab may write. national_id
+# and trn are sensitive but stored plain in this local build (parity with the
+# existing technicians phone/email-at-rest model handled by _enc_dict, which
+# this table is intentionally NOT registered with to keep the new surface
+# self-contained for local dev).
+STAFF_PERSONAL_FIELDS = (
+    "preferred_name", "pronouns", "sex", "date_of_birth", "country_of_birth",
+    "marital_status", "primary_nationality", "additional_nationalities",
+    "national_id", "trn", "gender_identity",
+    "home_address", "home_city", "home_parish", "home_country",
+    "personal_phone", "personal_email",
+)
+
+# Whitelisted collection names for staff_profile_items. The endpoint layer
+# rejects anything not in this set, so the generic store can't be abused to
+# stash arbitrary buckets.
+STAFF_PROFILE_COLLECTIONS = {
+    "emergency_contacts",
+    "languages",
+    "achievements",
+    "development_items",
+    "career_interests",
+    "mentorships",
+    "education",
+    "skills",
+    "job_history",
+}
+
+
+def get_staff_personal(staff_kind: str, staff_id: int) -> dict:
+    """Return the singleton personal/home-contact record as a plain dict
+    (all configurable fields present, NULLs as None). Never returns None —
+    an unset profile reads as all-empty so the UI renders a clean form."""
+    con = _con()
+    row = con.execute(
+        "SELECT * FROM staff_personal WHERE staff_kind = ? AND staff_id = ?",
+        (staff_kind, int(staff_id)),
+    ).fetchone()
+    con.close()
+    out = {f: None for f in STAFF_PERSONAL_FIELDS}
+    if row:
+        d = dict(row)
+        for f in STAFF_PERSONAL_FIELDS:
+            out[f] = d.get(f)
+        out["updated_at"] = d.get("updated_at")
+    return out
+
+
+def upsert_staff_personal(staff_kind: str, staff_id: int, data: dict) -> dict:
+    """Create-or-update the singleton record. Only whitelisted fields are
+    written; unknown keys are ignored. Returns the fresh record."""
+    now = datetime.utcnow().isoformat()
+    fields = {k: (data.get(k) if data.get(k) not in ("",) else None)
+              for k in STAFF_PERSONAL_FIELDS if k in data}
+    con = _con()
+    existing = con.execute(
+        "SELECT id FROM staff_personal WHERE staff_kind = ? AND staff_id = ?",
+        (staff_kind, int(staff_id)),
+    ).fetchone()
+    if existing:
+        if fields:
+            sets = ", ".join(f"{k} = ?" for k in fields)
+            con.execute(
+                f"UPDATE staff_personal SET {sets}, updated_at = ? WHERE id = ?",
+                (*fields.values(), now, existing["id"]),
+            )
+        else:
+            con.execute("UPDATE staff_personal SET updated_at = ? WHERE id = ?",
+                        (now, existing["id"]))
+    else:
+        cols = ["staff_kind", "staff_id", "updated_at"] + list(fields.keys())
+        vals = [staff_kind, int(staff_id), now] + list(fields.values())
+        ph = ", ".join("?" for _ in cols)
+        con.execute(
+            f"INSERT INTO staff_personal ({', '.join(cols)}) VALUES ({ph})", vals)
+    con.commit()
+    con.close()
+    return get_staff_personal(staff_kind, staff_id)
+
+
+def list_staff_profile_items(staff_kind: str, staff_id: int, collection: str) -> list:
+    """Return all items in one collection, oldest-first by sort_order then id.
+    Each item = {id, sort_order, created_at, updated_at, **data_json}."""
+    con = _con()
+    rows = con.execute(
+        "SELECT * FROM staff_profile_items WHERE staff_kind = ? AND staff_id = ? "
+        "AND collection = ? ORDER BY sort_order, id",
+        (staff_kind, int(staff_id), collection),
+    ).fetchall()
+    con.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            payload = _json.loads(d.get("data_json") or "{}")
+        except Exception:
+            payload = {}
+        item = {"id": d["id"], "sort_order": d["sort_order"],
+                "created_at": d["created_at"], "updated_at": d["updated_at"]}
+        item.update(payload if isinstance(payload, dict) else {})
+        out.append(item)
+    return out
+
+
+def add_staff_profile_item(staff_kind: str, staff_id: int, collection: str,
+                           payload: dict) -> int:
+    """Append one item to a collection. Returns the new row id."""
+    now = datetime.utcnow().isoformat()
+    con = _con()
+    nxt = con.execute(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM staff_profile_items "
+        "WHERE staff_kind = ? AND staff_id = ? AND collection = ?",
+        (staff_kind, int(staff_id), collection),
+    ).fetchone()[0]
+    cur = con.execute(
+        "INSERT INTO staff_profile_items "
+        "(staff_kind, staff_id, collection, data_json, sort_order, created_at, updated_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (staff_kind, int(staff_id), collection,
+         _json.dumps(payload or {}), nxt, now, now),
+    )
+    rid = cur.lastrowid
+    con.commit()
+    con.close()
+    return rid
+
+
+def update_staff_profile_item(staff_kind: str, staff_id: int, collection: str,
+                              item_id: int, payload: dict) -> bool:
+    """Replace the JSON payload of one owned item. Returns False if no row
+    matched (wrong owner / collection / id)."""
+    now = datetime.utcnow().isoformat()
+    con = _con()
+    cur = con.execute(
+        "UPDATE staff_profile_items SET data_json = ?, updated_at = ? "
+        "WHERE id = ? AND staff_kind = ? AND staff_id = ? AND collection = ?",
+        (_json.dumps(payload or {}), now, int(item_id),
+         staff_kind, int(staff_id), collection),
+    )
+    changed = cur.rowcount > 0
+    con.commit()
+    con.close()
+    return changed
+
+
+def delete_staff_profile_item(staff_kind: str, staff_id: int, collection: str,
+                              item_id: int) -> bool:
+    """Hard-delete one owned item (these are user-managed, low-stakes profile
+    rows — not part of the append-only audit ledger). Returns False if no row
+    matched."""
+    con = _con()
+    cur = con.execute(
+        "DELETE FROM staff_profile_items "
+        "WHERE id = ? AND staff_kind = ? AND staff_id = ? AND collection = ?",
+        (int(item_id), staff_kind, int(staff_id), collection),
+    )
+    changed = cur.rowcount > 0
+    con.commit()
+    con.close()
+    return changed
 
 
 def verify_tech(code: str, pin: str):

@@ -1239,7 +1239,7 @@
     .adm-org-wrap{animation:adm-org-fade .22s ease;}
     @keyframes adm-org-fade{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:translateY(0);}}
   </style>
-  <script src="/static/pc_shared.js?v=1780790500"></script>
+  <script src="/static/pc_shared.js?v=1781191429"></script>
 </head>
 <body>
 
@@ -1397,9 +1397,9 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
         Payroll
       </div>
-      <!-- "My Payslips" lives inside My Profile → My pay; the standalone
-           sidebar entry would just be a second door to the same room.
-           Hidden but kept in place for any code that still references it. -->
+      <!-- "My Payslips" lives on the unified /profile page (My Profile → Pay);
+           the standalone sidebar entry would just be a second door to the same
+           room. Hidden but kept in place for any code that still references it. -->
       <div class="nav-item" onclick="showPanel('mypay')" id="nav-mypay" style="display:none;">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
         My Payslips
@@ -1457,7 +1457,7 @@
            Stock / Shipping / Checklists / Month-end tabs now live inside
            the Warehouse (Inventory) panel as an "Operations" sub-section. -->
       <div id="nav-warehouse" style="display:none;"></div>
-      <div class="nav-item" onclick="showPanel('myprofile')" id="nav-myprofile">
+      <div class="nav-item" onclick="location.assign('/profile')" id="nav-myprofile">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
         My Profile
       </div>
@@ -1500,6 +1500,7 @@
               <tbody id="customerTableBody"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
             </table>
           </div>
+          <div id="custPager" style="display:none;align-items:center;gap:12px;flex-wrap:wrap;margin-top:10px;font-size:13px;color:var(--muted);"></div>
         </div>
 
         <!-- ── super_admin Customer Detail View (full, editable profile) ── -->
@@ -1639,6 +1640,7 @@
             <tbody id="invoiceTableBody"><tr><td colspan="9" class="empty">Loading…</td></tr></tbody>
           </table>
         </div>
+        <div id="invPager" style="display:none;align-items:center;gap:12px;flex-wrap:wrap;margin-top:10px;font-size:13px;color:var(--muted);"></div>
 
         <div style="margin-top:24px;padding:14px 16px;background:var(--teal-bg);border:1px solid var(--teal-bg);border-radius:8px;font-size:12px;color:var(--teal-deep);line-height:1.6;">
           <strong>Jamaica tax reference</strong> — GCT 15% is applied by default on new invoices. Payroll deductions (PAYE, NIS, NHT, Education Tax, HEART) reference values are stored for future paystub generation.
@@ -1675,6 +1677,7 @@
             <tbody id="estimateTableBody"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
           </table>
         </div>
+        <div id="estPager" style="display:none;align-items:center;gap:12px;flex-wrap:wrap;margin-top:10px;font-size:13px;color:var(--muted);"></div>
 
         <div style="margin-top:24px;padding:14px 16px;background:var(--teal-bg);border:1px solid var(--teal-bg);border-radius:8px;font-size:12px;color:var(--teal-deep);line-height:1.6;">
           <strong>How estimates flow</strong> — Draft → <em>Send</em> (customer sees it in their portal) → customer <em>Approves</em> or <em>Declines</em>. An approved estimate can be <em>Converted</em> into a draft invoice in one click, carrying over all line items. Sent estimates auto-expire after their valid-until date.
@@ -1714,6 +1717,7 @@
             <tbody id="docTableBody"><tr><td colspan="9" class="empty">Loading…</td></tr></tbody>
           </table>
         </div>
+        <div id="docPager" style="display:none;align-items:center;gap:12px;flex-wrap:wrap;margin-top:10px;font-size:13px;color:var(--muted);"></div>
       </div>
 
       <!-- ── Inventory panel ── -->
@@ -2609,6 +2613,7 @@
             <tbody id="visitTableBody"><tr><td colspan="9" class="empty">Loading…</td></tr></tbody>
           </table>
         </div>
+        <div id="vlPager" style="display:none;align-items:center;gap:12px;flex-wrap:wrap;margin-top:10px;font-size:13px;color:var(--muted);"></div>
       </div>
 
       <!-- ── PM Contracts panel ──
@@ -2712,41 +2717,25 @@
            lives in tech_landing.html and has more cards (schedule, KPI,
            CV) — admins only need identity / pay / account-security. -->
       <div class="panel" id="panel-myprofile">
-        <div class="top-bar"><h2>My Profile</h2></div>
+        <div class="top-bar"><h2>Account &amp; security</h2></div>
 
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start;">
-          <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px 20px;">
-            <h3 style="margin:0 0 10px;color:var(--ink);font-size:15px;">Identity</h3>
-            <div id="mp-identity"><div class="empty" style="padding:14px;">Loading…</div></div>
-          </div>
-          <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px 20px;">
-            <h3 style="margin:0 0 10px;color:var(--ink);font-size:15px;">Account &amp; security</h3>
-            <div id="mp-account">
-              <div style="font-size:13px;color:var(--muted);line-height:1.5;margin-bottom:10px;">
-                Manage how you sign in and protect your account.
-              </div>
-              <div style="display:flex;flex-direction:column;gap:8px;">
-                <button class="btn btn-ghost" onclick="mpOpenChangePw()">Change password</button>
-                <button class="btn btn-ghost" onclick="openSecurityModal()">Manage two-factor (MFA)</button>
-                <button class="btn btn-danger" onclick="adminLogout()">Sign out</button>
-              </div>
+        <!-- Identity + My-pay used to be duplicated here, but the single
+             "My Profile" surface is now /profile. This panel is the admin-only
+             Account &amp; security + Org tooling that /profile links out to. -->
+        <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px 20px;">
+          <h3 style="margin:0 0 10px;color:var(--ink);font-size:15px;">Account &amp; security</h3>
+          <div id="mp-account">
+            <div style="font-size:13px;color:var(--muted);line-height:1.5;margin-bottom:10px;">
+              Manage how you sign in and protect your account. Your profile, pay
+              and personal details live on <a href="/profile" style="color:var(--teal);font-weight:600;">My Profile</a>.
+            </div>
+            <div style="display:flex;flex-direction:column;gap:8px;max-width:340px;">
+              <button class="btn btn-ghost" onclick="mpOpenChangePw()">Change password</button>
+              <button class="btn btn-ghost" onclick="openSecurityModal()">Manage two-factor (MFA)</button>
+              <button class="btn btn-danger" onclick="adminLogout()">Sign out</button>
             </div>
           </div>
         </div>
-
-        <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:0;margin-top:14px;overflow:hidden;">
-          <!-- Brand accent strip at top of every "My pay" card. -->
-          <div class="pc-accent-strip"></div>
-          <div style="padding:18px 20px;">
-          <h3 style="margin:0 0 10px;color:var(--ink);font-size:15px;">My pay</h3>
-          <!-- inner-scroll cap so an admin with many periods doesn't
-               push the whole page off-screen. -->
-          <div id="mp-pay" style="max-height:360px;overflow-y:auto;"><div class="empty" style="padding:14px;">Loading…</div></div>
-          <div class="muted" style="font-size:12px;margin-top:8px;">
-            Tap a period to open the payslip. Print or Save as PDF from the modal.
-          </div>
-        </div>
-      </div>
 
       <!-- PrimeCool Org chart — click any card to drill into their team -->
       <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:0;margin-top:14px;overflow:hidden;">
@@ -2807,7 +2796,7 @@
       </div>
       </div><!-- /panel-myprofile — was missing this close, which nested every panel below inside it -->
 
-      <!-- Admin payslip detail modal — used by My Profile → My pay -->
+      <!-- Admin payslip detail modal — used by the admin Payroll panel -->
       <div class="modal-overlay" id="modal-adminPayslip">
         <div class="modal-card" style="max-width:520px;">
           <div class="modal-header" style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
@@ -3522,45 +3511,12 @@
   </div>
 </div>
 
-<!-- Record Payment -->
-<div class="modal-overlay" id="modal-recordPayment">
-  <div class="modal" style="max-width:460px;">
-    <div class="modal-header">
-      <h3>Record Payment</h3>
-      <button class="modal-close" onclick="closeModal('recordPayment')">×</button>
-    </div>
-    <div class="modal-body">
-      <div style="background:var(--light);border-radius:8px;padding:12px 14px;margin-bottom:14px;">
-        <div style="font-weight:700;color:var(--ink);" id="pay-inv-label">—</div>
-        <div style="font-size:12px;color:var(--muted);margin-top:2px;">Balance due: <strong id="pay-balance">—</strong></div>
-      </div>
-      <div class="field-row">
-        <div class="field"><label>Date *</label><input id="pay-date" type="date"></div>
-        <div class="field"><label>Amount *</label><input id="pay-amount" type="number" step="0.01" min="0.01" placeholder="0.00"></div>
-      </div>
-      <div class="field-row">
-        <div class="field">
-          <label>Method</label>
-          <select id="pay-method">
-            <option value="">—</option>
-            <option value="cash">Cash</option>
-            <option value="cheque">Cheque</option>
-            <option value="transfer">Bank Transfer</option>
-            <option value="card">Card</option>
-            <option value="other">Other</option>
-          </select>
-        </div>
-        <div class="field"><label>Reference</label><input id="pay-reference" placeholder="Cheque #, txn ref…"></div>
-      </div>
-      <div class="field"><label>Notes</label><input id="pay-notes" placeholder="Optional"></div>
-      <div class="form-error" id="err-recordPayment"></div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-ghost" onclick="closeModal('recordPayment')">Cancel</button>
-      <button class="btn btn-primary" onclick="submitRecordPayment()">Record Payment</button>
-    </div>
-  </div>
-</div>
+<!-- Record Payment (v1) — REMOVED. The live payment flow is the currency-aware
+     v2 modal built dynamically by openPaymentModal() (#inv-payment-modal). This
+     v1 static markup used IDs pay-amount / pay-method that collided with v2 and
+     once broke payment submission; its openPaymentModal/submitRecordPayment were
+     dead (shadowed by v2's later declaration). Markup deleted to remove the
+     shadowing/ID-collision hazard. See openPaymentModal() / _paySubmit(). -->
 
 <!-- Tax Reference -->
 <div class="modal-overlay" id="modal-taxReference">
@@ -4950,6 +4906,45 @@
   let adminToken = localStorage.getItem('pc_admin_token') || null;
   let allCustomers = [];
   let allVisits    = [];
+  // Render cap for the All Visits table. The full list can run into the
+  // thousands of rows; rendering them all eagerly balloons the DOM to ~90k
+  // nodes, which made every keystroke anywhere in the app (e.g. the Documents
+  // upload Title field) trigger a full accessibility-tree rebuild and hang the
+  // tab ("Page Unresponsive"). We render at most VL_DEFAULT_CAP rows and expose
+  // "Show more / Show all" controls. The cap resets to the default on any
+  // filter/view change so a fresh filter never inherits a huge prior cap.
+  const VL_DEFAULT_CAP = 150;
+  let vlRowCap = VL_DEFAULT_CAP;
+
+  // ── Shared render cap for other large tables ───────────────────────────
+  // Same problem as the visits table above: a few admin tables (Invoices,
+  // Customers, Estimates, Documents) render their full backing array into the
+  // DOM. Once a table runs into the hundreds/thousands of rows the resulting
+  // node count makes typing anywhere in the app janky and can hang the tab.
+  // We cap each at PC_TABLE_CAP rows and expose "Show more / Show all". Each
+  // table keeps its own cap var so paging one doesn't affect the others; the
+  // cap resets to the default whenever the render runs without _keepCap (i.e.
+  // on a filter/data change), so a fresh filter never inherits a huge cap.
+  const PC_TABLE_CAP = 150;
+  let invRowCap  = PC_TABLE_CAP;
+  let custRowCap = PC_TABLE_CAP;
+  let estRowCap  = PC_TABLE_CAP;
+  let docRowCap  = PC_TABLE_CAP;
+  let docRenderRows = [];   // last full row set handed to renderDocuments (for Show more/all)
+
+  // Render a "Showing N of TOTAL" pager into pagerEl. moreFn/allFn are global
+  // function names (strings) invoked by the buttons. Hidden when all rows fit.
+  function pcRenderTablePager(pagerEl, total, shown, moreFn, allFn, noun) {
+    if (!pagerEl) return;
+    if (shown >= total) { pagerEl.style.display = 'none'; pagerEl.innerHTML = ''; return; }
+    const label = noun || 'rows';
+    pagerEl.style.display = 'flex';
+    pagerEl.innerHTML =
+      `<span>Showing <strong>${shown.toLocaleString()}</strong> of <strong>${total.toLocaleString()}</strong> ${label}</span>`
+      + `<button type="button" class="btn btn-ghost btn-sm" onclick="${moreFn}()">Show ${Math.min(PC_TABLE_CAP, total - shown)} more</button>`
+      + `<button type="button" class="btn btn-ghost btn-sm" onclick="${allFn}()">Show all ${total.toLocaleString()}</button>`;
+  }
+
   let currentCustomer = null;
   let currentVisitId  = null;
   let visitCrewState  = [];   // [{id,name}] extra crew (excludes lead) for the edit modal
@@ -5782,9 +5777,10 @@
     onboarding: 'Onboarding',
     audit: 'Audit Log', reviews: 'Reviews', fs: '5S',
     delegations: 'Delegations', kpi: 'Performance KPI',
-    companymsg: 'Company Messages', myprofile: 'My Profile',
+    companymsg: 'Company Messages', myprofile: 'Account & security',
     contracts: 'PM Contracts', backups: 'Database Backups',
     estimates: 'Estimates & Quotes', svcreq: 'Service Requests',
+    pto: 'Manage Time Off',
   };
   function _setCrumbs(items) {
     const wrap = document.getElementById('pcCrumbs');
@@ -6021,7 +6017,7 @@
     'customers','visits','techs','invoices','documents','inventory',
     'schedule','timesheets','payroll','mypay','admins','audit','reviews',
     'fs','delegations','kpi','companymsg','warehouse','myprofile','onboarding',
-    'svcreq',
+    'svcreq','pto','estimates','contracts','backups',
   ]);
   function _maybeOpenPanelFromHash() {
     let h = (location.hash || '').replace(/^#/, '').trim();
@@ -6250,13 +6246,19 @@
     } catch {}
   }
 
-  function renderCustomerTable() {
+  function renderCustomerTable(_keepCap) {
+    if (!_keepCap) custRowCap = PC_TABLE_CAP;
     const tbody = document.getElementById('customerTableBody');
+    const custPager = document.getElementById('custPager');
     if (!allCustomers.length) {
       tbody.innerHTML = '<tr><td colspan="5" class="empty">No customers yet. Add your first one.</td></tr>';
+      if (custPager) custPager.style.display = 'none';
       return;
     }
-    tbody.innerHTML = allCustomers.map(c => {
+    const custTotal = allCustomers.length;
+    const custShown = Math.min(custRowCap, custTotal);
+    const custPageRows = allCustomers.slice(0, custShown);
+    tbody.innerHTML = custPageRows.map(c => {
       const isActive = c.active !== 0 && c.active !== false;
       const ctype = c.customer_type || 'residential';
       const safeName = esc(c.name);
@@ -6290,7 +6292,10 @@
         });
       });
     }
+    pcRenderTablePager(custPager, custTotal, custShown, 'custShowMore', 'custShowAll', 'customers');
   }
+  function custShowMore() { custRowCap += PC_TABLE_CAP; renderCustomerTable(true); }
+  function custShowAll()  { custRowCap = Infinity;      renderCustomerTable(true); }
 
   function openCustomerDetail(id) {
     currentCustomer = allCustomers.find(c => c.id === id);
@@ -9529,20 +9534,33 @@
       .map(c => `<th>${escHtml(c.label)}</th>`).join('');
   }
 
-  function renderVisitTable() {
+  // _keepCap: when true, preserve the current vlRowCap (used by the
+  // Show more / Show all pager). Any other caller (filter/view/column change,
+  // data reload) leaves it falsy so the cap resets to the default — a fresh
+  // filter should never inherit a huge prior cap.
+  function renderVisitTable(_keepCap) {
     const tbody = document.getElementById('visitTableBody');
     if (!tbody) return;
+    if (!_keepCap) vlRowCap = VL_DEFAULT_CAP;
     vlRenderHead();
     const visibleCount = VL_COLUMNS.filter(c => vlColVisible(c.key)).length;
     const rows = vlFilteredVisits();
+    const pager = document.getElementById('vlPager');
     if (!rows.length) {
       tbody.innerHTML = `<tr><td colspan="${visibleCount}" class="empty">No visits match this filter.</td></tr>`;
+      if (pager) pager.style.display = 'none';
       return;
     }
+    // Cap the rendered rows. Rendering thousands of rows eagerly balloons the
+    // DOM to ~90k nodes and makes every keystroke anywhere in the app trigger a
+    // full accessibility-tree rebuild (tab hangs / "Page Unresponsive").
+    const total = rows.length;
+    const shown = Math.min(vlRowCap, total);
+    const pageRows = rows.slice(0, shown);
     const isSuper = (currentAdmin && currentAdmin.role === 'super_admin');
     const _gate = (typeof PC !== 'undefined' && PC.gateLinkHtml);
     const canSetUserStatus = can('visit:update');
-    tbody.innerHTML = rows.map(v => {
+    tbody.innerHTML = pageRows.map(v => {
       const tech = allTechs.find(t => t.id === v.assigned_tech_id);
       const techLinked = tech
         ? (_gate
@@ -9597,6 +9615,31 @@
         });
       });
     }
+    // Pager: "Showing N of TOTAL" + Show more / Show all. Hidden when everything
+    // already fits under the cap.
+    if (pager) {
+      if (shown >= total) {
+        pager.style.display = 'none';
+        pager.innerHTML = '';
+      } else {
+        pager.style.display = 'flex';
+        pager.innerHTML =
+          `<span>Showing <strong>${shown.toLocaleString()}</strong> of <strong>${total.toLocaleString()}</strong> visits</span>`
+          + `<button type="button" class="btn btn-ghost btn-sm" onclick="vlShowMore()">Show ${Math.min(VL_DEFAULT_CAP, total - shown)} more</button>`
+          + `<button type="button" class="btn btn-ghost btn-sm" onclick="vlShowAll()">Show all ${total.toLocaleString()}</button>`;
+      }
+    }
+  }
+
+  // Pager handlers. Both pass _keepCap=true so the cap we set here survives the
+  // re-render (renderVisitTable resets the cap only on a fresh filter/view).
+  function vlShowMore() {
+    vlRowCap += VL_DEFAULT_CAP;
+    renderVisitTable(true);
+  }
+  function vlShowAll() {
+    vlRowCap = Infinity;
+    renderVisitTable(true);
   }
 
   async function toggleVisitFlag(visitId, flagged) {
@@ -10710,12 +10753,19 @@
     } catch {}
   }
 
-  function renderDocuments(rows) {
+  function renderDocuments(rows, _keepCap) {
+    if (!_keepCap) docRowCap = PC_TABLE_CAP;
+    docRenderRows = rows || [];
     const tbody = document.getElementById('docTableBody');
+    const docPager = document.getElementById('docPager');
     if (!rows.length) {
       tbody.innerHTML = '<tr><td colspan="9" class="empty">No documents found.</td></tr>';
+      if (docPager) docPager.style.display = 'none';
       return;
     }
+    const docTotal = rows.length;
+    const docShown = Math.min(docRowCap, docTotal);
+    const docPageRows = rows.slice(0, docShown);
     const sensitivityBadge = (s) => {
       const meta = {
         public:           { label: 'Public',           bg: 'var(--steel-bg)', fg: 'var(--steel)' },
@@ -10748,7 +10798,7 @@
     const _gateDoc = (typeof PC !== 'undefined' && PC.gateLinkHtml);
     // Sensitive-value gating: file size + sensitivity badge + version-ish
     //  metadata collapse to "—" when the viewer cannot read this document.
-    tbody.innerHTML = rows.map(d => {
+    tbody.innerHTML = docPageRows.map(d => {
       const _docVis = (typeof PC === 'undefined' || !PC.canRead) ? true : PC.canRead('document', d.id);
       // Attached entity link — per-attached-type
       let attached = d.linked_to_label ? escHtml(d.linked_to_label) : '<span style="color:var(--muted);">—</span>';
@@ -10787,7 +10837,10 @@
         </td>
       </tr>`;
     }).join('');
+    pcRenderTablePager(docPager, docTotal, docShown, 'docShowMore', 'docShowAll', 'documents');
   }
+  function docShowMore() { docRowCap += PC_TABLE_CAP; renderDocuments(docRenderRows, true); }
+  function docShowAll()  { docRowCap = Infinity;      renderDocuments(docRenderRows, true); }
 
   async function downloadDocument(id) {
     try {
@@ -10939,7 +10992,6 @@
   let invoiceAgingBucket = null; // 'not_yet_due' | 'bucket_0_30' | 'bucket_31_60' | 'bucket_61_90' | 'bucket_90plus'
   let editingInvoiceId = null;
   let currentLineItems = [];
-  let payingInvoice = null;
   let invoiceCurrency = 'JMD';
   let invoiceTaxRate  = 0.15;
 
@@ -11082,7 +11134,8 @@
     }
   }
 
-  function renderInvoices() {
+  function renderInvoices(_keepCap) {
+    if (!_keepCap) invRowCap = PC_TABLE_CAP;
     let rows = allInvoices.slice();
     if (invoiceFilter === 'overdue') rows = rows.filter(isOverdue);
     else if (invoiceFilter !== 'all') rows = rows.filter(r => r.status === invoiceFilter);
@@ -11132,12 +11185,17 @@
     else { badge.style.display = 'none'; }
 
     const tbody = document.getElementById('invoiceTableBody');
+    const invPager = document.getElementById('invPager');
     if (!rows.length) {
       tbody.innerHTML = '<tr><td colspan="9" class="empty">No invoices match this filter.</td></tr>';
+      if (invPager) invPager.style.display = 'none';
       return;
     }
+    const invTotal = rows.length;
+    const invShown = Math.min(invRowCap, invTotal);
+    const invPageRows = rows.slice(0, invShown);
     const _gate = (typeof PC !== 'undefined' && PC.gateLinkHtml);
-    tbody.innerHTML = rows.map(i => {
+    tbody.innerHTML = invPageRows.map(i => {
       const balance = (i.total || 0) - (i.amount_paid || 0);
       const overdue = isOverdue(i);
       const statusLabel = overdue ? 'overdue' : i.status;
@@ -11198,7 +11256,10 @@
         });
       }
     }
+    pcRenderTablePager(invPager, invTotal, invShown, 'invShowMore', 'invShowAll', 'invoices');
   }
+  function invShowMore() { invRowCap += PC_TABLE_CAP; renderInvoices(true); }
+  function invShowAll()  { invRowCap = Infinity;      renderInvoices(true); }
 
   // ── Invoice create/edit modal ──
   async function openInvoiceModal(invoiceId, prefill) {
@@ -11460,7 +11521,8 @@
     return `background:${bg};color:${fg};`;
   }
 
-  function renderEstimates() {
+  function renderEstimates(_keepCap) {
+    if (!_keepCap) estRowCap = PC_TABLE_CAP;
     let rows = allEstimates.slice();
     if (estimateFilter !== 'all') rows = rows.filter(r => r.status === estimateFilter);
 
@@ -11485,12 +11547,17 @@
     }
 
     const tbody = document.getElementById('estimateTableBody');
+    const estPager = document.getElementById('estPager');
     if (!rows.length) {
       tbody.innerHTML = '<tr><td colspan="7" class="empty">No estimates match this filter.</td></tr>';
+      if (estPager) estPager.style.display = 'none';
       return;
     }
+    const estTotal = rows.length;
+    const estShown = Math.min(estRowCap, estTotal);
+    const estPageRows = rows.slice(0, estShown);
     const _gate = (typeof PC !== 'undefined' && PC.gateLinkHtml);
-    tbody.innerHTML = rows.map(e => {
+    tbody.innerHTML = estPageRows.map(e => {
       const custLink = (_gate && e.customer_id)
         ? PC.gateLinkHtml('customer', e.customer_id, e.customer_name || '', {})
         : `<strong>${escHtml(e.customer_name || '')}</strong>`;
@@ -11519,7 +11586,10 @@
           <td style="white-space:nowrap;" onclick="event.stopPropagation();">${acts.join(' ') || '<span style="color:var(--muted);font-size:12px;">—</span>'}</td>
         </tr>`;
     }).join('');
+    pcRenderTablePager(estPager, estTotal, estShown, 'estShowMore', 'estShowAll', 'estimates');
   }
+  function estShowMore() { estRowCap += PC_TABLE_CAP; renderEstimates(true); }
+  function estShowAll()  { estRowCap = Infinity;      renderEstimates(true); }
 
   // ── Estimate create/edit modal ──
   async function openEstimateModal(estimateId) {
@@ -11701,46 +11771,11 @@
   }
 
   // ── Record payment ──
-  function openPaymentModal(invoiceId) {
-    payingInvoice = allInvoices.find(i => i.id === invoiceId);
-    if (!payingInvoice) return;
-    const balance = (payingInvoice.total || 0) - (payingInvoice.amount_paid || 0);
-    document.getElementById('pay-inv-label').textContent =
-      `${payingInvoice.invoice_number} — ${payingInvoice.customer_name}`;
-    document.getElementById('pay-balance').textContent = fmtMoney(balance, payingInvoice.currency);
-    document.getElementById('pay-date').value   = new Date().toISOString().slice(0, 10);
-    document.getElementById('pay-amount').value = balance > 0 ? balance.toFixed(2) : '';
-    document.getElementById('pay-method').value    = '';
-    document.getElementById('pay-reference').value = '';
-    document.getElementById('pay-notes').value     = '';
-    document.getElementById('err-recordPayment').style.display = 'none';
-    document.getElementById('modal-recordPayment').classList.add('open');
-  }
-
-  async function submitRecordPayment() {
-    // Generate one idempotency key per click; reuse on retry so a
-    // double-tap or network blip can't double-credit the invoice.
-    // Server returns the existing payment id for the same key, no
-    // duplicate row inserted. (Audit M3, 2026-05-23.)
-    const _idem = (window.crypto && crypto.randomUUID)
-      ? crypto.randomUUID()
-      : ('idem-' + Date.now() + '-' + Math.random().toString(36).slice(2,10));
-    const body = {
-      payment_date: document.getElementById('pay-date').value,
-      amount:       parseFloat(document.getElementById('pay-amount').value) || 0,
-      method:       document.getElementById('pay-method').value,
-      reference:    document.getElementById('pay-reference').value.trim(),
-      notes:        document.getElementById('pay-notes').value.trim(),
-      idempotency_key: _idem,
-    };
-    if (!body.payment_date) { showErr('err-recordPayment', 'Date is required.'); return; }
-    if (!body.amount || body.amount <= 0) { showErr('err-recordPayment', 'Amount must be positive.'); return; }
-    try {
-      await api('POST', `/api/admin/invoices/${payingInvoice.id}/payments`, body);
-      closeModal('recordPayment');
-      await loadInvoices();
-    } catch(e) { showErr('err-recordPayment', e.message); }
-  }
+  // NOTE: the v1 openPaymentModal/submitRecordPayment pair that lived here was
+  // dead code — shadowed by the currency-aware v2 openPaymentModal() defined
+  // later in this module (it builds #inv-payment-modal and submits via
+  // _paySubmit()). Removed along with its #modal-recordPayment markup to kill
+  // the function-shadowing + pay-amount/pay-method ID-collision hazard.
 
   // ── Tax reference ──
   async function showTaxReference() {
@@ -14237,15 +14272,14 @@
     }
   }
 
-  // ── My Profile (admin-side) ───────────────────────────────────────────────
-  // Every PrimeCool staff member sees a personal profile area. For admins
-  // we show identity (read-only), an Account & Security card (change
-  // password, manage MFA, sign out), and the same "My pay" list that
-  // the standalone My Payslips panel renders — so an admin who lives
-  // in My Profile never needs to leave it to see a payslip.
+  // ── Account & security (admin-side) ───────────────────────────────────────
+  // The single "My Profile" surface is now /profile (identity, pay, personal
+  // details all live there). This panel is the admin-only Account & Security
+  // card (change password, manage MFA, sign out) plus the Org tooling that
+  // /profile links out to.
   async function loadMpProfile() {
-    loadMpIdentity();
-    loadMpPay();
+    // Identity + pay now live on the unified /profile page; this panel is the
+    // admin-only Account & security + Org tooling, so we only load the org chart.
     loadAdminOrgChart();
   }
 
@@ -14624,254 +14658,12 @@
   }
 
   function apPrint(mode) {
-    // AstraZeneca-style Workday payslip layout, Jamaica-compliant.
-    // Mirrors the tech-side psPrint template so admins printing their
-    // own payslip see the same document the techs do — same summary
-    // strip, statutory tax split, employer contributions, JM tax info,
-    // and masked payment-information row.
+    // Canonical Jamaica-statutory Workday-style payslip — rendered by the ONE
+    // shared template in /static/pc_shared.js (PC.openPayslipPrint) so admin,
+    // tech /home, and the /profile Pay tab all produce an identical document.
     const p = _apCurrent;
     if (!p) return;
-    const cur = p.currency || 'JMD';
-    const saveMode = (mode === 'save');
-    // YTD: prefer server-supplied .ytd (JM tax year), fall back to 0s.
-    const ytd = (p && p.ytd) || {};
-    const er  = (p && p.employer_contribs) || null;
-    const company = (p && p.company) || { name:'PrimeCool Services Limited', address:'Kingston, Jamaica', trn:'TODO', nis_er:'TODO' };
-    const empIds  = (p && p.employee_ids) || { trn:'On file', nis:'On file' };
-    const bank    = (p && p.bank) || { bank_name:'On file', account_name:p.subject_name||'', account_masked:'****' };
-    const taxYr   = (p && p.tax_year) || {};
-    const n = (v) => _fmtMoney(v || 0, cur);
-    const eh = (s) => escHtml(String(s == null ? '' : s));
-    const today = new Date().toISOString().slice(0,10);
-    // Pre/tax/post split. Schema lumps non-statutory into other_deductions
-    // — we show that as POST-TAX; PRE-TAX is reserved for future pension /
-    // health columns and renders as 0 today.
-    const taxesCur = (Number(p.paye_tax)||0)+(Number(p.nis)||0)+(Number(p.nht)||0)+(Number(p.education_tax)||0);
-    const taxesYtd = (Number(ytd.paye_tax)||0)+(Number(ytd.nis)||0)+(Number(ytd.nht)||0)+(Number(ytd.education_tax)||0);
-    const preCur = 0, preYtd = 0;
-    const postCur = Number(p.other_deductions)||0;
-    const postYtd = Number(ytd.other_deductions)||0;
-    const w = window.open('', '_blank', 'width=900,height=1100');
-    if (!w) { toast('Pop-up blocked — allow pop-ups for this site and tap Print again.', 'warning'); return; }
-    w.document.write(`<!doctype html><html><head><meta charset="utf-8">
-      <title>PrimeCool Payslip — ${eh(p.subject_name||'')} — ${eh(p.period_label||'')}</title>
-      <style>
-        @page{size:A4;margin:14mm;}
-        *{box-sizing:border-box;}
-        body{font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;color:#1a2533;margin:0;font-size:11px;line-height:1.35;background:#fff;}
-        .sheet{max-width:780px;margin:0 auto;padding:18px 22px;}
-        .row{display:flex;gap:14px;}
-        .col{flex:1;}
-        .hdr{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #0B2545;padding-bottom:12px;margin-bottom:14px;}
-        .co-name{font-size:22px;font-weight:800;color:#0B2545;letter-spacing:.3px;}
-        .co-name em{color:#22A08A;font-style:normal;}
-        .co-meta{font-size:10.5px;color:#555;margin-top:4px;line-height:1.5;}
-        .ps-label{background:#22A08A;color:#fff;padding:6px 14px;border-radius:4px;font-weight:800;letter-spacing:1.2px;font-size:12px;}
-        .meta-row{display:grid;grid-template-columns:110px 1fr;row-gap:3px;column-gap:6px;font-size:10.5px;margin-top:8px;}
-        .meta-row .l{color:#555;} .meta-row .v{font-weight:600;color:#0B2545;}
-        .box{border:1px solid #cdd5e0;border-radius:4px;margin-top:12px;overflow:hidden;}
-        .box-h{background:#eaf0f7;color:#0B2545;font-weight:700;font-size:11px;padding:5px 10px;letter-spacing:.5px;}
-        .box-body{padding:8px 10px;display:grid;grid-template-columns:140px 1fr;row-gap:3px;column-gap:8px;font-size:10.5px;}
-        .box-body .l{color:#555;} .box-body .v{font-weight:600;color:#0B2545;}
-        table.tbl{width:100%;border-collapse:collapse;font-size:10.5px;margin-top:12px;}
-        table.tbl th{background:#eaf0f7;color:#0B2545;text-align:left;padding:6px 8px;font-weight:700;border:1px solid #cdd5e0;font-size:10px;letter-spacing:.3px;}
-        table.tbl td{padding:4px 8px;border:1px solid #e0e6ee;}
-        table.tbl td.num{text-align:right;font-variant-numeric:tabular-nums;}
-        .tot{background:#f5f7fa;font-weight:700;color:#0B2545;}
-        .net-pay-box{background:linear-gradient(135deg,#1B4F82,#0B2545);color:#fff;border-radius:12px;padding:16px 18px;text-align:center;box-shadow:0 2px 4px rgba(11,37,69,0.08),0 12px 28px -10px rgba(11,37,69,0.20);}
-        .net-pay-box .l{font-size:11px;font-weight:700;letter-spacing:1.4px;opacity:.92;color:#22A08A;}
-        .net-pay-box .v{font-size:26px;font-weight:700;margin-top:6px;letter-spacing:.2px;font-family:'IBM Plex Mono',ui-monospace,monospace;font-variant-numeric:tabular-nums;}
-        .footer-note{margin-top:14px;background:#f5f7fa;border:1px solid #cdd5e0;border-radius:4px;padding:7px 10px;font-size:10px;color:#4a5566;}
-        @media print{
-          .no-print{display:none !important;}
-          body,.net-pay-box,.tot,table.tbl th{-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;}
-          .net-pay-box,.row,table.tbl{page-break-inside:avoid;}
-        }
-        .print-bar{position:fixed;top:8px;right:8px;display:flex;gap:6px;}
-        .print-bar button{background:#0B2545;color:#fff;border:none;padding:7px 14px;border-radius:4px;cursor:pointer;font-weight:600;font-size:12px;}
-        .print-bar button.alt{background:#6b7280;}
-      </style></head><body>
-      <div class="print-bar no-print">
-        <button onclick="window.print()" title="${saveMode ? 'Pick &quot;Save as PDF&quot; as the destination in the print dialog' : 'Pick your printer in the print dialog'}">${saveMode ? '💾 Save as PDF' : '🖨 Print'}</button>
-        <button class="alt" onclick="window.close()">Close</button>
-      </div>
-      ${saveMode ? `<div class="no-print" style="background:#E0F2F1;color:#1A7A6A;padding:8px 14px;border:1px solid #E0F2F1;border-radius:4px;font-size:12px;margin:8px auto;max-width:780px;">💡 In the print dialog that just opened, pick <strong>Save as PDF</strong> from the destination dropdown to save this payslip to disk.</div>` : ''}
-      <div class="sheet">
-        <div class="hdr">
-          <div>
-            <div class="co-name">Prime<em>Cool</em> Services Ltd.</div>
-            <div class="co-meta">
-              ${eh(company.address)}<br>
-              TRN: ${eh(company.trn)} &nbsp;·&nbsp; NIS Employer #: ${eh(company.nis_er)}
-            </div>
-          </div>
-          <div style="text-align:right;">
-            <div class="ps-label">PAYSLIP</div>
-            <div class="meta-row" style="margin-top:10px;">
-              <div class="l">Pay Period:</div><div class="v">${eh(p.period_start||'')} – ${eh(p.period_end||'')}</div>
-              <div class="l">Pay Date:</div>  <div class="v">${eh(p.generated_at ? String(p.generated_at).slice(0,10) : today)}</div>
-              <div class="l">Tax Year:</div>  <div class="v">${eh(taxYr.label||'')}</div>
-              <div class="l">Payslip No:</div><div class="v">PCL/PS/${eh(String(p.id).padStart(6,'0'))}</div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Workday-style summary strip -->
-        <table class="tbl" style="margin-top:0;">
-          <thead><tr>
-            <th></th>
-            <th style="text-align:right;">GROSS PAY</th>
-            <th style="text-align:right;">PRE-TAX DEDUCTIONS</th>
-            <th style="text-align:right;">STATUTORY TAXES</th>
-            <th style="text-align:right;">POST-TAX DEDUCTIONS</th>
-            <th style="text-align:right;background:#0B2545;color:#fff;">NET PAY</th>
-          </tr></thead>
-          <tbody>
-            <tr>
-              <td style="font-weight:700;">Current</td>
-              <td class="num">${n(p.gross_pay)}</td>
-              <td class="num">${n(preCur)}</td>
-              <td class="num">${n(taxesCur)}</td>
-              <td class="num">${n(postCur)}</td>
-              <td class="num" style="background:#22A08A;color:#fff;font-weight:700;">${n(p.net_pay)}</td>
-            </tr>
-            <tr>
-              <td style="font-weight:700;">YTD</td>
-              <td class="num">${n(ytd.gross_pay)}</td>
-              <td class="num">${n(preYtd)}</td>
-              <td class="num">${n(taxesYtd)}</td>
-              <td class="num">${n(postYtd)}</td>
-              <td class="num" style="background:#0B2545;color:#fff;font-weight:700;">${n(ytd.net_pay)}</td>
-            </tr>
-          </tbody>
-        </table>
-
-        <div class="row">
-          <div class="col box">
-            <div class="box-h">EMPLOYEE DETAILS</div>
-            <div class="box-body">
-              <div class="l">Employee ID:</div><div class="v">${eh(p.subject_prid||'')}</div>
-              <div class="l">Name:</div>       <div class="v">${eh(p.subject_name||'')}</div>
-              <div class="l">Currency:</div>   <div class="v">${eh(cur)}</div>
-            </div>
-          </div>
-          <div class="col box">
-            <div class="box-h">JAMAICA TAX INFORMATION</div>
-            <div class="box-body">
-              <div class="l">TRN:</div>           <div class="v">${eh(empIds.trn||'On file')}</div>
-              <div class="l">NIS #:</div>         <div class="v">${eh(empIds.nis||'On file')}</div>
-              <div class="l">Tax Code:</div>     <div class="v">Threshold applied</div>
-              <div class="l">Tax Year:</div>     <div class="v">${eh(taxYr.label||'')}</div>
-              <div class="l">Add'l Withholding:</div><div class="v">—</div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Earnings -->
-        <table class="tbl">
-          <thead><tr>
-            <th colspan="5" style="background:#dde6f0;color:#0B2545;font-size:11px;">EARNINGS</th>
-          </tr><tr>
-            <th>DESCRIPTION</th><th>RATE</th><th>HOURS / UNITS</th>
-            <th style="text-align:right;">CURRENT (J$)</th>
-            <th style="text-align:right;">YTD (J$)</th>
-          </tr></thead>
-          <tbody>
-            <tr><td>Regular Pay</td><td class="num">${n(p.hourly_rate)}</td><td class="num">${Number(p.hours_regular||0).toFixed(2)}</td><td class="num">${n((Number(p.hours_regular)||0)*(Number(p.hourly_rate)||0))}</td><td class="num">${n(ytd.regular_pay||((Number(ytd.hours_regular)||0)*(Number(p.hourly_rate)||0)))}</td></tr>
-            <tr><td>Overtime</td><td class="num">${n(p.overtime_rate)}</td><td class="num">${Number(p.hours_overtime||0).toFixed(2)}</td><td class="num">${n((Number(p.hours_overtime)||0)*(Number(p.overtime_rate)||0))}</td><td class="num">${n(ytd.overtime_pay||((Number(ytd.hours_overtime)||0)*(Number(p.overtime_rate)||0)))}</td></tr>
-            <tr><td>Fixed Salary</td><td></td><td></td><td class="num">${n(p.fixed_salary)}</td><td class="num">${n(ytd.fixed_salary)}</td></tr>
-            <tr><td>Bonus</td><td></td><td></td><td class="num">${n(p.bonus)}</td><td class="num">${n(ytd.bonus)}</td></tr>
-            <tr class="tot"><td colspan="3">TOTAL EARNINGS</td><td class="num">${n(p.gross_pay)}</td><td class="num">${n(ytd.gross_pay)}</td></tr>
-          </tbody>
-        </table>
-
-        <!-- Statutory taxes / Other (post-tax) side-by-side -->
-        <div class="row">
-          <table class="tbl col" style="margin-right:7px;">
-            <thead><tr>
-              <th colspan="3" style="background:#dde6f0;color:#0B2545;font-size:11px;">STATUTORY TAXES (EMPLOYEE)</th>
-            </tr><tr>
-              <th>DESCRIPTION</th><th style="text-align:right;">CURRENT (J$)</th><th style="text-align:right;">YTD (J$)</th>
-            </tr></thead>
-            <tbody>
-              <tr><td>PAYE Income Tax</td><td class="num">${n(p.paye_tax)}</td><td class="num">${n(ytd.paye_tax)}</td></tr>
-              <tr><td>NIS (Employee 3%)</td><td class="num">${n(p.nis)}</td><td class="num">${n(ytd.nis)}</td></tr>
-              <tr><td>NHT (Employee 2%)</td><td class="num">${n(p.nht)}</td><td class="num">${n(ytd.nht)}</td></tr>
-              <tr><td>Education Tax (2.25%)</td><td class="num">${n(p.education_tax)}</td><td class="num">${n(ytd.education_tax)}</td></tr>
-              <tr class="tot"><td>TOTAL TAXES</td><td class="num">${n(taxesCur)}</td><td class="num">${n(taxesYtd)}</td></tr>
-            </tbody>
-          </table>
-          <table class="tbl col" style="margin-left:7px;">
-            <thead><tr>
-              <th colspan="3" style="background:#dde6f0;color:#0B2545;font-size:11px;">OTHER DEDUCTIONS (POST-TAX)</th>
-            </tr><tr>
-              <th>DESCRIPTION</th><th style="text-align:right;">CURRENT (J$)</th><th style="text-align:right;">YTD (J$)</th>
-            </tr></thead>
-            <tbody>
-              <tr><td>Other Deductions</td><td class="num">${n(p.other_deductions)}</td><td class="num">${n(ytd.other_deductions)}</td></tr>
-              <tr class="tot"><td>TOTAL POST-TAX</td><td class="num">${n(postCur)}</td><td class="num">${n(postYtd)}</td></tr>
-            </tbody>
-          </table>
-        </div>
-
-        ${er ? `
-        <table class="tbl">
-          <thead><tr>
-            <th colspan="3" style="background:#dde6f0;color:#0B2545;font-size:11px;">EMPLOYER CONTRIBUTIONS (NOT DEDUCTED FROM YOU)</th>
-          </tr><tr>
-            <th>DESCRIPTION</th><th style="text-align:right;">CURRENT (J$)</th><th style="text-align:right;">RATE</th>
-          </tr></thead>
-          <tbody>
-            <tr><td>NIS — Employer</td><td class="num">${n(er.nis_er)}</td><td class="num">3.0%</td></tr>
-            <tr><td>NHT — Employer</td><td class="num">${n(er.nht_er)}</td><td class="num">3.0%</td></tr>
-            <tr><td>Education Tax — Employer</td><td class="num">${n(er.edtax_er)}</td><td class="num">3.5%</td></tr>
-            <tr><td>HEART Trust / NTA</td><td class="num">${n(er.heart)}</td><td class="num">3.0%${er.heart === 0 ? ' (under threshold)' : ''}</td></tr>
-            <tr class="tot"><td>TOTAL EMPLOYER COST</td><td class="num">${n((er.nis_er||0)+(er.nht_er||0)+(er.edtax_er||0)+(er.heart||0))}</td><td></td></tr>
-          </tbody>
-        </table>` : ''}
-
-        <!-- Net pay banner -->
-        <div class="row" style="margin-top:14px;">
-          <div class="col" style="display:flex;flex-direction:column;gap:10px;">
-            <div class="net-pay-box">
-              <div class="l">NET PAY (Current Period)</div>
-              <div class="v">${n(p.net_pay)}</div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Payment Information — masked account # (last 4 visible) -->
-        <table class="tbl">
-          <thead><tr>
-            <th colspan="5" style="background:#dde6f0;color:#0B2545;font-size:11px;">PAYMENT INFORMATION</th>
-          </tr><tr>
-            <th>BANK</th><th>ACCOUNT NAME</th><th>ACCOUNT NUMBER</th>
-            <th style="text-align:right;">AMOUNT</th><th>CURRENCY</th>
-          </tr></thead>
-          <tbody>
-            <tr>
-              <td>${eh(bank.bank_name||'On file')}</td>
-              <td>${eh(bank.account_name||p.subject_name||'')}</td>
-              <td>${eh(bank.account_masked||'****')}</td>
-              <td class="num">${n(p.net_pay)}</td>
-              <td>${eh(cur)}</td>
-            </tr>
-          </tbody>
-        </table>
-
-        ${p.notes ? `<div class="box"><div class="box-h">NOTES</div><div style="padding:8px 10px;font-size:11px;line-height:1.5;">${eh(p.notes).replace(/\n/g,'<br>')}</div></div>` : ''}
-
-        <div class="footer-note">
-          <strong>PAY ADVICE</strong> — This payslip is computer-generated and does not require a signature.
-          Generated on ${eh(today)}.<br>
-          <strong>Jamaica statutory compliance:</strong> calculations apply current PAYE, NIS (employee 3% / employer 3%, capped at insurable ceiling),
-          NHT (employee 2% / employer 3%), Education Tax (employee 2.25% / employer 3.5%), and HEART Trust (employer 3% above monthly threshold) rates.
-          Rates change with the JM National Budget — confirm with PrimeCool payroll if disputed.
-        </div>
-      </div>
-      </body></html>`);
-    w.document.close();
-    if (saveMode) { try { setTimeout(() => { w.focus(); w.print(); }, 350); } catch (_) {} }
+    PC.openPayslipPrint(p, { saveMode: (mode === 'save') });
   }
 
   // ── Change own password ──────────────────────────────────────────────────

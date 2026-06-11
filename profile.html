@@ -1,0 +1,847 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex,nofollow">
+  <title>My Profile · PrimeCool</title>
+  <style>
+    :root {
+      --navy:#0B2545; --navy-2:#1B4F82; --navy-deep:#111820;
+      --ink:#0B2545;
+      --teal:#22A08A; --teal-dark:#1A7A6A;
+      --bg:#F2F6FA; --bg-2:#EBF0F5; --card:#fff;
+      --border:#E5EBF1; --border-light:#EEF2F6;
+      --muted:#5A6472; --muted-2:#8892A0; --text:#2C3340;
+      --danger:#B42318; --danger-bg:#FEF3F2; --link:#1B4F82;
+      --surface-2:#EBF0F5;
+      --teal-bg:#E0F2F1; --info-bg:#E7F0F7;
+      --warn-bg:#FFF7E6; --warn-fg:#7a5b00; --warn-border:#f0d28a;
+      --teal-solid:#1A7A6A; --danger-solid:#B42318;
+      --overlay:rgba(11,37,69,.45);
+      --font-display:'Archivo','Segoe UI',system-ui,sans-serif;
+      --font-body:'IBM Plex Sans','Segoe UI',system-ui,sans-serif;
+      --font-mono:'IBM Plex Mono',ui-monospace,monospace;
+      --shadow-card:0 1px 2px rgba(11,37,69,.04), 0 1px 3px rgba(11,37,69,.06);
+      --shadow-card-hover:0 2px 8px rgba(11,37,69,.10);
+      --topbar-h:56px; --accent-h:3px;
+    }
+    html[data-pc-theme="dark"]{
+      --navy:#0e1b2e; --navy-2:#16243b; --navy-deep:#0a121d;
+      --ink:#e9eef5; --teal:#2bb89e; --teal-dark:#5fe0c4;
+      --bg:#0b1320; --bg-2:#111c2c; --card:#16212f;
+      --border:#2a3848; --border-light:#243345;
+      --muted:#9aa6b6; --muted-2:#7e8b9c; --text:#d3dbe6;
+      --danger:#fca5a5; --danger-bg:rgba(229,62,62,0.18); --link:#93c5fd;
+      --surface-2:#1d2a3a; --teal-bg:rgba(34,160,138,0.18); --info-bg:rgba(59,130,246,0.18);
+      --warn-bg:rgba(245,158,11,0.16); --warn-fg:#fbbf24; --warn-border:rgba(245,158,11,0.4);
+      --teal-solid:#1A7A6A; --danger-solid:#dc2626; --overlay:rgba(0,0,0,0.65);
+      --shadow-card:0 1px 2px rgba(0,0,0,.4), 0 1px 3px rgba(0,0,0,.5);
+      --shadow-card-hover:0 2px 8px rgba(0,0,0,.6);
+    }
+    *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+    input,select,textarea{background:var(--card);color:var(--ink);font:inherit;}
+    input::placeholder,textarea::placeholder{color:var(--muted-2);}
+    html,body{height:100%;}
+    body{
+      font-family:var(--font-body); background:var(--bg); color:var(--text);
+      min-height:100vh; -webkit-font-smoothing:antialiased;
+      padding-top:calc(var(--topbar-h) + var(--accent-h));
+    }
+    body::before{content:"";position:fixed;top:0;left:0;right:0;height:var(--accent-h);background:var(--navy);z-index:60;}
+    a{color:var(--link);text-decoration:none;}
+
+    /* ── Top bar ── */
+    .topbar{position:fixed;top:var(--accent-h);left:0;right:0;height:var(--topbar-h);
+      background:var(--card);border-bottom:1px solid var(--border);display:flex;
+      align-items:center;gap:14px;padding:0 18px;z-index:50;}
+    /* Brand lockup — matches staff_home (snowflake mark + Prime/Cool wordmark). */
+    .brand-lockup{display:flex;align-items:center;gap:10px;color:var(--ink);min-width:0;flex-shrink:0;cursor:pointer;}
+    .brand-lockup .word{font-family:var(--font-display);font-weight:800;font-size:17px;letter-spacing:-0.01em;color:var(--ink);}
+    .brand-lockup .word span{color:var(--teal);}
+    .pc-snowflake{display:inline-block;width:22px;height:22px;background:var(--teal);border-radius:6px;flex-shrink:0;position:relative;vertical-align:middle;}
+    .pc-snowflake::before{content:"";position:absolute;inset:4px;
+      background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230B2545' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><line x1='12' y1='2' x2='12' y2='22'/><line x1='2' y1='12' x2='22' y2='12'/><line x1='4.93' y1='4.93' x2='19.07' y2='19.07'/><line x1='19.07' y1='4.93' x2='4.93' y2='19.07'/></svg>");
+      background-size:contain;background-repeat:no-repeat;}
+    .topbar .crumb{color:var(--muted);font-size:14px;}
+    .topbar .spacer{flex:1;}
+    .icon-btn{width:38px;height:38px;display:inline-flex;align-items:center;justify-content:center;border:none;background:transparent;border-radius:50%;color:var(--ink);cursor:pointer;}
+    .icon-btn:hover{background:var(--bg);}
+    .icon-btn svg{width:20px;height:20px;}
+    .tb-link{font-size:13px;color:var(--muted);padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--card);cursor:pointer;}
+    .tb-link:hover{background:var(--bg);color:var(--ink);}
+
+    /* ── Layout ── */
+    .wrap{max-width:1180px;margin:0 auto;padding:20px 18px 60px;display:grid;grid-template-columns:264px 1fr;gap:20px;align-items:start;}
+    @media(max-width:860px){.wrap{grid-template-columns:1fr;}}
+
+    /* ── Left rail ── */
+    .rail{background:var(--card);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow-card);overflow:hidden;position:sticky;top:calc(var(--topbar-h) + var(--accent-h) + 18px);}
+    .rail-hero{padding:22px 18px 16px;text-align:center;border-bottom:1px solid var(--border-light);}
+    .avatar{width:96px;height:96px;border-radius:50%;margin:0 auto 12px;object-fit:cover;display:flex;align-items:center;justify-content:center;font-family:var(--font-display);font-weight:800;font-size:34px;color:#fff;background:linear-gradient(135deg,var(--navy-2),var(--navy));position:relative;cursor:pointer;}
+    .avatar .cam{position:absolute;bottom:2px;right:2px;width:28px;height:28px;border-radius:50%;background:var(--card);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;color:var(--muted);}
+    .avatar .cam svg{width:15px;height:15px;}
+    .rail-name{font-family:var(--font-display);font-weight:800;font-size:18px;color:var(--ink);line-height:1.2;}
+    .rail-id{font-size:12.5px;color:var(--muted-2);margin-top:2px;font-family:var(--font-mono);}
+    .rail-title{font-size:13px;color:var(--muted);margin-top:6px;}
+    .rail-actions{display:flex;justify-content:center;gap:10px;margin-top:14px;}
+    .qbtn{width:42px;height:42px;border-radius:50%;border:1px solid var(--border);background:var(--bg);display:flex;align-items:center;justify-content:center;color:var(--navy-2);cursor:pointer;}
+    .qbtn:hover{background:var(--teal-bg);border-color:var(--teal);color:var(--teal-dark);}
+    .qbtn svg{width:18px;height:18px;}
+    .qbtn-lbl{font-size:10px;color:var(--muted-2);text-align:center;margin-top:3px;}
+    .nav{padding:8px;}
+    .nav button{display:flex;align-items:center;gap:11px;width:100%;text-align:left;border:none;background:transparent;color:var(--text);font-size:14px;padding:10px 12px;border-radius:9px;cursor:pointer;font-weight:500;}
+    .nav button svg{width:17px;height:17px;color:var(--muted);flex-shrink:0;}
+    .nav button:hover{background:var(--bg);}
+    .nav button.active{background:var(--teal-bg);color:var(--teal-dark);font-weight:700;}
+    .nav button.active svg{color:var(--teal-dark);}
+
+    /* ── Main panel ── */
+    .main{min-height:400px;}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow-card);padding:22px;margin-bottom:18px;}
+    .card h2{font-family:var(--font-display);font-size:19px;color:var(--ink);font-weight:800;margin-bottom:2px;}
+    .card .sub{color:var(--muted);font-size:13px;margin-bottom:16px;}
+    .sec-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;}
+    .sec-head h3{font-family:var(--font-display);font-size:16px;color:var(--ink);font-weight:700;}
+
+    .subtabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:18px;flex-wrap:wrap;}
+    .subtabs button{border:none;background:transparent;color:var(--muted);font-size:13.5px;font-weight:600;padding:10px 14px;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;}
+    .subtabs button:hover{color:var(--ink);}
+    .subtabs button.active{color:var(--teal-dark);border-bottom-color:var(--teal);}
+
+    .fgrid{display:grid;grid-template-columns:1fr 1fr;gap:2px 28px;}
+    @media(max-width:560px){.fgrid{grid-template-columns:1fr;}}
+    .field{padding:9px 0;border-bottom:1px solid var(--border-light);}
+    .field .k{font-size:12px;color:var(--muted-2);text-transform:uppercase;letter-spacing:.03em;margin-bottom:2px;}
+    .field .v{font-size:14.5px;color:var(--ink);font-weight:500;}
+    .field .v.empty{color:var(--muted-2);font-weight:400;font-style:italic;}
+
+    .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px 18px;}
+    @media(max-width:560px){.form-grid{grid-template-columns:1fr;}}
+    .fld label{display:block;font-size:12px;color:var(--muted);font-weight:600;margin-bottom:5px;}
+    .fld input,.fld select,.fld textarea{width:100%;padding:9px 11px;border:1px solid var(--border);border-radius:9px;font-size:14px;}
+    .fld input:focus,.fld select:focus,.fld textarea:focus{outline:none;border-color:var(--teal);box-shadow:0 0 0 3px var(--teal-bg);}
+    .fld.full{grid-column:1/-1;}
+    .fld input[readonly]{background:var(--bg);color:var(--muted);}
+
+    .btn{border:1px solid var(--border);background:var(--card);color:var(--ink);font-size:13.5px;font-weight:600;padding:9px 16px;border-radius:9px;cursor:pointer;}
+    .btn:hover{background:var(--bg);}
+    .btn-primary{background:var(--navy);color:#fff;border-color:var(--navy);}
+    .btn-primary:hover{background:var(--navy-2);}
+    .btn-teal{background:var(--teal-solid);color:#fff;border-color:var(--teal-solid);}
+    .btn-teal:hover{filter:brightness(1.06);}
+    .btn-sm{padding:6px 11px;font-size:12.5px;}
+    .btn-danger{color:var(--danger);border-color:var(--border);}
+    .btn-danger:hover{background:var(--danger-bg);}
+    .row-actions{display:flex;gap:8px;margin-top:18px;}
+
+    .tag{display:inline-flex;align-items:center;gap:6px;background:var(--bg-2);color:var(--ink);border:1px solid var(--border);border-radius:20px;padding:5px 12px;font-size:13px;font-weight:600;margin:0 6px 8px 0;}
+    .tag .x{cursor:pointer;color:var(--muted-2);font-weight:700;}
+    .tag .x:hover{color:var(--danger);}
+
+    .item{border:1px solid var(--border);border-radius:11px;padding:14px 16px;margin-bottom:10px;display:flex;justify-content:space-between;gap:14px;}
+    .item .it-title{font-weight:700;color:var(--ink);font-size:14.5px;}
+    .item .it-meta{color:var(--muted);font-size:13px;margin-top:3px;}
+    .item .it-desc{color:var(--text);font-size:13.5px;margin-top:6px;white-space:pre-wrap;}
+    .item .it-actions{display:flex;flex-direction:column;gap:6px;flex-shrink:0;}
+
+    .empty{text-align:center;color:var(--muted);padding:34px 18px;}
+    .empty svg{width:38px;height:38px;color:var(--muted-2);margin-bottom:10px;}
+    .empty .t{font-weight:700;color:var(--ink);margin-bottom:4px;}
+    .skel{height:14px;background:linear-gradient(90deg,var(--bg-2),var(--surface-2),var(--bg-2));background-size:200% 100%;animation:sh 1.2s infinite;border-radius:6px;margin:9px 0;}
+    @keyframes sh{0%{background-position:200% 0}100%{background-position:-200% 0}}
+
+    .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;}
+    .stat{background:var(--bg);border:1px solid var(--border-light);border-radius:11px;padding:14px;}
+    .stat .n{font-family:var(--font-display);font-size:23px;font-weight:800;color:var(--ink);}
+    .stat .n svg{width:24px;height:24px;color:var(--teal);vertical-align:middle;display:inline-block;}
+    .stat .l{font-size:12px;color:var(--muted);margin-top:2px;}
+    .more-row{display:flex;align-items:center;gap:12px;padding:12px 4px;border-bottom:1px solid var(--border);text-decoration:none;color:var(--ink);}
+    .more-row:last-child{border-bottom:none;}
+    .more-row:hover{background:var(--bg);}
+    .more-row .mic{width:34px;height:34px;flex:none;border-radius:9px;background:var(--teal-bg);color:var(--teal);display:inline-flex;align-items:center;justify-content:center;}
+    .more-row .mic svg{width:18px;height:18px;}
+    .more-row .mtx{flex:1;min-width:0;}
+    .more-row .mt{display:block;font-weight:700;font-size:14px;}
+    .more-row .md{display:block;font-size:12px;color:var(--muted);}
+    .more-row .mch{color:var(--muted);font-size:18px;}
+
+    .badge{display:inline-block;font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:20px;text-transform:uppercase;letter-spacing:.03em;}
+    .badge.ok{background:var(--teal-bg);color:var(--teal-dark);}
+    .badge.warn{background:var(--warn-bg);color:var(--warn-fg);}
+    .badge.bad{background:var(--danger-bg);color:var(--danger);}
+
+    table.pay{width:100%;border-collapse:collapse;font-size:13.5px;}
+    table.pay th{text-align:left;color:var(--muted-2);font-size:11.5px;text-transform:uppercase;letter-spacing:.03em;padding:8px 10px;border-bottom:1px solid var(--border);}
+    table.pay td{padding:11px 10px;border-bottom:1px solid var(--border-light);}
+    table.pay tr:hover td{background:var(--bg);}
+    .num{font-family:var(--font-mono);text-align:right;}
+
+    /* ── Modal ── */
+    .modal-back{position:fixed;inset:0;background:var(--overlay);z-index:100;display:none;align-items:center;justify-content:center;padding:20px;}
+    .modal-back.open{display:flex;}
+    .modal{background:var(--card);border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.3);width:100%;max-width:520px;max-height:90vh;overflow:auto;}
+    .modal-h{padding:18px 22px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;}
+    .modal-h h3{font-family:var(--font-display);font-size:17px;color:var(--ink);font-weight:800;}
+    .modal-b{padding:20px 22px;}
+    .modal-f{padding:14px 22px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px;}
+    .hidden{display:none!important;}
+    /* Payslips render via PC.openPayslipPrint (shared popup); no inline print canvas. */
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <a class="brand-lockup" href="/home"><span class="pc-snowflake" aria-hidden="true"></span><span class="word">Prime<span>Cool</span></span></a>
+    <span class="crumb">My Profile</span>
+    <div class="spacer"></div>
+    <span data-pc-notif-bell></span>
+    <button class="tb-link" id="backBtn">← Console</button>
+    <button class="tb-link" id="signoutBtn">Sign out</button>
+  </div>
+
+  <div class="wrap">
+    <aside class="rail" id="rail">
+      <div class="rail-hero">
+        <div class="skel" style="width:96px;height:96px;border-radius:50%;margin:0 auto 12px;"></div>
+        <div class="skel" style="width:60%;margin:8px auto;"></div>
+      </div>
+    </aside>
+    <main class="main" id="main">
+      <div class="card"><div class="skel"></div><div class="skel" style="width:70%"></div><div class="skel" style="width:40%"></div></div>
+    </main>
+  </div>
+
+  <input type="file" id="avatarFile" accept="image/*" class="hidden">
+
+  <div class="modal-back" id="modalBack">
+    <div class="modal">
+      <div class="modal-h"><h3 id="modalTitle">—</h3><button class="icon-btn" onclick="closeModal()">✕</button></div>
+      <div class="modal-b" id="modalBody"></div>
+      <div class="modal-f" id="modalFoot"></div>
+    </div>
+  </div>
+
+  <script src="/static/pc_shared.js?v=1781191429"></script>
+  <script>
+  // ── Helpers ────────────────────────────────────────────────────────────
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const $ = (id) => document.getElementById(id);
+  const toast = (m,k) => (window.PC && PC.toast) ? PC.toast(m,k) : console.log(m);
+  const fmtDate = (v) => (window.PC && PC.fmtDate) ? PC.fmtDate(v) : (v||'');
+  const CUR = {JMD:'J$', USD:'$', GBP:'£', EUR:'€'};
+  const money = (n,cur) => (CUR[cur]||((cur?cur+' ':'')) ) + (Number(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+
+  // Bearer token (if the user arrived from admin.html/tech.html) PLUS cookies.
+  // The /api/staff/me/* endpoints resolve the subject from the cookie; the
+  // header is a belt-and-suspenders fallback.
+  function bearer(){
+    return localStorage.getItem('pc_admin_token') || localStorage.getItem('pc_tech_token') || null;
+  }
+  async function api(method, path, body){
+    const h = {};
+    if (body !== undefined) h['Content-Type'] = 'application/json';
+    const t = bearer(); if (t) h['Authorization'] = 'Bearer ' + t;
+    const res = await fetch(path, {method, credentials:'include', headers:h,
+      body: body !== undefined ? JSON.stringify(body) : undefined});
+    if (res.status === 401){ location.replace('/staff'); throw new Error('unauth'); }
+    if (!res.ok){ let msg='HTTP '+res.status; try{const j=await res.json(); msg=j.detail||msg;}catch(_){} const e=new Error(msg); e.status=res.status; throw e; }
+    if (res.status === 204) return null;
+    const ct = res.headers.get('content-type')||''; return ct.includes('json') ? res.json() : res.text();
+  }
+
+  const ICO = {
+    summary:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>',
+    job:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
+    comp:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v10M9.5 9.5a2.5 2 0 0 1 5 0c0 1.5-2.5 1.5-2.5 2.5"/></svg>',
+    pay:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="3"/></svg>',
+    print:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px;vertical-align:-2px"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8" rx="1"/></svg>',
+    absence:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>',
+    contact:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4z" opacity="0"/><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.08 4.18 2 2 0 0 1 4.06 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92Z"/></svg>',
+    personal:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>',
+    perf:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m7 14 4-4 4 3 4-6"/></svg>',
+    career:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 3 7l9 5 9-5-9-5Z"/><path d="M3 7v6l9 5 9-5V7"/></svg>',
+    phone:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.08 4.18 2 2 0 0 1 4.06 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92Z"/></svg>',
+    mail:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 6-10 7L2 6"/></svg>',
+    team:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+    cam:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>',
+    inbox:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>',
+  };
+  const ico = (n) => ICO[n]||'';
+
+  // ── State ──────────────────────────────────────────────────────────────
+  let me = null;          // /api/staff/me
+  let jobInfo = null;     // /api/staff/me/job
+  const TABS = [
+    ['summary','Summary','summary'], ['job','Job','job'],
+    ['compensation','Compensation','comp'], ['pay','Pay','pay'],
+    ['absence','Absence','absence'], ['contact','Contact','contact'],
+    ['personal','Personal','personal'], ['performance','Performance','perf'],
+    ['career','Career','career'],
+  ];
+  let activeTab = 'summary';
+
+  // ── Boot ───────────────────────────────────────────────────────────────
+  (async function boot(){
+    try { me = await api('GET','/api/staff/me'); }
+    catch(e){ if(e.message!=='unauth'){ $('main').innerHTML = '<div class="card"><div class="empty"><div class="t">Could not load your profile</div><div>'+esc(e.message)+'</div></div></div>'; } return; }
+    try { jobInfo = await api('GET','/api/staff/me/job'); } catch(_){ jobInfo = {}; }
+    renderRail();
+    if (window.PC && PC.notif) { try { PC.notif.mount(); } catch(_){} }
+    const want = (location.hash||'').replace('#','');
+    if (TABS.some(t=>t[0]===want)) activeTab = want;
+    selectTab(activeTab);
+
+    $('backBtn').onclick = () => { location.href = me.kind === 'admin' ? '/admin' : '/tech'; };
+    $('signoutBtn').onclick = signOut;
+    $('avatarFile').onchange = uploadAvatar;
+  })();
+
+  function initials(name){ return (name||'?').split(/\s+/).slice(0,2).map(w=>w[0]||'').join('').toUpperCase(); }
+
+  function renderRail(){
+    const av = me.avatar_url
+      ? `<img class="avatar" id="avatarImg" src="${esc(me.avatar_url)}" alt=""><div class="cam-overlay"></div>`
+      : `<div class="avatar" id="avatarImg">${esc(initials(me.name))}<span class="cam">${ico('cam')}</span></div>`;
+    const wid = jobInfo && jobInfo.worker_id ? jobInfo.worker_id : (me.prid||me.tech_code||'');
+    const navHtml = TABS.map(([id,label,icon])=>
+      `<button data-tab="${id}" class="${id===activeTab?'active':''}" onclick="selectTab('${id}')">${ico(icon)}<span>${esc(label)}</span></button>`).join('');
+    $('rail').innerHTML = `
+      <div class="rail-hero">
+        <div style="position:relative;width:96px;margin:0 auto 12px;" title="Change photo" onclick="document.getElementById('avatarFile').click()">${av}</div>
+        <div class="rail-name">${esc(me.name)}</div>
+        <div class="rail-id">${esc(wid)}</div>
+        <div class="rail-title">${esc((jobInfo&&jobInfo.title)||me.role_label||'')}</div>
+        <div class="rail-actions">
+          <div><button class="qbtn" title="Call" onclick="quickContact('tel')">${ico('phone')}</button><div class="qbtn-lbl">Call</div></div>
+          <div><button class="qbtn" title="Email" onclick="quickContact('mail')">${ico('mail')}</button><div class="qbtn-lbl">Email</div></div>
+          <div><button class="qbtn" title="Team" onclick="selectTab('job')">${ico('team')}</button><div class="qbtn-lbl">Team</div></div>
+        </div>
+      </div>
+      <nav class="nav">${navHtml}</nav>`;
+  }
+  function quickContact(kind){
+    const v = kind==='tel' ? (me.phone) : (me.email);
+    if(!v){ toast('No '+(kind==='tel'?'phone':'email')+' on file','warning'); return; }
+    location.href = (kind==='tel'?'tel:':'mailto:')+v;
+  }
+
+  async function uploadAvatar(ev){
+    const f = ev.target.files && ev.target.files[0]; if(!f) return;
+    const fd = new FormData(); fd.append('file', f);
+    const h={}; const t=bearer(); if(t) h['Authorization']='Bearer '+t;
+    try{
+      const res = await fetch('/api/staff/me/avatar',{method:'POST',credentials:'include',headers:h,body:fd});
+      if(!res.ok) throw new Error('upload failed');
+      const j = await res.json(); me.avatar_url = j.avatar_url; renderRail(); toast('Photo updated','success');
+    }catch(e){ toast('Could not upload photo','error'); }
+    ev.target.value='';
+  }
+  async function signOut(){
+    const path = me && me.kind==='admin' ? '/api/admin/logout' : '/api/tech/logout';
+    const h={}; const t=bearer(); if(t) h['Authorization']='Bearer '+t;
+    try{ await fetch(path,{method:'POST',credentials:'include',headers:h}); }catch(_){}
+    localStorage.removeItem('pc_admin_token'); localStorage.removeItem('pc_tech_token');
+    location.replace('/staff');
+  }
+
+  // ── Tab router ─────────────────────────────────────────────────────────
+  function selectTab(id){
+    activeTab = id; location.hash = id;
+    document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active', b.dataset.tab===id));
+    $('main').innerHTML = '<div class="card"><div class="skel"></div><div class="skel" style="width:65%"></div></div>';
+    const fn = ({summary:tabSummary, job:tabJob, compensation:tabComp, pay:tabPay,
+      absence:tabAbsence, contact:tabContact, personal:tabPersonal,
+      performance:tabPerf, career:tabCareer})[id];
+    Promise.resolve().then(fn).catch(e=>{
+      if(e.message==='unauth') return;
+      $('main').innerHTML = '<div class="card"><div class="empty"><div class="t">Couldn\'t load this section</div><div>'+esc(e.message)+'</div></div></div>';
+    });
+  }
+  const field = (k,v) => `<div class="field"><div class="k">${esc(k)}</div><div class="v ${v?'':'empty'}">${v?esc(v):'Not provided'}</div></div>`;
+  const prettify = (s) => { s = String(s==null?'':s).trim(); if(!s) return s; return s.replace(/[_-]+/g,' ').replace(/\b\w/g, c=>c.toUpperCase()); };
+  const emptyState = (icon,title,msg) => `<div class="empty">${ico(icon)}<div class="t">${esc(title)}</div><div>${esc(msg)}</div></div>`;
+
+  // ── Summary ────────────────────────────────────────────────────────────
+  async function tabSummary(){
+    let extra = '';
+    if (me.kind === 'tech'){
+      const bits = await Promise.allSettled([
+        api('GET','/api/tech/me/clock-status'),
+        api('GET','/api/tech/me/pto-balance'),
+      ]);
+      const clock = bits[0].status==='fulfilled' ? bits[0].value : null;
+      const pto = bits[1].status==='fulfilled' ? bits[1].value : null;
+      const bal = pto && pto.balance ? pto.balance : null;
+      extra = `<div class="card"><div class="sec-head"><h3>At a glance</h3></div><div class="stat-grid">
+        ${clock ? `<div class="stat"><div class="n">${clock.clocked_in?'On the clock':'Off'}</div><div class="l">Clock status</div></div>`:''}
+        ${bal ? `<div class="stat"><div class="n">${Number(bal.vacation_balance||0).toFixed(1)}</div><div class="l">Vacation hrs</div></div>
+                 <div class="stat"><div class="n">${Number(bal.floating_balance||bal.floating_holidays||0).toFixed(1)}</div><div class="l">Floating hrs</div></div>`:''}
+      </div></div>`;
+    }
+    const j = jobInfo||{};
+    // Unique tools that still live in the legacy console panels — kept reachable
+    // here as linked sub-pages so /profile is the single "My Profile" entry point.
+    const moreItems = me.kind === 'tech'
+      ? [
+          {label:'Timesheet', desc:'Enter & submit your hours', href:'/home#timesheet', icon:'absence'},
+          {label:'My Records', desc:'Org chart, CV / work history & certifications', href:'/home#profile', icon:'career'},
+        ]
+      : [
+          {label:'Account & security', desc:'Password, two-factor & PrimeCool org chart', href:'/admin#myprofile', icon:'personal'},
+        ];
+    const moreCard = `<div class="card"><div class="sec-head"><h3>More in PrimeCool</h3></div>
+      ${moreItems.map(m=>`<a class="more-row" href="${m.href}">
+        <span class="mic">${ico(m.icon)}</span>
+        <span class="mtx"><span class="mt">${esc(m.label)}</span><span class="md">${esc(m.desc)}</span></span>
+        <span class="mch">›</span></a>`).join('')}</div>`;
+    $('main').innerHTML = `
+      <div class="card">
+        <h2>Good ${greet()}, ${esc((me.name||'').split(' ')[0])}</h2>
+        <div class="sub">Here's your profile at PrimeCool. Use the tabs on the left to view and update your information.</div>
+        <div class="fgrid">
+          ${field('Position', j.title||me.role_label)}
+          ${field('Department', prettify(j.department||me.department))}
+          ${field('Worker ID', j.worker_id||me.prid||me.tech_code)}
+          ${field('Hire date', j.hire_date?fmtDate(j.hire_date):'')}
+          ${field('Manager', j.supervisor||'')}
+          ${field('Hub', j.hub||'')}
+        </div>
+      </div>
+      ${extra}
+      <div class="card">
+        <div class="sec-head"><h3>Quick actions</h3></div>
+        <div class="stat-grid">
+          <div class="stat" style="cursor:pointer" onclick="selectTab('pay')"><div class="n">${ico('pay')}</div><div class="l">View payslips</div></div>
+          <div class="stat" style="cursor:pointer" onclick="selectTab('personal')"><div class="n">${ico('personal')}</div><div class="l">Edit personal info</div></div>
+          <div class="stat" style="cursor:pointer" onclick="selectTab('contact')"><div class="n">${ico('contact')}</div><div class="l">Emergency contacts</div></div>
+          <div class="stat" style="cursor:pointer" onclick="selectTab('career')"><div class="n">${ico('career')}</div><div class="l">Career & skills</div></div>
+        </div>
+      </div>
+      ${moreCard}`;
+  }
+  function greet(){ const h=new Date().getHours(); return h<12?'morning':h<17?'afternoon':'evening'; }
+
+  // ── Job ────────────────────────────────────────────────────────────────
+  async function tabJob(){
+    const j = jobInfo || await api('GET','/api/staff/me/job');
+    const stMap = {active:['ok','Active'], on_leave:['warn','On leave'], terminated:['bad','Terminated']};
+    const st = stMap[j.employment_status]||['ok', j.employment_status||'Active'];
+    $('main').innerHTML = `<div class="card">
+      <h2>Job</h2><div class="sub">Your employment details. Managed by HR — contact your manager to request changes.</div>
+      <div style="margin-bottom:16px"><span class="badge ${st[0]}">${esc(st[1])}</span></div>
+      <div class="fgrid">
+        ${field('Business title', j.title)}
+        ${field('Department', prettify(j.department))}
+        ${field('Worker ID', j.worker_id)}
+        ${field('Role', (j.role||'').replace(/_/g,' '))}
+        ${field('Hire date', j.hire_date?fmtDate(j.hire_date):'')}
+        ${field('Manager', j.supervisor)}
+        ${field('Primary hub', j.hub)}
+        ${field('Pay basis', j.pay_basis==='hourly'?'Hourly':'Salary')}
+      </div></div>`;
+  }
+
+  // ── Compensation ───────────────────────────────────────────────────────
+  async function tabComp(){
+    const j = jobInfo || await api('GET','/api/staff/me/job');
+    let latest = null;
+    try { const slips = await api('GET', payslipsPath()); latest = (slips&&slips[0])||null; } catch(_){}
+    $('main').innerHTML = `<div class="card">
+      <h2>Compensation</h2><div class="sub">Your current pay basis. Detailed payslips live under the Pay tab.</div>
+      <div class="fgrid">
+        ${field('Pay basis', j.pay_basis==='hourly'?'Hourly':'Salary')}
+        ${j.hourly_rate!=null?field('Hourly rate', money(j.hourly_rate, latest?latest.currency:'JMD')):''}
+        ${latest?field('Latest gross', money(latest.gross_pay, latest.currency)):''}
+        ${latest?field('Latest net', money(latest.net_pay, latest.currency)):''}
+        ${latest?field('Last pay period', latest.period_label):''}
+      </div>
+      ${!latest && j.hourly_rate==null ? emptyState('comp','No compensation on file','Once a pay period is approved, your figures appear here.') : ''}
+      </div>`;
+  }
+  function payslipsPath(){ return me.kind==='admin' ? '/api/admin/me/payslips' : '/api/tech/me/payslips'; }
+  function payslipPath(id){ return (me.kind==='admin'?'/api/admin/me/payslips/':'/api/tech/me/payslips/')+id; }
+
+  // ── Pay ────────────────────────────────────────────────────────────────
+  let _paySlips = [];          // list rows from the index endpoint
+  const _slipCache = {};       // id -> full detail (so print doesn't refetch)
+  async function tabPay(){
+    const slips = await api('GET', payslipsPath());
+    _paySlips = Array.isArray(slips) ? slips : [];
+    if(!_paySlips.length){ $('main').innerHTML = `<div class="card"><h2>Pay</h2>${emptyState('pay','No payslips yet','Approved payslips will appear here for you to view and download.')}</div>`; return; }
+    const rows = _paySlips.map(s=>`<tr>
+      <td style="cursor:pointer" onclick="viewSlip(${s.id})">${esc(s.period_label||'')}</td>
+      <td style="cursor:pointer" onclick="viewSlip(${s.id})">${s.period_end?fmtDate(s.period_end):''}</td>
+      <td class="num">${money(s.gross_pay,s.currency)}</td>
+      <td class="num">${money(s.total_deductions,s.currency)}</td>
+      <td class="num"><strong>${money(s.net_pay,s.currency)}</strong></td>
+      <td class="num"><button class="btn btn-sm" title="Print this payslip" onclick="printSlip(${s.id})">${ico('print')||'Print'}</button></td>
+    </tr>`).join('');
+    $('main').innerHTML = `<div class="card">
+      <div class="sec-head"><h2 style="margin:0">Pay</h2><button class="btn btn-sm" onclick="printAllSlips()">${ico('print')||''} Print all</button></div>
+      <div class="sub">Your approved payslips, most recent first. Click a row for the full breakdown, or print a copy.</div>
+      <table class="pay"><thead><tr><th>Period</th><th>Pay date</th><th class="num">Gross</th><th class="num">Deductions</th><th class="num">Net</th><th class="num">Print</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+  }
+  async function loadSlip(id){
+    if(_slipCache[id]) return _slipCache[id];
+    const s = await api('GET', payslipPath(id));
+    _slipCache[id] = s; return s;
+  }
+  // View opens the lightweight on-screen quick-view (PC.openPayslipQuickView);
+  // the rich, print-ready document is one tap away via "View full payslip".
+  // Print / Print all render the ONE canonical rich document (PC.openPayslipPrint)
+  // and auto-open the print dialog — identical to /home, /tech and /admin.
+  async function viewSlip(id){
+    let s; try{ s = await loadSlip(id); }catch(e){ toast(e.message,'error'); return; }
+    PC.openPayslipQuickView(s);
+  }
+  async function printSlip(id){
+    let s; try{ s = await loadSlip(id); }catch(e){ toast(e.message,'error'); return; }
+    PC.openPayslipPrint(s, { saveMode: true });
+  }
+  async function printAllSlips(){
+    if(!_paySlips.length) return;
+    try{
+      const full = await Promise.all(_paySlips.map(s=>loadSlip(s.id)));
+      PC.openPayslipPrint(full.filter(Boolean), { saveMode: true });
+    }catch(e){ toast(e.message,'error'); }
+  }
+
+  // ── Absence ────────────────────────────────────────────────────────────
+  async function tabAbsence(){
+    if (me.kind !== 'tech'){
+      $('main').innerHTML = `<div class="card"><h2>Absence</h2>${emptyState('absence','Time off isn\'t tracked here for your role','Admin leave is handled outside the self-service portal. Speak with HR for time-off requests.')}</div>`;
+      return;
+    }
+    const [pto, reqs] = await Promise.all([
+      api('GET','/api/tech/me/pto-balance').catch(()=>null),
+      api('GET','/api/tech/me/pto-requests').catch(()=>[]),
+    ]);
+    const bal = pto && pto.balance ? pto.balance : {};
+    const list = Array.isArray(reqs) ? reqs : (reqs.requests||[]);
+    const rrows = list.length ? list.map(r=>{
+      const stMap={pending:['warn','Pending'],approved:['ok','Approved'],denied:['bad','Denied'],cancelled:['bad','Cancelled']};
+      const st=stMap[r.status]||['warn',r.status||''];
+      return `<div class="item"><div><div class="it-title">${esc((r.kind||'').replace(/_/g,' '))} · ${Number(r.hours||0)} hrs</div>
+        <div class="it-meta">${fmtDate(r.start_date)} → ${fmtDate(r.end_date)} · <span class="badge ${st[0]}">${esc(st[1])}</span></div>
+        ${r.reason?`<div class="it-desc">${esc(r.reason)}</div>`:''}</div>
+        <div class="it-actions">${r.status==='pending'?`<button class="btn btn-sm btn-danger" onclick="cancelPto(${r.id})">Cancel</button>`:''}</div></div>`;
+    }).join('') : emptyState('absence','No time-off requests yet','Submit a request and it appears here for approval.');
+    $('main').innerHTML = `<div class="card"><h2>Absence</h2><div class="sub">Your leave balances and requests.</div>
+      <div class="stat-grid" style="margin-bottom:18px">
+        <div class="stat"><div class="n">${Number(bal.vacation_balance||0).toFixed(1)}</div><div class="l">Vacation hours</div></div>
+        <div class="stat"><div class="n">${Number(bal.floating_balance||bal.floating_holidays||0).toFixed(1)}</div><div class="l">Floating holiday hrs</div></div>
+        <div class="stat"><div class="n">${Number(bal.sick_balance||bal.sick_hours||0).toFixed(1)}</div><div class="l">Sick hours</div></div>
+      </div></div>
+      <div class="card"><div class="sec-head"><h3>Requests</h3><button class="btn btn-teal btn-sm" onclick="newPto()">Request time off</button></div>${rrows}</div>`;
+  }
+  function newPto(){
+    openModal('Request time off', `<div class="form-grid">
+      <div class="fld"><label>Type</label><select id="pto_kind"><option value="vacation">Vacation</option><option value="floating">Floating holiday</option><option value="sick">Sick</option></select></div>
+      <div class="fld"><label>Hours</label><input id="pto_hours" type="number" min="1" step="0.5" value="8"></div>
+      <div class="fld"><label>Start date</label><input id="pto_start" type="date"></div>
+      <div class="fld"><label>End date</label><input id="pto_end" type="date"></div>
+      <div class="fld full"><label>Reason (optional)</label><textarea id="pto_reason" rows="2"></textarea></div>
+    </div>`, [['Cancel','btn',closeModal],['Submit','btn btn-teal',submitPto]]);
+  }
+  async function submitPto(){
+    const body={kind:$('pto_kind').value, hours:parseFloat($('pto_hours').value||'0'),
+      start_date:$('pto_start').value, end_date:$('pto_end').value, reason:$('pto_reason').value};
+    if(!body.start_date||!body.end_date||!body.hours){ toast('Fill in dates and hours','warning'); return; }
+    try{ await api('POST','/api/tech/me/pto-requests', body); closeModal(); toast('Request submitted','success'); tabAbsence(); }
+    catch(e){ toast(e.message,'error'); }
+  }
+  async function cancelPto(id){
+    if(!confirm('Cancel this time-off request?')) return;
+    try{ await api('POST','/api/tech/me/pto-requests/'+id+'/cancel'); toast('Cancelled','success'); tabAbsence(); }
+    catch(e){ toast(e.message,'error'); }
+  }
+
+  // ── Singleton record (Personal + Contact) ──────────────────────────────
+  let personalCache = null;
+  async function loadPersonal(force){ if(!personalCache||force) personalCache = await api('GET','/api/staff/me/personal'); return personalCache; }
+  async function savePersonal(patch){
+    const merged = Object.assign({}, personalCache, patch);
+    personalCache = await api('PUT','/api/staff/me/personal', merged);
+    return personalCache;
+  }
+
+  // ── Contact ────────────────────────────────────────────────────────────
+  async function tabContact(){
+    const p = await loadPersonal();
+    const ecs = (await api('GET','/api/staff/me/profile/emergency_contacts')).items;
+    const ecHtml = ecs.length ? ecs.map(c=>`<div class="item"><div>
+        <div class="it-title">${esc(c.name||'')} ${c.is_primary?'<span class="badge ok">Primary</span>':''}</div>
+        <div class="it-meta">${esc(c.relationship||'')}${c.phone?' · '+esc(c.phone):''}${c.email?' · '+esc(c.email):''}</div>
+      </div><div class="it-actions">
+        <button class="btn btn-sm" onclick="editEC(${c.id})">Edit</button>
+        <button class="btn btn-sm btn-danger" onclick="delItem('emergency_contacts',${c.id},tabContact)">Delete</button>
+      </div></div>`).join('') : emptyState('contact','No emergency contacts','Add someone we should call in an emergency.');
+    $('main').innerHTML = `
+      <div class="card"><div class="sec-head"><h2 style="margin:0">Contact</h2><button class="btn btn-sm" onclick="editContact()">Edit</button></div>
+        <div class="sub">Work details are managed by HR. You can edit your home and personal contact details.</div>
+        <div class="fgrid">
+          ${field('Work email', p.work_email)}
+          ${field('Work phone', p.work_phone)}
+          ${field('Personal email', p.personal_email)}
+          ${field('Personal phone', p.personal_phone)}
+          ${field('Home address', p.home_address)}
+          ${field('City / Town', p.home_city)}
+          ${field('Parish', p.home_parish)}
+          ${field('Country', p.home_country)}
+        </div>
+      </div>
+      <div class="card"><div class="sec-head"><h3>Emergency contacts</h3><button class="btn btn-teal btn-sm" onclick="editEC()">Add contact</button></div>${ecHtml}</div>`;
+  }
+  function editContact(){
+    const p = personalCache||{};
+    openModal('Edit contact details', `<div class="form-grid">
+      <div class="fld"><label>Work email</label><input value="${esc(p.work_email||'')}" readonly></div>
+      <div class="fld"><label>Work phone</label><input value="${esc(p.work_phone||'')}" readonly></div>
+      <div class="fld"><label>Personal email</label><input id="c_pe" value="${esc(p.personal_email||'')}"></div>
+      <div class="fld"><label>Personal phone</label><input id="c_pp" value="${esc(p.personal_phone||'')}"></div>
+      <div class="fld full"><label>Home address</label><input id="c_addr" value="${esc(p.home_address||'')}"></div>
+      <div class="fld"><label>City / Town</label><input id="c_city" value="${esc(p.home_city||'')}"></div>
+      <div class="fld"><label>Parish</label><input id="c_parish" value="${esc(p.home_parish||'')}"></div>
+      <div class="fld"><label>Country</label><input id="c_country" value="${esc(p.home_country||'')}"></div>
+    </div>`, [['Cancel','btn',closeModal],['Save','btn btn-teal',async()=>{
+      await savePersonal({personal_email:$('c_pe').value, personal_phone:$('c_pp').value,
+        home_address:$('c_addr').value, home_city:$('c_city').value,
+        home_parish:$('c_parish').value, home_country:$('c_country').value});
+      closeModal(); toast('Contact updated','success'); tabContact();
+    }]]);
+  }
+  function editEC(id){
+    // Emergency contacts aren't cached — fetch the current list to edit one.
+    api('GET','/api/staff/me/profile/emergency_contacts').then(r=>{
+      const item = id ? r.items.find(x=>x.id===id) : {};
+      openModal(id?'Edit emergency contact':'Add emergency contact', `<div class="form-grid">
+        <div class="fld"><label>Name</label><input id="ec_name" value="${esc(item.name||'')}"></div>
+        <div class="fld"><label>Relationship</label><input id="ec_rel" value="${esc(item.relationship||'')}"></div>
+        <div class="fld"><label>Phone</label><input id="ec_phone" value="${esc(item.phone||'')}"></div>
+        <div class="fld"><label>Alt phone</label><input id="ec_alt" value="${esc(item.alt_phone||'')}"></div>
+        <div class="fld full"><label>Email</label><input id="ec_email" value="${esc(item.email||'')}"></div>
+        <div class="fld full"><label><input type="checkbox" id="ec_primary" ${item.is_primary?'checked':''}> Primary contact</label></div>
+      </div>`, [['Cancel','btn',closeModal],['Save','btn btn-teal',async()=>{
+        const body={name:$('ec_name').value, relationship:$('ec_rel').value, phone:$('ec_phone').value,
+          alt_phone:$('ec_alt').value, email:$('ec_email').value, is_primary:$('ec_primary').checked};
+        if(!body.name){ toast('Name is required','warning'); return; }
+        if(id) await api('PATCH','/api/staff/me/profile/emergency_contacts/'+id, body);
+        else await api('POST','/api/staff/me/profile/emergency_contacts', body);
+        closeModal(); toast('Saved','success'); tabContact();
+      }]]);
+    });
+  }
+
+  // ── Personal ───────────────────────────────────────────────────────────
+  let personalSub = 'info';
+  async function tabPersonal(){
+    const p = await loadPersonal();
+    const subnav = `<div class="subtabs">
+      <button class="${personalSub==='info'?'active':''}" onclick="setPSub('info')">Personal Information</button>
+      <button class="${personalSub==='ids'?'active':''}" onclick="setPSub('ids')">IDs</button>
+      <button class="${personalSub==='names'?'active':''}" onclick="setPSub('names')">Names</button>
+    </div>`;
+    let body='';
+    if(personalSub==='info'){
+      body = `<div class="sec-head"><h3>Personal Information</h3><button class="btn btn-sm" onclick="editPInfo()">Edit</button></div>
+        <div class="fgrid">
+          ${field('Sex', p.sex)}
+          ${field('Date of birth', p.date_of_birth?fmtDate(p.date_of_birth):'')}
+          ${field('Age', ageFrom(p.date_of_birth))}
+          ${field('Country of birth', p.country_of_birth)}
+          ${field('Marital status', p.marital_status)}
+          ${field('Primary nationality', p.primary_nationality)}
+          ${field('Additional nationalities', p.additional_nationalities)}
+          ${field('Gender identity', p.gender_identity)}
+          ${field('Pronouns', p.pronouns)}
+        </div>`;
+    } else if(personalSub==='ids'){
+      body = `<div class="sec-head"><h3>Identification</h3><button class="btn btn-sm" onclick="editPIds()">Edit</button></div>
+        <div class="fgrid">
+          ${field('National ID', p.national_id)}
+          ${field('TRN', p.trn)}
+        </div>`;
+    } else {
+      body = `<div class="sec-head"><h3>Names</h3><button class="btn btn-sm" onclick="editPNames()">Edit</button></div>
+        <div class="fgrid">
+          ${field('Legal name', p.legal_name)}
+          ${field('Preferred name', p.preferred_name)}
+        </div>`;
+    }
+    $('main').innerHTML = `<div class="card"><h2>Personal</h2><div class="sub">Your personal details, kept private and visible only to you and HR.</div>${subnav}${body}</div>`;
+  }
+  function setPSub(s){ personalSub=s; tabPersonal(); }
+  function ageFrom(dob){ if(!dob) return ''; const d=new Date(dob); if(isNaN(d)) return ''; const t=new Date(); let a=t.getFullYear()-d.getFullYear(); if(t.getMonth()<d.getMonth()||(t.getMonth()===d.getMonth()&&t.getDate()<d.getDate()))a--; return a>0&&a<130?(a+' years'):''; }
+  function selOpts(cur,opts){ return opts.map(o=>`<option ${o===cur?'selected':''}>${esc(o)}</option>`).join(''); }
+  function editPInfo(){
+    const p=personalCache||{};
+    openModal('Edit personal information', `<div class="form-grid">
+      <div class="fld"><label>Sex</label><select id="p_sex"><option value=""></option>${selOpts(p.sex,['Male','Female','Other','Prefer not to say'])}</select></div>
+      <div class="fld"><label>Date of birth</label><input id="p_dob" type="date" value="${esc(p.date_of_birth||'')}"></div>
+      <div class="fld"><label>Country of birth</label><input id="p_cob" value="${esc(p.country_of_birth||'')}"></div>
+      <div class="fld"><label>Marital status</label><select id="p_ms"><option value=""></option>${selOpts(p.marital_status,['Single','Married','Common-law','Divorced','Widowed','Separated'])}</select></div>
+      <div class="fld"><label>Primary nationality</label><input id="p_nat" value="${esc(p.primary_nationality||'')}"></div>
+      <div class="fld"><label>Additional nationalities</label><input id="p_nat2" value="${esc(p.additional_nationalities||'')}"></div>
+      <div class="fld"><label>Gender identity</label><input id="p_gi" value="${esc(p.gender_identity||'')}"></div>
+      <div class="fld"><label>Pronouns</label><input id="p_pn" value="${esc(p.pronouns||'')}"></div>
+    </div>`, [['Cancel','btn',closeModal],['Save','btn btn-teal',async()=>{
+      await savePersonal({sex:$('p_sex').value, date_of_birth:$('p_dob').value, country_of_birth:$('p_cob').value,
+        marital_status:$('p_ms').value, primary_nationality:$('p_nat').value, additional_nationalities:$('p_nat2').value,
+        gender_identity:$('p_gi').value, pronouns:$('p_pn').value});
+      closeModal(); toast('Saved','success'); tabPersonal();
+    }]]);
+  }
+  function editPIds(){
+    const p=personalCache||{};
+    openModal('Edit identification', `<div class="form-grid">
+      <div class="fld full"><label>National ID</label><input id="i_nid" value="${esc(p.national_id||'')}"></div>
+      <div class="fld full"><label>TRN (Tax Registration Number)</label><input id="i_trn" value="${esc(p.trn||'')}"></div>
+    </div>`, [['Cancel','btn',closeModal],['Save','btn btn-teal',async()=>{
+      await savePersonal({national_id:$('i_nid').value, trn:$('i_trn').value});
+      closeModal(); toast('Saved','success'); tabPersonal();
+    }]]);
+  }
+  function editPNames(){
+    const p=personalCache||{};
+    openModal('Edit names', `<div class="form-grid">
+      <div class="fld full"><label>Legal name</label><input value="${esc(p.legal_name||'')}" readonly></div>
+      <div class="fld full"><label>Preferred name</label><input id="n_pref" value="${esc(p.preferred_name||'')}"></div>
+    </div>`, [['Cancel','btn',closeModal],['Save','btn btn-teal',async()=>{
+      await savePersonal({preferred_name:$('n_pref').value});
+      closeModal(); toast('Saved','success'); tabPersonal();
+    }]]);
+  }
+
+  // ── Performance ────────────────────────────────────────────────────────
+  async function tabPerf(){
+    if (me.kind !== 'tech'){
+      $('main').innerHTML = `<div class="card"><h2>Performance</h2>${emptyState('perf','No performance data for your role','KPI tracking applies to field technicians. Your reviews are handled directly with your manager.')}</div>`;
+      return;
+    }
+    const [kpi, goals] = await Promise.all([
+      api('GET','/api/tech/me/kpi').catch(()=>null),
+      api('GET','/api/tech/me/kpi/goals').catch(()=>null),
+    ]);
+    let kpiCards = '';
+    if (kpi){
+      const score = kpi.score!=null?kpi.score:(kpi.overall_score!=null?kpi.overall_score:null);
+      const cards = [];
+      if(score!=null) cards.push(`<div class="stat"><div class="n">${score}</div><div class="l">KPI score</div></div>`);
+      ['jobs_completed','on_time_rate','first_time_fix_rate','avg_rating'].forEach(k=>{
+        if(kpi[k]!=null) cards.push(`<div class="stat"><div class="n">${kpi[k]}</div><div class="l">${k.replace(/_/g,' ')}</div></div>`);
+      });
+      if(cards.length) kpiCards = `<div class="card"><div class="sec-head"><h3>Your KPIs</h3></div><div class="stat-grid">${cards.join('')}</div></div>`;
+    }
+    const glist = goals && (goals.goals||Array.isArray(goals)) ? (goals.goals||goals) : [];
+    const goalsHtml = glist.length ? glist.map(g=>`<div class="item"><div>
+        <div class="it-title">${esc(g.title||g.name||'Goal')}</div>
+        <div class="it-meta">${g.status?esc(g.status):''}${g.target!=null?' · target '+esc(g.target):''}</div>
+        ${g.description?`<div class="it-desc">${esc(g.description)}</div>`:''}</div></div>`).join('')
+      : emptyState('perf','No goals set','Your manager assigns performance goals here.');
+    $('main').innerHTML = `<div class="card"><h2>Performance</h2><div class="sub">Your KPIs and performance goals.</div></div>
+      ${kpiCards || `<div class="card">${emptyState('perf','No KPI data yet','Your performance metrics will appear here.')}</div>`}
+      <div class="card"><div class="sec-head"><h3>Goals</h3></div>${goalsHtml}</div>`;
+  }
+
+  // ── Career (generic collections) ───────────────────────────────────────
+  const COLL = {
+    job_history:{label:'Job History', icon:'job', singular:'role', fields:[
+      ['title','Title','text'],['organization','Organization','text'],
+      ['start_date','Start date','date'],['end_date','End date','date'],['description','Description','textarea']]},
+    education:{label:'Education', icon:'career', singular:'qualification', fields:[
+      ['institution','Institution','text'],['qualification','Qualification','text'],
+      ['field','Field of study','text'],['start_year','Start year','text'],['end_year','End year','text']]},
+    skills:{label:'Skills', icon:'career', singular:'skill', tagMode:true, fields:[['skill','Skill','text']]},
+    career_interests:{label:'Career Interests', icon:'career', singular:'interest', tagMode:true, fields:[['interest','Interest','text']]},
+    languages:{label:'Languages', icon:'career', singular:'language', fields:[
+      ['language','Language','text'],['proficiency','Proficiency',['','Basic','Conversational','Fluent','Native']]]},
+    development_items:{label:'Development Items', icon:'perf', singular:'item', fields:[
+      ['title','Title','text'],['status','Status',['','Not started','In progress','Complete']],
+      ['target_date','Target date','date'],['description','Description','textarea']]},
+    mentorships:{label:'My Mentorships', icon:'team', singular:'mentorship', fields:[
+      ['role','Role',['Mentor','Mentee']],['partner_name','Partner','text'],
+      ['focus','Focus area','text'],['status','Status',['Active','Completed']]]},
+    achievements:{label:'Achievements', icon:'career', singular:'achievement', fields:[
+      ['title','Title','text'],['date','Date','date'],['description','Description','textarea']]},
+  };
+  let careerSub = 'job_history';
+  async function tabCareer(){
+    const order = ['job_history','skills','education','languages','career_interests','development_items','mentorships','achievements'];
+    const subnav = `<div class="subtabs">${order.map(k=>`<button class="${careerSub===k?'active':''}" onclick="setCSub('${k}')">${esc(COLL[k].label)}</button>`).join('')}</div>`;
+    $('main').innerHTML = `<div class="card"><h2>Career</h2><div class="sub">Your professional profile — visible to HR for development and progression.</div>${subnav}<div id="collMount"><div class="skel"></div></div></div>`;
+    renderColl();
+  }
+  function setCSub(k){ careerSub=k; tabCareer(); }
+  async function renderColl(){
+    const c = COLL[careerSub];
+    const data = (await api('GET','/api/staff/me/profile/'+careerSub)).items;
+    let html;
+    if (c.tagMode){
+      const tags = data.map(it=>`<span class="tag">${esc(it[c.fields[0][0]]||'')}<span class="x" onclick="delItem('${careerSub}',${it.id},renderColl)">✕</span></span>`).join('');
+      html = `<div class="sec-head"><h3>${esc(c.label)}</h3><button class="btn btn-teal btn-sm" onclick="addColl()">Add ${esc(c.singular)}</button></div>
+        <div>${tags || `<div class="empty" style="padding:18px"><div>No ${esc(c.label.toLowerCase())} added yet.</div></div>`}</div>`;
+    } else {
+      const items = data.length ? data.map(it=>{
+        const title = it.title||it.qualification||it.language||it.partner_name||it.organization||'—';
+        const metaParts = c.fields.slice(1).map(f=>it[f[0]]).filter(Boolean);
+        return `<div class="item"><div>
+          <div class="it-title">${esc(title)}</div>
+          <div class="it-meta">${esc(metaParts.filter(x=>x!==it.description).join(' · '))}</div>
+          ${it.description?`<div class="it-desc">${esc(it.description)}</div>`:''}</div>
+          <div class="it-actions"><button class="btn btn-sm" onclick="editColl(${it.id})">Edit</button>
+          <button class="btn btn-sm btn-danger" onclick="delItem('${careerSub}',${it.id},renderColl)">Delete</button></div></div>`;
+      }).join('') : emptyState(c.icon, 'No '+c.label.toLowerCase()+' yet', 'Add your first '+c.singular+'.');
+      html = `<div class="sec-head"><h3>${esc(c.label)}</h3><button class="btn btn-teal btn-sm" onclick="addColl()">Add ${esc(c.singular)}</button></div>${items}`;
+    }
+    $('collMount').innerHTML = html;
+  }
+  function collFormHtml(c, item){
+    return `<div class="form-grid">${c.fields.map(([key,label,type])=>{
+      const v = item[key]||'';
+      const full = (type==='textarea')?' full':'';
+      let ctrl;
+      if(Array.isArray(type)) ctrl = `<select id="f_${key}">${type.map(o=>`<option ${o===v?'selected':''} value="${esc(o)}">${esc(o||'—')}</option>`).join('')}</select>`;
+      else if(type==='textarea') ctrl = `<textarea id="f_${key}" rows="3">${esc(v)}</textarea>`;
+      else ctrl = `<input id="f_${key}" type="${type==='date'?'date':'text'}" value="${esc(v)}">`;
+      return `<div class="fld${full}"><label>${esc(label)}</label>${ctrl}</div>`;
+    }).join('')}</div>`;
+  }
+  function collBody(c){ const o={}; c.fields.forEach(([key])=>{ const el=$('f_'+key); if(el) o[key]=el.value; }); return o; }
+  function addColl(){
+    const c = COLL[careerSub];
+    openModal('Add '+c.singular, collFormHtml(c,{}), [['Cancel','btn',closeModal],['Save','btn btn-teal',async()=>{
+      const body=collBody(c); const first=c.fields[0][0];
+      if(!body[first]){ toast(c.fields[0][1]+' is required','warning'); return; }
+      await api('POST','/api/staff/me/profile/'+careerSub, body); closeModal(); toast('Added','success'); renderColl();
+    }]]);
+  }
+  async function editColl(id){
+    const c = COLL[careerSub];
+    const item = (await api('GET','/api/staff/me/profile/'+careerSub)).items.find(x=>x.id===id)||{};
+    openModal('Edit '+c.singular, collFormHtml(c,item), [['Cancel','btn',closeModal],['Save','btn btn-teal',async()=>{
+      await api('PATCH','/api/staff/me/profile/'+careerSub+'/'+id, collBody(c)); closeModal(); toast('Saved','success'); renderColl();
+    }]]);
+  }
+  async function delItem(coll, id, after){
+    if(!confirm('Delete this item?')) return;
+    try{ await api('DELETE','/api/staff/me/profile/'+coll+'/'+id); toast('Deleted','success'); (after||renderColl)(); }
+    catch(e){ toast(e.message,'error'); }
+  }
+
+  // ── Modal ──────────────────────────────────────────────────────────────
+  function openModal(title, bodyHtml, buttons){
+    $('modalTitle').textContent = title;
+    $('modalBody').innerHTML = bodyHtml;
+    $('modalFoot').innerHTML = '';
+    (buttons||[]).forEach(([label,cls,fn])=>{
+      const b=document.createElement('button'); b.className=cls; b.textContent=label; b.onclick=fn; $('modalFoot').appendChild(b);
+    });
+    $('modalBack').classList.add('open');
+  }
+  function closeModal(){ $('modalBack').classList.remove('open'); }
+  $('modalBack').addEventListener('click', e=>{ if(e.target===$('modalBack')) closeModal(); });
+  document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeModal(); });
+  </script>
+</body>
+</html>

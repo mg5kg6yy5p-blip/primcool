@@ -339,6 +339,378 @@
     return prefix + n.toLocaleString('en-US', { minimumFractionDigits: dp, maximumFractionDigits: dp });
   };
 
+  // ── Payslip print (single canonical renderer) ─────────────
+  // The AstraZeneca/Workday-style, Jamaica-statutory payslip layout. This is
+  // the ONE template every print path uses (admin apPrint, tech /home, the new
+  // /profile Pay tab). Pass an enriched payslip object (as returned by
+  // /api/{admin,tech}/me/payslips/{id} → _enrich_payslip_for_print) or an
+  // array of them. The server supplies .ytd, .employer_contribs, .company,
+  // .bank, .tax_year, .employee_ids; this renderer degrades gracefully when
+  // any are missing.
+  function _psMoney(n, cur) {
+    const v = Number(n || 0);
+    const sym = cur === 'JMD' ? 'J$' : (cur === 'USD' ? '$' : (cur || 'JMD') + ' ');
+    return sym + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  function _psEsc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
+    });
+  }
+
+  // Inner sheet markup for ONE payslip (no <html>/<style>/print-bar wrapper).
+  PC.payslipSheetHTML = function (p) {
+    if (!p) return '';
+    const cur = p.currency || 'JMD';
+    const ytd = p.ytd || {};
+    const er = p.employer_contribs || null;
+    const company = p.company || { name: 'PrimeCool Services Limited', address: 'Kingston, Jamaica', trn: 'TODO', nis_er: 'TODO' };
+    const empIds = p.employee_ids || { trn: 'On file', nis: 'On file' };
+    const bank = p.bank || { bank_name: 'On file', account_name: p.subject_name || '', account_masked: '****' };
+    const taxYr = p.tax_year || {};
+    const n = function (v) { return _psMoney(v, cur); };
+    const eh = _psEsc;
+    const today = new Date().toISOString().slice(0, 10);
+    const taxesCur = (Number(p.paye_tax) || 0) + (Number(p.nis) || 0) + (Number(p.nht) || 0) + (Number(p.education_tax) || 0);
+    const taxesYtd = (Number(ytd.paye_tax) || 0) + (Number(ytd.nis) || 0) + (Number(ytd.nht) || 0) + (Number(ytd.education_tax) || 0);
+    const preCur = 0, preYtd = 0;
+    const postCur = Number(p.other_deductions) || 0;
+    const postYtd = Number(ytd.other_deductions) || 0;
+    return `
+      <div class="sheet">
+        <div class="hdr">
+          <div>
+            <div class="co-name">Prime<em>Cool</em> Services Ltd.</div>
+            <div class="co-meta">
+              ${eh(company.address)}<br>
+              TRN: ${eh(company.trn)} &nbsp;·&nbsp; NIS Employer #: ${eh(company.nis_er)}
+            </div>
+          </div>
+          <div style="text-align:right;">
+            <div class="ps-label">PAYSLIP</div>
+            <div class="meta-row" style="margin-top:10px;">
+              <div class="l">Pay Period:</div><div class="v">${eh(p.period_start || '')} – ${eh(p.period_end || '')}</div>
+              <div class="l">Pay Date:</div>  <div class="v">${eh(p.generated_at ? String(p.generated_at).slice(0, 10) : today)}</div>
+              <div class="l">Tax Year:</div>  <div class="v">${eh(taxYr.label || '')}</div>
+              <div class="l">Payslip No:</div><div class="v">PCL/PS/${eh(String(p.id).padStart(6, '0'))}</div>
+            </div>
+          </div>
+        </div>
+
+        <table class="tbl" style="margin-top:0;">
+          <thead><tr>
+            <th></th>
+            <th style="text-align:right;">GROSS PAY</th>
+            <th style="text-align:right;">PRE-TAX DEDUCTIONS</th>
+            <th style="text-align:right;">STATUTORY TAXES</th>
+            <th style="text-align:right;">POST-TAX DEDUCTIONS</th>
+            <th style="text-align:right;background:#0B2545;color:#fff;">NET PAY</th>
+          </tr></thead>
+          <tbody>
+            <tr>
+              <td style="font-weight:700;">Current</td>
+              <td class="num">${n(p.gross_pay)}</td>
+              <td class="num">${n(preCur)}</td>
+              <td class="num">${n(taxesCur)}</td>
+              <td class="num">${n(postCur)}</td>
+              <td class="num" style="background:#22A08A;color:#fff;font-weight:700;">${n(p.net_pay)}</td>
+            </tr>
+            <tr>
+              <td style="font-weight:700;">YTD</td>
+              <td class="num">${n(ytd.gross_pay)}</td>
+              <td class="num">${n(preYtd)}</td>
+              <td class="num">${n(taxesYtd)}</td>
+              <td class="num">${n(postYtd)}</td>
+              <td class="num" style="background:#0B2545;color:#fff;font-weight:700;">${n(ytd.net_pay)}</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="row">
+          <div class="col box">
+            <div class="box-h">EMPLOYEE DETAILS</div>
+            <div class="box-body">
+              <div class="l">Employee ID:</div><div class="v">${eh(p.subject_prid || '')}</div>
+              <div class="l">Name:</div>       <div class="v">${eh(p.subject_name || '')}</div>
+              <div class="l">Currency:</div>   <div class="v">${eh(cur)}</div>
+            </div>
+          </div>
+          <div class="col box">
+            <div class="box-h">JAMAICA TAX INFORMATION</div>
+            <div class="box-body">
+              <div class="l">TRN:</div>           <div class="v">${eh(empIds.trn || 'On file')}</div>
+              <div class="l">NIS #:</div>         <div class="v">${eh(empIds.nis || 'On file')}</div>
+              <div class="l">Tax Code:</div>     <div class="v">Threshold applied</div>
+              <div class="l">Tax Year:</div>     <div class="v">${eh(taxYr.label || '')}</div>
+              <div class="l">Add'l Withholding:</div><div class="v">—</div>
+            </div>
+          </div>
+        </div>
+
+        <table class="tbl">
+          <thead><tr>
+            <th colspan="5" style="background:#dde6f0;color:#0B2545;font-size:11px;">EARNINGS</th>
+          </tr><tr>
+            <th>DESCRIPTION</th><th>RATE</th><th>HOURS / UNITS</th>
+            <th style="text-align:right;">CURRENT (J$)</th>
+            <th style="text-align:right;">YTD (J$)</th>
+          </tr></thead>
+          <tbody>
+            <tr><td>Regular Pay</td><td class="num">${n(p.hourly_rate)}</td><td class="num">${Number(p.hours_regular || 0).toFixed(2)}</td><td class="num">${n((Number(p.hours_regular) || 0) * (Number(p.hourly_rate) || 0))}</td><td class="num">${n(ytd.regular_pay || ((Number(ytd.hours_regular) || 0) * (Number(p.hourly_rate) || 0)))}</td></tr>
+            <tr><td>Overtime</td><td class="num">${n(p.overtime_rate)}</td><td class="num">${Number(p.hours_overtime || 0).toFixed(2)}</td><td class="num">${n((Number(p.hours_overtime) || 0) * (Number(p.overtime_rate) || 0))}</td><td class="num">${n(ytd.overtime_pay || ((Number(ytd.hours_overtime) || 0) * (Number(p.overtime_rate) || 0)))}</td></tr>
+            <tr><td>Fixed Salary</td><td></td><td></td><td class="num">${n(p.fixed_salary)}</td><td class="num">${n(ytd.fixed_salary)}</td></tr>
+            <tr><td>Bonus</td><td></td><td></td><td class="num">${n(p.bonus)}</td><td class="num">${n(ytd.bonus)}</td></tr>
+            <tr class="tot"><td colspan="3">TOTAL EARNINGS</td><td class="num">${n(p.gross_pay)}</td><td class="num">${n(ytd.gross_pay)}</td></tr>
+          </tbody>
+        </table>
+
+        <div class="row">
+          <table class="tbl col" style="margin-right:7px;">
+            <thead><tr>
+              <th colspan="3" style="background:#dde6f0;color:#0B2545;font-size:11px;">STATUTORY TAXES (EMPLOYEE)</th>
+            </tr><tr>
+              <th>DESCRIPTION</th><th style="text-align:right;">CURRENT (J$)</th><th style="text-align:right;">YTD (J$)</th>
+            </tr></thead>
+            <tbody>
+              <tr><td>PAYE Income Tax</td><td class="num">${n(p.paye_tax)}</td><td class="num">${n(ytd.paye_tax)}</td></tr>
+              <tr><td>NIS (Employee 3%)</td><td class="num">${n(p.nis)}</td><td class="num">${n(ytd.nis)}</td></tr>
+              <tr><td>NHT (Employee 2%)</td><td class="num">${n(p.nht)}</td><td class="num">${n(ytd.nht)}</td></tr>
+              <tr><td>Education Tax (2.25%)</td><td class="num">${n(p.education_tax)}</td><td class="num">${n(ytd.education_tax)}</td></tr>
+              <tr class="tot"><td>TOTAL TAXES</td><td class="num">${n(taxesCur)}</td><td class="num">${n(taxesYtd)}</td></tr>
+            </tbody>
+          </table>
+          <table class="tbl col" style="margin-left:7px;">
+            <thead><tr>
+              <th colspan="3" style="background:#dde6f0;color:#0B2545;font-size:11px;">OTHER DEDUCTIONS (POST-TAX)</th>
+            </tr><tr>
+              <th>DESCRIPTION</th><th style="text-align:right;">CURRENT (J$)</th><th style="text-align:right;">YTD (J$)</th>
+            </tr></thead>
+            <tbody>
+              <tr><td>Other Deductions</td><td class="num">${n(p.other_deductions)}</td><td class="num">${n(ytd.other_deductions)}</td></tr>
+              <tr class="tot"><td>TOTAL POST-TAX</td><td class="num">${n(postCur)}</td><td class="num">${n(postYtd)}</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        ${er ? `
+        <table class="tbl">
+          <thead><tr>
+            <th colspan="3" style="background:#dde6f0;color:#0B2545;font-size:11px;">EMPLOYER CONTRIBUTIONS (NOT DEDUCTED FROM YOU)</th>
+          </tr><tr>
+            <th>DESCRIPTION</th><th style="text-align:right;">CURRENT (J$)</th><th style="text-align:right;">RATE</th>
+          </tr></thead>
+          <tbody>
+            <tr><td>NIS — Employer</td><td class="num">${n(er.nis_er)}</td><td class="num">3.0%</td></tr>
+            <tr><td>NHT — Employer</td><td class="num">${n(er.nht_er)}</td><td class="num">3.0%</td></tr>
+            <tr><td>Education Tax — Employer</td><td class="num">${n(er.edtax_er)}</td><td class="num">3.5%</td></tr>
+            <tr><td>HEART Trust / NTA</td><td class="num">${n(er.heart)}</td><td class="num">3.0%${er.heart === 0 ? ' (under threshold)' : ''}</td></tr>
+            <tr class="tot"><td>TOTAL EMPLOYER COST</td><td class="num">${n((er.nis_er || 0) + (er.nht_er || 0) + (er.edtax_er || 0) + (er.heart || 0))}</td><td></td></tr>
+          </tbody>
+        </table>` : ''}
+
+        <div class="row" style="margin-top:14px;">
+          <div class="col" style="display:flex;flex-direction:column;gap:10px;">
+            <div class="net-pay-box">
+              <div class="l">NET PAY (Current Period)</div>
+              <div class="v">${n(p.net_pay)}</div>
+            </div>
+          </div>
+        </div>
+
+        <table class="tbl">
+          <thead><tr>
+            <th colspan="5" style="background:#dde6f0;color:#0B2545;font-size:11px;">PAYMENT INFORMATION</th>
+          </tr><tr>
+            <th>BANK</th><th>ACCOUNT NAME</th><th>ACCOUNT NUMBER</th>
+            <th style="text-align:right;">AMOUNT</th><th>CURRENCY</th>
+          </tr></thead>
+          <tbody>
+            <tr>
+              <td>${eh(bank.bank_name || 'On file')}</td>
+              <td>${eh(bank.account_name || p.subject_name || '')}</td>
+              <td>${eh(bank.account_masked || '****')}</td>
+              <td class="num">${n(p.net_pay)}</td>
+              <td>${eh(cur)}</td>
+            </tr>
+          </tbody>
+        </table>
+
+        ${p.notes ? `<div class="box"><div class="box-h">NOTES</div><div style="padding:8px 10px;font-size:11px;line-height:1.5;">${eh(p.notes).replace(/\n/g, '<br>')}</div></div>` : ''}
+
+        <div class="footer-note">
+          <strong>PAY ADVICE</strong> — This payslip is computer-generated and does not require a signature.
+          Generated on ${eh(today)}.<br>
+          <strong>Jamaica statutory compliance:</strong> calculations apply current PAYE, NIS (employee 3% / employer 3%, capped at insurable ceiling),
+          NHT (employee 2% / employer 3%), Education Tax (employee 2.25% / employer 3.5%), and HEART Trust (employer 3% above monthly threshold) rates.
+          Rates change with the JM National Budget — confirm with PrimeCool payroll if disputed.
+        </div>
+      </div>`;
+  };
+
+  // Full standalone HTML document (styles + print-bar + one or more sheets).
+  // `slips` may be a single payslip object or an array of them.
+  PC.payslipPrintHTML = function (slips, opts) {
+    opts = opts || {};
+    const saveMode = !!opts.saveMode;
+    const list = Array.isArray(slips) ? slips.filter(Boolean) : (slips ? [slips] : []);
+    const first = list[0] || {};
+    const title = list.length === 1
+      ? `PrimeCool Payslip — ${_psEsc(first.subject_name || '')} — ${_psEsc(first.period_label || '')}`
+      : `PrimeCool Payslips (${list.length})`;
+    const sheets = list.map(function (p) { return PC.payslipSheetHTML(p); }).join('\n');
+    return `<!doctype html><html><head><meta charset="utf-8">
+      <title>${title}</title>
+      <style>
+        @page{size:A4;margin:14mm;}
+        *{box-sizing:border-box;}
+        body{font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;color:#1a2533;margin:0;font-size:11px;line-height:1.35;background:#fff;}
+        .sheet{max-width:780px;margin:0 auto;padding:18px 22px;page-break-after:always;}
+        .sheet:last-child{page-break-after:auto;}
+        .row{display:flex;gap:14px;}
+        .col{flex:1;}
+        .hdr{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #0B2545;padding-bottom:12px;margin-bottom:14px;}
+        .co-name{font-size:22px;font-weight:800;color:#0B2545;letter-spacing:.3px;}
+        .co-name em{color:#22A08A;font-style:normal;}
+        .co-meta{font-size:10.5px;color:#555;margin-top:4px;line-height:1.5;}
+        .ps-label{background:#22A08A;color:#fff;padding:6px 14px;border-radius:4px;font-weight:800;letter-spacing:1.2px;font-size:12px;}
+        .meta-row{display:grid;grid-template-columns:110px 1fr;row-gap:3px;column-gap:6px;font-size:10.5px;margin-top:8px;}
+        .meta-row .l{color:#555;} .meta-row .v{font-weight:600;color:#0B2545;}
+        .box{border:1px solid #cdd5e0;border-radius:4px;margin-top:12px;overflow:hidden;}
+        .box-h{background:#eaf0f7;color:#0B2545;font-weight:700;font-size:11px;padding:5px 10px;letter-spacing:.5px;}
+        .box-body{padding:8px 10px;display:grid;grid-template-columns:140px 1fr;row-gap:3px;column-gap:8px;font-size:10.5px;}
+        .box-body .l{color:#555;} .box-body .v{font-weight:600;color:#0B2545;}
+        table.tbl{width:100%;border-collapse:collapse;font-size:10.5px;margin-top:12px;}
+        table.tbl th{background:#eaf0f7;color:#0B2545;text-align:left;padding:6px 8px;font-weight:700;border:1px solid #cdd5e0;font-size:10px;letter-spacing:.3px;}
+        table.tbl td{padding:4px 8px;border:1px solid #e0e6ee;}
+        table.tbl td.num{text-align:right;font-variant-numeric:tabular-nums;}
+        .tot{background:#f5f7fa;font-weight:700;color:#0B2545;}
+        .net-pay-box{background:linear-gradient(135deg,#1B4F82,#0B2545);color:#fff;border-radius:12px;padding:16px 18px;text-align:center;box-shadow:0 2px 4px rgba(11,37,69,0.08),0 12px 28px -10px rgba(11,37,69,0.20);}
+        .net-pay-box .l{font-size:11px;font-weight:700;letter-spacing:1.4px;opacity:.92;color:#22A08A;}
+        .net-pay-box .v{font-size:26px;font-weight:700;margin-top:6px;letter-spacing:.2px;font-family:'IBM Plex Mono',ui-monospace,monospace;font-variant-numeric:tabular-nums;}
+        .footer-note{margin-top:14px;background:#f5f7fa;border:1px solid #cdd5e0;border-radius:4px;padding:7px 10px;font-size:10px;color:#4a5566;}
+        @media print{
+          .no-print{display:none !important;}
+          body,.net-pay-box,.tot,table.tbl th{-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;}
+          .net-pay-box,.row,table.tbl{page-break-inside:avoid;}
+        }
+        .print-bar{position:fixed;top:8px;right:8px;display:flex;gap:6px;z-index:10;}
+        .print-bar button{background:#0B2545;color:#fff;border:none;padding:7px 14px;border-radius:4px;cursor:pointer;font-weight:600;font-size:12px;}
+        .print-bar button.alt{background:#6b7280;}
+      </style></head><body>
+      <div class="print-bar no-print">
+        <button onclick="window.print()" title="${saveMode ? 'Pick &quot;Save as PDF&quot; as the destination in the print dialog' : 'Pick your printer in the print dialog'}">${saveMode ? '💾 Save as PDF' : '🖨 Print'}</button>
+        <button class="alt" onclick="window.close()">Close</button>
+      </div>
+      ${saveMode ? `<div class="no-print" style="background:#E0F2F1;color:#1A7A6A;padding:8px 14px;border:1px solid #E0F2F1;border-radius:4px;font-size:12px;margin:8px auto;max-width:780px;">💡 In the print dialog that just opened, pick <strong>Save as PDF</strong> from the destination dropdown to save this payslip to disk.</div>` : ''}
+      ${sheets}
+      ${saveMode ? `<script>window.addEventListener('load',function(){setTimeout(function(){try{window.focus();window.print();}catch(e){}},200);});<\/script>` : ''}
+      </body></html>`;
+  };
+
+  // Open a print window and write the canonical payslip document into it.
+  // Returns the window handle (or null if pop-up blocked). When opts.saveMode
+  // is set the document AUTO-PRINTS ITSELF on load (via a script embedded in the
+  // written HTML) rather than the opener calling w.print(). This matters: the
+  // popup is same-origin and shares a renderer process with the opener, and
+  // window.print() blocks its caller's event loop until the dialog closes —
+  // calling it from here would freeze the opener tab ("Pages Unresponsive").
+  // Letting the popup print itself keeps the opener fully responsive.
+  PC.openPayslipPrint = function (slips, opts) {
+    opts = opts || {};
+    const saveMode = !!opts.saveMode;
+    const w = window.open('', '_blank', 'width=900,height=1100');
+    if (!w) {
+      try { PC.toast('Pop-up blocked — allow pop-ups for this site and tap Print again.', 'warning'); } catch (_) {}
+      return null;
+    }
+    w.document.write(PC.payslipPrintHTML(slips, { saveMode: saveMode }));
+    w.document.close();
+    return w;
+  };
+
+  // ── Payslip quick-view (lightweight on-screen modal) ─────────
+  // A fast in-page glance at one payslip: period, gross, taxes, other
+  // deductions and net pay — no popup window. The rich, print-ready layout
+  // stays reachable via the "View full payslip" button (→ PC.openPayslipPrint,
+  // read-only) and the "Print / PDF" button (→ saveMode). Use this for the
+  // on-screen "View" action; reserve PC.openPayslipPrint for the full document.
+  // Pass an enriched or basic payslip object. Self-contained (builds its own
+  // overlay with inline styles) so every SPA renders it identically.
+  PC.openPayslipQuickView = function (slip, opts) {
+    opts = opts || {};
+    if (!slip) return null;
+    const cur = slip.currency || 'JMD';
+    const n = function (v) { return _psMoney(v, cur); };
+    const eh = _psEsc;
+    const taxes = (Number(slip.paye_tax) || 0) + (Number(slip.nis) || 0)
+                + (Number(slip.nht) || 0) + (Number(slip.education_tax) || 0);
+    const other = Number(slip.other_deductions) || 0;
+    const payDate = slip.generated_at ? String(slip.generated_at).slice(0, 10) : '';
+    const period = slip.period_label || ((slip.period_start || '') + ' – ' + (slip.period_end || ''));
+    const slipNo = slip.id ? 'PCL/PS/' + String(slip.id).padStart(6, '0') : '';
+
+    // Tear down any prior instance so re-opening never stacks overlays.
+    const prev = document.getElementById('pc-ps-quickview');
+    if (prev) prev.remove();
+
+    const ov = document.createElement('div');
+    ov.id = 'pc-ps-quickview';
+    ov.setAttribute('role', 'dialog');
+    ov.setAttribute('aria-modal', 'true');
+    ov.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(11,37,69,0.55);'
+      + 'display:flex;align-items:center;justify-content:center;padding:18px;';
+    const line = function (label, val, strong) {
+      return '<div style="display:flex;justify-content:space-between;gap:14px;padding:8px 0;'
+        + 'border-bottom:1px solid #eef1f5;font-size:13.5px;">'
+        + '<span style="color:#5b6675;">' + eh(label) + '</span>'
+        + '<span style="font-weight:' + (strong ? '700' : '600') + ';color:#0B2545;'
+        + 'font-variant-numeric:tabular-nums;">' + val + '</span></div>';
+    };
+    ov.innerHTML =
+      '<div style="background:#fff;border-radius:14px;max-width:420px;width:100%;'
+      + 'box-shadow:0 20px 60px -12px rgba(11,37,69,0.45);overflow:hidden;'
+      + "font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;\">"
+      +   '<div style="background:linear-gradient(135deg,#1B4F82,#0B2545);color:#fff;padding:16px 20px;">'
+      +     '<div style="font-size:12px;letter-spacing:1.4px;font-weight:700;color:#22A08A;">PAYSLIP</div>'
+      +     '<div style="font-size:17px;font-weight:700;margin-top:2px;">' + eh(period) + '</div>'
+      +     '<div style="font-size:12px;opacity:.85;margin-top:2px;">'
+      +        eh(slip.subject_name || '') + (slipNo ? '&nbsp;·&nbsp;' + eh(slipNo) : '') + '</div>'
+      +   '</div>'
+      +   '<div style="padding:14px 20px 4px;">'
+      +     (payDate ? line('Pay date', eh(payDate)) : '')
+      +     line('Gross pay', n(slip.gross_pay))
+      +     line('Statutory taxes', n(taxes))
+      +     line('Other deductions', n(other))
+      +   '</div>'
+      +   '<div style="margin:8px 20px 0;background:linear-gradient(135deg,#1B4F82,#0B2545);color:#fff;'
+      +     'border-radius:10px;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;">'
+      +     '<span style="font-size:11px;letter-spacing:1.2px;font-weight:700;color:#22A08A;">NET PAY</span>'
+      +     '<span style="font-size:20px;font-weight:700;font-variant-numeric:tabular-nums;">' + n(slip.net_pay) + '</span>'
+      +   '</div>'
+      +   '<div style="padding:16px 20px;display:flex;gap:8px;flex-wrap:wrap;">'
+      +     '<button type="button" data-pcact="full" style="flex:1;min-width:130px;background:#0B2545;color:#fff;'
+      +       'border:none;padding:10px 14px;border-radius:8px;cursor:pointer;font-weight:600;font-size:13px;">View full payslip</button>'
+      +     '<button type="button" data-pcact="print" style="flex:1;min-width:110px;background:#22A08A;color:#fff;'
+      +       'border:none;padding:10px 14px;border-radius:8px;cursor:pointer;font-weight:600;font-size:13px;">Print / PDF</button>'
+      +     '<button type="button" data-pcact="close" style="background:#eef1f5;color:#0B2545;'
+      +       'border:none;padding:10px 14px;border-radius:8px;cursor:pointer;font-weight:600;font-size:13px;">Close</button>'
+      +   '</div>'
+      + '</div>';
+
+    function close() { try { ov.remove(); } catch (_) {} document.removeEventListener('keydown', onKey); }
+    function onKey(e) { if (e.key === 'Escape') close(); }
+    ov.addEventListener('click', function (e) {
+      const t = e.target;
+      const act = t && t.getAttribute ? t.getAttribute('data-pcact') : null;
+      if (t === ov || act === 'close') { close(); return; }
+      if (act === 'full')  { close(); PC.openPayslipPrint(slip, { saveMode: false }); return; }
+      if (act === 'print') { close(); PC.openPayslipPrint(slip, { saveMode: true }); return; }
+    });
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(ov);
+    return ov;
+  };
+
   // (Date helpers PC.fmtDate / PC.fmtDateTime are defined once, above, and
   //  honor the user's date_format preference. A second ISO-only definition
   //  used to live here and silently shadowed them — removed.)
@@ -1100,7 +1472,15 @@
     nav.setAttribute('aria-label', 'Primary navigation');
     nav.setAttribute('data-pc-bottomnav', '');
     nav.innerHTML = items.map(function (it) {
-      return '<a class="pc-bn-item" href="/home#' + it.key + '">'
+      // Profile is the one item that lives at its own top-level page
+      // (/profile = profile.html), NOT a /home tab. Everywhere else in the
+      // app — the staff_home bottom bar, the avatar button, the "My Profile"
+      // pill, and the admin "My Profile" nav — "Profile" opens /profile. The
+      // shared bar must match, or the SAME icon lands you on two different
+      // pages depending on which page rendered it (/home#profile is the
+      // separate "My Records" panel, reached from /profile's own tile).
+      const href = (it.key === 'profile') ? '/profile' : ('/home#' + it.key);
+      return '<a class="pc-bn-item" href="' + href + '">'
            +   '<span class="pc-bn-ico">' + _BN_ICONS[it.ico] + '</span>'
            +   '<span>' + it.label + '</span>'
            + '</a>';

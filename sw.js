@@ -14,7 +14,7 @@
 // Bump CACHE_VERSION whenever the shell asset list or strategy changes; the
 // activate handler purges every cache that doesn't match.
 
-const CACHE_VERSION = 'pc-tech-v4';
+const CACHE_VERSION = 'pc-tech-v8';
 const SHELL_CACHE    = CACHE_VERSION + '-shell';
 
 // Assets that make up the bootable shell. Keep this list lean — only what's
