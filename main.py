@@ -82,6 +82,9 @@ from database import (
     cancel_warehouse_delivery, VALID_DELIVERY_KINDS,
     delete_tech, set_tech_pin,
     get_tech_by_code_and_email, create_pin_reset_token, consume_pin_reset_token,
+    create_onboarding_invite, resolve_onboarding_token, mark_onboarding_invite_used,
+    get_onboarding_status, set_onboarding_status, is_onboarding_locked, submit_onboarding,
+    replace_staff_profile_collection,
     create_photo, get_visit_photos, get_photo_by_id, delete_photo,
     get_timesheet_data,
     create_pay_period, list_pay_periods, get_pay_period,
@@ -13835,7 +13838,7 @@ def api_staff_me_personal_get(request: Request):
     """Personal + home-contact singleton (DOB, IDs, nationality, home
     address, personal phone/email). Always returns a full field set so the
     form renders even when nothing's been saved yet."""
-    from database import get_staff_personal
+    from database import get_staff_personal, get_onboarding_status
     kind, sid, who = _profile_subject(request)
     data = get_staff_personal(kind, sid)
     # Surface the read-only work contact alongside, so the Contact tab can show
@@ -13843,20 +13846,34 @@ def api_staff_me_personal_get(request: Request):
     data["work_email"] = who.get("email")
     data["work_phone"] = who.get("phone")
     data["legal_name"] = who.get("name")
+    # Lock state drives whether the profile renders self-edit buttons. Once the
+    # onboarding wizard is submitted everything is read-only to the employee.
+    status = get_onboarding_status(kind, sid)
+    data["onboarding_status"] = status
+    data["onboarding_locked"] = (status == "submitted")
     return data
 
 
 @app.put("/api/staff/me/personal")
 async def api_staff_me_personal_put(request: Request):
     """Upsert the personal/home-contact singleton. Whitelisted fields only."""
-    from database import upsert_staff_personal
+    from database import upsert_staff_personal, is_onboarding_locked
     kind, sid, who = _profile_subject(request)
     body = await request.json()
     if not isinstance(body, dict):
         raise HTTPException(400, "expected an object")
+    # Once the new hire submits the onboarding wizard, EVERYTHING they entered
+    # locks ("becomes infallible") — only HR/super_admin may change it from the
+    # admin surface. Self-service PUTs are refused wholesale after submit.
+    if is_onboarding_locked(kind, sid):
+        raise HTTPException(
+            423,
+            "Your onboarding information is locked. Contact HR to make changes.",
+        )
     # DOB is HR-managed: captured at onboarding and locked on the employee's
     # own profile. Strip it here so a self-service PUT can never change it,
-    # regardless of what the client sends. National ID / TRN stay editable.
+    # regardless of what the client sends. National ID / TRN stay editable
+    # pre-submit; after submit the lock above blocks the whole endpoint.
     body.pop("date_of_birth", None)
     saved = upsert_staff_personal(kind, sid, body)
     saved["work_email"] = who.get("email")
@@ -13878,6 +13895,24 @@ def api_staff_me_collection_list(collection: str, request: Request):
             "items": list_staff_profile_items(kind, sid, collection)}
 
 
+# Collections whose contents are captured during onboarding and therefore
+# lock with the rest of the wizard data on submit. Ongoing-profile collections
+# (skills, achievements, career_interests, mentorships, development_items)
+# stay freely self-editable — they are not part of the new-hire packet.
+_ONBOARD_LOCKED_COLLECTIONS = {
+    "emergency_contacts", "education", "job_history",
+    "languages", "policy_acknowledgements",
+}
+
+
+def _guard_collection_lock(kind: str, sid: int, collection: str):
+    """Block self-service writes to an onboarding-sourced collection once the
+    hire has submitted. Only HR/super_admin edit locked data afterward."""
+    if collection in _ONBOARD_LOCKED_COLLECTIONS and is_onboarding_locked(kind, sid):
+        raise HTTPException(
+            423, "Your onboarding information is locked. Contact HR to make changes.")
+
+
 @app.post("/api/staff/me/profile/{collection}")
 async def api_staff_me_collection_add(collection: str, request: Request):
     """Append one item to a collection. Body = the item's fields (stored as a
@@ -13887,6 +13922,7 @@ async def api_staff_me_collection_add(collection: str, request: Request):
     kind, sid, who = _profile_subject(request)
     if collection not in STAFF_PROFILE_COLLECTIONS:
         raise HTTPException(404, "unknown profile collection")
+    _guard_collection_lock(kind, sid, collection)
     body = await request.json()
     if not isinstance(body, dict):
         raise HTTPException(400, "expected an object")
@@ -13907,6 +13943,7 @@ async def api_staff_me_collection_update(collection: str, item_id: int,
     kind, sid, who = _profile_subject(request)
     if collection not in STAFF_PROFILE_COLLECTIONS:
         raise HTTPException(404, "unknown profile collection")
+    _guard_collection_lock(kind, sid, collection)
     body = await request.json()
     if not isinstance(body, dict):
         raise HTTPException(400, "expected an object")
@@ -13927,6 +13964,7 @@ def api_staff_me_collection_delete(collection: str, item_id: int,
     kind, sid, who = _profile_subject(request)
     if collection not in STAFF_PROFILE_COLLECTIONS:
         raise HTTPException(404, "unknown profile collection")
+    _guard_collection_lock(kind, sid, collection)
     if not delete_staff_profile_item(kind, sid, collection, item_id):
         raise HTTPException(404, "item not found")
     return {"ok": True,
@@ -13966,6 +14004,175 @@ def staff_profile_page():
     as admin.html / tech.html); every tab calls the /api/staff/me/* endpoints
     above, which resolve the subject from the cookie."""
     return FileResponse("profile.html")
+
+
+# ── Self-service onboarding wizard (Jamaica) ──────────────────────────────
+# Flow: HR/super_admin create the staff account first (role + asset
+# provisioning is theirs), then mint an invite token and send the new hire a
+# link. The hire opens /onboard?token=… and fills a Jamaica-adapted wizard
+# (parishes, TRN/NIS/NHT, local direct-deposit, optional diversity, policy
+# acknowledgements, e-signature). On submit, everything they entered LOCKS —
+# only HR/super_admin can change it afterward, from the admin surface.
+#
+# The wizard is authenticated SOLELY by the token (the hire has no account
+# login yet), so these endpoints never touch the staff cookie. The token
+# resolves to exactly one (staff_kind, staff_id); the hire can only ever write
+# their own record.
+
+# Which staff_personal collections the wizard is allowed to write. Kept tight
+# so a crafted body can't stuff arbitrary buckets through the token surface.
+_ONBOARD_COLLECTIONS = ("emergency_contacts", "education", "job_history",
+                        "languages", "policy_acknowledgements")
+
+
+def _onboard_subject_or_410(token: str):
+    """Resolve a wizard token to its subject, or raise. 404 for an unknown/
+    malformed token, 410 (Gone) for an expired/used one — distinct so the page
+    can show 'link expired' vs 'invalid link'."""
+    info = resolve_onboarding_token(token or "")
+    if not info:
+        raise HTTPException(410, "This onboarding link is invalid or has expired.")
+    return info
+
+
+@app.post("/api/admin/onboarding/invite")
+async def admin_onboarding_invite(request: Request):
+    """Mint an onboarding link for an already-created staff account. Restricted
+    to super_admin + hr_admin (same policy as warehouse onboarding): only HR
+    onboards staff. Body: {staff_kind:'tech'|'admin', staff_id:int,
+    days_valid?:int}. Returns {token, link, expires_in_days}."""
+    admin = _require_admin(request)
+    if admin.get("role") not in ("super_admin", "hr_admin"):
+        _audit_from(admin, "onboarding.invite_denied", request,
+                    details={"reason": "role_not_authorized",
+                             "actor_role": admin.get("role")})
+        raise HTTPException(
+            403, "Onboarding invites are restricted to super_admin and hr_admin.")
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "expected an object")
+    kind = "admin" if body.get("staff_kind") == "admin" else "tech"
+    try:
+        sid = int(body.get("staff_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "staff_id required")
+    # Confirm the subject actually exists before minting a token for it.
+    if kind == "tech":
+        subj = get_tech_by_id(sid)
+    else:
+        subj = get_admin_user_by_id(sid)
+    if not subj:
+        raise HTTPException(404, "No such staff member")
+    days = int(body.get("days_valid") or 14)
+    days = max(1, min(days, 60))
+    token = create_onboarding_invite(kind, sid, created_by=admin["id"],
+                                     days_valid=days)
+    link = str(request.base_url).rstrip("/") + "/onboard?token=" + token
+    _audit_from(admin, "onboarding.invite", request,
+                target_type=kind, target_id=sid,
+                target_label=subj.get("name"),
+                details={"expires_in_days": days})
+    return {"token": token, "link": link, "expires_in_days": days,
+            "staff_kind": kind, "staff_id": sid, "name": subj.get("name")}
+
+
+@app.get("/onboard")
+def onboarding_page():
+    """The new-hire wizard shell. Token lives in the query string; the page
+    validates it client-side via /api/onboard/resolve before rendering."""
+    return FileResponse("onboarding.html")
+
+
+@app.get("/api/onboard/resolve")
+def api_onboard_resolve(request: Request, token: str = ""):
+    """Token-auth: confirm a wizard link and return prefill data so a hire can
+    resume a partial draft across sessions. Never exposes another subject —
+    the token alone selects the record."""
+    from database import get_staff_personal, list_staff_profile_items
+    info = _onboard_subject_or_410(token)
+    kind, sid = info["staff_kind"], info["staff_id"]
+    subj = get_tech_by_id(sid) if kind == "tech" else get_admin_user_by_id(sid)
+    if not subj:
+        raise HTTPException(404, "Staff record missing")
+    personal = get_staff_personal(kind, sid)
+    collections = {c: list_staff_profile_items(kind, sid, c)
+                   for c in _ONBOARD_COLLECTIONS}
+    return {
+        "ok": True,
+        "locked": info["locked"],
+        "status": get_onboarding_status(kind, sid),
+        # Read-only context the hire sees but can't change (HR-managed).
+        "legal_name": subj.get("name"),
+        "work_email": subj.get("email"),
+        "work_phone": subj.get("phone"),
+        "personal": personal,
+        "collections": collections,
+    }
+
+
+@app.put("/api/onboard/save")
+async def api_onboard_save(request: Request, token: str = ""):
+    """Token-auth partial save. Writes whitelisted singleton fields + allowed
+    collections, marks the subject 'in_progress'. Refused once submitted."""
+    from database import upsert_staff_personal
+    info = _onboard_subject_or_410(token)
+    if info["locked"]:
+        raise HTTPException(423, "This onboarding has been submitted and is locked.")
+    kind, sid = info["staff_kind"], info["staff_id"]
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "expected an object")
+    personal = body.get("personal") or {}
+    if isinstance(personal, dict) and personal:
+        # upsert_staff_personal already filters to STAFF_PERSONAL_FIELDS, so
+        # lifecycle/esign columns can't be written through here.
+        upsert_staff_personal(kind, sid, personal)
+    collections = body.get("collections") or {}
+    if isinstance(collections, dict):
+        for name, items in collections.items():
+            if name in _ONBOARD_COLLECTIONS and isinstance(items, list):
+                replace_staff_profile_collection(kind, sid, name, items)
+    # First save flips 'invited' → 'in_progress'.
+    if get_onboarding_status(kind, sid) != "submitted":
+        set_onboarding_status(kind, sid, "in_progress")
+    return {"ok": True, "status": get_onboarding_status(kind, sid)}
+
+
+@app.post("/api/onboard/submit")
+async def api_onboard_submit(request: Request, token: str = ""):
+    """Token-auth final submit. Persists any last edits, captures the
+    e-signature, flips the lock to 'submitted', and burns the token so the
+    link can't be re-submitted. From here only HR/super_admin can edit."""
+    from database import upsert_staff_personal
+    info = _onboard_subject_or_410(token)
+    kind, sid = info["staff_kind"], info["staff_id"]
+    if info["locked"]:
+        # Already done — idempotent success so a double-click is harmless.
+        return {"ok": True, "status": "submitted", "already": True}
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "expected an object")
+    # Persist any final-page edits before locking.
+    personal = body.get("personal") or {}
+    if isinstance(personal, dict) and personal:
+        upsert_staff_personal(kind, sid, personal)
+    collections = body.get("collections") or {}
+    if isinstance(collections, dict):
+        for name, items in collections.items():
+            if name in _ONBOARD_COLLECTIONS and isinstance(items, list):
+                replace_staff_profile_collection(kind, sid, name, items)
+    esign_name = (body.get("esign_full_name") or "").strip()
+    esign_init = (body.get("esign_initials") or "").strip()
+    if not esign_name or not esign_init:
+        raise HTTPException(400, "An e-signature (full name + initials) is required to submit.")
+    submit_onboarding(kind, sid, esign_full_name=esign_name,
+                      esign_initials=esign_init)
+    # Note: we deliberately DON'T burn the token here. The 'submitted' lock is
+    # the real guard — save() returns 423 and submit() is idempotent once
+    # locked — so leaving the link resolvable lets the hire reopen it and see
+    # the friendly "Onboarding complete" confirmation instead of a dead link.
+    # The invite still ages out on its own expiry window.
+    return {"ok": True, "status": "submitted"}
 
 
 @app.get("/api/portal/me/sessions")

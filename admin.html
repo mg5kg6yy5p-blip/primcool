@@ -4745,6 +4745,21 @@
       <div id="pridDisplay" style="font-family:'Courier New',monospace;font-size:28px;font-weight:700;color:var(--ink);letter-spacing:3px;padding:18px;background:var(--light);border:2px dashed var(--teal);border-radius:10px;margin-bottom:18px;"></div>
       <p id="pridSubText" style="font-size:13px;color:var(--text);line-height:1.6;"></p>
       <button class="btn btn-primary" style="margin-top:14px;" onclick="copyPrid()">📋 Copy PRID</button>
+
+      <!-- Self-service onboarding link (HR/super_admin only) -->
+      <div id="onboardLinkBlock" style="display:none;margin-top:22px;padding-top:18px;border-top:1px solid var(--border);text-align:left;">
+        <p style="font-size:13px;color:var(--text);line-height:1.6;margin-bottom:10px;">
+          <strong>Send their onboarding link.</strong> The new hire fills in their own personal, tax (TRN/NIS/NHT), banking and policy details. Once they submit, the information locks and only HR can change it.
+        </p>
+        <button class="btn btn-primary" id="genOnboardBtn" style="width:100%;" onclick="genOnboardLink()">🔗 Generate onboarding link</button>
+        <div id="onboardLinkReady" style="display:none;margin-top:12px;">
+          <input id="onboardLinkInput" readonly style="width:100%;padding:9px 11px;border:1px solid var(--border);border-radius:8px;font-size:12px;font-family:'Courier New',monospace;background:var(--light);" onclick="this.select()">
+          <div style="display:flex;gap:8px;margin-top:8px;">
+            <button class="btn btn-ghost" style="flex:1;" onclick="copyOnboardLink()">📋 Copy link</button>
+          </div>
+          <p id="onboardLinkExpiry" style="font-size:11.5px;color:var(--muted);margin-top:8px;"></p>
+        </div>
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-primary" style="width:100%;" onclick="closeModal('prid');location.reload();">Done</button>
@@ -10570,15 +10585,55 @@
       ['au-password','au-name','au-email','au-phone','au-hire','au-dob','au-natid','au-trn'].forEach(id => document.getElementById(id).value = '');
       document.getElementById('au-role').value = '';
       await loadAdmins();
-      showPridModal(res.prid, `${escHtml(body.name)} signs in at <strong>/admin</strong> with their PRID as the username, plus the password you set.`);
+      showPridModal(res.prid, `${escHtml(body.name)} signs in at <strong>/admin</strong> with their PRID as the username, plus the password you set.`,
+        { kind: 'admin', id: res.id });
     } catch(e) { showErr('err-addAdmin', e.message); }
   }
 
   // ── PRID success modal ──
-  function showPridModal(prid, subText) {
+  // Optional subject = {kind:'tech'|'admin', id:Number}. When provided AND the
+  // current admin may onboard (super_admin / hr_admin), the success modal also
+  // offers a self-service onboarding link for that new hire.
+  let _onboardSubject = null;
+  function showPridModal(prid, subText, subject) {
     document.getElementById('pridDisplay').textContent = prid;
     document.getElementById('pridSubText').innerHTML = subText;
+    _onboardSubject = subject || null;
+    const block = document.getElementById('onboardLinkBlock');
+    const canOnboard = (typeof can === 'function')
+      ? (can('admin:create') || can('tech:create')) : true;
+    // Reset the link sub-UI each open.
+    document.getElementById('onboardLinkReady').style.display = 'none';
+    const genBtn = document.getElementById('genOnboardBtn');
+    if (genBtn) { genBtn.disabled = false; genBtn.textContent = '🔗 Generate onboarding link'; }
+    block.style.display = (_onboardSubject && canOnboard) ? 'block' : 'none';
     document.getElementById('modal-prid').classList.add('open');
+  }
+  async function genOnboardLink() {
+    if (!_onboardSubject) return;
+    const btn = document.getElementById('genOnboardBtn');
+    btn.disabled = true; btn.textContent = 'Generating…';
+    try {
+      const res = await api('POST', '/api/admin/onboarding/invite',
+        { staff_kind: _onboardSubject.kind, staff_id: _onboardSubject.id });
+      document.getElementById('onboardLinkInput').value = res.link;
+      document.getElementById('onboardLinkExpiry').textContent =
+        `Link valid for ${res.expires_in_days} days. Send it only to ${escHtml(res.name||'the new hire')}.`;
+      document.getElementById('onboardLinkReady').style.display = 'block';
+      btn.textContent = '🔗 Regenerate link';
+      btn.disabled = false;
+    } catch (e) {
+      btn.disabled = false; btn.textContent = '🔗 Generate onboarding link';
+      alert(e.message || 'Could not generate link');
+    }
+  }
+  async function copyOnboardLink() {
+    const link = document.getElementById('onboardLinkInput').value;
+    try {
+      await navigator.clipboard.writeText(link);
+      const btn = event.target; const orig = btn.textContent;
+      btn.textContent = '✓ Copied!'; setTimeout(() => { btn.textContent = orig; }, 1500);
+    } catch { document.getElementById('onboardLinkInput').select(); }
   }
   async function copyPrid() {
     const prid = document.getElementById('pridDisplay').textContent;
@@ -13534,7 +13589,8 @@
       closeModal('addTech');
       resetTechForm();
       await loadTechs();
-      showPridModal(res.prid, `${escHtml(body.name)} signs in at <strong>/tech</strong> with their PRID as the code, plus the PIN you set.`);
+      showPridModal(res.prid, `${escHtml(body.name)} signs in at <strong>/tech</strong> with their PRID as the code, plus the PIN you set.`,
+        { kind: 'tech', id: res.id });
     } catch(e) { showErr('err-addTech', e.message); }
   }
 

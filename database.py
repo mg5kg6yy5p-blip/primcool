@@ -1211,6 +1211,27 @@ def init_db():
             created_at  TEXT NOT NULL
         )
     """)
+    # Self-service onboarding invites. HR/super_admin create the staff
+    # account first (so role/asset provisioning is theirs), then mint a
+    # token here and send the link to the new hire. The new hire fills the
+    # Jamaica onboarding wizard against (staff_kind, staff_id); on submit the
+    # staff_personal record locks. used_at is stamped at submit so a link is
+    # single-completion, but the token stays valid (not yet expired/used) for
+    # the whole window so the hire can save partial progress across sessions.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS onboarding_invites (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            staff_kind   TEXT NOT NULL,             -- 'admin' | 'tech'
+            staff_id     INTEGER NOT NULL,
+            token        TEXT NOT NULL UNIQUE,
+            expires_at   TEXT NOT NULL,
+            used_at      TEXT,                       -- stamped when wizard submitted
+            created_by   INTEGER,                    -- admin user id who minted it
+            created_at   TEXT NOT NULL
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_onboarding_invites_subject "
+                "ON onboarding_invites(staff_kind, staff_id)")
     con.execute("""
         CREATE TABLE IF NOT EXISTS visit_photos (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2821,7 +2842,9 @@ def init_db():
             primary_nationality      TEXT,
             additional_nationalities TEXT,
             national_id       TEXT,                   -- e.g. Jamaica national ID
-            trn               TEXT,                   -- tax reg number
+            trn               TEXT,                   -- tax reg number (replaces US SSN)
+            nis               TEXT,                   -- National Insurance Scheme #
+            nht               TEXT,                   -- National Housing Trust # (optional)
             gender_identity   TEXT,
             -- home contact (work phone/email live on the base staff record)
             home_address      TEXT,
@@ -2830,10 +2853,51 @@ def init_db():
             home_country      TEXT,
             personal_phone    TEXT,
             personal_email    TEXT,
+            -- direct-deposit (Jamaican banks; replaces US W-4/MW507 tax forms)
+            bank_name           TEXT,
+            bank_branch         TEXT,
+            bank_account_type   TEXT,                 -- chequing | savings
+            bank_account_number TEXT,
+            -- optional diversity / accessibility (employee may decline)
+            ethnicity           TEXT,
+            disability_status   TEXT,
+            accommodation_needed TEXT,                -- 'yes' | 'no' | ''
+            accommodation_note  TEXT,
+            -- e-signature captured at submit
+            esign_full_name     TEXT,
+            esign_initials      TEXT,
+            esign_agreed_at     TEXT,                 -- ISO timestamp
+            -- onboarding lifecycle: '' | 'invited' | 'in_progress' | 'submitted'
+            onboarding_status        TEXT,
+            onboarding_submitted_at  TEXT,            -- ISO timestamp; lock marker
             updated_at        TEXT NOT NULL,
             UNIQUE(staff_kind, staff_id)
         )
     """)
+
+    # Additive migration: bring an older staff_personal table up to the
+    # current column set without dropping data. New columns are nullable so
+    # existing rows are untouched.
+    _sp_cols = {row[1] for row in con.execute("PRAGMA table_info(staff_personal)")}
+    for _col, _ddl in [
+        ("nis",                  "ALTER TABLE staff_personal ADD COLUMN nis TEXT"),
+        ("nht",                  "ALTER TABLE staff_personal ADD COLUMN nht TEXT"),
+        ("bank_name",            "ALTER TABLE staff_personal ADD COLUMN bank_name TEXT"),
+        ("bank_branch",          "ALTER TABLE staff_personal ADD COLUMN bank_branch TEXT"),
+        ("bank_account_type",    "ALTER TABLE staff_personal ADD COLUMN bank_account_type TEXT"),
+        ("bank_account_number",  "ALTER TABLE staff_personal ADD COLUMN bank_account_number TEXT"),
+        ("ethnicity",            "ALTER TABLE staff_personal ADD COLUMN ethnicity TEXT"),
+        ("disability_status",    "ALTER TABLE staff_personal ADD COLUMN disability_status TEXT"),
+        ("accommodation_needed", "ALTER TABLE staff_personal ADD COLUMN accommodation_needed TEXT"),
+        ("accommodation_note",   "ALTER TABLE staff_personal ADD COLUMN accommodation_note TEXT"),
+        ("esign_full_name",      "ALTER TABLE staff_personal ADD COLUMN esign_full_name TEXT"),
+        ("esign_initials",       "ALTER TABLE staff_personal ADD COLUMN esign_initials TEXT"),
+        ("esign_agreed_at",      "ALTER TABLE staff_personal ADD COLUMN esign_agreed_at TEXT"),
+        ("onboarding_status",       "ALTER TABLE staff_personal ADD COLUMN onboarding_status TEXT"),
+        ("onboarding_submitted_at", "ALTER TABLE staff_personal ADD COLUMN onboarding_submitted_at TEXT"),
+    ]:
+        if _col not in _sp_cols:
+            con.execute(_ddl)
 
     # staff_profile_items is the GENERIC collection store: every list-type
     # profile section (emergency contacts, languages, achievements, career
@@ -4852,9 +4916,22 @@ def get_tech_by_id(tech_id: int):
 STAFF_PERSONAL_FIELDS = (
     "preferred_name", "pronouns", "sex", "date_of_birth", "country_of_birth",
     "marital_status", "primary_nationality", "additional_nationalities",
-    "national_id", "trn", "gender_identity",
+    "national_id", "trn", "nis", "nht", "gender_identity",
     "home_address", "home_city", "home_parish", "home_country",
     "personal_phone", "personal_email",
+    # direct-deposit (Jamaican banks)
+    "bank_name", "bank_branch", "bank_account_type", "bank_account_number",
+    # optional diversity / accessibility
+    "ethnicity", "disability_status", "accommodation_needed", "accommodation_note",
+    # e-signature (the agreed_at timestamp is server-stamped, not in this list)
+    "esign_full_name", "esign_initials",
+)
+
+# Server-controlled lifecycle columns on staff_personal that the self-service
+# whitelist intentionally excludes — only the onboarding submit/HR paths set
+# these. Kept separate so a stray body key can never flip the lock.
+STAFF_PERSONAL_LIFECYCLE_FIELDS = (
+    "esign_agreed_at", "onboarding_status", "onboarding_submitted_at",
 )
 
 # Whitelisted collection names for staff_profile_items. The endpoint layer
@@ -4870,6 +4947,7 @@ STAFF_PROFILE_COLLECTIONS = {
     "education",
     "skills",
     "job_history",
+    "policy_acknowledgements",
 }
 
 
@@ -5004,6 +5082,34 @@ def delete_staff_profile_item(staff_kind: str, staff_id: int, collection: str,
     con.commit()
     con.close()
     return changed
+
+
+def replace_staff_profile_collection(staff_kind: str, staff_id: int,
+                                     collection: str, items: list) -> int:
+    """Wholesale-replace a collection with a fresh ordered list. Used by the
+    onboarding wizard, which keeps the entire list client-side and re-submits
+    it on each save (simpler + race-free vs. per-row diffing). Each entry in
+    `items` is a plain dict payload; sort_order follows list order. Returns
+    the number of items written."""
+    now = datetime.utcnow().isoformat()
+    items = [i for i in (items or []) if isinstance(i, dict)]
+    con = _con()
+    con.execute(
+        "DELETE FROM staff_profile_items "
+        "WHERE staff_kind = ? AND staff_id = ? AND collection = ?",
+        (staff_kind, int(staff_id), collection),
+    )
+    for idx, payload in enumerate(items):
+        con.execute(
+            "INSERT INTO staff_profile_items "
+            "(staff_kind, staff_id, collection, data_json, sort_order, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (staff_kind, int(staff_id), collection,
+             _json.dumps(payload), idx, now, now),
+        )
+    con.commit()
+    con.close()
+    return len(items)
 
 
 def verify_tech(code: str, pin: str):
@@ -5288,6 +5394,153 @@ def consume_pin_reset_token(token: str):
     con.commit()
     con.close()
     return row["tech_id"]
+
+
+# ── Self-service onboarding: invite tokens + lock lifecycle ───────────────
+
+def create_onboarding_invite(staff_kind: str, staff_id: int,
+                             created_by: int = None, days_valid: int = 14) -> str:
+    """Mint a single-subject onboarding token for an already-created staff
+    account. Default 14-day window — long enough for a new hire to complete
+    the wizard across sessions. Marks the subject 'invited' if not already
+    further along. Returns the raw token (caller builds the link)."""
+    from datetime import timedelta
+    staff_kind = "admin" if staff_kind == "admin" else "tech"
+    token   = secrets.token_urlsafe(24)
+    now     = datetime.now(timezone.utc)
+    expires = (now + timedelta(days=int(days_valid))).isoformat()
+    con = _con()
+    con.execute(
+        "INSERT INTO onboarding_invites "
+        "(staff_kind, staff_id, token, expires_at, created_by, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (staff_kind, int(staff_id), token, expires, created_by, now.isoformat()),
+    )
+    con.commit()
+    con.close()
+    # Move the subject to 'invited' unless they've already started/submitted.
+    cur = (get_onboarding_status(staff_kind, staff_id) or "")
+    if cur not in ("in_progress", "submitted"):
+        set_onboarding_status(staff_kind, staff_id, "invited")
+    return token
+
+
+def resolve_onboarding_token(token: str):
+    """Return {staff_kind, staff_id, invite_id, locked} for a still-valid,
+    not-yet-used token, else None. 'locked' reflects whether the subject has
+    already submitted (so the wizard can show a read-only confirmation)."""
+    if not token:
+        return None
+    con = _con()
+    row = con.execute(
+        "SELECT * FROM onboarding_invites WHERE token = ? AND used_at IS NULL",
+        (token,),
+    ).fetchone()
+    con.close()
+    if not row:
+        return None
+    row = dict(row)
+    if row["expires_at"] < datetime.now(timezone.utc).isoformat():
+        return None
+    status = get_onboarding_status(row["staff_kind"], row["staff_id"]) or ""
+    return {
+        "staff_kind": row["staff_kind"],
+        "staff_id":   row["staff_id"],
+        "invite_id":  row["id"],
+        "locked":     status == "submitted",
+    }
+
+
+def mark_onboarding_invite_used(invite_id: int):
+    """Stamp used_at so the link can't be re-submitted after completion."""
+    con = _con()
+    con.execute(
+        "UPDATE onboarding_invites SET used_at = ? WHERE id = ? AND used_at IS NULL",
+        (datetime.now(timezone.utc).isoformat(), int(invite_id)),
+    )
+    con.commit()
+    con.close()
+
+
+def get_onboarding_status(staff_kind: str, staff_id: int) -> str:
+    """Read the lifecycle marker straight off staff_personal (it is NOT in
+    STAFF_PERSONAL_FIELDS, so get_staff_personal doesn't surface it). Returns
+    '' when no row / unset."""
+    con = _con()
+    row = con.execute(
+        "SELECT onboarding_status FROM staff_personal "
+        "WHERE staff_kind = ? AND staff_id = ?",
+        (staff_kind, int(staff_id)),
+    ).fetchone()
+    con.close()
+    return (row["onboarding_status"] if row and row["onboarding_status"] else "")
+
+
+def is_onboarding_locked(staff_kind: str, staff_id: int) -> bool:
+    """True once the hire has submitted — self-service writes must be refused
+    after this; only HR/super_admin may edit."""
+    return get_onboarding_status(staff_kind, staff_id) == "submitted"
+
+
+def set_onboarding_status(staff_kind: str, staff_id: int, status: str):
+    """Set the lifecycle marker, creating the singleton row if needed. This
+    writes a column outside STAFF_PERSONAL_FIELDS, so it has its own path."""
+    now = datetime.utcnow().isoformat()
+    con = _con()
+    existing = con.execute(
+        "SELECT id FROM staff_personal WHERE staff_kind = ? AND staff_id = ?",
+        (staff_kind, int(staff_id)),
+    ).fetchone()
+    if existing:
+        con.execute(
+            "UPDATE staff_personal SET onboarding_status = ?, updated_at = ? WHERE id = ?",
+            (status, now, existing["id"]),
+        )
+    else:
+        con.execute(
+            "INSERT INTO staff_personal (staff_kind, staff_id, onboarding_status, updated_at) "
+            "VALUES (?, ?, ?, ?)",
+            (staff_kind, int(staff_id), status, now),
+        )
+    con.commit()
+    con.close()
+
+
+def submit_onboarding(staff_kind: str, staff_id: int,
+                      esign_full_name: str = "", esign_initials: str = "") -> dict:
+    """Finalize the wizard: stamp the e-signature + submitted timestamp and
+    flip the lock to 'submitted'. Idempotent-safe: if already submitted, it
+    just returns the current record without re-stamping the timestamp."""
+    if is_onboarding_locked(staff_kind, staff_id):
+        return get_staff_personal(staff_kind, staff_id)
+    now = datetime.now(timezone.utc).isoformat()
+    fields = {
+        "esign_full_name": (esign_full_name or "").strip() or None,
+        "esign_initials":  (esign_initials or "").strip() or None,
+        "esign_agreed_at": now,
+        "onboarding_status": "submitted",
+        "onboarding_submitted_at": now,
+    }
+    con = _con()
+    existing = con.execute(
+        "SELECT id FROM staff_personal WHERE staff_kind = ? AND staff_id = ?",
+        (staff_kind, int(staff_id)),
+    ).fetchone()
+    sets = ", ".join(f"{k} = ?" for k in fields)
+    if existing:
+        con.execute(
+            f"UPDATE staff_personal SET {sets}, updated_at = ? WHERE id = ?",
+            (*fields.values(), now, existing["id"]),
+        )
+    else:
+        cols = ["staff_kind", "staff_id", "updated_at"] + list(fields.keys())
+        vals = [staff_kind, int(staff_id), now] + list(fields.values())
+        ph = ", ".join("?" for _ in cols)
+        con.execute(
+            f"INSERT INTO staff_personal ({', '.join(cols)}) VALUES ({ph})", vals)
+    con.commit()
+    con.close()
+    return get_staff_personal(staff_kind, staff_id)
 
 
 def delete_tech(tech_id: int):

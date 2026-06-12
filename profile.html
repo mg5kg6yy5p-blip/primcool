@@ -724,9 +724,11 @@
         <button class="btn btn-sm" onclick="editEC(${c.id})">Edit</button>
         <button class="btn btn-sm btn-danger" onclick="delItem('emergency_contacts',${c.id},tabContact)">Delete</button>
       </div></div>`).join('') : emptyState('contact','No emergency contacts','Add someone we should call in an emergency.');
+    const locked = pIsLocked();
     $('main').innerHTML = `
-      <div class="card"><div class="sec-head"><h2 style="margin:0">Contact</h2><button class="btn btn-sm" onclick="editContact()">Edit</button></div>
+      <div class="card"><div class="sec-head"><h2 style="margin:0">Contact</h2>${locked?'':'<button class="btn btn-sm" onclick="editContact()">Edit</button>'}</div>
         <div class="sub">Work details are managed by HR. You can edit your home and personal contact details.</div>
+        ${pLockBanner()}
         <div class="fgrid">
           ${field('Work email', p.work_email)}
           ${field('Work phone', p.work_phone)}
@@ -738,9 +740,15 @@
           ${field('Country', p.home_country)}
         </div>
       </div>
-      <div class="card"><div class="sec-head"><h3>Emergency contacts</h3><button class="btn btn-teal btn-sm" onclick="editEC()">Add contact</button></div>${ecHtml}</div>`;
+      <div class="card"><div class="sec-head"><h3>Emergency contacts</h3>${locked?'':'<button class="btn btn-teal btn-sm" onclick="editEC()">Add contact</button>'}</div>${
+        locked ? (ecs.length ? ecs.map(c=>`<div class="item"><div>
+          <div class="it-title">${esc(c.name||'')} ${c.is_primary?'<span class="badge ok">Primary</span>':''}</div>
+          <div class="it-meta">${esc(c.relationship||'')}${c.phone?' · '+esc(c.phone):''}${c.email?' · '+esc(c.email):''}</div>
+        </div></div>`).join('') : emptyState('contact','No emergency contacts','')) : ecHtml
+      }</div>`;
   }
   function editContact(){
+    if(pIsLocked()){ toast('Locked — contact HR to change','error'); return; }
     const p = personalCache||{};
     openModal('Edit contact details', `<div class="form-grid">
       <div class="fld"><label>Work email</label><input value="${esc(p.work_email||'')}" readonly></div>
@@ -759,6 +767,7 @@
     }]]);
   }
   function editEC(id){
+    if(pIsLocked()){ toast('Locked — contact HR to change','error'); return; }
     // Emergency contacts aren't cached — fetch the current list to edit one.
     api('GET','/api/staff/me/profile/emergency_contacts').then(r=>{
       const item = id ? r.items.find(x=>x.id===id) : {};
@@ -782,6 +791,18 @@
 
   // ── Personal ───────────────────────────────────────────────────────────
   let personalSub = 'info';
+  // Once the new-hire onboarding wizard is submitted, this personal record is
+  // locked ("infallible") — only HR/super_admin may change it. We hide the
+  // self-edit buttons and show a banner so the employee knows where to go.
+  function pIsLocked(){ return !!(personalCache && personalCache.onboarding_locked); }
+  function pEditBtn(fn){ return pIsLocked() ? '' : `<button class="btn btn-sm" onclick="${fn}()">Edit</button>`; }
+  function pLockBanner(){
+    return pIsLocked()
+      ? `<div style="background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;border-radius:8px;padding:10px 12px;margin:10px 0;font-size:13px;">
+           <strong>Locked.</strong> You completed onboarding, so these details are now read-only. Contact HR to make a change.
+         </div>`
+      : '';
+  }
   async function tabPersonal(){
     const p = await loadPersonal();
     const subnav = `<div class="subtabs">
@@ -791,7 +812,7 @@
     </div>`;
     let body='';
     if(personalSub==='info'){
-      body = `<div class="sec-head"><h3>Personal Information</h3><button class="btn btn-sm" onclick="editPInfo()">Edit</button></div>
+      body = `<div class="sec-head"><h3>Personal Information</h3>${pEditBtn('editPInfo')}</div>
         <div class="fgrid">
           ${field('Sex', p.sex)}
           ${field('Date of birth', p.date_of_birth?fmtDate(p.date_of_birth):'')}
@@ -804,24 +825,25 @@
           ${field('Pronouns', p.pronouns)}
         </div>`;
     } else if(personalSub==='ids'){
-      body = `<div class="sec-head"><h3>Identification</h3><button class="btn btn-sm" onclick="editPIds()">Edit</button></div>
+      body = `<div class="sec-head"><h3>Identification</h3>${pEditBtn('editPIds')}</div>
         <div class="fgrid">
           ${field('National ID', p.national_id)}
           ${field('TRN', p.trn)}
         </div>`;
     } else {
-      body = `<div class="sec-head"><h3>Names</h3><button class="btn btn-sm" onclick="editPNames()">Edit</button></div>
+      body = `<div class="sec-head"><h3>Names</h3>${pEditBtn('editPNames')}</div>
         <div class="fgrid">
           ${field('Legal name', p.legal_name)}
           ${field('Preferred name', p.preferred_name)}
         </div>`;
     }
-    $('main').innerHTML = `<div class="card"><h2>Personal</h2><div class="sub">Your personal details, kept private and visible only to you and HR.</div>${subnav}${body}</div>`;
+    $('main').innerHTML = `<div class="card"><h2>Personal</h2><div class="sub">Your personal details, kept private and visible only to you and HR.</div>${pLockBanner()}${subnav}${body}</div>`;
   }
   function setPSub(s){ personalSub=s; tabPersonal(); }
   function ageFrom(dob){ if(!dob) return ''; const d=new Date(dob); if(isNaN(d)) return ''; const t=new Date(); let a=t.getFullYear()-d.getFullYear(); if(t.getMonth()<d.getMonth()||(t.getMonth()===d.getMonth()&&t.getDate()<d.getDate()))a--; return a>0&&a<130?(a+' years'):''; }
   function selOpts(cur,opts){ return opts.map(o=>`<option ${o===cur?'selected':''}>${esc(o)}</option>`).join(''); }
   function editPInfo(){
+    if(pIsLocked()){ toast('Locked — contact HR to change','error'); return; }
     const p=personalCache||{};
     openModal('Edit personal information', `<div class="form-grid">
       <div class="fld"><label>Sex</label><select id="p_sex"><option value=""></option>${selOpts(p.sex,['Male','Female','Other','Prefer not to say'])}</select></div>
@@ -840,6 +862,7 @@
     }]]);
   }
   function editPIds(){
+    if(pIsLocked()){ toast('Locked — contact HR to change','error'); return; }
     const p=personalCache||{};
     openModal('Edit identification', `<div class="form-grid">
       <div class="fld full"><label>National ID</label><input id="i_nid" value="${esc(p.national_id||'')}"></div>
@@ -850,6 +873,7 @@
     }]]);
   }
   function editPNames(){
+    if(pIsLocked()){ toast('Locked — contact HR to change','error'); return; }
     const p=personalCache||{};
     openModal('Edit names', `<div class="form-grid">
       <div class="fld full"><label>Legal name</label><input value="${esc(p.legal_name||'')}" readonly></div>
