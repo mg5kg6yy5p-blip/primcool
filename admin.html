@@ -1824,10 +1824,9 @@
           <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:18px;">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
               <h3 style="margin:0;color:var(--ink);font-size:16px;">Warehouse roster</h3>
-              <!-- Onboarding & position assignment: super_admin + hr_admin
-                   only. Button is hidden client-side AND the server
-                   double-checks in admin_create_tech (see main.py). -->
-              <button class="btn btn-primary btn-sm" id="whAddStaffBtn" onclick="whOpenAddStaff()" style="display:none;">+ Add staff</button>
+              <!-- Onboarding moved to the single Onboarding panel (super_admin +
+                   hr_admin only). This roster is read-only; create staff there. -->
+              <span style="font-size:12px;color:var(--muted);">Read-only — onboard via the <strong>Onboarding</strong> panel.</span>
             </div>
             <div class="muted" style="font-size:12px;margin-bottom:10px;">
               Three archetypes — <strong>warehouse manager</strong> oversees the floor,
@@ -2815,37 +2814,9 @@
 
       
 
-      <!-- Add Staff modal (warehouse) -->
-      <div class="modal-overlay" id="modal-whAddStaff">
-        <div class="modal-card">
-          <div class="modal-header">
-            <h3>Add warehouse staff</h3>
-            <button class="modal-close" onclick="closeModal('whAddStaff')">×</button>
-          </div>
-          <div class="modal-body">
-            <label class="modal-label">Name</label>
-            <input id="whNew-name" class="modal-input" type="text">
-            <label class="modal-label">PIN (6–16 digits)</label>
-            <input id="whNew-pin" class="modal-input" type="text" inputmode="numeric">
-            <label class="modal-label">Phone</label>
-            <input id="whNew-phone" class="modal-input" type="text">
-            <label class="modal-label">Email</label>
-            <input id="whNew-email" class="modal-input" type="email">
-            <label class="modal-label">Type</label>
-            <select id="whNew-type" class="modal-input">
-              <option value="warehouse_floor">Warehouse floor staff</option>
-              <option value="parts_runner">Parts runner (gets a truck)</option>
-              <option value="warehouse_manager">Warehouse manager</option>
-              <option value="driver">Delivery driver (gets a truck)</option>
-            </select>
-            <div class="form-error" id="err-whAddStaff"></div>
-          </div>
-          <div class="modal-footer">
-            <button class="btn btn-ghost"   onclick="closeModal('whAddStaff')">Cancel</button>
-            <button class="btn btn-primary" onclick="whSubmitAddStaff()">Create</button>
-          </div>
-        </div>
-      </div>
+      <!-- Warehouse staff onboarding moved to the unified Onboarding panel
+           (super_admin + hr_admin). The old in-tab "Add warehouse staff"
+           modal was removed; pick the position type in the Onboarding form. -->
 
       <!-- ── 5S panel ── -->
       <div class="panel" id="panel-fs">
@@ -4584,6 +4555,18 @@
           <input id="t-rate" type="number" step="0.01" min="0" placeholder="0.00">
         </div>
       </div>
+      <div class="field-row" id="t-stafftype-row">
+        <div class="field">
+          <label>Position type <span style="text-transform:none;font-weight:400;color:var(--muted);">— controls asset provisioning</span></label>
+          <select id="t-stafftype">
+            <option value="tech">Field Technician</option>
+            <option value="parts_runner">Parts Runner (gets a truck)</option>
+            <option value="warehouse_floor">Warehouse Floor</option>
+            <option value="warehouse_manager">Warehouse Manager</option>
+            <option value="driver">Delivery Driver (gets a truck)</option>
+          </select>
+        </div>
+      </div>
       <div class="field-row" id="t-onboard-row">
         <div class="field"><label>Hire Date *</label><input id="t-hire" type="date"></div>
         <div class="field"><label>Initial PIN (6–16 digits) *</label><input id="t-pin" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="16" placeholder="••••" style="letter-spacing:6px;font-family:'Courier New',monospace;"></div>
@@ -5297,15 +5280,8 @@
       const nw = document.getElementById('nav-warehouse');
       if (nw) nw.style.display = 'flex';
     }
-    // Warehouse onboarding & position assignment: super_admin + hr_admin only.
-    // "+ Add staff" stays hidden for every other role even if they can see
-    // the Warehouse Ops panel (e.g. supervisor_admin / inventory_manager
-    // need read-access but must not create staff).
-    const _role = currentAdmin && currentAdmin.role;
-    if (_role === 'super_admin' || _role === 'hr_admin') {
-      const ab = document.getElementById('whAddStaffBtn');
-      if (ab) ab.style.display = '';
-    }
+    // Warehouse staff onboarding now lives solely in the Onboarding panel
+    // (super_admin + hr_admin); the Warehouse Ops roster is read-only here.
     // Delegations — super_admin OR admin with delegation power.
     if (currentAdmin && (currentAdmin.role === 'super_admin'
         || currentAdmin.has_delegation_power === 1
@@ -8429,41 +8405,9 @@
     }
   }
 
-  function whOpenAddStaff() {
-    ['whNew-name','whNew-pin','whNew-phone','whNew-email'].forEach(id => {
-      const el = document.getElementById(id);
-      if (el) el.value = '';
-    });
-    document.getElementById('whNew-type').value = 'warehouse_floor';
-    document.getElementById('err-whAddStaff').style.display = 'none';
-    document.getElementById('modal-whAddStaff').classList.add('open');
-  }
-
-  async function whSubmitAddStaff() {
-    const body = {
-      name:        document.getElementById('whNew-name').value.trim(),
-      pin:         document.getElementById('whNew-pin').value.trim(),
-      phone:       document.getElementById('whNew-phone').value.trim(),
-      email:       document.getElementById('whNew-email').value.trim(),
-      staff_type:  document.getElementById('whNew-type').value,
-    };
-    const errEl = document.getElementById('err-whAddStaff');
-    errEl.style.display = 'none';
-    if (!body.name || !body.pin) {
-      errEl.textContent = 'Name and PIN are required.';
-      errEl.style.display = 'block';
-      return;
-    }
-    try {
-      await api('POST', '/api/admin/techs', body);
-      closeModal('whAddStaff');
-      toast('Warehouse staff created.', 'success');
-      whLoadStaff();
-    } catch (e) {
-      errEl.textContent = e.message || 'Create failed.';
-      errEl.style.display = 'block';
-    }
-  }
+  // whOpenAddStaff / whSubmitAddStaff removed: warehouse staff onboarding is
+  // now handled exclusively by the unified Onboarding panel (super_admin +
+  // hr_admin), where the position-type selector covers warehouse archetypes.
 
   // ── Sub-tab: per-asset 5S checklist editor ──────────────────────
   async function _whLoadAssetsCache() {
@@ -13515,6 +13459,7 @@
     // Hide the onboarding-only fields
     document.getElementById('t-onboard-row').style.display = 'none';
     document.getElementById('t-onboard-hint').style.display = 'none';
+    document.getElementById('t-stafftype-row').style.display = 'none';
     // Show the read-only PRID / tech code banner
     document.getElementById('t-edit-id-banner').style.display = 'block';
     document.getElementById('t-edit-prid').textContent = t.prid || '—';
@@ -13535,9 +13480,11 @@
     document.getElementById('techSubmitBtn').textContent  = 'Generate PRID & Create';
     document.getElementById('t-onboard-row').style.display  = 'grid';
     document.getElementById('t-onboard-hint').style.display = 'block';
+    document.getElementById('t-stafftype-row').style.display = 'grid';
     document.getElementById('t-edit-id-banner').style.display = 'none';
     ['t-pin','t-name','t-phone','t-email','t-hire','t-rate','t-dob','t-natid','t-trn'].forEach(id => document.getElementById(id).value = '');
     document.getElementById('t-role').value = 'tech';
+    document.getElementById('t-stafftype').value = 'tech';
     document.getElementById('err-addTech').style.display = 'none';
   }
 
@@ -13573,6 +13520,7 @@
       phone:       document.getElementById('t-phone').value.trim(),
       email:       document.getElementById('t-email').value.trim(),
       role:        document.getElementById('t-role').value || 'tech',
+      staff_type:  document.getElementById('t-stafftype').value || 'tech',
       hire_date:   document.getElementById('t-hire').value,
       hourly_rate: parseFloat(document.getElementById('t-rate').value) || 0,
       date_of_birth: document.getElementById('t-dob').value || '',
