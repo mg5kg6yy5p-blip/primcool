@@ -2435,6 +2435,11 @@ class AdminUserCreate(BaseModel):
     phone:     str = ""
     role:      str
     hire_date: str = ""
+    # Onboarding-captured personal fields seeded into staff_personal. DOB is
+    # HR-managed (locked on the employee's own profile); IDs stay editable.
+    date_of_birth: str = ""
+    national_id:   str = ""
+    trn:           str = ""
 
 
 class AdminUserUpdate(BaseModel):
@@ -2717,6 +2722,11 @@ class TechCreate(BaseModel):
     # provisioning (vehicle/truck/PPE locker) in create_tech.
     staff_type:  Optional[str] = "tech"   # see VALID_STAFF_TYPES
     department:  Optional[str] = None     # defaults per staff_type
+    # Onboarding-captured personal fields seeded into staff_personal. DOB is
+    # HR-managed (locked on the employee's own profile); IDs stay editable.
+    date_of_birth: str = ""
+    national_id:   str = ""
+    trn:           str = ""
 
 
 class TechUpdate(BaseModel):
@@ -13844,6 +13854,10 @@ async def api_staff_me_personal_put(request: Request):
     body = await request.json()
     if not isinstance(body, dict):
         raise HTTPException(400, "expected an object")
+    # DOB is HR-managed: captured at onboarding and locked on the employee's
+    # own profile. Strip it here so a self-service PUT can never change it,
+    # regardless of what the client sends. National ID / TRN stay editable.
+    body.pop("date_of_birth", None)
     saved = upsert_staff_personal(kind, sid, body)
     saved["work_email"] = who.get("email")
     saved["work_phone"] = who.get("phone")

@@ -5164,6 +5164,16 @@ def create_tech(data: dict) -> tuple:
 
     con.commit()
     con.close()
+
+    # Seed the singleton personal record from onboarding intake. DOB is
+    # captured here (HR-managed, locked on the employee's own profile);
+    # national_id / trn are seeded too but stay employee-editable.
+    _seed = {k: (data.get(k) or "").strip()
+             for k in ("date_of_birth", "national_id", "trn")
+             if (data.get(k) or "").strip()}
+    if _seed:
+        upsert_staff_personal("tech", tech_id, _seed)
+
     return tech_id, prid
 
 
@@ -5590,6 +5600,15 @@ def create_admin_user(data: dict, created_by: int = None) -> tuple:
     admin_id = cur.lastrowid
     con.commit()
     con.close()
+
+    # Seed the singleton personal record from onboarding intake (same policy
+    # as techs: DOB locked on the employee's profile, IDs employee-editable).
+    _seed = {k: (data.get(k) or "").strip()
+             for k in ("date_of_birth", "national_id", "trn")
+             if (data.get(k) or "").strip()}
+    if _seed:
+        upsert_staff_personal("admin", admin_id, _seed)
+
     return admin_id, prid
 
 

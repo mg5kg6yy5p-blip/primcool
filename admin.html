@@ -4588,6 +4588,13 @@
         <div class="field"><label>Hire Date *</label><input id="t-hire" type="date"></div>
         <div class="field"><label>Initial PIN (6–16 digits) *</label><input id="t-pin" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="16" placeholder="••••" style="letter-spacing:6px;font-family:'Courier New',monospace;"></div>
       </div>
+      <div class="field-row">
+        <div class="field"><label>Date of Birth <span style="text-transform:none;font-weight:400;color:var(--muted);">— HR-managed, locked on their profile</span></label><input id="t-dob" type="date"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>National ID</label><input id="t-natid" placeholder="optional"></div>
+        <div class="field"><label>TRN</label><input id="t-trn" placeholder="optional"></div>
+      </div>
       <div class="form-error" id="err-addTech"></div>
       <p id="t-onboard-hint" style="font-size:12px;color:var(--muted);">PRID is auto-generated from initials + hire date (e.g. <strong>PCMR200526</strong>) and used as their sign-in code at <strong>/tech</strong>.</p>
     </div>
@@ -4725,6 +4732,13 @@
       <div class="field-row">
         <div class="field"><label>Hire Date *</label><input id="au-hire" type="date"></div>
         <div class="field"><label>Initial Password *</label><input id="au-password" type="text" placeholder="min 8 chars" autocomplete="off"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Date of Birth <span style="text-transform:none;font-weight:400;color:var(--muted);">— HR-managed, locked on their profile</span></label><input id="au-dob" type="date"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>National ID</label><input id="au-natid" placeholder="optional"></div>
+        <div class="field"><label>TRN</label><input id="au-trn" placeholder="optional"></div>
       </div>
       <div class="form-error" id="err-addAdmin"></div>
       <p style="font-size:12px;color:var(--muted);margin-top:2px;line-height:1.5;">PRID is auto-generated from initials + hire date (e.g. <strong>PCJD200526</strong>). The PRID is the username — share it with the employee along with the initial password.</p>
@@ -10598,6 +10612,9 @@
       phone:     document.getElementById('au-phone').value.trim(),
       role:      document.getElementById('au-role').value,
       hire_date: document.getElementById('au-hire').value,
+      date_of_birth: document.getElementById('au-dob').value || '',
+      national_id:   document.getElementById('au-natid').value.trim(),
+      trn:           document.getElementById('au-trn').value.trim(),
     };
     if (!body.password || !body.name || !body.email || !body.role || !body.hire_date) {
       showErr('err-addAdmin', 'Name, email, role, hire date, and password are required.'); return;
@@ -10606,7 +10623,7 @@
     try {
       const res = await api('POST', '/api/admin/users', body);
       closeModal('addAdmin');
-      ['au-password','au-name','au-email','au-phone','au-hire'].forEach(id => document.getElementById(id).value = '');
+      ['au-password','au-name','au-email','au-phone','au-hire','au-dob','au-natid','au-trn'].forEach(id => document.getElementById(id).value = '');
       document.getElementById('au-role').value = '';
       await loadAdmins();
       showPridModal(res.prid, `${escHtml(body.name)} signs in at <strong>/admin</strong> with their PRID as the username, plus the password you set.`);
@@ -13519,7 +13536,7 @@
     document.getElementById('t-onboard-row').style.display  = 'grid';
     document.getElementById('t-onboard-hint').style.display = 'block';
     document.getElementById('t-edit-id-banner').style.display = 'none';
-    ['t-pin','t-name','t-phone','t-email','t-hire','t-rate'].forEach(id => document.getElementById(id).value = '');
+    ['t-pin','t-name','t-phone','t-email','t-hire','t-rate','t-dob','t-natid','t-trn'].forEach(id => document.getElementById(id).value = '');
     document.getElementById('t-role').value = 'tech';
     document.getElementById('err-addTech').style.display = 'none';
   }
@@ -13558,6 +13575,9 @@
       role:        document.getElementById('t-role').value || 'tech',
       hire_date:   document.getElementById('t-hire').value,
       hourly_rate: parseFloat(document.getElementById('t-rate').value) || 0,
+      date_of_birth: document.getElementById('t-dob').value || '',
+      national_id:   document.getElementById('t-natid').value.trim(),
+      trn:           document.getElementById('t-trn').value.trim(),
     };
     if (!body.pin || !body.name || !body.hire_date) { showErr('err-addTech','Name, PIN, and hire date are required.'); return; }
     if (!/^\d{6,16}$/.test(body.pin)) { showErr('err-addTech','PIN must be 6–16 digits.'); return; }

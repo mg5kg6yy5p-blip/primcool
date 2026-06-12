@@ -825,7 +825,7 @@
     const p=personalCache||{};
     openModal('Edit personal information', `<div class="form-grid">
       <div class="fld"><label>Sex</label><select id="p_sex"><option value=""></option>${selOpts(p.sex,['Male','Female','Other','Prefer not to say'])}</select></div>
-      <div class="fld"><label>Date of birth</label><input id="p_dob" type="date" value="${esc(p.date_of_birth||'')}"></div>
+      <div class="fld"><label>Date of birth</label><input type="date" value="${esc(p.date_of_birth||'')}" disabled style="opacity:.6;cursor:not-allowed;"><div style="font-size:11px;color:var(--muted);margin-top:3px;">Set at onboarding — contact HR to change.</div></div>
       <div class="fld"><label>Country of birth</label><input id="p_cob" value="${esc(p.country_of_birth||'')}"></div>
       <div class="fld"><label>Marital status</label><select id="p_ms"><option value=""></option>${selOpts(p.marital_status,['Single','Married','Common-law','Divorced','Widowed','Separated'])}</select></div>
       <div class="fld"><label>Primary nationality</label><input id="p_nat" value="${esc(p.primary_nationality||'')}"></div>
@@ -833,7 +833,7 @@
       <div class="fld"><label>Gender identity</label><input id="p_gi" value="${esc(p.gender_identity||'')}"></div>
       <div class="fld"><label>Pronouns</label><input id="p_pn" value="${esc(p.pronouns||'')}"></div>
     </div>`, [['Cancel','btn',closeModal],['Save','btn btn-teal',async()=>{
-      await savePersonal({sex:$('p_sex').value, date_of_birth:$('p_dob').value, country_of_birth:$('p_cob').value,
+      await savePersonal({sex:$('p_sex').value, country_of_birth:$('p_cob').value,
         marital_status:$('p_ms').value, primary_nationality:$('p_nat').value, additional_nationalities:$('p_nat2').value,
         gender_identity:$('p_gi').value, pronouns:$('p_pn').value});
       closeModal(); toast('Saved','success'); tabPersonal();
