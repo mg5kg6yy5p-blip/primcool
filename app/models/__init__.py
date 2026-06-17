@@ -8,6 +8,13 @@ from app.models.asset import (
 from app.models.audit import AuditLog
 from app.models.consult import ConsultSubmission
 from app.models.customer import Building, CustomerAccount, Site, Space
+from app.models.inventory import (
+    Confirmation,
+    ConfirmationPart,
+    Material,
+    StockLocation,
+    StockQuant,
+)
 from app.models.user import User
 from app.models.workflow import Notification, Operation, SavedView, WorkOrder
 
@@ -28,4 +35,9 @@ __all__ = [
     "WorkOrder",
     "Operation",
     "SavedView",
+    "Material",
+    "StockLocation",
+    "StockQuant",
+    "Confirmation",
+    "ConfirmationPart",
 ]

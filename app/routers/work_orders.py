@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
-from app.core.deps import require_admin_or_dispatcher
+from app.core.deps import require_admin_or_dispatcher, require_staff
 from app.db.session import get_db
 from app.models.enums import (
     AuditAction,
@@ -30,8 +30,11 @@ from app.services.workflow import (
 
 router = APIRouter(
     prefix="/api/v1/work-orders", tags=["work_orders"],
-    dependencies=[Depends(require_admin_or_dispatcher)],
+    # GETs reachable to any staff member (technicians need their queue);
+    # mutations carry an explicit admin/dispatcher dep at the route level.
+    dependencies=[Depends(require_staff)],
 )
+_ADMIN_DEP = [Depends(require_admin_or_dispatcher)]
 
 # Emergency sorts to the top of every queue, then by priority, then newest.
 _PRIORITY_RANK = case(
@@ -94,7 +97,7 @@ def list_work_orders(
     return [_with_transitions(o) for o in orders]
 
 
-@router.post("", response_model=WorkOrderOut, status_code=201)
+@router.post("", response_model=WorkOrderOut, status_code=201, dependencies=_ADMIN_DEP)
 def create_work_order(
     payload: WorkOrderCreate, db: Annotated[Session, Depends(get_db)]
 ) -> WorkOrderOut:
@@ -116,7 +119,7 @@ def get_work_order(order_id: UUID, db: Annotated[Session, Depends(get_db)]) -> W
     return _with_transitions(row)
 
 
-@router.patch("/{order_id}", response_model=WorkOrderOut)
+@router.patch("/{order_id}", response_model=WorkOrderOut, dependencies=_ADMIN_DEP)
 def update_work_order(
     order_id: UUID, payload: WorkOrderUpdate, db: Annotated[Session, Depends(get_db)]
 ) -> WorkOrderOut:
@@ -140,7 +143,7 @@ def update_work_order(
     return _with_transitions(row)
 
 
-@router.post("/{order_id}/transition", response_model=WorkOrderOut)
+@router.post("/{order_id}/transition", response_model=WorkOrderOut, dependencies=_ADMIN_DEP)
 def transition(
     order_id: UUID, payload: TransitionRequest, db: Annotated[Session, Depends(get_db)]
 ) -> WorkOrderOut:
@@ -168,7 +171,8 @@ def list_operations(order_id: UUID, db: Annotated[Session, Depends(get_db)]) -> 
     )
 
 
-@router.post("/{order_id}/operations", response_model=OperationOut, status_code=201)
+@router.post("/{order_id}/operations", response_model=OperationOut, status_code=201,
+              dependencies=_ADMIN_DEP)
 def add_operation(
     order_id: UUID, payload: OperationCreate, db: Annotated[Session, Depends(get_db)]
 ) -> Operation:

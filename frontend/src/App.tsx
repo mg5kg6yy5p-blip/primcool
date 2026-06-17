@@ -6,22 +6,20 @@ import { AssetTreePage } from "./internal/AssetTreePage";
 import { SitesPage } from "./internal/SitesPage";
 import { TriagePage } from "./internal/TriagePage";
 import { WorkQueuePage } from "./internal/WorkQueuePage";
+import { InventoryPage } from "./internal/InventoryPage";
 import { LoginPage } from "./internal/LoginPage";
+import { TechQueue } from "./technician/TechQueue";
+import { TechOrder } from "./technician/TechOrder";
 
 type Surface = "internal" | "technician" | "portal";
 
-const TITLES: Record<Surface, string> = {
-  internal: "Dispatcher / Admin",
-  technician: "Technician Mobile",
-  portal: "Customer Portal",
-};
-
 export default function App({ surface }: { surface: Surface }) {
-  if (surface !== "internal") {
+  if (surface === "technician") return <TechnicianApp />;
+  if (surface === "portal") {
     return (
       <main>
-        <h1>PrimeCool — {TITLES[surface]}</h1>
-        <p>Surface scaffolded. UI lands in {surface === "technician" ? "Phase 3" : "Phase 5"}.</p>
+        <h1>PrimeCool — Customer Portal</h1>
+        <p>Lands in Phase 5.</p>
       </main>
     );
   }
@@ -31,12 +29,8 @@ export default function App({ surface }: { surface: Surface }) {
 function InternalApp() {
   const { user, loading } = useAuth();
   const location = useLocation();
-
   if (loading) return <main><p>Loading…</p></main>;
-
-  // /app/login is reachable without auth.
   if (location.pathname.endsWith("/login")) return <LoginPage />;
-
   if (!user) return <Navigate to="/app/login" replace state={{ from: location }} />;
 
   return (
@@ -50,6 +44,7 @@ function InternalApp() {
           <NavLink to="/app/sites">Sites &amp; Spaces</NavLink>
           <NavLink to="/app/assets">Functional Locations</NavLink>
           <NavLink to="/app/equipment">Equipment</NavLink>
+          <NavLink to="/app/inventory">Inventory</NavLink>
         </nav>
         <UserBadge />
       </header>
@@ -61,7 +56,32 @@ function InternalApp() {
           <Route path="sites" element={<SitesPage />} />
           <Route path="assets" element={<AssetTreePage />} />
           <Route path="equipment" element={<EquipmentPage />} />
+          <Route path="inventory" element={<InventoryPage />} />
           <Route path="*" element={<Navigate to="triage" replace />} />
+        </Routes>
+      </main>
+    </div>
+  );
+}
+
+function TechnicianApp() {
+  const { user, loading } = useAuth();
+  const location = useLocation();
+  if (loading) return <main><p>Loading…</p></main>;
+  if (location.pathname.endsWith("/login")) return <LoginPage />;
+  if (!user) return <Navigate to="/tech/login" replace />;
+
+  return (
+    <div className="tech-shell">
+      <header className="tech-header">
+        <span className="brand">Prime<span>Cool</span></span>
+        <UserBadge />
+      </header>
+      <main>
+        <Routes>
+          <Route index element={<TechQueue />} />
+          <Route path="orders/:orderId" element={<TechOrder />} />
+          <Route path="*" element={<Navigate to="/tech" replace />} />
         </Routes>
       </main>
     </div>

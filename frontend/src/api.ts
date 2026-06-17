@@ -1,12 +1,15 @@
 import type {
   AuditLog,
   Building,
+  Confirmation,
+  ConfirmationPartIn,
   CustomerAccount,
   Equipment,
   EquipmentHistory,
   EquipmentInstall,
   FieldErrors,
   FunctionalLocation,
+  Material,
   Meter,
   MeterReading,
   Notification,
@@ -15,6 +18,8 @@ import type {
   SavedView,
   Site,
   Space,
+  StockLocation,
+  StockQuant,
   WorkOrder,
 } from "./types";
 
@@ -156,4 +161,30 @@ export const api = {
   // audit
   listAudit: (entityType: string, entityId: string) =>
     request<AuditLog[]>(`/audit?entity_type=${entityType}&entity_id=${entityId}`),
+
+  // inventory
+  listMaterials: () => request<Material[]>("/materials"),
+  createMaterial: (body: Partial<Material>) => post<Material>("/materials", body),
+  listStockLocations: () => request<StockLocation[]>("/stock-locations"),
+  createStockLocation: (body: Partial<StockLocation>) =>
+    post<StockLocation>("/stock-locations", body),
+  listStock: (params?: { material_id?: string; stock_location_id?: string }) => {
+    const q = new URLSearchParams(params as Record<string, string>).toString();
+    return request<StockQuant[]>(`/stock${q ? `?${q}` : ""}`);
+  },
+  setStock: (body: { material_id: string; stock_location_id: string; qty: number }) =>
+    request<StockQuant>("/stock", { method: "PUT", body: JSON.stringify(body) }),
+
+  // confirmations
+  listOperationConfirmations: (operationId: string) =>
+    request<Confirmation[]>(`/operations/${operationId}/confirmations`),
+  confirmOperation: (
+    operationId: string,
+    body: {
+      actual_hours: number; is_final: boolean; notes?: string;
+      parts?: ConfirmationPartIn[];
+    },
+  ) => post<Confirmation>(`/operations/${operationId}/confirm`, body),
+  reverseConfirmation: (confirmationId: string, reason: string) =>
+    post<Confirmation>(`/confirmations/${confirmationId}/reverse`, { reason }),
 };

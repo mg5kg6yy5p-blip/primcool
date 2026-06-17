@@ -160,6 +160,58 @@ export interface Operation {
   planned_hours: number;
 }
 
+export interface Material {
+  id: string;
+  part_number: string;
+  description: string;
+  unit_cost: number;
+  currency: string;
+  uom: string;
+  status: string;
+}
+
+export interface StockLocation {
+  id: string;
+  name: string;
+  kind: string;
+}
+
+export interface StockQuant {
+  id: string;
+  material_id: string;
+  stock_location_id: string;
+  qty: number;
+}
+
+export interface ConfirmationPartIn {
+  material_id: string;
+  stock_location_id: string;
+  qty_used: number;
+}
+
+export interface ConfirmationPart {
+  id: string;
+  confirmation_id: string;
+  material_id: string;
+  stock_location_id: string;
+  qty_used: number;
+  unit_cost_at_use: number;
+}
+
+export interface Confirmation {
+  id: string;
+  operation_id: string;
+  technician_user_id: string | null;
+  actual_hours: number;
+  started_at: string | null;
+  ended_at: string | null;
+  is_final: boolean;
+  notes: string;
+  reversal_of_id: string | null;
+  at: string;
+  parts: ConfirmationPart[];
+}
+
 export interface SavedView {
   id: string;
   user_id: string | null;

@@ -123,3 +123,46 @@ button:disabled { background: #9bb3ad; cursor: not-allowed; }
 
 .login { max-width: 360px; margin: 4rem auto; }
 .login h1 { text-align: center; }
+
+/* Technician mobile-first surface */
+.tech-shell { max-width: 540px; margin: 0 auto; }
+.tech-header {
+  background: var(--navy); color: #fff;
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 0.8rem 1rem; gap: 1rem;
+}
+.tech-list { padding: 1rem; }
+.tech-card {
+  display: block; background: #fff; padding: 0.8rem 1rem; margin-bottom: 0.6rem;
+  border: 1px solid #e2e8f0; border-radius: 8px; text-decoration: none; color: inherit;
+}
+.tech-card .row { display: flex; gap: 0.4rem; margin-bottom: 0.4rem; }
+.tech-card h3 { margin: 0.2rem 0; }
+.tech-order { padding: 1rem; }
+.tech-order .back { color: var(--teal); }
+.tech-ops { list-style: none; padding: 0; }
+.tech-ops li {
+  background: #fff; padding: 0.8rem; margin-bottom: 0.6rem;
+  border: 1px solid #e2e8f0; border-radius: 8px;
+}
+.cnf-history { margin-top: 0.4rem; font-size: 0.85rem; }
+.cnf-row { display: flex; gap: 0.6rem; align-items: center; padding: 0.2rem 0; }
+.cnf-row .rev { color: var(--slate); font-style: italic; }
+.reverse-inline { display: inline-flex; gap: 0.3rem; align-items: center; }
+.reverse-inline input { margin: 0; }
+
+button.link {
+  background: transparent; color: var(--teal); border: 0; padding: 0;
+  text-decoration: underline; font-size: inherit; margin: 0;
+}
+
+.dialog-back {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+  display: flex; align-items: center; justify-content: center; padding: 1rem;
+}
+.dialog {
+  background: #fff; border-radius: 12px; padding: 1.5rem;
+  width: 100%; max-width: 480px; max-height: 90vh; overflow: auto;
+}
+.part-row { display: grid; grid-template-columns: 2fr 2fr 1fr auto; gap: 0.3rem; margin: 0.3rem 0; }
+.part-row select, .part-row input { margin: 0; }

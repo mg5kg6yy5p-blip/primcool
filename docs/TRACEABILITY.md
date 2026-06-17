@@ -16,16 +16,16 @@ Legend: ☐ = not started · ☑ = complete
 | equipment_install    | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
 | meter                | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
 | meter_reading        | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
-| material             | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
-| stock_location       | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
-| stock_quant          | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
+| material             | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☐ | ☑ |
+| stock_location       | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | n/a | ☑ |
+| stock_quant          | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | n/a | ☑ |
 | equipment_bom        | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
 | bom_item             | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
 | notification         | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
 | work_order           | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
 | operation            | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
-| confirmation         | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
-| confirmation_part    | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
+| confirmation         | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
+| confirmation_part    | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | n/a | ☑ |
 | saved_view           | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | n/a | ☑ |
 | service_contract     | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
 | contract_site        | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
@@ -52,7 +52,44 @@ Some entities span phases (e.g. `material` lifts in Phase 3 for consumption,
 but its full UI may not land until Phase 5 alongside billing). Each cell will
 be checked when the work for that surface is genuinely shippable, not stubbed.
 
-Last updated: Auth unit complete — 2026-06-17
+Last updated: Phase 3 complete — 2026-06-17
+
+## Phase 3 status — Confirmations
+
+Gate criteria (per spec §7):
+- [x] **Append-only proven** — `Confirmation` and `ConfirmationPart` have no
+      UPDATE/DELETE endpoints (`test_no_update_endpoint_for_confirmations`);
+      reversal creates a NEW row pointing at the original via `reversal_of_id`
+      and the original is never touched (`test_reverse_creates_new_row_and_*`).
+      Postgres triggers via migration 0005 reject UPDATE/DELETE at the DB level
+      (deferred verification until the Railway PG add-on lands).
+- [x] **Stock math proven** — confirm decrements `stock_quant`, reverse
+      restores; insufficient stock rejected with no movement
+      (`test_confirm_with_parts_decrements_stock`,
+       `test_confirm_with_insufficient_stock_rejected`,
+       `test_reverse_creates_new_row_and_restores_stock`).
+- [x] **Auto-tech_complete** when all operations have at least one non-reversed
+      final confirmation (`test_all_final_auto_advances_to_tech_complete`).
+- [x] **Reversal excludes from rollup** — operation walks back to `open`
+      when the only finalising confirmation gets reversed
+      (`test_reversal_walks_operation_back_to_open`).
+- [x] Double-reverse and reversal-of-reversal rejected.
+- [x] Cost snapshot — `unit_cost_at_use` frozen at consumption time.
+- [x] Technician mobile flow: 3 taps from queue (tap order → tap Confirm →
+      submit) — `TechQueue` lists `assigned_to_user_id=me` orders emergency-
+      first, `TechOrder` exposes per-op Confirm with parts picker and reversal.
+- [x] Work-order router opened to `require_staff` for reads (so technicians
+      reach their queue) while mutations carry an explicit admin/dispatcher
+      dep. Confirm/reverse endpoints accept all staff (technician included).
+- [x] 12 Phase 3 tests + 49 prior tests = **61 green**; migration chain
+      0001→0005 up/downgrades on SQLite; frontend builds clean (49 modules).
+
+### Deferred to Phase 5
+- `equipment_bom` / `bom_item` — placeholder where-used endpoint returns
+  empty (`test_where_used_returns_empty_for_now`); BOM auth/UI land with
+  billing.
+
+## Auth unit — argon2id + JWT + 4 roles
 
 ## Auth unit — argon2id + JWT + 4 roles
 
