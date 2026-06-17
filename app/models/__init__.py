@@ -15,6 +15,7 @@ from app.models.inventory import (
     StockLocation,
     StockQuant,
 )
+from app.models.pm import PmSchedule
 from app.models.user import User
 from app.models.workflow import Notification, Operation, SavedView, WorkOrder
 
@@ -40,4 +41,5 @@ __all__ = [
     "StockQuant",
     "Confirmation",
     "ConfirmationPart",
+    "PmSchedule",
 ]

@@ -7,6 +7,7 @@ import { SitesPage } from "./internal/SitesPage";
 import { TriagePage } from "./internal/TriagePage";
 import { WorkQueuePage } from "./internal/WorkQueuePage";
 import { InventoryPage } from "./internal/InventoryPage";
+import { PmSchedulesPage } from "./internal/PmSchedulesPage";
 import { LoginPage } from "./internal/LoginPage";
 import { TechQueue } from "./technician/TechQueue";
 import { TechOrder } from "./technician/TechOrder";
@@ -45,6 +46,7 @@ function InternalApp() {
           <NavLink to="/app/assets">Functional Locations</NavLink>
           <NavLink to="/app/equipment">Equipment</NavLink>
           <NavLink to="/app/inventory">Inventory</NavLink>
+          <NavLink to="/app/pm">PM</NavLink>
         </nav>
         <UserBadge />
       </header>
@@ -57,6 +59,7 @@ function InternalApp() {
           <Route path="assets" element={<AssetTreePage />} />
           <Route path="equipment" element={<EquipmentPage />} />
           <Route path="inventory" element={<InventoryPage />} />
+          <Route path="pm" element={<PmSchedulesPage />} />
           <Route path="*" element={<Navigate to="triage" replace />} />
         </Routes>
       </main>

@@ -31,7 +31,7 @@ Legend: ☐ = not started · ☑ = complete
 | contract_site        | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
 | invoice_draft        | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
 | invoice_draft_line   | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
-| pm_schedule          | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
+| pm_schedule          | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
 | audit_log            | ☑ | ☑ | ☑ | ☑ | ☐ | n/a | ☑ | ☑ |
 
 ## Phase ownership
@@ -52,7 +52,41 @@ Some entities span phases (e.g. `material` lifts in Phase 3 for consumption,
 but its full UI may not land until Phase 5 alongside billing). Each cell will
 be checked when the work for that surface is genuinely shippable, not stubbed.
 
-Last updated: Phase 3 complete — 2026-06-17
+Last updated: Phase 4 complete — 2026-06-17
+
+## Phase 4 status — PM engine wiring
+
+The spec's "reuse existing engine" mandate doesn't apply (no engine exists);
+this is a from-scratch build per `pm_schedule` semantics in §3e/§7.
+
+Gate criteria (per spec §7):
+- [x] **Calendar trigger generates exactly one order in test** —
+      `test_calendar_due_generates_exactly_one_order` confirms a single order,
+      and a second scan returns nothing (one-open-cycle holds).
+- [x] **Meter trigger generates exactly one order in test** —
+      `test_meter_due_generates_exactly_one_order`; reading at/above the
+      threshold triggers, below-threshold doesn't
+      (`test_meter_below_threshold_generates_nothing`).
+- [x] **Completing re-baselines per existing rules** — `on_pm_order_closed`
+      hook fires from the work-order state machine on close; anchors next-due
+      to actual completion time (calendar) or latest meter reading (meter),
+      not to the previous due. Proven by `test_completion_rebaselines_*`.
+- [x] **One open cycle per schedule** —
+      `test_open_cycle_blocks_regeneration_even_when_overdue`.
+- [x] Paused schedules don't generate (`test_paused_schedule_doesnt_generate`).
+- [x] Generated orders inherit `billing_class`/`priority` and carry
+      `order_type=preventive`, `pm_schedule_id` set — proven.
+- [x] Validation parity: calendar without `interval_days` and meter without
+      `meter_id` both return 422, surfaced as field-level messages in the UI.
+- [x] Audit row on every generation and on every re-baseline; actor attributed
+      via the `Session.info` mechanism from the auth unit.
+- [x] 12 Phase 4 tests + 61 prior = **73 green**; migration chain 0001→0006
+      up/downgrades on SQLite; frontend builds clean (50 modules).
+
+The `service_contract_id` column is in place but unused; Phase 5 will populate
+it from the contract picker and feed entitlement counting.
+
+## Phase 3 status — Confirmations
 
 ## Phase 3 status — Confirmations
 

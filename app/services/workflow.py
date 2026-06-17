@@ -57,6 +57,10 @@ def transition_work_order(
         action=AuditAction.status_change, before=before, after=serialize(order),
         actor_user_id=actor_user_id,
     )
+    if target == OrderStatus.closed and order.pm_schedule_id is not None:
+        # Lazy import — pm imports workflow's transition function.
+        from app.services.pm import on_pm_order_closed
+        on_pm_order_closed(db, order)
     return order
 
 

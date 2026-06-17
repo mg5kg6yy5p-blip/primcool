@@ -21,6 +21,7 @@ from app.routers import (
     materials,
     meters,
     notifications,
+    pm,
     public,
     saved_views,
     sites,
@@ -77,6 +78,9 @@ def create_app() -> FastAPI:
     # CMMS v1 — confirmations & inventory (Phase 3)
     app.include_router(materials.router)
     app.include_router(confirmations.router)
+
+    # CMMS v1 — PM engine (Phase 4)
+    app.include_router(pm.router)
 
     return app
 

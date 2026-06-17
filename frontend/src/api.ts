@@ -15,6 +15,8 @@ import type {
   Notification,
   Operation,
   OrderStatus,
+  PmSchedule,
+  PmScanResult,
   SavedView,
   Site,
   Space,
@@ -124,8 +126,8 @@ export const api = {
     post<EquipmentInstall>(`/equipment/${id}/remove`, {}),
 
   // meters & readings
-  listMeters: (equipmentId: string) =>
-    request<Meter[]>(`/meters?equipment_id=${equipmentId}`),
+  listMeters: (equipmentId?: string) =>
+    request<Meter[]>(`/meters${equipmentId ? `?equipment_id=${equipmentId}` : ""}`),
   createMeter: (body: Partial<Meter>) => post<Meter>("/meters", body),
   listReadings: (meterId: string) =>
     request<MeterReading[]>(`/meters/${meterId}/readings`),
@@ -174,6 +176,15 @@ export const api = {
   },
   setStock: (body: { material_id: string; stock_location_id: string; qty: number }) =>
     request<StockQuant>("/stock", { method: "PUT", body: JSON.stringify(body) }),
+
+  // PM schedules
+  listPmSchedules: () => request<PmSchedule[]>("/pm-schedules"),
+  createPmSchedule: (body: Partial<PmSchedule> & {
+    start_at?: string; start_value?: number;
+  }) => post<PmSchedule>("/pm-schedules", body),
+  patchPmSchedule: (id: string, body: Partial<PmSchedule>) =>
+    patch<PmSchedule>(`/pm-schedules/${id}`, body),
+  scanPm: () => post<PmScanResult>("/pm-schedules/scan", {}),
 
   // confirmations
   listOperationConfirmations: (operationId: string) =>

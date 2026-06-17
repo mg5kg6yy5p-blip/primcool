@@ -116,6 +116,11 @@ class UserRole(str, enum.Enum):
     portal_user = "portal_user"
 
 
+class PmTriggerKind(str, enum.Enum):
+    calendar = "calendar"
+    meter = "meter"
+
+
 class AuditAction(str, enum.Enum):
     create = "create"
     update = "update"

@@ -212,6 +212,35 @@ export interface Confirmation {
   parts: ConfirmationPart[];
 }
 
+export type PmTriggerKind = "calendar" | "meter";
+
+export interface PmSchedule {
+  id: string;
+  customer_account_id: string;
+  site_id: string;
+  functional_location_id: string | null;
+  equipment_id: string | null;
+  name: string;
+  description: string;
+  trigger_kind: PmTriggerKind;
+  interval_days: number | null;
+  meter_id: string | null;
+  interval_value: number | null;
+  last_completed_at: string | null;
+  last_completed_value: number | null;
+  next_due_at: string | null;
+  next_due_value: number | null;
+  order_title: string;
+  billing_class: BillingClass;
+  priority: Severity;
+  service_contract_id: string | null;
+  is_active: boolean;
+}
+
+export interface PmScanResult {
+  generated_work_order_ids: string[];
+}
+
 export interface SavedView {
   id: string;
   user_id: string | null;
