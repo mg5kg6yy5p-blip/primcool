@@ -31,6 +31,36 @@ export interface Site {
   geo_lng: number | null;
 }
 
+export interface Building {
+  id: string;
+  site_id: string;
+  name: string;
+}
+
+export interface Space {
+  id: string;
+  site_id: string;
+  building_id: string | null;
+  identifier: string;
+  space_type: SpaceType;
+}
+
+export interface Meter {
+  id: string;
+  equipment_id: string;
+  meter_type: MeterType;
+  unit: string;
+}
+
+export interface MeterReading {
+  id: string;
+  meter_id: string;
+  reading_value: number;
+  read_at: string;
+  source: string;
+  recorded_by: string | null;
+}
+
 export interface FunctionalLocation {
   id: string;
   site_id: string;

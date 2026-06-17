@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, ApiError } from "../api";
+import { api, ApiError, ValidationError } from "../api";
 import type {
   Equipment,
   EquipmentHistory,
   EquipmentInstall,
+  FieldErrors,
   FunctionalLocation,
+  Meter,
+  MeterType,
   Site,
 } from "../types";
 import { StatusChip } from "../components/StatusChip";
@@ -60,6 +63,8 @@ export function EquipmentDetail({
         />
       )}
 
+      <MetersPanel equipmentId={equipmentId} onReadingAdded={refresh} />
+
       <h3>Timeline</h3>
       <ol className="timeline">
         {history?.events.map((ev, i) => (
@@ -71,6 +76,89 @@ export function EquipmentDetail({
         ))}
         {history?.events.length === 0 && <li><em>No events yet</em></li>}
       </ol>
+    </div>
+  );
+}
+
+const METER_TYPES: MeterType[] = ["run_hours", "starts", "other"];
+
+function MetersPanel({
+  equipmentId,
+  onReadingAdded,
+}: {
+  equipmentId: string;
+  onReadingAdded: () => void;
+}) {
+  const [meters, setMeters] = useState<Meter[]>([]);
+  const [meterType, setMeterType] = useState<MeterType>("run_hours");
+  const [unit, setUnit] = useState("h");
+  const [errors, setErrors] = useState<FieldErrors>({});
+  const [reading, setReading] = useState<Record<string, string>>({});
+
+  const load = useCallback(() => {
+    api.listMeters(equipmentId).then(setMeters);
+  }, [equipmentId]);
+  useEffect(() => { load(); }, [load]);
+
+  async function addMeter(e: React.FormEvent) {
+    e.preventDefault();
+    setErrors({});
+    try {
+      await api.createMeter({ equipment_id: equipmentId, meter_type: meterType, unit });
+      load();
+    } catch (err) {
+      if (err instanceof ValidationError) setErrors(err.fields);
+      else alert(String(err));
+    }
+  }
+
+  async function addReading(meterId: string) {
+    const value = parseFloat(reading[meterId] ?? "");
+    if (Number.isNaN(value)) return;
+    try {
+      await api.addReading(meterId, value);
+      setReading((r) => ({ ...r, [meterId]: "" }));
+      onReadingAdded();
+    } catch (err) {
+      alert(String(err));
+    }
+  }
+
+  return (
+    <div className="card">
+      <h3>Meters</h3>
+      <ul>
+        {meters.map((m) => (
+          <li key={m.id}>
+            {m.meter_type.replace(/_/g, " ")} ({m.unit || "—"})
+            <span className="inline-reading">
+              <input
+                type="number"
+                placeholder="reading"
+                value={reading[m.id] ?? ""}
+                onChange={(e) =>
+                  setReading((r) => ({ ...r, [m.id]: e.target.value }))}
+              />
+              <button type="button" onClick={() => addReading(m.id)}>Log</button>
+            </span>
+          </li>
+        ))}
+        {meters.length === 0 && <li><em>No meters</em></li>}
+      </ul>
+      <form onSubmit={addMeter}>
+        <label>
+          Meter type
+          <select value={meterType} onChange={(e) => setMeterType(e.target.value as MeterType)}>
+            {METER_TYPES.map((t) => <option key={t} value={t}>{t.replace(/_/g, " ")}</option>)}
+          </select>
+        </label>
+        <label>
+          Unit
+          <input value={unit} onChange={(e) => setUnit(e.target.value)} />
+          {errors.unit && <span className="field-error">{errors.unit}</span>}
+        </label>
+        <button type="submit">Add meter</button>
+      </form>
     </div>
   );
 }

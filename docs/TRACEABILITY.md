@@ -9,13 +9,13 @@ Legend: ☐ = not started · ☑ = complete
 |---|---|---|---|---|---|---|---|---|
 | customer_account     | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
 | site                 | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
-| building             | ☑ | ☑ | ☑ | ☑ | ☐ | ☐ | ☐ | ☐ |
-| space                | ☑ | ☑ | ☑ | ☑ | ☐ | ☐ | ☐ | ☐ |
+| building             | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
+| space                | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
 | functional_location  | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
 | equipment            | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
 | equipment_install    | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
-| meter                | ☑ | ☑ | ☑ | ☑ | ☐ | ☐ | ☐ | ☑ |
-| meter_reading        | ☑ | ☑ | ☑ | ☑ | ☐ | ☐ | ☑ | ☑ |
+| meter                | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
+| meter_reading        | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
 | material             | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
 | stock_location       | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
 | stock_quant          | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
@@ -76,14 +76,13 @@ exercised on the SQLite test DB; invariants A/B are validated on SQLite because
 SQLite enforces partial unique indexes. A Postgres-backed immutability test is
 deferred to the integration-test pass once the Railway Postgres add-on exists.
 
-### Known UI gaps carried forward (API + tests done, UI deferred)
-- **building**, **space** — backend CRUD + migration done; no dedicated UI form
-  yet (low-value secondary CRUD; sites/FL/equipment cover the Phase 1 gate).
-- **meter** create / **meter_reading** entry — API done and surfaced read-only
-  in the equipment timeline; dedicated entry forms deferred.
+### UI gaps — CLOSED (backfilled 2026-06-17)
+- **building**, **space** — full UI in `SitesPage.tsx` (site picker → buildings
+  list + add form, spaces table + add form with building assignment).
+- **meter** create / **meter_reading** entry — `MetersPanel` in
+  `EquipmentDetail.tsx`: list meters, add meter, inline "Log" reading per meter.
 
-These are tracked as defects per the lockstep rule and should be backfilled
-before or alongside Phase 2 if the dispatcher workflow needs them.
+Every Phase 1 entity row is now fully checked. Frontend builds clean (41 modules).
 
 ## Phase 0 scaffold status
 

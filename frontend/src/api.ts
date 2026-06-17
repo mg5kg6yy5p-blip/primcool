@@ -1,11 +1,15 @@
 import type {
+  Building,
   CustomerAccount,
   Equipment,
   EquipmentHistory,
   EquipmentInstall,
   FieldErrors,
   FunctionalLocation,
+  Meter,
+  MeterReading,
   Site,
+  Space,
 } from "./types";
 
 const BASE = "/api/v1";
@@ -67,6 +71,16 @@ export const api = {
     request<Site[]>(`/sites${customerId ? `?customer_account_id=${customerId}` : ""}`),
   createSite: (body: Partial<Site>) => post<Site>("/sites", body),
 
+  // buildings
+  listBuildings: (siteId?: string) =>
+    request<Building[]>(`/buildings${siteId ? `?site_id=${siteId}` : ""}`),
+  createBuilding: (body: Partial<Building>) => post<Building>("/buildings", body),
+
+  // spaces
+  listSpaces: (siteId?: string) =>
+    request<Space[]>(`/spaces${siteId ? `?site_id=${siteId}` : ""}`),
+  createSpace: (body: Partial<Space>) => post<Space>("/spaces", body),
+
   // functional locations
   listFLs: (siteId?: string) =>
     request<FunctionalLocation[]>(
@@ -87,4 +101,13 @@ export const api = {
     post<EquipmentInstall>(`/equipment/${id}/install`, { fl_id: flId }),
   remove: (id: string) =>
     post<EquipmentInstall>(`/equipment/${id}/remove`, {}),
+
+  // meters & readings
+  listMeters: (equipmentId: string) =>
+    request<Meter[]>(`/meters?equipment_id=${equipmentId}`),
+  createMeter: (body: Partial<Meter>) => post<Meter>("/meters", body),
+  listReadings: (meterId: string) =>
+    request<MeterReading[]>(`/meters/${meterId}/readings`),
+  addReading: (meterId: string, value: number) =>
+    post<MeterReading>(`/meters/${meterId}/readings`, { reading_value: value }),
 };

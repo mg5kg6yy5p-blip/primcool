@@ -2,6 +2,7 @@ import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 import { CustomersPage } from "./internal/CustomersPage";
 import { EquipmentPage } from "./internal/EquipmentPage";
 import { AssetTreePage } from "./internal/AssetTreePage";
+import { SitesPage } from "./internal/SitesPage";
 
 type Surface = "internal" | "technician" | "portal";
 
@@ -27,6 +28,7 @@ export default function App({ surface }: { surface: Surface }) {
         <span className="brand">Prime<span>Cool</span> · Maintenance</span>
         <nav>
           <NavLink to="/app/customers">Customers</NavLink>
+          <NavLink to="/app/sites">Sites &amp; Spaces</NavLink>
           <NavLink to="/app/assets">Functional Locations</NavLink>
           <NavLink to="/app/equipment">Equipment</NavLink>
         </nav>
@@ -34,6 +36,7 @@ export default function App({ surface }: { surface: Surface }) {
       <main>
         <Routes>
           <Route path="customers" element={<CustomersPage />} />
+          <Route path="sites" element={<SitesPage />} />
           <Route path="assets" element={<AssetTreePage />} />
           <Route path="equipment" element={<EquipmentPage />} />
           <Route path="*" element={<Navigate to="customers" replace />} />

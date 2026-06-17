@@ -89,3 +89,7 @@ button:disabled { background: #9bb3ad; cursor: not-allowed; }
 
 .tree { line-height: 1.7; }
 .tree small { color: var(--slate); }
+
+.inline-reading { display: inline-flex; gap: 0.3rem; margin-left: 0.6rem; }
+.inline-reading input { width: 90px; margin-top: 0; display: inline-block; }
+.inline-reading button { margin-top: 0; padding: 0.25rem 0.6rem; }
