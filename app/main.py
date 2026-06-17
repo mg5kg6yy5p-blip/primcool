@@ -1,7 +1,9 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -91,6 +93,29 @@ def create_app() -> FastAPI:
     app.include_router(bom.router)
     app.include_router(invoices.router)
     app.include_router(portal.router)
+
+    # Serve the built React SPA if `frontend/dist/` exists. The three surfaces
+    # (/app, /tech, /portal) all resolve to the SPA's index.html so React
+    # Router can take over client-side. Production deploys should run
+    # `npm --prefix frontend run build` before starting the server.
+    dist = Path("frontend/dist")
+    if dist.is_dir():
+        if (dist / "assets").is_dir():
+            app.mount("/assets",
+                      StaticFiles(directory=str(dist / "assets")),
+                      name="spa-assets")
+
+        index_html = str(dist / "index.html")
+
+        def _spa() -> FileResponse:
+            return FileResponse(index_html)
+
+        for prefix in ("/app", "/tech", "/portal"):
+            app.add_api_route(prefix, _spa, methods=["GET"], include_in_schema=False)
+            app.add_api_route(
+                f"{prefix}/{{rest:path}}", _spa,
+                methods=["GET"], include_in_schema=False,
+            )
 
     return app
 
