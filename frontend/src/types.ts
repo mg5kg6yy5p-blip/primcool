@@ -104,6 +104,84 @@ export interface EquipmentHistory {
   events: TimelineEvent[];
 }
 
+export type NotificationCategory =
+  | "cooling" | "heating" | "leak" | "electrical"
+  | "noise" | "maintenance_request" | "other";
+export type Severity = "emergency" | "high" | "medium" | "low";
+export type NotificationStatus = "new" | "acknowledged" | "converted" | "closed_no_action";
+export type OrderType = "corrective" | "preventive" | "install" | "inspection";
+export type BillingClass = "contract" | "billable" | "warranty" | "goodwill";
+export type OrderStatus =
+  | "created" | "scheduled" | "in_progress" | "tech_complete" | "closed" | "cancelled";
+export type OperationStatus = "open" | "confirmed";
+
+export interface Notification {
+  id: string;
+  customer_account_id: string;
+  site_id: string;
+  space_id: string | null;
+  category: NotificationCategory;
+  severity: Severity;
+  title: string;
+  description: string;
+  photo_url: string | null;
+  status: NotificationStatus;
+  acknowledged_at: string | null;
+  closed_at: string | null;
+}
+
+export interface WorkOrder {
+  id: string;
+  notification_id: string | null;
+  customer_account_id: string;
+  site_id: string;
+  functional_location_id: string | null;
+  equipment_id: string | null;
+  pm_schedule_id: string | null;
+  order_type: OrderType;
+  billing_class: BillingClass;
+  priority: Severity;
+  title: string;
+  description: string;
+  status: OrderStatus;
+  assigned_to_user_id: string | null;
+  scheduled_date: string | null;
+  due_date: string | null;
+  closed_at: string | null;
+  legal_transitions: OrderStatus[];
+}
+
+export interface Operation {
+  id: string;
+  work_order_id: string;
+  sequence: number;
+  description: string;
+  status: OperationStatus;
+  planned_hours: number;
+}
+
+export interface SavedView {
+  id: string;
+  user_id: string | null;
+  entity: string;
+  name: string;
+  filters: Record<string, unknown>;
+  columns: string[];
+  sort: Record<string, unknown>;
+  is_default: boolean;
+}
+
+export interface AuditLog {
+  id: string;
+  actor_user_id: string | null;
+  entity_type: string;
+  entity_id: string;
+  action: string;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  at: string;
+}
+
 export interface FieldErrors {
   [field: string]: string;
 }

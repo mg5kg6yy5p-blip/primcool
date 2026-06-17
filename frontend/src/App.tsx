@@ -3,6 +3,8 @@ import { CustomersPage } from "./internal/CustomersPage";
 import { EquipmentPage } from "./internal/EquipmentPage";
 import { AssetTreePage } from "./internal/AssetTreePage";
 import { SitesPage } from "./internal/SitesPage";
+import { TriagePage } from "./internal/TriagePage";
+import { WorkQueuePage } from "./internal/WorkQueuePage";
 
 type Surface = "internal" | "technician" | "portal";
 
@@ -27,6 +29,8 @@ export default function App({ surface }: { surface: Surface }) {
       <header>
         <span className="brand">Prime<span>Cool</span> · Maintenance</span>
         <nav>
+          <NavLink to="/app/triage">Triage</NavLink>
+          <NavLink to="/app/queue">Work Queue</NavLink>
           <NavLink to="/app/customers">Customers</NavLink>
           <NavLink to="/app/sites">Sites &amp; Spaces</NavLink>
           <NavLink to="/app/assets">Functional Locations</NavLink>
@@ -35,11 +39,13 @@ export default function App({ surface }: { surface: Surface }) {
       </header>
       <main>
         <Routes>
+          <Route path="triage" element={<TriagePage />} />
+          <Route path="queue" element={<WorkQueuePage />} />
           <Route path="customers" element={<CustomersPage />} />
           <Route path="sites" element={<SitesPage />} />
           <Route path="assets" element={<AssetTreePage />} />
           <Route path="equipment" element={<EquipmentPage />} />
-          <Route path="*" element={<Navigate to="customers" replace />} />
+          <Route path="*" element={<Navigate to="triage" replace />} />
         </Routes>
       </main>
     </div>

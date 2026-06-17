@@ -1,4 +1,5 @@
 import type {
+  AuditLog,
   Building,
   CustomerAccount,
   Equipment,
@@ -8,8 +9,13 @@ import type {
   FunctionalLocation,
   Meter,
   MeterReading,
+  Notification,
+  Operation,
+  OrderStatus,
+  SavedView,
   Site,
   Space,
+  WorkOrder,
 } from "./types";
 
 const BASE = "/api/v1";
@@ -110,4 +116,34 @@ export const api = {
     request<MeterReading[]>(`/meters/${meterId}/readings`),
   addReading: (meterId: string, value: number) =>
     post<MeterReading>(`/meters/${meterId}/readings`, { reading_value: value }),
+
+  // notifications / triage
+  listNotifications: (params?: { customer_account_id?: string; status?: string }) => {
+    const q = new URLSearchParams(params as Record<string, string>).toString();
+    return request<Notification[]>(`/notifications${q ? `?${q}` : ""}`);
+  },
+  createNotification: (body: Partial<Notification>) =>
+    post<Notification>("/notifications", body),
+  acknowledge: (id: string) => post<Notification>(`/notifications/${id}/acknowledge`, {}),
+  convertToOrder: (id: string) => post<WorkOrder>(`/notifications/${id}/convert-to-order`, {}),
+  closeNoAction: (id: string, reason: string) =>
+    post<Notification>(`/notifications/${id}/close-no-action`, { reason }),
+
+  // work orders
+  listWorkOrders: (qs?: string) => request<WorkOrder[]>(`/work-orders${qs ? `?${qs}` : ""}`),
+  getWorkOrder: (id: string) => request<WorkOrder>(`/work-orders/${id}`),
+  transitionOrder: (id: string, target: OrderStatus) =>
+    post<WorkOrder>(`/work-orders/${id}/transition`, { target }),
+  listOperations: (orderId: string) =>
+    request<Operation[]>(`/work-orders/${orderId}/operations`),
+  addOperation: (orderId: string, body: Partial<Operation>) =>
+    post<Operation>(`/work-orders/${orderId}/operations`, body),
+
+  // saved views
+  listSavedViews: () => request<SavedView[]>("/saved-views"),
+  createSavedView: (body: Partial<SavedView>) => post<SavedView>("/saved-views", body),
+
+  // audit
+  listAudit: (entityType: string, entityId: string) =>
+    request<AuditLog[]>(`/audit?entity_type=${entityType}&entity_id=${entityId}`),
 };

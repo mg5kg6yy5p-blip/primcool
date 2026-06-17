@@ -21,12 +21,12 @@ Legend: ☐ = not started · ☑ = complete
 | stock_quant          | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
 | equipment_bom        | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
 | bom_item             | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
-| notification         | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
-| work_order           | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
-| operation            | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
+| notification         | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
+| work_order           | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
+| operation            | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
 | confirmation         | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
 | confirmation_part    | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
-| saved_view           | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
+| saved_view           | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | n/a | ☑ |
 | service_contract     | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
 | contract_site        | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
 | invoice_draft        | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
@@ -52,7 +52,39 @@ Some entities span phases (e.g. `material` lifts in Phase 3 for consumption,
 but its full UI may not land until Phase 5 alongside billing). Each cell will
 be checked when the work for that surface is genuinely shippable, not stubbed.
 
-Last updated: Phase 1 complete — 2026-06-17
+Last updated: Phase 2 complete — 2026-06-17
+
+## Phase 2 status — Notification → triage → order
+
+Gate criteria (per spec §7):
+- [x] **Full path tenant-request → converted → scheduled clickable end-to-end**
+      — Triage inbox (raise request, Acknowledge/Convert/Close), convert creates
+      a corrective order copying site/space/severity→priority, work queue +
+      order detail drive it onward via transition buttons.
+- [x] **Illegal transitions rejected with tests** — work-order state machine in
+      `services/workflow.py`; `test_work_order_illegal_backward_rejected`,
+      `test_work_order_skip_state_rejected`, `test_cancel_from_created_ok_but_not_*`,
+      `test_transition_from_terminal_rejected`.
+- [x] Notification lifecycle (new→acknowledged→converted|closed_no_action) with
+      illegal-transition tests; close-no-action requires a reason (audited).
+- [x] Work queue default lens excludes closed/cancelled; `include_closed` shows
+      them; emergency sorts to top (`test_queue_excludes_*`, `test_emergency_*`).
+- [x] After tech_complete, descriptive fields frozen (`test_fields_frozen_*`).
+- [x] Saved view drives the queue via `view_id` (`test_saved_view_filters_queue`).
+- [x] Transition buttons rendered only for legal next states (server returns
+      `legal_transitions`; `OrderDetail` renders exactly those).
+- [x] Audit row per mutation; customer-account scoping on lists; validation 422.
+- [x] 33 tests green (14 Phase 0/1 + 19 Phase 2); frontend builds clean (44 mod).
+
+Migration 0003 adds notification/work_order/operation/saved_view. Per spec,
+notification carries NO immutability trigger (its status timestamps mutate);
+confirmation's append-only trigger arrives in Phase 3.
+
+Auth note: `created_by`, `assigned_to_user_id`, `saved_view.user_id` are
+nullable pending the dedicated argon2id+JWT+roles unit. Portal row-scoping
+(Phase 5 gate) will build on the scoping filters already present on every list.
+
+## Phase 1 status — Hierarchy & assets
 
 ## Phase 1 status — Hierarchy & assets
 

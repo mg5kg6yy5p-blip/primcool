@@ -17,9 +17,12 @@ from app.routers import (
     functional_locations,
     health,
     meters,
+    notifications,
     public,
+    saved_views,
     sites,
     spaces,
+    work_orders,
 )
 
 
@@ -57,6 +60,11 @@ def create_app() -> FastAPI:
     app.include_router(equipment.router)
     app.include_router(meters.router)
     app.include_router(audit.router)
+
+    # CMMS v1 — notification -> triage -> order (Phase 2)
+    app.include_router(notifications.router)
+    app.include_router(work_orders.router)
+    app.include_router(saved_views.router)
 
     return app
 

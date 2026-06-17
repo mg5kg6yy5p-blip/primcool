@@ -57,6 +57,58 @@ class ReadingSource(str, enum.Enum):
     import_ = "import"
 
 
+class NotificationCategory(str, enum.Enum):
+    cooling = "cooling"
+    heating = "heating"
+    leak = "leak"
+    electrical = "electrical"
+    noise = "noise"
+    maintenance_request = "maintenance_request"
+    other = "other"
+
+
+class Severity(str, enum.Enum):
+    emergency = "emergency"
+    high = "high"
+    medium = "medium"
+    low = "low"
+
+
+class NotificationStatus(str, enum.Enum):
+    new = "new"
+    acknowledged = "acknowledged"
+    converted = "converted"
+    closed_no_action = "closed_no_action"
+
+
+class OrderType(str, enum.Enum):
+    corrective = "corrective"
+    preventive = "preventive"
+    install = "install"
+    inspection = "inspection"
+
+
+class BillingClass(str, enum.Enum):
+    contract = "contract"
+    billable = "billable"
+    warranty = "warranty"
+    goodwill = "goodwill"
+
+
+class OrderStatus(str, enum.Enum):
+    created = "created"
+    scheduled = "scheduled"
+    in_progress = "in_progress"
+    tech_complete = "tech_complete"
+    closed = "closed"
+    cancelled = "cancelled"
+
+
+class OperationStatus(str, enum.Enum):
+    open = "open"
+    confirmed = "confirmed"
+
+
 class AuditAction(str, enum.Enum):
     create = "create"
     update = "update"

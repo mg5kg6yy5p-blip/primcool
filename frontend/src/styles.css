@@ -93,3 +93,19 @@ button:disabled { background: #9bb3ad; cursor: not-allowed; }
 .inline-reading { display: inline-flex; gap: 0.3rem; margin-left: 0.6rem; }
 .inline-reading input { width: 90px; margin-top: 0; display: inline-block; }
 .inline-reading button { margin-top: 0; padding: 0.25rem 0.6rem; }
+
+.actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin: 0.6rem 0; }
+.close-row { display: inline-flex; gap: 0.3rem; align-items: center; }
+.close-row input { margin-top: 0; width: 160px; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 1rem; margin-bottom: 0.8rem; }
+.chip { font-size: 0.8rem; color: var(--slate); }
+.chip select, .chip input { margin-top: 0.15rem; }
+
+.tabs { display: flex; gap: 0.3rem; border-bottom: 1px solid #e2e8f0; margin: 1rem 0; }
+.tab {
+  background: transparent; color: var(--slate); border: 0;
+  border-bottom: 2px solid transparent; border-radius: 0;
+  margin: 0; padding: 0.4rem 0.8rem; text-transform: capitalize;
+}
+.tab.active { color: var(--navy); border-bottom-color: var(--teal); }
