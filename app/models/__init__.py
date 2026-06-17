@@ -6,6 +6,15 @@ from app.models.asset import (
     MeterReading,
 )
 from app.models.audit import AuditLog
+from app.models.billing import (
+    BillingRate,
+    BomItem,
+    ContractSite,
+    EquipmentBom,
+    InvoiceDraft,
+    InvoiceDraftLine,
+    ServiceContract,
+)
 from app.models.consult import ConsultSubmission
 from app.models.customer import Building, CustomerAccount, Site, Space
 from app.models.inventory import (
@@ -42,4 +51,11 @@ __all__ = [
     "Confirmation",
     "ConfirmationPart",
     "PmSchedule",
+    "ServiceContract",
+    "ContractSite",
+    "BillingRate",
+    "EquipmentBom",
+    "BomItem",
+    "InvoiceDraft",
+    "InvoiceDraftLine",
 ]

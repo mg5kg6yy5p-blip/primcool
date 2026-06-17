@@ -14,6 +14,7 @@ class CustomerAccountCreate(BaseModel):
     contact_email: EmailStr | str = Field(default="")
     contact_phone: str = Field(default="", max_length=40)
     status: CustomerStatus = CustomerStatus.active
+    gct_rate: float = Field(default=0.0, ge=0, le=100)
 
 
 class CustomerAccountUpdate(BaseModel):
@@ -24,6 +25,7 @@ class CustomerAccountUpdate(BaseModel):
     contact_email: EmailStr | str | None = None
     contact_phone: str | None = Field(default=None, max_length=40)
     status: CustomerStatus | None = None
+    gct_rate: float | None = Field(default=None, ge=0, le=100)
 
 
 class CustomerAccountOut(BaseModel):
@@ -36,6 +38,7 @@ class CustomerAccountOut(BaseModel):
     contact_email: str
     contact_phone: str
     status: CustomerStatus
+    gct_rate: float
 
 
 # --- site ---

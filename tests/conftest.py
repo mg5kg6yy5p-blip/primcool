@@ -57,6 +57,17 @@ def client() -> Iterator[TestClient]:
         role=UserRole.admin,
         is_active=True,
     ))
+    # Seed default billing rates so the Phase 5 billable cascade has rates
+    # to look up. Mirrors migration 0007's bulk_insert.
+    from app.models.billing import BillingRate
+    bootstrap.add_all([
+        BillingRate(role=UserRole.technician, hourly_amount=3000.0,
+                    currency="JMD", is_active=True),
+        BillingRate(role=UserRole.dispatcher, hourly_amount=4000.0,
+                    currency="JMD", is_active=True),
+        BillingRate(role=UserRole.admin, hourly_amount=5000.0,
+                    currency="JMD", is_active=True),
+    ])
     bootstrap.commit()
     bootstrap.close()
 

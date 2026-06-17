@@ -11,17 +11,21 @@ from app.core.rate_limit import limiter
 from app.routers import (
     audit,
     auth,
+    bom,
     buildings,
     confirmations,
     consult,
+    contracts,
     customers,
     equipment,
     functional_locations,
     health,
+    invoices,
     materials,
     meters,
     notifications,
     pm,
+    portal,
     public,
     saved_views,
     sites,
@@ -81,6 +85,12 @@ def create_app() -> FastAPI:
 
     # CMMS v1 — PM engine (Phase 4)
     app.include_router(pm.router)
+
+    # CMMS v1 — contracts, BOM, billing, customer portal (Phase 5)
+    app.include_router(contracts.router)
+    app.include_router(bom.router)
+    app.include_router(invoices.router)
+    app.include_router(portal.router)
 
     return app
 

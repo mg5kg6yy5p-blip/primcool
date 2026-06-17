@@ -121,6 +121,25 @@ class PmTriggerKind(str, enum.Enum):
     meter = "meter"
 
 
+class ContractStatus(str, enum.Enum):
+    active = "active"
+    expired = "expired"
+    cancelled = "cancelled"
+
+
+class InvoiceStatus(str, enum.Enum):
+    draft = "draft"
+    issued = "issued"
+    void = "void"
+
+
+class LineKind(str, enum.Enum):
+    labor = "labor"
+    part = "part"
+    tax = "tax"
+    adjustment = "adjustment"
+
+
 class AuditAction(str, enum.Enum):
     create = "create"
     update = "update"

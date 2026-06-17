@@ -241,6 +241,50 @@ export interface PmScanResult {
   generated_work_order_ids: string[];
 }
 
+export type ContractStatus = "active" | "expired" | "cancelled";
+export type InvoiceStatus = "draft" | "issued" | "void";
+export type LineKind = "labor" | "part" | "tax" | "adjustment";
+
+export interface ServiceContract {
+  id: string;
+  customer_account_id: string;
+  name: string;
+  starts_on: string;
+  ends_on: string;
+  included_pm_visits_per_year: number;
+  response_sla: Record<string, number>;
+  terms_notes: string;
+  status: ContractStatus;
+  site_ids: string[];
+  used_this_year: number;
+}
+
+export interface InvoiceDraftLine {
+  id: string;
+  kind: LineKind;
+  description: string;
+  qty: number;
+  unit_amount: number;
+  total: number;
+  source_confirmation_id: string | null;
+  source_part_id: string | null;
+}
+
+export interface InvoiceDraft {
+  id: string;
+  work_order_id: string;
+  customer_account_id: string;
+  billing_class: BillingClass;
+  currency: string;
+  subtotal: number;
+  gct_rate: number;
+  gct_amount: number;
+  total: number;
+  status: InvoiceStatus;
+  issued_at: string | null;
+  lines: InvoiceDraftLine[];
+}
+
 export interface SavedView {
   id: string;
   user_id: string | null;

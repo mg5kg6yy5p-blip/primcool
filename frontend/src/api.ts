@@ -9,6 +9,7 @@ import type {
   EquipmentInstall,
   FieldErrors,
   FunctionalLocation,
+  InvoiceDraft,
   Material,
   Meter,
   MeterReading,
@@ -18,6 +19,7 @@ import type {
   PmSchedule,
   PmScanResult,
   SavedView,
+  ServiceContract,
   Site,
   Space,
   StockLocation,
@@ -163,6 +165,23 @@ export const api = {
   // audit
   listAudit: (entityType: string, entityId: string) =>
     request<AuditLog[]>(`/audit?entity_type=${entityType}&entity_id=${entityId}`),
+
+  // contracts
+  listContracts: (customerId?: string) => request<ServiceContract[]>(
+    `/contracts${customerId ? `?customer_account_id=${customerId}` : ""}`,
+  ),
+  createContract: (body: Partial<ServiceContract> & {
+    starts_on: string; ends_on: string; site_ids?: string[];
+  }) => post<ServiceContract>("/contracts", body),
+  getContract: (id: string) => request<ServiceContract>(`/contracts/${id}`),
+
+  // invoices
+  generateInvoiceDraft: (orderId: string) =>
+    post<InvoiceDraft>(`/work-orders/${orderId}/invoice-draft`, {}),
+  getInvoiceDraft: (orderId: string) =>
+    request<InvoiceDraft | null>(`/work-orders/${orderId}/invoice-draft`).catch(() => null),
+  issueInvoice: (draftId: string) =>
+    post<InvoiceDraft>(`/invoices/${draftId}/issue`, {}),
 
   // inventory
   listMaterials: () => request<Material[]>("/materials"),

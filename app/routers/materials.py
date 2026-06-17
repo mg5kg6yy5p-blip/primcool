@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session
 
 from app.core.deps import require_admin_or_dispatcher
 from app.db.session import get_db
+from app.models.asset import Equipment
+from app.models.billing import BomItem, EquipmentBom
 from app.models.enums import AuditAction
 from app.models.inventory import Material, StockLocation, StockQuant
 from app.schemas.inventory import (
@@ -57,12 +59,24 @@ def create_material(
 def where_used(
     material_id: UUID, db: Annotated[Session, Depends(get_db)]
 ) -> list[WhereUsedRow]:
-    """Equipment whose BOM lists this material. BOM lands fully in Phase 5;
-    until then this endpoint returns an empty list and exists so the API
-    shape stays stable."""
+    """Equipment whose BOM lists this material — reverse query."""
     if db.get(Material, material_id) is None:
         raise HTTPException(status_code=404, detail="Material not found")
-    return []
+    rows: list[WhereUsedRow] = []
+    items = db.scalars(
+        select(BomItem).where(BomItem.material_id == material_id)
+    )
+    for item in items:
+        bom = db.get(EquipmentBom, item.equipment_bom_id)
+        if bom is None:
+            continue
+        eq = db.get(Equipment, bom.equipment_id)
+        if eq is None:
+            continue
+        rows.append(WhereUsedRow(
+            equipment_id=eq.id, serial=eq.serial, qty=item.quantity,
+        ))
+    return rows
 
 
 # --- stock locations ---

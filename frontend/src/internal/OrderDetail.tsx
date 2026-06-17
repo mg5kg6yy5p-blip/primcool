@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "../api";
 import type { AuditLog, Operation, OrderStatus, WorkOrder } from "../types";
 import { StatusChip } from "../components/StatusChip";
+import { InvoicePanel } from "./InvoicePanel";
 
 type Tab = "operations" | "parts" | "costs" | "history";
 
@@ -67,8 +68,13 @@ export function OrderDetail({
         <OperationsTab orderId={orderId} frozen={order.status !== "created" &&
           order.status !== "scheduled" && order.status !== "in_progress"} />
       )}
-      {tab === "parts" && <p><em>Parts consumption lands in Phase 3.</em></p>}
-      {tab === "costs" && <p><em>Cost rollup lands in Phase 5 (billing).</em></p>}
+      {tab === "parts" && <p><em>Confirmed parts appear via the technician flow.</em></p>}
+      {tab === "costs" && (
+        <InvoicePanel
+          orderId={orderId}
+          canGenerate={order.status === "tech_complete" || order.status === "closed"}
+        />
+      )}
       {tab === "history" && <HistoryTab orderId={orderId} />}
     </div>
   );

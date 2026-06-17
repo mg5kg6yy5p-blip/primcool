@@ -62,3 +62,18 @@ def require_roles(*allowed: UserRole):
 require_admin = require_roles(UserRole.admin)
 require_admin_or_dispatcher = require_roles(UserRole.admin, UserRole.dispatcher)
 require_staff = require_roles(UserRole.admin, UserRole.dispatcher, UserRole.technician)
+
+
+def require_portal_user(
+    user: Annotated[User, Depends(get_current_user)],
+) -> User:
+    """Portal-user-only guard. The user MUST be linked to a customer
+    account; queries downstream scope everything by user.customer_account_id."""
+    if user.role != UserRole.portal_user:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Portal access only")
+    if user.customer_account_id is None:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Portal user must be linked to a customer account",
+        )
+    return user

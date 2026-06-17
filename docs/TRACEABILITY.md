@@ -19,18 +19,18 @@ Legend: ☐ = not started · ☑ = complete
 | material             | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☐ | ☑ |
 | stock_location       | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | n/a | ☑ |
 | stock_quant          | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | n/a | ☑ |
-| equipment_bom        | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
-| bom_item             | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
+| equipment_bom        | ☑ | ☑ | ☑ | ☑ | n/a | n/a | n/a | ☑ |
+| bom_item             | ☑ | ☑ | ☑ | ☑ | n/a | n/a | n/a | ☑ |
 | notification         | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
 | work_order           | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
 | operation            | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
 | confirmation         | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
 | confirmation_part    | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | n/a | ☑ |
 | saved_view           | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | n/a | ☑ |
-| service_contract     | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
-| contract_site        | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
-| invoice_draft        | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
-| invoice_draft_line   | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
+| service_contract     | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
+| contract_site        | ☑ | ☑ | ☑ | ☑ | n/a | n/a | n/a | ☑ |
+| invoice_draft        | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
+| invoice_draft_line   | ☑ | ☑ | ☑ | ☑ | ☑ | n/a | n/a | ☑ |
 | pm_schedule          | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
 | audit_log            | ☑ | ☑ | ☑ | ☑ | ☐ | n/a | ☑ | ☑ |
 
@@ -52,7 +52,52 @@ Some entities span phases (e.g. `material` lifts in Phase 3 for consumption,
 but its full UI may not land until Phase 5 alongside billing). Each cell will
 be checked when the work for that surface is genuinely shippable, not stubbed.
 
-Last updated: Phase 4 complete — 2026-06-17
+Last updated: Phase 5 complete — 2026-06-17
+
+## Phase 5 status — Contracts & billing
+
+Gate criteria (per spec §7):
+- [x] **Four billing-class scenarios each produce correct draft lines in tests**:
+      * `billable` — labor at admin/dispatcher/technician rate × hours, parts at
+        `unit_cost_at_use × PARTS_MARKUP` (`test_billable_charges_*`).
+      * `warranty` — engine overrides to warranty when equipment is under
+        warranty at order time; lines emitted at zero with qty preserved
+        (`test_warranty_zero_charge`).
+      * `contract` — PM under active contract w/ remaining entitlement; lines
+        at zero; `used_this_year` counter increments (`test_contract_*`).
+      * `goodwill` — explicit set; zero charge with flag (`test_goodwill_*`).
+- [x] **Portal user cannot read another account's data** — explicit leak test
+      (`test_portal_cross_account_leak_blocked`,
+       `test_portal_user_cannot_raise_for_another_account`,
+       `test_portal_user_cannot_raise_against_other_account_site`,
+       `test_portal_work_orders_scoped`).
+- [x] Draft regeneratable until issued; regeneration voids the prior draft
+      (`test_regenerate_voids_old_draft_and_makes_new`); issuing prevents
+      re-issue but allows a fresh draft alongside.
+- [x] Reversed confirmations and their parts auto-excluded
+      (`test_reversed_confirmations_excluded_from_draft`).
+- [x] GCT line added when customer.gct_rate > 0 (`test_gct_line_added_*`).
+- [x] BOM where-used reverse query returns equipment that uses a material
+      (`test_bom_where_used`).
+- [x] Cross-surface 403s: portal user blocked from internal admin routes; staff
+      blocked from portal endpoints.
+- [x] 21 Phase 5 tests + 73 prior = **93 green total**; migration chain
+      0001→0007 up/downgrades on SQLite; frontend builds clean (54 modules).
+
+Frontend Phase 5 surfaces:
+- Internal: ContractsPage (list + create with covered-sites picker + PM
+  entitlement meter "X of Y used"); InvoicePanel in the order detail Costs
+  tab (Generate / Regenerate / Mark issued + full line breakdown with
+  subtotal, GCT line if any, total).
+- Customer portal (`/portal/*`): scoped sites list, my requests + raise-
+  request form, my work orders (read-only).
+
+### Auth follow-through
+All Phase 5 routers carry router-level deps: contracts/BOM/invoices require
+admin/dispatcher; portal requires portal_user with a customer_account_id.
+The cross-account leak test is the gate for portal row scoping.
+
+## Phase 4 status — PM engine wiring
 
 ## Phase 4 status — PM engine wiring
 

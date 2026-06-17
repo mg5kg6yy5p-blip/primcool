@@ -1,7 +1,7 @@
 from uuid import UUID, uuid4
 
 from sqlalchemy import Enum as SAEnum
-from sqlalchemy import Float, ForeignKey, String, Uuid
+from sqlalchemy import Float, ForeignKey, Numeric, String, Uuid  # noqa: F401
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -26,6 +26,7 @@ class CustomerAccount(Base, TimestampMixin):
         nullable=False,
         default=CustomerStatus.active,
     )
+    gct_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
 
 class Site(Base, TimestampMixin):

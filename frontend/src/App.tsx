@@ -8,23 +8,27 @@ import { TriagePage } from "./internal/TriagePage";
 import { WorkQueuePage } from "./internal/WorkQueuePage";
 import { InventoryPage } from "./internal/InventoryPage";
 import { PmSchedulesPage } from "./internal/PmSchedulesPage";
+import { ContractsPage } from "./internal/ContractsPage";
 import { LoginPage } from "./internal/LoginPage";
 import { TechQueue } from "./technician/TechQueue";
 import { TechOrder } from "./technician/TechOrder";
+import { PortalApp } from "./portal/PortalApp";
 
 type Surface = "internal" | "technician" | "portal";
 
 export default function App({ surface }: { surface: Surface }) {
   if (surface === "technician") return <TechnicianApp />;
-  if (surface === "portal") {
-    return (
-      <main>
-        <h1>PrimeCool — Customer Portal</h1>
-        <p>Lands in Phase 5.</p>
-      </main>
-    );
-  }
+  if (surface === "portal") return <PortalShell />;
   return <InternalApp />;
+}
+
+function PortalShell() {
+  const { user, loading } = useAuth();
+  const location = useLocation();
+  if (loading) return <main><p>Loading…</p></main>;
+  if (location.pathname.endsWith("/login")) return <LoginPage />;
+  if (!user) return <Navigate to="/portal/login" replace />;
+  return <PortalApp />;
 }
 
 function InternalApp() {
@@ -47,6 +51,7 @@ function InternalApp() {
           <NavLink to="/app/equipment">Equipment</NavLink>
           <NavLink to="/app/inventory">Inventory</NavLink>
           <NavLink to="/app/pm">PM</NavLink>
+          <NavLink to="/app/contracts">Contracts</NavLink>
         </nav>
         <UserBadge />
       </header>
@@ -60,6 +65,7 @@ function InternalApp() {
           <Route path="equipment" element={<EquipmentPage />} />
           <Route path="inventory" element={<InventoryPage />} />
           <Route path="pm" element={<PmSchedulesPage />} />
+          <Route path="contracts" element={<ContractsPage />} />
           <Route path="*" element={<Navigate to="triage" replace />} />
         </Routes>
       </main>
