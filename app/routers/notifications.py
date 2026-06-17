@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
+from app.core.deps import require_admin_or_dispatcher
 from app.db.session import get_db
 from app.models.customer import Site
 from app.models.enums import AuditAction, NotificationStatus, Severity
@@ -23,7 +24,10 @@ from app.services.workflow import (
     convert_notification_to_order,
 )
 
-router = APIRouter(prefix="/api/v1/notifications", tags=["notifications"])
+router = APIRouter(
+    prefix="/api/v1/notifications", tags=["notifications"],
+    dependencies=[Depends(require_admin_or_dispatcher)],
+)
 
 # Triage inbox ordering: new first, then by severity (emergency -> low),
 # then newest.

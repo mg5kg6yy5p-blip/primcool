@@ -109,6 +109,13 @@ class OperationStatus(str, enum.Enum):
     confirmed = "confirmed"
 
 
+class UserRole(str, enum.Enum):
+    admin = "admin"
+    dispatcher = "dispatcher"
+    technician = "technician"
+    portal_user = "portal_user"
+
+
 class AuditAction(str, enum.Enum):
     create = "create"
     update = "update"

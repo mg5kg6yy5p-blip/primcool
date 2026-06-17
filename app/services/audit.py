@@ -11,6 +11,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.core.context import get_actor
 from app.db.base import Base
 from app.models.audit import AuditLog
 from app.models.enums import AuditAction
@@ -47,6 +48,11 @@ def record_audit(
     after: dict | None = None,
     actor_user_id: UUID | None = None,
 ) -> AuditLog:
+    # Fall back to the session-scoped current user when the caller didn't pass
+    # one explicitly. Service helpers (install/remove, workflow transitions)
+    # may still pass an explicit actor.
+    if actor_user_id is None:
+        actor_user_id = get_actor(db)
     row = AuditLog(
         actor_user_id=actor_user_id,
         entity_type=entity_type,

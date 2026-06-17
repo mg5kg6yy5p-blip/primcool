@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.deps import require_admin_or_dispatcher
 from app.db.session import get_db
 from app.models.asset import Equipment, Meter, MeterReading
 from app.models.common import utcnow
@@ -17,7 +18,10 @@ from app.schemas.asset import (
 )
 from app.services.audit import record_audit, serialize
 
-router = APIRouter(prefix="/api/v1/meters", tags=["meters"])
+router = APIRouter(
+    prefix="/api/v1/meters", tags=["meters"],
+    dependencies=[Depends(require_admin_or_dispatcher)],
+)
 
 
 @router.get("", response_model=list[MeterOut])

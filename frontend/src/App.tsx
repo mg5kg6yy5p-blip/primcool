@@ -1,10 +1,12 @@
-import { NavLink, Navigate, Route, Routes } from "react-router-dom";
+import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { useAuth } from "./auth";
 import { CustomersPage } from "./internal/CustomersPage";
 import { EquipmentPage } from "./internal/EquipmentPage";
 import { AssetTreePage } from "./internal/AssetTreePage";
 import { SitesPage } from "./internal/SitesPage";
 import { TriagePage } from "./internal/TriagePage";
 import { WorkQueuePage } from "./internal/WorkQueuePage";
+import { LoginPage } from "./internal/LoginPage";
 
 type Surface = "internal" | "technician" | "portal";
 
@@ -23,6 +25,19 @@ export default function App({ surface }: { surface: Surface }) {
       </main>
     );
   }
+  return <InternalApp />;
+}
+
+function InternalApp() {
+  const { user, loading } = useAuth();
+  const location = useLocation();
+
+  if (loading) return <main><p>Loading…</p></main>;
+
+  // /app/login is reachable without auth.
+  if (location.pathname.endsWith("/login")) return <LoginPage />;
+
+  if (!user) return <Navigate to="/app/login" replace state={{ from: location }} />;
 
   return (
     <div className="shell">
@@ -36,6 +51,7 @@ export default function App({ surface }: { surface: Surface }) {
           <NavLink to="/app/assets">Functional Locations</NavLink>
           <NavLink to="/app/equipment">Equipment</NavLink>
         </nav>
+        <UserBadge />
       </header>
       <main>
         <Routes>
@@ -48,6 +64,17 @@ export default function App({ surface }: { surface: Surface }) {
           <Route path="*" element={<Navigate to="triage" replace />} />
         </Routes>
       </main>
+    </div>
+  );
+}
+
+function UserBadge() {
+  const { user, logout } = useAuth();
+  if (!user) return null;
+  return (
+    <div className="user-badge">
+      <span>{user.full_name || user.email} <small>({user.role})</small></span>
+      <button onClick={logout}>Sign out</button>
     </div>
   );
 }

@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.deps import require_admin_or_dispatcher
 from app.db.session import get_db
 from app.models.asset import FunctionalLocation
 from app.models.customer import Site
@@ -16,7 +17,10 @@ from app.schemas.asset import (
 )
 from app.services.audit import record_audit, serialize
 
-router = APIRouter(prefix="/api/v1/functional-locations", tags=["functional_locations"])
+router = APIRouter(
+    prefix="/api/v1/functional-locations", tags=["functional_locations"],
+    dependencies=[Depends(require_admin_or_dispatcher)],
+)
 
 
 @router.get("", response_model=list[FunctionalLocationOut])

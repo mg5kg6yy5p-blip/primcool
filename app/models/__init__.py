@@ -8,6 +8,7 @@ from app.models.asset import (
 from app.models.audit import AuditLog
 from app.models.consult import ConsultSubmission
 from app.models.customer import Building, CustomerAccount, Site, Space
+from app.models.user import User
 from app.models.workflow import Notification, Operation, SavedView, WorkOrder
 
 __all__ = [
@@ -22,6 +23,7 @@ __all__ = [
     "Meter",
     "MeterReading",
     "AuditLog",
+    "User",
     "Notification",
     "WorkOrder",
     "Operation",

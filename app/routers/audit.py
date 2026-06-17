@@ -5,11 +5,15 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.deps import require_admin_or_dispatcher
 from app.db.session import get_db
 from app.models.audit import AuditLog
 from app.schemas.audit import AuditLogOut
 
-router = APIRouter(prefix="/api/v1/audit", tags=["audit"])
+router = APIRouter(
+    prefix="/api/v1/audit", tags=["audit"],
+    dependencies=[Depends(require_admin_or_dispatcher)],
+)
 
 
 @router.get("", response_model=list[AuditLogOut])

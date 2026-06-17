@@ -5,13 +5,17 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.deps import require_admin_or_dispatcher
 from app.db.session import get_db
 from app.models.customer import Building, Site
 from app.models.enums import AuditAction
 from app.schemas.customer import BuildingCreate, BuildingOut, BuildingUpdate
 from app.services.audit import record_audit, serialize
 
-router = APIRouter(prefix="/api/v1/buildings", tags=["buildings"])
+router = APIRouter(
+    prefix="/api/v1/buildings", tags=["buildings"],
+    dependencies=[Depends(require_admin_or_dispatcher)],
+)
 
 
 @router.get("", response_model=list[BuildingOut])

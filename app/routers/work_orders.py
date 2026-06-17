@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
+from app.core.deps import require_admin_or_dispatcher
 from app.db.session import get_db
 from app.models.enums import (
     AuditAction,
@@ -27,7 +28,10 @@ from app.services.workflow import (
     transition_work_order,
 )
 
-router = APIRouter(prefix="/api/v1/work-orders", tags=["work_orders"])
+router = APIRouter(
+    prefix="/api/v1/work-orders", tags=["work_orders"],
+    dependencies=[Depends(require_admin_or_dispatcher)],
+)
 
 # Emergency sorts to the top of every queue, then by priority, then newest.
 _PRIORITY_RANK = case(

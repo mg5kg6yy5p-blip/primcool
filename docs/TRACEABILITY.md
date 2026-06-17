@@ -52,7 +52,37 @@ Some entities span phases (e.g. `material` lifts in Phase 3 for consumption,
 but its full UI may not land until Phase 5 alongside billing). Each cell will
 be checked when the work for that surface is genuinely shippable, not stubbed.
 
-Last updated: Phase 2 complete — 2026-06-17
+Last updated: Auth unit complete — 2026-06-17
+
+## Auth unit — argon2id + JWT + 4 roles
+
+- [x] `User` model (`user_account` table), migration 0004, `UserRole` enum
+      (admin, dispatcher, technician, portal_user).
+- [x] Password hashing in `app/core/security.py` (argon2id via passlib).
+- [x] HS256 JWT with claims `sub`, `role`, optional `acct` (customer_account_id
+      for portal users), `iat`, `exp`.
+- [x] Endpoints: `GET /api/auth/status`, `POST /api/auth/bootstrap` (creates
+      first admin only when the user table is empty; 403 thereafter),
+      `POST /api/auth/login`, `GET /api/auth/me`, `POST /api/auth/logout`.
+- [x] Admin-only user CRUD at `/api/v1/users` (list/create/get/patch).
+- [x] All v1 routers now carry `dependencies=[Depends(require_admin_or_dispatcher)]`;
+      unauthenticated requests get 401, wrong-role requests get 403.
+- [x] Actor attribution: `get_current_user` writes the user id to
+      `Session.info["actor_user_id"]`; `record_audit` reads it as a fallback
+      so every audited mutation attributes to the acting user automatically.
+- [x] Frontend: `AuthProvider`/`useAuth`, token in `localStorage`, automatic
+      Authorization header from `api.ts`, 401 → redirect to login, login page
+      with bootstrap-when-empty flow, user badge + sign-out in header.
+- [x] 16 auth tests + the 33 prior tests all green (49 total) — covers
+      bootstrap allow/refuse, login good/bad/unknown, /me with and without
+      token, protected-route 401, role 403, expired token, malformed token,
+      inactive-user revocation, audit actor attribution.
+
+The auth dependency is applied as a router-level dep so technician and
+portal_user roles will get scoped access added in their respective phases
+(Phase 3 for technician's work queue, Phase 5 for portal_user row-scoping).
+
+## Phase 2 status — Notification → triage → order
 
 ## Phase 2 status — Notification → triage → order
 

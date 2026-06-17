@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.deps import require_admin_or_dispatcher
 from app.db.session import get_db
 from app.models.asset import Equipment, EquipmentInstall, Meter, MeterReading
 from app.models.enums import AuditAction
@@ -27,7 +28,10 @@ from app.services.install import (
     remove_equipment,
 )
 
-router = APIRouter(prefix="/api/v1/equipment", tags=["equipment"])
+router = APIRouter(
+    prefix="/api/v1/equipment", tags=["equipment"],
+    dependencies=[Depends(require_admin_or_dispatcher)],
+)
 
 
 @router.get("", response_model=list[EquipmentOut])

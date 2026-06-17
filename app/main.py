@@ -10,6 +10,7 @@ from app.core.config import get_settings
 from app.core.rate_limit import limiter
 from app.routers import (
     audit,
+    auth,
     buildings,
     consult,
     customers,
@@ -22,6 +23,7 @@ from app.routers import (
     saved_views,
     sites,
     spaces,
+    users,
     work_orders,
 )
 
@@ -50,6 +52,10 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(public.router)
     app.include_router(consult.router)
+
+    # Auth (argon2id + JWT + 4 roles)
+    app.include_router(auth.router)
+    app.include_router(users.router)
 
     # CMMS v1 — hierarchy & assets (Phase 1)
     app.include_router(customers.router)

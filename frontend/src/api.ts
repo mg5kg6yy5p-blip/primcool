@@ -18,6 +18,8 @@ import type {
   WorkOrder,
 } from "./types";
 
+import { getToken } from "./auth";
+
 const BASE = "/api/v1";
 
 /** Raised on a 422 so callers can render field-level messages (parity rule). */
@@ -32,10 +34,18 @@ export class ValidationError extends Error {
 export class ApiError extends Error {}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const token = getToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
     ...init,
+    headers: { ...headers, ...((init?.headers as Record<string, string>) ?? {}) },
   });
+  if (res.status === 401) {
+    localStorage.removeItem("primcool.token");
+    window.location.assign("/app/login");
+    throw new ApiError("Unauthorized");
+  }
   if (res.status === 422) {
     const body = await res.json();
     const fields: FieldErrors = {};

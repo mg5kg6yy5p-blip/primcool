@@ -109,3 +109,17 @@ button:disabled { background: #9bb3ad; cursor: not-allowed; }
   margin: 0; padding: 0.4rem 0.8rem; text-transform: capitalize;
 }
 .tab.active { color: var(--navy); border-bottom-color: var(--teal); }
+
+.user-badge {
+  margin-left: auto;
+  display: flex; align-items: center; gap: 0.6rem;
+  font-size: 0.85rem; color: #cdd6e0;
+}
+.user-badge small { color: #8a94a6; }
+.user-badge button {
+  background: transparent; color: var(--teal); border: 1px solid var(--teal);
+  padding: 0.25rem 0.6rem; margin: 0;
+}
+
+.login { max-width: 360px; margin: 4rem auto; }
+.login h1 { text-align: center; }

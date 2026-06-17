@@ -5,13 +5,17 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.deps import require_admin_or_dispatcher
 from app.db.session import get_db
 from app.models.enums import AuditAction
 from app.models.workflow import SavedView
 from app.schemas.workflow import SavedViewCreate, SavedViewOut
 from app.services.audit import record_audit, serialize
 
-router = APIRouter(prefix="/api/v1/saved-views", tags=["saved_views"])
+router = APIRouter(
+    prefix="/api/v1/saved-views", tags=["saved_views"],
+    dependencies=[Depends(require_admin_or_dispatcher)],
+)
 
 
 @router.get("", response_model=list[SavedViewOut])
