@@ -1,0 +1,10 @@
+[project]
+name = "primcool"
+version = "0.1.0"
+description = "PrimeCool Services Ltd. — public site + maintenance system"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --tb=short"
+asyncio_mode = "auto"

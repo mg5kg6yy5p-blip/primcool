@@ -52,4 +52,22 @@ Some entities span phases (e.g. `material` lifts in Phase 3 for consumption,
 but its full UI may not land until Phase 5 alongside billing). Each cell will
 be checked when the work for that surface is genuinely shippable, not stubbed.
 
-Last updated: Phase 0 — 2026-06-09
+Last updated: Phase 0 scaffold complete — 2026-06-14
+
+## Phase 0 scaffold status
+
+- [x] Backend restructured into `app/` package (routers/models/schemas/db/core)
+- [x] SQLAlchemy 2.0 + Postgres + Alembic wired
+- [x] First Alembic migration: `consult_submission` table
+- [x] Pydantic-settings config in `app/core/config.py`
+- [x] slowapi rate limiter shared via `app.state.limiter`
+- [x] pytest + httpx TestClient; 4 smoke tests for the consult flow pass
+- [x] Frontend skeleton at `frontend/` (React 18 + Vite + TS, three surfaces)
+- [x] `railway.toml` updated to `alembic upgrade head && uvicorn app.main:app`
+- [x] Architecture doc at `docs/ARCHITECTURE.md`
+- [x] Existing endpoints preserved: `/`, `/health`, `POST /api/consult`,
+      `GET /api/submissions`, `/images/*` — all moved into the new package
+
+Five security items from earlier (HTML-escape email body, locked CORS,
+rate limit, EmailStr, no hardcoded NOTIFY_EMAIL fallback) are incorporated
+into the restructure.

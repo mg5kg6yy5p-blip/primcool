@@ -8,3 +8,17 @@ venv/
 
 *.db
 submissions.db
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Tooling
+.pytest_cache/
+.coverage
+.ruff_cache/
+.mypy_cache/
+
+# OS
+.DS_Store
