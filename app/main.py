@@ -8,7 +8,19 @@ from slowapi.errors import RateLimitExceeded
 
 from app.core.config import get_settings
 from app.core.rate_limit import limiter
-from app.routers import consult, health, public
+from app.routers import (
+    audit,
+    buildings,
+    consult,
+    customers,
+    equipment,
+    functional_locations,
+    health,
+    meters,
+    public,
+    sites,
+    spaces,
+)
 
 
 @asynccontextmanager
@@ -35,6 +47,16 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(public.router)
     app.include_router(consult.router)
+
+    # CMMS v1 — hierarchy & assets (Phase 1)
+    app.include_router(customers.router)
+    app.include_router(sites.router)
+    app.include_router(buildings.router)
+    app.include_router(spaces.router)
+    app.include_router(functional_locations.router)
+    app.include_router(equipment.router)
+    app.include_router(meters.router)
+    app.include_router(audit.router)
 
     return app
 

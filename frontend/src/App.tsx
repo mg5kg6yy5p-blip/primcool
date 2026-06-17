@@ -1,3 +1,8 @@
+import { NavLink, Navigate, Route, Routes } from "react-router-dom";
+import { CustomersPage } from "./internal/CustomersPage";
+import { EquipmentPage } from "./internal/EquipmentPage";
+import { AssetTreePage } from "./internal/AssetTreePage";
+
 type Surface = "internal" | "technician" | "portal";
 
 const TITLES: Record<Surface, string> = {
@@ -7,10 +12,33 @@ const TITLES: Record<Surface, string> = {
 };
 
 export default function App({ surface }: { surface: Surface }) {
+  if (surface !== "internal") {
+    return (
+      <main>
+        <h1>PrimeCool — {TITLES[surface]}</h1>
+        <p>Surface scaffolded. UI lands in {surface === "technician" ? "Phase 3" : "Phase 5"}.</p>
+      </main>
+    );
+  }
+
   return (
-    <main>
-      <h1>PrimeCool — {TITLES[surface]}</h1>
-      <p>Phase 0 scaffold. Real UI lands in Phase 1.</p>
-    </main>
+    <div className="shell">
+      <header>
+        <span className="brand">Prime<span>Cool</span> · Maintenance</span>
+        <nav>
+          <NavLink to="/app/customers">Customers</NavLink>
+          <NavLink to="/app/assets">Functional Locations</NavLink>
+          <NavLink to="/app/equipment">Equipment</NavLink>
+        </nav>
+      </header>
+      <main>
+        <Routes>
+          <Route path="customers" element={<CustomersPage />} />
+          <Route path="assets" element={<AssetTreePage />} />
+          <Route path="equipment" element={<EquipmentPage />} />
+          <Route path="*" element={<Navigate to="customers" replace />} />
+        </Routes>
+      </main>
+    </div>
   );
 }
