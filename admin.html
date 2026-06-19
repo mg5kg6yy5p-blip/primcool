@@ -1541,6 +1541,26 @@
             </div>
           </div>
 
+          <!-- CMMS Gap #1: Functional Locations (slots) -->
+          <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:18px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+              <h3 style="margin:0;color:var(--ink);font-size:16px;">Functional Locations</h3>
+              <button class="btn btn-primary btn-sm" id="cdf-add-fl-btn" onclick="openAddFL()">+ Add Location</button>
+            </div>
+            <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">
+              Fixed slots in the customer's property. A unit can be installed into a free slot;
+              swapping units in and out is tracked on each unit's timeline.
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr>
+                  <th>Location</th><th>Code</th><th>Class</th><th>Currently installed</th>
+                </tr></thead>
+                <tbody id="cdf-fl-body"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+
           <!-- Service History -->
           <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px 20px;">
             <h3 style="margin:0 0 12px;color:var(--ink);font-size:16px;">Service History</h3>
@@ -2527,6 +2547,7 @@
             <button class="btn btn-edit" id="tdf-approve-ot-btn" onclick="tdfApproveOvertime()" style="display:none;">Approve Overtime</button>
             <button class="btn btn-edit" id="tdf-release-kpi-btn" onclick="tdfReleaseKpiPeriod()" style="display:none;">Release KPI Scorecard</button>
             <button class="btn btn-edit" id="tdf-promote-btn" onclick="openPromoteTech()" style="display:none;">↗ Promote to Office Role</button>
+            <button class="btn btn-edit" id="tdf-onboard-review-btn" onclick="if(tdfState.tech) openOnboardReview('tech', tdfState.tech.id, tdfState.tech.name)" style="display:none;">🧾 Onboarding Submission</button>
             <button class="btn btn-danger" id="tdf-offboard-btn" onclick="tdfOffboard()" style="margin-left:auto;">🚪 Offboard</button>
           </div>
         </div>
@@ -3505,6 +3526,22 @@
   </div>
 </div>
 
+<!-- HR onboarding-submission review (shared by tech detail + admin rows) -->
+<div class="modal-overlay" id="modal-onboardReview">
+  <div class="modal" style="max-width:840px;">
+    <div class="modal-header">
+      <h3 id="onbReviewTitle">Onboarding submission</h3>
+      <button class="modal-close" onclick="closeModal('onboardReview')">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="onbReviewBody"><div class="empty" style="padding:20px;">Loading…</div></div>
+    </div>
+    <div class="modal-footer" id="onbReviewFooter">
+      <button class="btn btn-primary" onclick="closeModal('onboardReview')">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- GCT (output tax) liability report -->
 <div class="modal-overlay" id="modal-gctReport">
   <div class="modal" style="max-width:760px;">
@@ -4384,10 +4421,61 @@
     </div>
     <div class="modal-body">
       <div id="eqd-body" style="display:grid;grid-template-columns:140px 1fr;gap:6px 14px;font-size:13px;"></div>
+      <!-- CMMS Gap #1: lifecycle (status + current functional-location) + install/remove actions -->
+      <div id="eqd-lifecycle" style="margin-top:16px;"></div>
+      <!-- CMMS Gap #1: install/remove timeline -->
+      <div id="eqd-timeline" style="margin-top:16px;"></div>
     </div>
-    <div class="modal-footer" style="justify-content:space-between;">
-      <div style="font-size:11px;color:var(--muted);font-style:italic;">Full equipment detail view coming in a future build.</div>
+    <div class="modal-footer" style="justify-content:flex-end;">
       <button class="btn btn-ghost" onclick="closeModal('equipmentDetail')">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── CMMS Gap #1: Install equipment into a functional location ── -->
+<div class="modal-overlay" id="modal-installEquip">
+  <div class="modal" style="max-width:460px;width:96%;">
+    <div class="modal-header">
+      <h3 style="margin:0;">Install equipment</h3>
+      <button class="modal-close" onclick="closeModal('installEquip')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:13px;color:var(--muted);margin-bottom:10px;" id="ieq-subtitle">Choose the location (slot) to install this unit into.</div>
+      <label style="display:block;font-size:11px;text-transform:uppercase;letter-spacing:0.4px;font-weight:600;color:var(--muted);margin-bottom:4px;">Functional location</label>
+      <select id="ieq-fl" style="width:100%;margin-bottom:10px;"></select>
+      <label style="display:block;font-size:11px;text-transform:uppercase;letter-spacing:0.4px;font-weight:600;color:var(--muted);margin-bottom:4px;">Note (optional)</label>
+      <input id="ieq-note" type="text" style="width:100%;" placeholder="e.g. swapped in after refurb">
+      <div id="ieq-error" style="display:none;margin-top:10px;padding:8px 10px;border-radius:6px;background:#fdecea;color:#b71c1c;font-size:12px;"></div>
+    </div>
+    <div class="modal-footer" style="justify-content:flex-end;gap:8px;">
+      <button class="btn btn-ghost" onclick="closeModal('installEquip')">Cancel</button>
+      <button class="btn btn-primary" id="ieq-confirm">Install</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── CMMS Gap #1: Remove equipment from its slot ── -->
+<div class="modal-overlay" id="modal-removeInstall">
+  <div class="modal" style="max-width:460px;width:96%;">
+    <div class="modal-header">
+      <h3 style="margin:0;">Remove from location</h3>
+      <button class="modal-close" onclick="closeModal('removeInstall')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:13px;color:var(--muted);margin-bottom:10px;" id="rmi-subtitle">Pull this unit from its current slot.</div>
+      <label style="display:block;font-size:11px;text-transform:uppercase;letter-spacing:0.4px;font-weight:600;color:var(--muted);margin-bottom:4px;">New status</label>
+      <select id="rmi-status" style="width:100%;margin-bottom:10px;">
+        <option value="in_storage">In storage (back on the shelf)</option>
+        <option value="in_repair">In repair (pulled for refurb)</option>
+        <option value="scrapped">Scrapped (retired)</option>
+      </select>
+      <label style="display:block;font-size:11px;text-transform:uppercase;letter-spacing:0.4px;font-weight:600;color:var(--muted);margin-bottom:4px;">Note (optional)</label>
+      <input id="rmi-note" type="text" style="width:100%;" placeholder="e.g. compressor failure">
+      <div id="rmi-error" style="display:none;margin-top:10px;padding:8px 10px;border-radius:6px;background:#fdecea;color:#b71c1c;font-size:12px;"></div>
+    </div>
+    <div class="modal-footer" style="justify-content:flex-end;gap:8px;">
+      <button class="btn btn-ghost" onclick="closeModal('removeInstall')">Cancel</button>
+      <button class="btn btn-primary" id="rmi-confirm">Remove</button>
     </div>
   </div>
 </div>
@@ -4419,6 +4507,27 @@
       <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:14px;">
         <h4 style="margin:0 0 10px;color:var(--ink);font-size:14px;">Job Metadata</h4>
         <div id="vdf-meta-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px 18px;font-size:13px;"></div>
+      </div>
+
+      <!-- Lifecycle (CMMS Gap #3 — single enforced state machine) -->
+      <div id="vdf-lifecycle-card" style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:14px;">
+        <h4 style="margin:0 0 8px;color:var(--ink);font-size:14px;">Lifecycle</h4>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:10px;">
+          created → scheduled → in&nbsp;progress → completed → closed&nbsp;&nbsp;·&nbsp;&nbsp;cancel from created/scheduled
+        </div>
+        <div id="vdf-lifecycle-actions" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;"></div>
+        <div id="vdf-lifecycle-error" style="display:none;margin-top:8px;color:var(--danger,#c0392b);font-size:12px;"></div>
+      </div>
+
+      <!-- Billing (CMMS Gap #2) -->
+      <div id="vdf-billing-card" style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:14px;">
+        <h4 style="margin:0 0 8px;color:var(--ink);font-size:14px;">Billing</h4>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:10px;">
+          Who pays for this work — resolved as warranty → contract → billable, or set manually (goodwill).
+        </div>
+        <div id="vdf-billing-summary" style="font-size:13px;color:var(--text);margin-bottom:10px;">Loading…</div>
+        <div id="vdf-billing-actions" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;"></div>
+        <div id="vdf-billing-error" style="display:none;margin-top:8px;color:var(--danger,#c0392b);font-size:12px;"></div>
       </div>
 
       <!-- Scope of Work -->
@@ -4516,6 +4625,39 @@
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('addEquipment')">Cancel</button>
       <button class="btn btn-primary" onclick="submitAddEquipment()">Add Equipment</button>
+    </div>
+  </div>
+</div>
+
+<!-- CMMS Gap #1: Add Functional Location -->
+<div class="modal-overlay" id="modal-addFL">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>Add Functional Location</h3>
+      <button class="modal-close" onclick="closeModal('addFL')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field"><label>Name *</label><input id="fl-name" placeholder="Apt 4B / Living-room split"></div>
+      <div class="field-row">
+        <div class="field"><label>Class</label>
+          <select id="fl-class">
+            <option value="slot">Slot</option>
+            <option value="space">Space</option>
+            <option value="building">Building</option>
+            <option value="site">Site</option>
+          </select>
+        </div>
+        <div class="field"><label>Code</label><input id="fl-code" placeholder="optional short handle"></div>
+      </div>
+      <div class="field"><label>Parent location</label>
+        <select id="fl-parent"><option value="">— none (top level) —</option></select>
+      </div>
+      <div class="field"><label>Notes</label><textarea id="fl-notes" placeholder="Additional notes…"></textarea></div>
+      <div class="form-error" id="err-addFL"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('addFL')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitAddFL()">Add Location</button>
     </div>
   </div>
 </div>
@@ -5742,7 +5884,9 @@
       return lines.join('; ');
     }
     if (d && typeof d === 'object') {
-      return d.msg || d.error || JSON.stringify(d);
+      // CMMS install-conflict 409s use {scope, message}; also tolerate the
+      // common {msg}/{error} object shapes before falling back to raw JSON.
+      return d.msg || d.error || d.message || JSON.stringify(d);
     }
     return 'HTTP ' + status;
   }
@@ -6363,6 +6507,7 @@
       cdfState.customer = cust;
       renderCdfProfile();
       loadCdfEquipment();
+      loadCdfFunctionalLocations();
       loadCdfVisits();
     } catch(e) {
       if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) {
@@ -6448,6 +6593,76 @@
     }
   }
 
+  // ── CMMS Gap #1: Functional Locations panel (customer detail) ──
+  async function loadCdfFunctionalLocations() {
+    if (!cdfState.customer) return;
+    const tbody = document.getElementById('cdf-fl-body');
+    if (!tbody) return;
+    try {
+      const fls = await api('GET',
+        `/api/admin/customers/${cdfState.customer.id}/functional-locations`);
+      cdfState.functionalLocations = fls || [];
+      if (!cdfState.functionalLocations.length) {
+        tbody.innerHTML = '<tr><td colspan="4" class="empty">No functional locations yet. Add one to start tracking installs.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = cdfState.functionalLocations.map(f => {
+        const occ = f.active_equipment_id
+          ? `<strong>${escHtml(f.active_equipment_name || ('#' + f.active_equipment_id))}</strong>`
+          : '<span style="color:var(--muted);">— empty —</span>';
+        return `<tr>
+          <td>${escHtml(f.name)}</td>
+          <td>${escHtml(f.code) || '—'}</td>
+          <td>${escHtml(f.fl_class) || 'slot'}</td>
+          <td>${occ}</td>
+        </tr>`;
+      }).join('');
+    } catch(e) {
+      tbody.innerHTML = `<tr><td colspan="4" class="empty">Unable to load locations: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  function openAddFL() {
+    if (!cdfState.customer) { toast('Open a customer first.', 'error'); return; }
+    document.getElementById('fl-name').value = '';
+    document.getElementById('fl-code').value = '';
+    document.getElementById('fl-notes').value = '';
+    document.getElementById('fl-class').value = 'slot';
+    const errEl = document.getElementById('err-addFL');
+    if (errEl) errEl.textContent = '';
+    // Populate the parent dropdown from the already-loaded FL list.
+    const parentSel = document.getElementById('fl-parent');
+    const existing = cdfState.functionalLocations || [];
+    parentSel.innerHTML = '<option value="">— none (top level) —</option>'
+      + existing.map(f => `<option value="${f.id}">${escHtml(f.name)}</option>`).join('');
+    document.getElementById('modal-addFL').classList.add('open');
+  }
+
+  async function submitAddFL() {
+    if (!cdfState.customer) return;
+    const errEl = document.getElementById('err-addFL');
+    errEl.textContent = '';
+    const name = document.getElementById('fl-name').value.trim();
+    if (!name) { errEl.textContent = 'Name is required.'; return; }
+    const body = {
+      customer_id: cdfState.customer.id,
+      name,
+      fl_class: document.getElementById('fl-class').value || 'slot',
+      code: document.getElementById('fl-code').value.trim() || null,
+      notes: document.getElementById('fl-notes').value.trim() || null,
+    };
+    const parent = document.getElementById('fl-parent').value;
+    if (parent) body.parent_fl_id = parseInt(parent, 10);
+    try {
+      await api('POST', '/api/admin/functional-locations', body);
+      closeModal('addFL');
+      toast('Functional location added.', 'success');
+      loadCdfFunctionalLocations();
+    } catch(e) {
+      errEl.textContent = e.message || 'Could not add location.';
+    }
+  }
+
   function openEquipmentDetail(equipmentId) {
     if (!currentAdmin || currentAdmin.role !== 'super_admin') return;
     const eq = (cdfState.equipment || []).find(x => x.id === equipmentId);
@@ -6471,6 +6686,8 @@
       ['Model',         eq.model || '—'],
       ['Serial Number', eq.serial_number || '—'],
       ['Location',      eq.location || '—'],
+      ['Status',        eqdStatusLabel(eq.status)],
+      ['Warranty',      eqdWarrantyLabel(eq)],
       ['Notes',         eq.notes || '—'],
       ['Created',       PC.fmtDateTime(eq.created_at) || '—'],
       ['Last PM',       eq.last_pm_visit ? String(eq.last_pm_visit).slice(0,10) : '—'],
@@ -6517,6 +6734,208 @@
     body.appendChild(sVal);
 
     document.getElementById('modal-equipmentDetail').classList.add('open');
+    // CMMS Gap #1: render the install/remove controls + timeline (async).
+    eqdRenderLifecycle(eq);
+    eqdLoadTimeline(eq.id);
+  }
+
+  // ── CMMS Gap #1: equipment lifecycle (status / install / timeline) ──
+  const EQD_STATUS_LABELS = {
+    installed:  'Installed',
+    in_storage: 'In storage',
+    in_repair:  'In repair',
+    scrapped:   'Scrapped',
+  };
+  function eqdStatusLabel(s) { return EQD_STATUS_LABELS[s] || (s || '—'); }
+  function eqdWarrantyLabel(eq) {
+    if (!eq || !eq.warranty_months) return '—';
+    // The expiry is computed server-side on demand; here we show the term and,
+    // when present, the computed expiry the history/detail endpoints return.
+    const exp = eq.warranty_expiry ? (' · expires ' + String(eq.warranty_expiry).slice(0,10)) : '';
+    return eq.warranty_months + ' months' + exp;
+  }
+
+  // Keep the equipment we're currently viewing so the install/remove dialogs
+  // know which unit + customer to act on.
+  let eqdCurrent = null;
+
+  async function eqdRenderLifecycle(eq) {
+    eqdCurrent = eq;
+    const box = document.getElementById('eqd-lifecycle');
+    if (!box) return;
+    const canEdit = currentAdmin && (typeof _admin_can === 'undefined' ? true : true);
+    // The endpoints are perm-gated server-side (customer:update); we render the
+    // buttons for any admin who can open this modal and let the server enforce.
+    const installed = (eq.status === 'installed');
+    let loc = '—';
+    try {
+      const hist = await api('GET', `/api/admin/equipment/${eq.id}/history`);
+      const active = (hist || []).find(h => !h.removed_at);
+      if (active) {
+        loc = (active.fl_name || ('FL #' + active.functional_location_id))
+              + (active.fl_code ? ' (' + active.fl_code + ')' : '');
+      }
+    } catch (_) {}
+    box.innerHTML = `
+      <div style="border-top:1px solid var(--border);padding-top:12px;">
+        <div style="font-weight:700;font-size:13px;margin-bottom:8px;">Location &amp; lifecycle</div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <span style="font-size:12px;color:var(--muted);">Currently installed at:</span>
+          <strong style="font-size:13px;">${escHtml(loc)}</strong>
+          ${installed
+            ? `<button class="btn btn-ghost btn-sm" id="eqd-remove-btn">Remove from location</button>`
+            : `<button class="btn btn-primary btn-sm" id="eqd-install-btn">Install into location</button>`}
+        </div>
+      </div>`;
+    const ib = document.getElementById('eqd-install-btn');
+    if (ib) ib.onclick = () => eqdOpenInstall(eq);
+    const rb = document.getElementById('eqd-remove-btn');
+    if (rb) rb.onclick = () => eqdOpenRemove(eq);
+  }
+
+  async function eqdLoadTimeline(equipmentId) {
+    const box = document.getElementById('eqd-timeline');
+    if (!box) return;
+    box.innerHTML = '<div style="font-size:12px;color:var(--muted);">Loading timeline…</div>';
+    try {
+      const hist = await api('GET', `/api/admin/equipment/${equipmentId}/history`);
+      if (!hist || !hist.length) {
+        box.innerHTML = `<div style="border-top:1px solid var(--border);padding-top:12px;">
+          <div style="font-weight:700;font-size:13px;margin-bottom:6px;">Install history</div>
+          <div style="font-size:12px;color:var(--muted);">No install history yet.</div></div>`;
+        return;
+      }
+      const rowsHtml = hist.map(h => {
+        const where = escHtml(h.fl_name || ('FL #' + h.functional_location_id))
+                      + (h.fl_code ? ' <span style="color:var(--muted);">(' + escHtml(h.fl_code) + ')</span>' : '');
+        const inAt = h.installed_at ? String(h.installed_at).slice(0,10) : '—';
+        const outAt = h.removed_at ? String(h.removed_at).slice(0,10)
+                      : '<span style="color:#2e7d32;font-weight:600;">current</span>';
+        const note = h.remove_note || h.install_note || '';
+        return `<tr>
+          <td style="padding:4px 8px;">${where}</td>
+          <td style="padding:4px 8px;">${inAt}</td>
+          <td style="padding:4px 8px;">${outAt}</td>
+          <td style="padding:4px 8px;color:var(--muted);">${escHtml(note)}</td>
+        </tr>`;
+      }).join('');
+      box.innerHTML = `<div style="border-top:1px solid var(--border);padding-top:12px;">
+        <div style="font-weight:700;font-size:13px;margin-bottom:6px;">Install history</div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+          <thead><tr style="text-align:left;color:var(--muted);">
+            <th style="padding:4px 8px;font-weight:600;">Location</th>
+            <th style="padding:4px 8px;font-weight:600;">Installed</th>
+            <th style="padding:4px 8px;font-weight:600;">Removed</th>
+            <th style="padding:4px 8px;font-weight:600;">Note</th>
+          </tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table></div>`;
+    } catch (e) {
+      box.innerHTML = `<div style="font-size:12px;color:var(--muted);">Unable to load timeline: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  async function eqdOpenInstall(eq) {
+    const sel = document.getElementById('ieq-fl');
+    const err = document.getElementById('ieq-error');
+    err.style.display = 'none';
+    document.getElementById('ieq-note').value = '';
+    sel.innerHTML = '<option value="">Loading locations…</option>';
+    document.getElementById('ieq-subtitle').textContent =
+      'Choose a location to install "' + (eq.name || ('#' + eq.id)) + '" into.';
+    document.getElementById('modal-installEquip').classList.add('open');
+    // The customer is whatever this equipment belongs to.
+    const custId = eq.customer_id || (cdfState.customer && cdfState.customer.id);
+    try {
+      const fls = await api('GET', `/api/admin/customers/${custId}/functional-locations`);
+      const free = (fls || []).filter(f => !f.active_equipment_id);
+      if (!free.length) {
+        sel.innerHTML = '<option value="">No free locations — create or free one first</option>';
+      } else {
+        sel.innerHTML = free.map(f =>
+          `<option value="${f.id}">${escHtml(f.name)}${f.code ? ' (' + escHtml(f.code) + ')' : ''}</option>`
+        ).join('');
+      }
+    } catch (e) {
+      sel.innerHTML = '';
+      err.textContent = 'Unable to load locations: ' + e.message;
+      err.style.display = 'block';
+    }
+    document.getElementById('ieq-confirm').onclick = () => eqdDoInstall(eq);
+  }
+
+  async function eqdDoInstall(eq) {
+    const sel = document.getElementById('ieq-fl');
+    const err = document.getElementById('ieq-error');
+    const flId = parseInt(sel.value, 10);
+    if (!flId) { err.textContent = 'Pick a location first.'; err.style.display = 'block'; return; }
+    try {
+      await api('POST', `/api/admin/equipment/${eq.id}/install`, {
+        functional_location_id: flId,
+        install_note: document.getElementById('ieq-note').value || null,
+      });
+      closeModal('installEquip');
+      toast('Equipment installed.', 'success');
+      await eqdRefresh(eq.id);
+    } catch (e) {
+      // The server returns 409 with {detail:{scope,message}} on an invariant
+      // violation; _apiErrorMessage unwraps detail.message so e.message is the
+      // friendly text ("That location already has equipment installed.").
+      err.textContent = e.message || 'Install failed.';
+      err.style.display = 'block';
+    }
+  }
+
+  function eqdOpenRemove(eq) {
+    const err = document.getElementById('rmi-error');
+    err.style.display = 'none';
+    document.getElementById('rmi-note').value = '';
+    document.getElementById('rmi-status').value = 'in_storage';
+    document.getElementById('rmi-subtitle').textContent =
+      'Pull "' + (eq.name || ('#' + eq.id)) + '" from its current slot.';
+    document.getElementById('modal-removeInstall').classList.add('open');
+    document.getElementById('rmi-confirm').onclick = () => eqdDoRemove(eq);
+  }
+
+  async function eqdDoRemove(eq) {
+    const err = document.getElementById('rmi-error');
+    try {
+      await api('POST', `/api/admin/equipment/${eq.id}/remove-install`, {
+        new_status: document.getElementById('rmi-status').value,
+        remove_note: document.getElementById('rmi-note').value || null,
+      });
+      closeModal('removeInstall');
+      toast('Equipment removed from location.', 'success');
+      await eqdRefresh(eq.id);
+    } catch (e) {
+      err.textContent = e.message || 'Remove failed.';
+      err.style.display = 'block';
+    }
+  }
+
+  // Re-fetch the single equipment row (so status/location update) and re-render
+  // the modal sections + the customer equipment table behind it.
+  async function eqdRefresh(equipmentId) {
+    const custId = (eqdCurrent && eqdCurrent.customer_id)
+                   || (cdfState.customer && cdfState.customer.id);
+    try {
+      if (custId) {
+        const eqList = await api('GET', `/api/admin/customers/${custId}/equipment`);
+        cdfState.equipment = eqList || [];
+        const fresh = cdfState.equipment.find(x => x.id === equipmentId);
+        if (fresh) {
+          eqdCurrent = fresh;
+          // Update the status/warranty cells without rebuilding the whole grid.
+          openEquipmentDetail(equipmentId);
+        }
+        if (typeof loadCdfEquipment === 'function') loadCdfEquipment();
+      } else {
+        eqdRenderLifecycle(eqdCurrent);
+        eqdLoadTimeline(equipmentId);
+      }
+    } catch (_) {
+      eqdLoadTimeline(equipmentId);
+    }
   }
 
   async function openEquipmentDetailFromVisit(customerId, equipmentId) {
@@ -6843,6 +7262,8 @@
       const v = await api('GET', `/api/admin/visits/${visit_id}`);
       vdfState.visit = v;
       renderVdfMetadata();
+      renderVdfLifecycle();
+      renderVdfBilling();
       renderVdfScope();
       renderVdfReadings();
       renderVdfParts();
@@ -6931,6 +7352,187 @@
       fld('Assigned Technician', techCellLink),
       fld('Related Invoice',  invoiceCellLink),
     ].join('');
+  }
+
+  // CMMS Gap #3 — the legal next-states for each status, mirroring the
+  // server's _VISIT_LIFECYCLE. Buttons surface only legal moves; the server
+  // remains the source of truth and rejects anything illegal with a 409.
+  const VDF_LIFECYCLE = {
+    created:     ['scheduled', 'cancelled'],
+    scheduled:   ['in_progress', 'cancelled'],
+    in_progress: ['completed'],
+    completed:   ['closed'],
+    closed:      [],
+    cancelled:   [],
+  };
+  const VDF_STATE_LABELS = {
+    scheduled: 'Schedule', in_progress: 'Start', completed: 'Complete',
+    closed: 'Close', cancelled: 'Cancel',
+  };
+
+  function _vdfNormStatus(s) {
+    s = (s || '').trim();
+    if (s === 'tech_complete' || s === 'complete') return 'completed';
+    if (s === 'canceled') return 'cancelled';
+    if (s === 'confirmed') return 'completed';
+    return s;
+  }
+
+  function renderVdfLifecycle() {
+    const v = vdfState.visit;
+    const host = document.getElementById('vdf-lifecycle-actions');
+    const errEl = document.getElementById('vdf-lifecycle-error');
+    if (!host) return;
+    if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+    const cur = _vdfNormStatus(v && v.status);
+    const nexts = VDF_LIFECYCLE[cur] || [];
+    const editable = can('visit:update');
+    let html = `<span style="font-size:12px;color:var(--muted);">Current: <strong style="color:var(--text);">${escHtml(cur || '—')}</strong></span>`;
+    if (!editable) {
+      html += `<span style="font-size:12px;color:var(--muted);margin-left:8px;">(read-only)</span>`;
+    } else if (!nexts.length) {
+      html += `<span style="font-size:12px;color:var(--muted);margin-left:8px;">Terminal state — no further transitions.</span>`;
+    } else {
+      nexts.forEach(ns => {
+        const danger = (ns === 'cancelled');
+        const cls = danger ? 'btn btn-ghost btn-sm' : 'btn btn-primary btn-sm';
+        html += ` <button class="${cls}" onclick="vdfTransition('${ns}')">${escHtml(VDF_STATE_LABELS[ns] || ns)}</button>`;
+      });
+    }
+    host.innerHTML = html;
+  }
+
+  async function vdfTransition(target) {
+    const v = vdfState.visit;
+    if (!v) return;
+    let reason = '';
+    if (target === 'cancelled') {
+      reason = prompt('Reason for cancelling this visit?') || '';
+      if (reason === null) return;
+    }
+    const errEl = document.getElementById('vdf-lifecycle-error');
+    try {
+      await api('POST', `/api/admin/visits/${v.id}/transition`,
+                { status: target, reason: reason });
+      await openVisitDetailFull(v.id);
+      try { if (typeof renderVisitTable === 'function') renderVisitTable(); } catch(_) {}
+    } catch (e) {
+      if (errEl) {
+        errEl.textContent = (e && e.message) ? e.message : 'Transition failed.';
+        errEl.style.display = 'block';
+      }
+    }
+  }
+
+  // ── Billing (CMMS Gap #2) ────────────────────────────────────────────────
+  const VDF_BILLING_LABELS = {
+    warranty: 'Warranty', contract: 'PM Contract', billable: 'Billable',
+    goodwill: 'Goodwill',
+  };
+  const VDF_BILLING_COLORS = {
+    warranty: '#2980b9', contract: '#27ae60', billable: 'var(--text)',
+    goodwill: '#8e44ad',
+  };
+
+  async function renderVdfBilling() {
+    const v = vdfState.visit;
+    const card = document.getElementById('vdf-billing-card');
+    const sumEl = document.getElementById('vdf-billing-summary');
+    const actEl = document.getElementById('vdf-billing-actions');
+    const errEl = document.getElementById('vdf-billing-error');
+    if (!card || !v) return;
+    if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+    // Billing only makes sense once there's confirmed work (completed/closed).
+    const st = _vdfNormStatus(v.status);
+    if (st !== 'completed' && st !== 'closed') {
+      sumEl.innerHTML = '<span style="color:var(--muted);">Billing class resolves once the visit is completed.</span>';
+      actEl.innerHTML = '';
+      return;
+    }
+    sumEl.innerHTML = '<span style="color:var(--muted);">Resolving…</span>';
+    actEl.innerHTML = '';
+    let r;
+    try {
+      r = await api('GET', `/api/admin/visits/${v.id}/billing-class`);
+    } catch (e) {
+      sumEl.innerHTML = `<span style="color:var(--muted);">${escHtml((e&&e.message)||'Could not resolve billing class.')}</span>`;
+      return;
+    }
+    vdfState.billing = r;
+    const bc = r.billing_class || 'billable';
+    const col = VDF_BILLING_COLORS[bc] || 'var(--text)';
+    const ovr = r.overridden ? ' <span style="font-size:11px;color:var(--muted);">(manual override)</span>' : '';
+    let html = `<div>Class: <strong style="color:${col};">${escHtml(VDF_BILLING_LABELS[bc] || bc)}</strong>${ovr}</div>`;
+    if (r.reason) html += `<div style="font-size:12px;color:var(--muted);margin-top:3px;">${escHtml(r.reason)}</div>`;
+    if (r.entitlement && r.entitlement.included) {
+      const e = r.entitlement;
+      html += `<div style="font-size:11px;color:var(--muted);margin-top:3px;">Contract entitlement: ${e.used}/${e.included} used this contract-year (${escHtml(e.window_start||'')} → ${escHtml(e.window_end||'')}).</div>`;
+    }
+    sumEl.innerHTML = html;
+
+    let acts = '';
+    if (can('visit:update')) {
+      acts += `<span style="font-size:12px;color:var(--muted);">Override:</span>`;
+      ['billable','warranty','contract','goodwill'].forEach(c => {
+        if (c === bc && r.overridden) return; // already this override
+        acts += ` <button class="btn btn-ghost btn-sm" onclick="vdfSetBillingClass('${c}')">${escHtml(VDF_BILLING_LABELS[c])}</button>`;
+      });
+    }
+    if (can('invoice:create')) {
+      acts += ` <button class="btn btn-primary btn-sm" style="margin-left:auto;" onclick="vdfGenerateDraftInvoice()">Generate Draft Invoice</button>`;
+    }
+    actEl.innerHTML = acts;
+  }
+
+  async function vdfSetBillingClass(cls) {
+    const v = vdfState.visit;
+    if (!v) return;
+    let reason = '';
+    if (cls === 'goodwill') {
+      reason = prompt('Reason for writing this visit off as goodwill?') || '';
+      if (reason === '') return; // require a reason for goodwill
+    } else {
+      reason = prompt(`Reason for overriding billing class to "${VDF_BILLING_LABELS[cls]}"? (optional)`) || '';
+    }
+    const errEl = document.getElementById('vdf-billing-error');
+    try {
+      await api('POST', `/api/admin/visits/${v.id}/billing-class`,
+                { billing_class: cls, reason: reason });
+      toast(`Billing class set to ${VDF_BILLING_LABELS[cls]}.`);
+      await renderVdfBilling();
+    } catch (e) {
+      if (errEl) {
+        errEl.textContent = (e && e.message) ? e.message : 'Could not set billing class.';
+        errEl.style.display = 'block';
+      }
+    }
+  }
+
+  async function vdfGenerateDraftInvoice() {
+    const v = vdfState.visit;
+    if (!v) return;
+    const gctStr = prompt('Optional GCT rate as a percentage (e.g. 15 for 15%). Leave blank for none.', '');
+    if (gctStr === null) return;
+    let taxRate = 0;
+    if (gctStr.trim() !== '') {
+      const n = parseFloat(gctStr);
+      if (isNaN(n) || n < 0) { toast('Invalid GCT rate.'); return; }
+      taxRate = n / 100.0;
+    }
+    const errEl = document.getElementById('vdf-billing-error');
+    try {
+      const res = await api('POST', `/api/admin/visits/${v.id}/draft-invoice`,
+                            { tax_rate: taxRate });
+      const cls = VDF_BILLING_LABELS[res.billing_class] || res.billing_class;
+      toast(`Draft invoice ${res.invoice_number || ''} created (${cls}, total ${fmtMoney ? fmtMoney(res.total) : res.total}).`);
+      try { renderVdfInvoice(); } catch(_) {}
+      try { if (typeof renderVdfBilling === 'function') renderVdfBilling(); } catch(_) {}
+    } catch (e) {
+      if (errEl) {
+        errEl.textContent = (e && e.message) ? e.message : 'Could not generate draft invoice.';
+        errEl.style.display = 'block';
+      }
+    }
   }
 
   function renderVdfScope() {
@@ -7480,6 +8082,7 @@
     _toggle('tdf-reset-mfa-btn',   isActiveTech && can('tech:reset_pin'));
     _toggle('tdf-approve-ot-btn',  isActiveTech && can('tech:approve_overtime'));
     _toggle('tdf-release-kpi-btn', can('tech:release_kpi_period'));
+    _toggle('tdf-onboard-review-btn', _onbCanEdit());
   }
 
   // ── KPI section ───────────────────────────────────────────────────────────
@@ -9847,10 +10450,13 @@
       box.innerHTML = events.map(e => {
         const snap = e.snapshot || {};
         const when = e.created_at ? fmtDateTime(e.created_at, '') : '';
+        const rs = (snap.restored_stock || []);
+        const rsN = rs.reduce((s, r) => s + (Number(r.quantity) || 0), 0);
         return `<div class="vce-row vce-reversal">
           <div><strong>Reversal</strong> — ${escHtml(e.reason || '')}</div>
           <div class="vce-meta">by ${escHtml(e.actor_label || 'admin')} · ${escHtml(when)}
-            ${snap.work_done ? '· had logged: “' + escHtml(String(snap.work_done).slice(0,80)) + '”' : ''}</div>
+            ${snap.work_done ? '· had logged: “' + escHtml(String(snap.work_done).slice(0,80)) + '”' : ''}
+            ${rs.length ? '· returned ' + rsN + ' unit(s) to stock' : ''}</div>
         </div>`;
       }).join('');
     } catch (e) {
@@ -9865,8 +10471,12 @@
     const btn = document.getElementById('rcSubmitBtn');
     btn.disabled = true;
     try {
-      await api('POST', `/api/admin/visits/${rcVisitId}/reverse-confirmation`, { reason });
-      toast('Confirmation reversed — visit re-opened', 'success');
+      const res = await api('POST', `/api/admin/visits/${rcVisitId}/reverse-confirmation`, { reason });
+      const restored = (res && res.restored) || [];
+      const n = restored.reduce((s, r) => s + (Number(r.quantity) || 0), 0);
+      toast(restored.length
+        ? `Confirmation reversed — visit re-opened · ${n} unit(s) across ${restored.length} part(s) returned to stock`
+        : 'Confirmation reversed — visit re-opened', 'success');
       closeModal('reverseConfirm');
       await loadAllVisits();
     } catch (e) {
@@ -10549,6 +11159,7 @@
         <td>${a.active ? '<span class="badge badge-confirmed">Active</span>' : '<span class="badge" style="background:var(--surface-2);color:var(--muted);">Inactive</span>'}</td>
         <td style="white-space:nowrap;">
           <button class="btn btn-edit btn-sm pc-stop-prop" onclick="event.stopPropagation();openResetAdminPw(${a.id},'${escHtml(a.name)}')">Reset PW</button>
+          ${_onbCanEdit() ? `<button class="btn btn-ghost btn-sm pc-stop-prop" onclick="event.stopPropagation();openOnboardReview('admin',${a.id},'${escHtml(a.name)}')" style="margin-left:6px;">🧾 Onboarding</button>` : ''}
           ${canManage && !isMe ? (
             a.active
               ? `<button class="btn btn-danger btn-sm pc-stop-prop" onclick="event.stopPropagation();openOffboard('admin',${a.id},'${escHtml(a.name)}')" style="margin-left:6px;">🚪 Offboard</button>`
@@ -10635,6 +11246,189 @@
       btn.textContent = '✓ Copied!'; setTimeout(() => { btn.textContent = orig; }, 1500);
     } catch { document.getElementById('onboardLinkInput').select(); }
   }
+
+  // ── HR onboarding-submission review ─────────────────────────────────────
+  // Read (and, for HR/super_admin, correct) the packet a hire submitted
+  // through the wizard. Works for both 'tech' and 'admin' subjects.
+  let _onbReview = { kind: null, id: null, name: '', data: null, editing: false };
+
+  const _ONB_STATUS = {
+    submitted:    ['Submitted · locked', 'var(--teal-bg)',  'var(--teal-deep)'],
+    in_progress:  ['In progress',        'var(--steel-bg)', 'var(--steel)'],
+    invited:      ['Invited — not yet submitted', 'var(--surface-2)', 'var(--muted)'],
+    '':           ['Not started',        'var(--surface-2)', 'var(--muted)'],
+  };
+  // Singleton fields HR may correct, grouped for display. [key, label, type].
+  const _ONB_GROUPS = [
+    ['Personal', [
+      ['preferred_name','Preferred name','text'],
+      ['pronouns','Pronouns','text'],
+      ['sex','Sex','text'],
+      ['date_of_birth','Date of birth','date'],
+      ['country_of_birth','Country of birth','text'],
+      ['marital_status','Marital status','text'],
+      ['primary_nationality','Primary nationality','text'],
+      ['additional_nationalities','Additional nationalities','text'],
+      ['gender_identity','Gender identity','text'],
+      ['personal_phone','Personal phone','text'],
+      ['personal_email','Personal email','text'],
+      ['home_address','Home address','text'],
+      ['home_city','City / Town','text'],
+      ['home_parish','Parish','text'],
+      ['home_country','Country','text'],
+    ]],
+    ['Work eligibility & statutory IDs', [
+      ['national_id','National ID','text'],
+      ['trn','TRN','text'],
+      ['nis','NIS','text'],
+      ['nht','NHT','text'],
+    ]],
+    ['Pay & banking', [
+      ['bank_name','Bank','text'],
+      ['bank_branch','Branch','text'],
+      ['bank_account_type','Account type','text'],
+      ['bank_account_number','Account number','text'],
+    ]],
+    ['Diversity & accessibility (optional)', [
+      ['ethnicity','Ethnicity','text'],
+      ['disability_status','Disability status','text'],
+      ['accommodation_needed','Accommodation needed','text'],
+      ['accommodation_note','Accommodation note','text'],
+    ]],
+  ];
+
+  function _onbCanEdit() {
+    return !!(currentAdmin && (currentAdmin.role === 'super_admin' || currentAdmin.role === 'hr_admin'));
+  }
+  function _onbHumanKey(k) {
+    return String(k).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  }
+  function _onbRow(label, val) {
+    return `<div style="display:flex;justify-content:space-between;gap:16px;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;">
+      <span style="color:var(--muted);">${escHtml(label)}</span>
+      <span style="color:var(--text);text-align:right;font-weight:500;">${(val !== null && val !== undefined && String(val).trim() !== '') ? escHtml(String(val)) : '—'}</span></div>`;
+  }
+  function _onbCard(title, inner) {
+    return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:14px;">
+      <h4 style="margin:0 0 8px;color:var(--ink);font-size:14px;">${escHtml(title)}</h4>${inner}</div>`;
+  }
+  function _onbCollection(title, items) {
+    if (!Array.isArray(items) || !items.length) {
+      return _onbCard(title, `<div style="font-size:12px;color:var(--muted);">None provided.</div>`);
+    }
+    const blocks = items.map(it => {
+      if (it && typeof it === 'object') {
+        const rows = Object.keys(it)
+          .filter(k => k !== 'id')
+          .map(k => _onbRow(_onbHumanKey(k), it[k])).join('');
+        return `<div style="border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:8px;background:var(--surface-2);">${rows}</div>`;
+      }
+      return `<div style="font-size:13px;padding:4px 0;">${escHtml(String(it))}</div>`;
+    }).join('');
+    return _onbCard(`${title} <span style="color:var(--muted);font-weight:400;">(${items.length})</span>`, blocks);
+  }
+
+  async function openOnboardReview(kind, id, name) {
+    kind = (kind === 'admin') ? 'admin' : 'tech';
+    _onbReview = { kind, id, name: name || '', data: null, editing: false };
+    document.getElementById('onbReviewTitle').textContent = 'Onboarding — ' + (name || '');
+    document.getElementById('onbReviewBody').innerHTML = '<div class="empty" style="padding:20px;">Loading…</div>';
+    document.getElementById('onbReviewFooter').innerHTML =
+      `<button class="btn btn-primary" onclick="closeModal('onboardReview')">Close</button>`;
+    document.getElementById('modal-onboardReview').classList.add('open');
+    try {
+      const d = await api('GET', `/api/admin/onboarding/submission/${kind}/${id}`);
+      _onbReview.data = d;
+      renderOnbReview();
+    } catch (e) {
+      document.getElementById('onbReviewBody').innerHTML =
+        `<div class="empty" style="padding:20px;color:var(--danger);">Unable to load: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  function renderOnbReview() {
+    const d = _onbReview.data; if (!d) return;
+    const p = d.personal || {};
+    const st = _ONB_STATUS[d.status] || _ONB_STATUS[''];
+    const fmtTs = ts => ts ? new Date(ts).toLocaleString() : '';
+
+    const head = `
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:14px;">
+        <span class="badge" style="background:${st[1]};color:${st[2]};">${escHtml(st[0])}</span>
+        ${d.submitted_at ? `<span style="font-size:12px;color:var(--muted);">Submitted ${escHtml(fmtTs(d.submitted_at))}</span>` : ''}
+      </div>
+      <div style="background:var(--steel-bg);border-radius:8px;padding:10px 14px;font-size:12px;color:var(--ink);margin-bottom:16px;line-height:1.6;">
+        <strong>HR-managed identity:</strong> ${escHtml(d.name || '—')}
+        ${d.work_email ? ' · ' + escHtml(d.work_email) : ''}${d.work_phone ? ' · ' + escHtml(d.work_phone) : ''}
+        <br>The fields below were entered by the hire and locked on submit. ${_onbCanEdit() ? 'As HR you can correct them.' : ''}
+      </div>`;
+
+    if (_onbReview.editing) {
+      const groups = _ONB_GROUPS.map(([title, fields]) => {
+        const inner = fields.map(([k, label, type]) => `
+          <div style="margin-bottom:8px;">
+            <label style="display:block;font-size:11px;font-weight:600;color:var(--muted);margin-bottom:3px;">${escHtml(label)}</label>
+            <input data-onbk="${k}" type="${type}" value="${escHtml(p[k] == null ? '' : String(p[k]))}"
+                   style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;">
+          </div>`).join('');
+        return _onbCard(title, inner);
+      }).join('');
+      document.getElementById('onbReviewBody').innerHTML = head + groups +
+        `<div style="font-size:12px;color:var(--muted);">Emergency contacts, education, work history and policy sign-offs are shown in read mode and aren't edited here.</div>`;
+      document.getElementById('onbReviewFooter').innerHTML =
+        `<button class="btn btn-ghost" onclick="onbReviewCancelEdit()">Cancel</button>
+         <button class="btn btn-primary" onclick="saveOnbReview()">Save changes</button>`;
+      return;
+    }
+
+    const personalCard = _onbCard('Personal', _ONB_GROUPS[0][1].map(([k,l]) => _onbRow(l, p[k])).join(''));
+    const workCard     = _onbCard('Work eligibility & statutory IDs', _ONB_GROUPS[1][1].map(([k,l]) => _onbRow(l, p[k])).join(''));
+    const bankCard     = _onbCard('Pay & banking', _ONB_GROUPS[2][1].map(([k,l]) => _onbRow(l, p[k])).join(''));
+    const divCard      = _onbCard('Diversity & accessibility (optional)', _ONB_GROUPS[3][1].map(([k,l]) => _onbRow(l, p[k])).join(''));
+    const esignCard    = _onbCard('Electronic signature', [
+      _onbRow('Signed name', p.esign_full_name),
+      _onbRow('Initials', p.esign_initials),
+      _onbRow('Agreed at', fmtTs(d.esign_agreed_at)),
+    ].join(''));
+    const col = d.collections || {};
+    const collectionCards =
+      _onbCollection('Emergency contacts', col.emergency_contacts) +
+      _onbCollection('Education', col.education) +
+      _onbCollection('Work history', col.job_history) +
+      _onbCollection('Languages', col.languages) +
+      _onbCollection('Policy acknowledgements', col.policy_acknowledgements);
+
+    document.getElementById('onbReviewBody').innerHTML =
+      head + personalCard + workCard + bankCard + collectionCards + divCard + esignCard;
+
+    document.getElementById('onbReviewFooter').innerHTML =
+      (_onbCanEdit()
+        ? `<button class="btn btn-edit" onclick="onbReviewStartEdit()">✎ Correct details</button>`
+        : '') +
+      `<button class="btn btn-primary" onclick="closeModal('onboardReview')">Close</button>`;
+  }
+
+  function onbReviewStartEdit() { _onbReview.editing = true; renderOnbReview(); }
+  function onbReviewCancelEdit() { _onbReview.editing = false; renderOnbReview(); }
+
+  async function saveOnbReview() {
+    const personal = {};
+    document.querySelectorAll('#onbReviewBody [data-onbk]').forEach(el => {
+      personal[el.getAttribute('data-onbk')] = el.value;
+    });
+    try {
+      const res = await api('POST',
+        `/api/admin/onboarding/submission/${_onbReview.kind}/${_onbReview.id}`,
+        { personal });
+      _onbReview.data.personal = res.personal;
+      _onbReview.editing = false;
+      renderOnbReview();
+      toast('Onboarding details updated.', 'success');
+    } catch (e) {
+      toast('Save failed: ' + e.message, 'error');
+    }
+  }
+
   async function copyPrid() {
     const prid = document.getElementById('pridDisplay').textContent;
     try {

@@ -434,6 +434,20 @@ def init_db():
         # only ever consulted for audit display.
         ("updated_by_kind",   "ALTER TABLE equipment ADD COLUMN updated_by_kind TEXT"),
         ("updated_by_id",     "ALTER TABLE equipment ADD COLUMN updated_by_id INTEGER"),
+        # --- CMMS lifecycle (Gap #1: FL/equipment temporal split) -----------
+        # status tracks the physical state of the asset as it moves through the
+        # refurbish-and-swap loop. 'installed' = currently in service at an FL;
+        # 'in_storage' = on the shelf/van available to install; 'in_repair' =
+        # pulled for refurb; 'scrapped' = retired. The active install invariant
+        # (one active equipment_install per equipment) is what actually enforces
+        # "installed" — status is the human-facing label and lets us list spare
+        # stock. We don't CHECK-constrain it on ALTER (SQLite can't add a CHECK
+        # to an existing column), so the service layer validates the enum.
+        ("status",            "ALTER TABLE equipment ADD COLUMN status TEXT NOT NULL DEFAULT 'in_storage'"),
+        # warranty_months drives the computed warranty-expiry used later by the
+        # billing-class layer (Gap #2) to resolve 'warranty' coverage. NULL or 0
+        # means no manufacturer warranty on record.
+        ("warranty_months",   "ALTER TABLE equipment ADD COLUMN warranty_months INTEGER"),
     ):
         if name not in eq_cols:
             try: con.execute(sql)
@@ -1359,6 +1373,38 @@ def init_db():
         # that. NULL/'' means no user status set. Vocabulary is whitelisted in
         # main.py (_VISIT_USER_STATUSES) so the DB stays a dumb store.
         ("user_status",            "ALTER TABLE maintenance_visits ADD COLUMN user_status TEXT"),
+        # CMMS Gap #3 — single enforced lifecycle state machine. The canonical
+        # graph is created→scheduled→in_progress→completed→closed, with cancel
+        # reachable from created/scheduled (see transition_visit + _VISIT_
+        # LIFECYCLE). These columns record the two new terminal transitions so
+        # close/cancel are first-class (not just a status string). Additive; the
+        # existing scheduled/in_progress/completed data is untouched. NB: the
+        # spec name "tech_complete" maps onto the existing "completed" state
+        # (which already locks via submitted_at), so no data rename is needed.
+        ("closed_at",              "ALTER TABLE maintenance_visits ADD COLUMN closed_at TEXT"),
+        ("closed_by_kind",         "ALTER TABLE maintenance_visits ADD COLUMN closed_by_kind TEXT"),
+        ("closed_by_id",           "ALTER TABLE maintenance_visits ADD COLUMN closed_by_id INTEGER"),
+        ("cancelled_at",           "ALTER TABLE maintenance_visits ADD COLUMN cancelled_at TEXT"),
+        ("cancelled_reason",       "ALTER TABLE maintenance_visits ADD COLUMN cancelled_reason TEXT"),
+        ("cancelled_by_kind",      "ALTER TABLE maintenance_visits ADD COLUMN cancelled_by_kind TEXT"),
+        ("cancelled_by_id",        "ALTER TABLE maintenance_visits ADD COLUMN cancelled_by_id INTEGER"),
+        # CMMS Gap #2 — billing-class layer. Every order (visit) resolves to ONE
+        # billing class that decides who pays for the work it confirmed:
+        #   warranty  — equipment still under manufacturer warranty at visit date
+        #   contract  — covered by an active PM contract within its yearly
+        #               entitlement (overage past entitlement falls back to billable)
+        #   billable  — the customer pays (the default)
+        #   goodwill  — written off, charged at zero (manual decision only)
+        # `billing_class` caches the LAST resolved/overridden value; when
+        # `billing_class_overridden=1` the stored value is a manual decision that
+        # resolve_billing_class() must respect instead of recomputing. NULL means
+        # "never resolved" → resolve_billing_class() computes it on demand.
+        ("billing_class",            "ALTER TABLE maintenance_visits ADD COLUMN billing_class TEXT"),
+        ("billing_class_reason",     "ALTER TABLE maintenance_visits ADD COLUMN billing_class_reason TEXT"),
+        ("billing_class_overridden", "ALTER TABLE maintenance_visits ADD COLUMN billing_class_overridden INTEGER NOT NULL DEFAULT 0"),
+        ("billing_class_set_at",     "ALTER TABLE maintenance_visits ADD COLUMN billing_class_set_at TEXT"),
+        ("billing_class_set_by_kind","ALTER TABLE maintenance_visits ADD COLUMN billing_class_set_by_kind TEXT"),
+        ("billing_class_set_by_id",  "ALTER TABLE maintenance_visits ADD COLUMN billing_class_set_by_id INTEGER"),
     ):
         if col_sql[0] not in existing_cols:
             try: con.execute(col_sql[1])
@@ -1393,6 +1439,20 @@ def init_db():
     """)
     con.execute("CREATE INDEX IF NOT EXISTS idx_pm_contracts_customer ON pm_contracts(customer_id, status)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_pm_contracts_status ON pm_contracts(status, end_date)")
+
+    # CMMS Gap #2 — contract entitlement. `included_pm_visits_per_year` is the
+    # number of PM visits the contract value already pays for in a contract-year
+    # (the year window anchored on start_date). 0/NULL = unlimited (every PM
+    # visit under the contract is covered). Beyond the entitlement, additional
+    # PM visits resolve to `billable` (overage). See count_contract_visits_in_year.
+    _pmc_cols = {row[1] for row in con.execute("PRAGMA table_info(pm_contracts)")}
+    for c, sql in (
+        ("included_pm_visits_per_year",
+         "ALTER TABLE pm_contracts ADD COLUMN included_pm_visits_per_year INTEGER NOT NULL DEFAULT 0"),
+    ):
+        if c not in _pmc_cols:
+            try: con.execute(sql)
+            except sqlite3.OperationalError: pass
 
     # Parts: image + location for tech in-field visual confirmation
     part_cols = {row[1] for row in con.execute("PRAGMA table_info(parts)")}
@@ -2921,6 +2981,77 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_staff_profile_items "
                 "ON staff_profile_items(staff_kind, staff_id, collection, sort_order)")
 
+    # ====================================================================
+    # CMMS Gap #1 — functional-location ↔ equipment temporal split
+    # --------------------------------------------------------------------
+    # A functional_location ("FL") is a *slot*: a fixed place in a customer's
+    # property where a piece of equipment lives (e.g. "Apt 4B / Living-room
+    # split"). The slot persists even when the physical unit is pulled for
+    # refurb and a loaner is dropped in — that swap is the whole point of the
+    # model. FLs form a tree via parent_fl_id (site → building → space → slot)
+    # discriminated loosely by fl_class. Scoped to a customer so the portal can
+    # row-filter. We keep this independent of the legacy free-text
+    # equipment.location; the FL tree is the structured successor.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS functional_location (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id   INTEGER NOT NULL REFERENCES customers(id),
+            parent_fl_id  INTEGER REFERENCES functional_location(id),
+            fl_class      TEXT NOT NULL DEFAULT 'slot'
+                          CHECK (fl_class IN ('site','building','space','slot')),
+            code          TEXT,                       -- short human label, unique per customer
+            name          TEXT NOT NULL,
+            notes         TEXT,
+            active        INTEGER NOT NULL DEFAULT 1,
+            created_at    TEXT NOT NULL,
+            updated_at    TEXT
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_fl_customer "
+                "ON functional_location(customer_id, active)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_fl_parent "
+                "ON functional_location(parent_fl_id)")
+    # A customer-scoped code is a friendly handle; unique only when supplied.
+    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_fl_customer_code "
+                "ON functional_location(customer_id, code) WHERE code IS NOT NULL")
+
+    # equipment_install is the temporal join: which unit occupied which slot,
+    # from installed_at until removed_at. removed_at IS NULL ⇒ the install is
+    # ACTIVE (current). History is append-only in spirit: removing a unit sets
+    # removed_at rather than deleting the row, so the equipment timeline can
+    # replay every swap. installed_by_kind/id is the polymorphic actor (admin
+    # or tech) mirroring equipment.updated_by_*.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS equipment_install (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            equipment_id          INTEGER NOT NULL REFERENCES equipment(id),
+            functional_location_id INTEGER NOT NULL REFERENCES functional_location(id),
+            installed_at          TEXT NOT NULL,
+            removed_at            TEXT,
+            installed_by_kind     TEXT,
+            installed_by_id       INTEGER,
+            removed_by_kind       TEXT,
+            removed_by_id         INTEGER,
+            install_note          TEXT,
+            remove_note           TEXT,
+            created_at            TEXT NOT NULL
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_eqinstall_equipment "
+                "ON equipment_install(equipment_id, installed_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_eqinstall_fl "
+                "ON equipment_install(functional_location_id, installed_at)")
+    # THE TWO INVARIANTS (the Phase-1 gate). SQLite partial-unique indexes are
+    # the re-expression of the spec's Postgres partial unique constraints:
+    #   1. At most ONE active install per functional location (no two units in
+    #      the same slot at once).
+    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_active_install_per_fl "
+                "ON equipment_install(functional_location_id) WHERE removed_at IS NULL")
+    #   2. At most ONE active install per piece of equipment (a unit can't be
+    #      installed in two slots at once).
+    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_active_install_per_equipment "
+                "ON equipment_install(equipment_id) WHERE removed_at IS NULL")
+
     con.commit()
     con.close()
     _backfill_prids()
@@ -4047,6 +4178,16 @@ def create_equipment(data: dict) -> int:
         ),
     )
     equipment_id = cur.lastrowid
+    # Optional Gap #1 columns at creation time (status / manufacturer warranty).
+    # Wrapped per-column so older DBs without the additive columns still insert.
+    if data.get("status"):
+        try: con.execute("UPDATE equipment SET status=? WHERE id=?",
+                         (data["status"], equipment_id))
+        except sqlite3.OperationalError: pass
+    if data.get("warranty_months") is not None:
+        try: con.execute("UPDATE equipment SET warranty_months=? WHERE id=?",
+                         (int(data["warranty_months"]), equipment_id))
+        except sqlite3.OperationalError: pass
     con.commit()
     con.close()
     return equipment_id
@@ -4070,7 +4211,7 @@ def delete_equipment(equipment_id: int):
 # customers would orphan visit_id → equipment_id history and should be a
 # separate, audited admin action when needed.
 
-_EQUIPMENT_PLAIN_COLS  = ("name", "type", "model", "active")
+_EQUIPMENT_PLAIN_COLS  = ("name", "type", "model", "active", "warranty_months")
 _EQUIPMENT_ENC_COLS    = ("serial_number", "location", "notes")
 _EQUIPMENT_ALL_EDITABLE = _EQUIPMENT_PLAIN_COLS + _EQUIPMENT_ENC_COLS
 
@@ -4119,6 +4260,331 @@ def deactivate_equipment(equipment_id, updated_by_kind=None, updated_by_id=None)
         updated_by_kind=updated_by_kind,
         updated_by_id=updated_by_id,
     )
+
+
+# ── Functional locations + equipment installs (CMMS Gap #1) ──────────────────
+#
+# The functional_location tree models WHERE equipment can live; equipment_install
+# is the temporal record of WHICH unit occupies a slot over time. The two
+# partial-unique indexes created in init_db() (uq_active_install_per_fl,
+# uq_active_install_per_equipment) are the real guard rails — the service layer
+# below is a thin, friendly wrapper that surfaces those IntegrityErrors as
+# meaningful errors and keeps equipment.status in sync.
+
+_FL_VALID_CLASSES = ("site", "building", "space", "slot")
+_EQUIPMENT_VALID_STATUS = ("installed", "in_storage", "in_repair", "scrapped")
+
+
+class InstallConflict(Exception):
+    """Raised when an install would violate an active-install invariant.
+
+    Carries `scope` ∈ {'fl','equipment'} so the route layer can render a
+    targeted, human-friendly message ("That slot already has a unit installed"
+    vs. "That unit is already installed elsewhere") instead of leaking a raw
+    SQLite IntegrityError string.
+    """
+    def __init__(self, scope, message):
+        super().__init__(message)
+        self.scope = scope
+
+
+def create_functional_location(data: dict) -> int:
+    """Create an FL slot/node. Requires customer_id + name; fl_class defaults
+    to 'slot'. parent_fl_id is optional (NULL = top of that customer's tree)."""
+    fl_class = (data.get("fl_class") or "slot").strip()
+    if fl_class not in _FL_VALID_CLASSES:
+        raise ValueError("invalid fl_class: %r" % fl_class)
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    try:
+        cur = con.execute(
+            """
+            INSERT INTO functional_location
+                (customer_id, parent_fl_id, fl_class, code, name, notes, active, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+            """,
+            (
+                int(data["customer_id"]),
+                (int(data["parent_fl_id"]) if data.get("parent_fl_id") else None),
+                fl_class,
+                (data.get("code") or None),
+                data["name"],
+                (data.get("notes") or None),
+                now,
+            ),
+        )
+        con.commit()
+        return cur.lastrowid
+    except sqlite3.IntegrityError as e:
+        # SQLite phrases UNIQUE violations by COLUMN ("...functional_location.code"),
+        # not by index name, so we match the column signature.
+        if "functional_location.code" in str(e):
+            raise ValueError("An FL with that code already exists for this customer.") from e
+        raise
+    finally:
+        con.close()
+
+
+def get_functional_location(fl_id: int):
+    con = _con()
+    row = con.execute(
+        "SELECT * FROM functional_location WHERE id = ?", (fl_id,)
+    ).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
+def get_customer_functional_locations(customer_id: int, include_inactive=False):
+    """Flat list of a customer's FL nodes, ordered for tree assembly
+    (parents before children is not guaranteed by id, so the caller builds the
+    tree from parent_fl_id)."""
+    con = _con()
+    if include_inactive:
+        rows = con.execute(
+            "SELECT * FROM functional_location WHERE customer_id = ? "
+            "ORDER BY COALESCE(parent_fl_id, 0), name",
+            (customer_id,),
+        ).fetchall()
+    else:
+        rows = con.execute(
+            "SELECT * FROM functional_location WHERE customer_id = ? AND active = 1 "
+            "ORDER BY COALESCE(parent_fl_id, 0), name",
+            (customer_id,),
+        ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def update_functional_location(fl_id, updates: dict) -> bool:
+    if not isinstance(updates, dict) or not updates:
+        return False
+    set_parts, args = [], []
+    for col in ("parent_fl_id", "fl_class", "code", "name", "notes", "active"):
+        if col not in updates:
+            continue
+        val = updates[col]
+        if col == "fl_class" and val not in _FL_VALID_CLASSES:
+            raise ValueError("invalid fl_class: %r" % val)
+        if col == "active":
+            val = 1 if val else 0
+        if col == "parent_fl_id":
+            val = int(val) if val else None
+        if col == "code":
+            val = val or None
+        set_parts.append("%s = ?" % col)
+        args.append(val)
+    if not set_parts:
+        return False
+    set_parts.append("updated_at = ?")
+    args.append(datetime.now(timezone.utc).isoformat())
+    args.append(int(fl_id))
+    con = _con()
+    try:
+        cur = con.execute(
+            "UPDATE functional_location SET %s WHERE id = ?" % ", ".join(set_parts), args
+        )
+        con.commit()
+        return cur.rowcount > 0
+    except sqlite3.IntegrityError as e:
+        if "functional_location.code" in str(e):
+            raise ValueError("An FL with that code already exists for this customer.") from e
+        raise
+    finally:
+        con.close()
+
+
+def get_active_install_for_fl(fl_id: int):
+    """The unit currently occupying this slot, or None."""
+    con = _con()
+    row = con.execute(
+        "SELECT * FROM equipment_install "
+        "WHERE functional_location_id = ? AND removed_at IS NULL",
+        (fl_id,),
+    ).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
+def get_active_install_for_equipment(equipment_id: int):
+    """The slot this unit currently occupies, or None."""
+    con = _con()
+    row = con.execute(
+        "SELECT * FROM equipment_install "
+        "WHERE equipment_id = ? AND removed_at IS NULL",
+        (equipment_id,),
+    ).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
+def install_equipment(equipment_id, functional_location_id, *,
+                      installed_by_kind=None, installed_by_id=None,
+                      install_note=None, installed_at=None) -> int:
+    """Open a new active install row for `equipment_id` at
+    `functional_location_id`, and flip equipment.status to 'installed'.
+
+    Relies on the two partial-unique indexes to reject:
+      * a second unit in an already-occupied slot, and
+      * installing a unit that's already installed somewhere.
+    Either violation is surfaced as InstallConflict with a `scope` tag.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    ts = installed_at or now
+    con = _con()
+    try:
+        cur = con.execute(
+            """
+            INSERT INTO equipment_install
+                (equipment_id, functional_location_id, installed_at, removed_at,
+                 installed_by_kind, installed_by_id, install_note, created_at)
+            VALUES (?, ?, ?, NULL, ?, ?, ?, ?)
+            """,
+            (int(equipment_id), int(functional_location_id), ts,
+             installed_by_kind, installed_by_id, (install_note or None), now),
+        )
+        con.execute(
+            "UPDATE equipment SET status = 'installed', updated_at = ? WHERE id = ?",
+            (now, int(equipment_id)),
+        )
+        con.commit()
+        return cur.lastrowid
+    except sqlite3.IntegrityError as e:
+        con.rollback()
+        # SQLite names the offending COLUMN, not the partial-unique index, so
+        # we disambiguate the two invariants by column signature.
+        msg = str(e)
+        if "functional_location_id" in msg:
+            raise InstallConflict(
+                "fl", "That location already has equipment installed. "
+                "Remove the current unit before installing another."
+            ) from e
+        if "equipment_id" in msg:
+            raise InstallConflict(
+                "equipment", "That equipment is already installed at another location. "
+                "Remove it from its current slot first."
+            ) from e
+        raise
+    finally:
+        con.close()
+
+
+def remove_equipment_install(equipment_id, *, removed_by_kind=None,
+                             removed_by_id=None, remove_note=None,
+                             removed_at=None, new_status="in_storage") -> bool:
+    """Close the active install for `equipment_id` (sets removed_at) and set
+    equipment.status to `new_status` (default 'in_storage'; pass 'in_repair'
+    when the unit was pulled for refurb). Returns False if there was no active
+    install."""
+    if new_status not in _EQUIPMENT_VALID_STATUS:
+        raise ValueError("invalid status: %r" % new_status)
+    now = datetime.now(timezone.utc).isoformat()
+    ts = removed_at or now
+    con = _con()
+    try:
+        cur = con.execute(
+            "UPDATE equipment_install SET removed_at = ?, removed_by_kind = ?, "
+            "removed_by_id = ?, remove_note = ? "
+            "WHERE equipment_id = ? AND removed_at IS NULL",
+            (ts, removed_by_kind, removed_by_id, (remove_note or None), int(equipment_id)),
+        )
+        if cur.rowcount > 0:
+            con.execute(
+                "UPDATE equipment SET status = ?, updated_at = ? WHERE id = ?",
+                (new_status, now, int(equipment_id)),
+            )
+        con.commit()
+        return cur.rowcount > 0
+    finally:
+        con.close()
+
+
+def set_equipment_status(equipment_id, status, updated_by_kind=None, updated_by_id=None) -> bool:
+    """Directly set equipment.status (e.g. 'in_repair' → 'in_storage' after
+    refurb, or 'scrapped'). Does NOT touch install rows; callers that retire a
+    unit should remove its install first. Stamps updated_at/updated_by."""
+    if status not in _EQUIPMENT_VALID_STATUS:
+        raise ValueError("invalid status: %r" % status)
+    set_parts = ["status = ?", "updated_at = ?"]
+    args = [status, datetime.now(timezone.utc).isoformat()]
+    if updated_by_kind is not None:
+        set_parts.append("updated_by_kind = ?")
+        args.append(updated_by_kind)
+    if updated_by_id is not None:
+        set_parts.append("updated_by_id = ?")
+        args.append(int(updated_by_id))
+    args.append(int(equipment_id))
+    con = _con()
+    try:
+        cur = con.execute(
+            "UPDATE equipment SET %s WHERE id = ?" % ", ".join(set_parts), args
+        )
+        con.commit()
+        return cur.rowcount > 0
+    finally:
+        con.close()
+
+
+def get_equipment_install_history(equipment_id: int):
+    """Full install/remove history for a unit, newest first, with the FL name
+    joined for display. Feeds the equipment timeline view."""
+    con = _con()
+    rows = con.execute(
+        """
+        SELECT ei.*, fl.name AS fl_name, fl.code AS fl_code, fl.fl_class AS fl_class,
+               fl.customer_id AS fl_customer_id
+        FROM equipment_install ei
+        JOIN functional_location fl ON fl.id = ei.functional_location_id
+        WHERE ei.equipment_id = ?
+        ORDER BY ei.installed_at DESC, ei.id DESC
+        """,
+        (equipment_id,),
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def get_fl_install_history(fl_id: int):
+    """Full occupancy history for a slot, newest first, with equipment name
+    joined for display."""
+    con = _con()
+    rows = con.execute(
+        """
+        SELECT ei.*, e.name AS equipment_name, e.type AS equipment_type, e.model AS equipment_model
+        FROM equipment_install ei
+        JOIN equipment e ON e.id = ei.equipment_id
+        WHERE ei.functional_location_id = ?
+        ORDER BY ei.installed_at DESC, ei.id DESC
+        """,
+        (fl_id,),
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def compute_warranty_expiry(equipment_row: dict):
+    """Return an ISO date string for when the manufacturer warranty lapses,
+    or None when warranty_months is unset/zero. Anchored on created_at (our
+    proxy for the install/commission date until a dedicated field exists)."""
+    if not equipment_row:
+        return None
+    months = equipment_row.get("warranty_months")
+    if not months:
+        return None
+    anchor = equipment_row.get("created_at")
+    if not anchor:
+        return None
+    try:
+        base = datetime.fromisoformat(anchor.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+    # Add `months` months without external deps: roll year/month, clamp day.
+    total = (base.year * 12 + (base.month - 1)) + int(months)
+    y, m = divmod(total, 12)
+    m += 1
+    # clamp day to the last valid day of the target month
+    import calendar as _cal
+    day = min(base.day, _cal.monthrange(y, m)[1])
+    return base.replace(year=y, month=m, day=day).date().isoformat()
 
 
 # ── Maintenance Visits ────────────────────────────────────────────────────────
@@ -4216,12 +4682,38 @@ def create_visit(data: dict) -> int:
         ),
     )
     visit_id = cur.lastrowid
+    # Optional links not in the base INSERT column list (additive columns).
+    # Wrapped per-column so older DBs without the column still create the visit.
+    for col in ("pm_contract_id", "callback_of_visit_id", "hub_id"):
+        if data.get(col) is not None:
+            try: con.execute(f"UPDATE maintenance_visits SET {col}=? WHERE id=?",
+                             (data[col], visit_id))
+            except sqlite3.OperationalError: pass
     con.commit()
     con.close()
     return visit_id
 
 
 def update_visit(visit_id: int, data: dict):
+    # CMMS Gap #3 — every edit path runs through the lifecycle guard so no
+    # caller can make an illegal status jump or mutate a frozen visit's
+    # descriptive content. transition_visit() handles dedicated lifecycle moves
+    # (close/cancel) with their side-effects; this guard covers the edit modal
+    # and the tech start bump. Raises VisitTransitionError on violation.
+    if data.get("status"):
+        _g = _con()
+        _gr = _g.execute(
+            "SELECT status FROM maintenance_visits WHERE id = ?", (int(visit_id),)
+        ).fetchone()
+        _g.close()
+        if _gr is not None:
+            _cur = normalize_visit_status(_gr["status"])
+            _tgt = normalize_visit_status(data["status"])
+            if _tgt != _cur and _tgt not in _VISIT_LIFECYCLE.get(_cur, set()):
+                raise VisitTransitionError(
+                    f"Illegal transition: {_cur} → {_tgt}", kind="transition",
+                    current=_cur, requested=_tgt)
+    assert_visit_edit_allowed(visit_id, data)
     con = _con()
     con.execute(
         """
@@ -4248,7 +4740,7 @@ def update_visit(visit_id: int, data: dict):
         (
             data.get("equipment_id") or None,
             data["visit_type"].upper(),
-            data["status"],
+            normalize_visit_status(data["status"]),
             data.get("scheduled_date") or None,
             data.get("scheduled_time") or None,
             data.get("completed_date") or None,
@@ -4599,6 +5091,202 @@ def tech_complete_visit(visit_id: int, work_done: str, parts: str, notes: str,
     )
     con.commit()
     con.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# CMMS Gap #3 — single enforced visit lifecycle state machine
+#
+# Until now visit `status` was written ad hoc from several call sites
+# (create_visit default, tech_start_job, tech_complete_visit, the reversal
+# reopen, the admin edit modal). transition_visit() is the ONE authority for
+# legal status changes — mirroring transition_invoice_status / _estimate /
+# _timesheet. The canonical graph reuses the EXISTING vocabulary so the live
+# data (scheduled/in_progress/completed) needs no migration:
+#
+#     created ─▶ scheduled ─▶ in_progress ─▶ completed ─▶ closed
+#        │           │
+#        └───────────┴────────────────────▶ cancelled
+#
+# Spec names map onto existing states: the spec's "tech_complete" IS this
+# system's "completed" (which already locks via submitted_at), and "closed"
+# is the new manager/billing close. Aliases are normalised on the way in.
+# ─────────────────────────────────────────────────────────────────────────
+_VISIT_LIFECYCLE = {
+    "created":     {"scheduled", "cancelled"},
+    "scheduled":   {"in_progress", "cancelled"},
+    "in_progress": {"completed"},
+    "completed":   {"closed"},
+    "closed":      set(),
+    "cancelled":   set(),
+}
+# Normalise spec / colloquial names onto the canonical vocabulary.
+_VISIT_STATUS_ALIASES = {
+    "tech_complete": "completed",
+    "complete":      "completed",
+    "canceled":      "cancelled",
+    "open":          "scheduled",
+}
+_ALL_VISIT_STATES = set(_VISIT_LIFECYCLE.keys())
+# Once a visit reaches one of these, its descriptive fields are frozen — the
+# only way back to editable is a confirmation reversal (reverse_visit_
+# confirmation), which re-opens to 'scheduled'.
+_VISIT_FROZEN_STATES = {"completed", "closed", "cancelled"}
+# Descriptive (work-content / scheduling) fields that freeze after completion.
+# `status` and pure metadata (crew, flags) are intentionally excluded.
+_VISIT_DESCRIPTIVE_FIELDS = (
+    "visit_type", "scheduled_date", "scheduled_time", "completed_date",
+    "technician", "work_done", "parts_replaced", "notes", "scope_of_work",
+    "estimated_duration_min", "contact_person_name", "contact_person_phone",
+    "hazards", "access_codes", "equipment_id",
+)
+# Of those, these are stored encrypted and must be decrypted before comparing.
+_VISIT_DESCRIPTIVE_ENC = {
+    "work_done", "parts_replaced", "notes",
+    "contact_person_phone", "hazards", "access_codes",
+}
+
+
+class VisitTransitionError(Exception):
+    """Raised for an illegal visit lifecycle transition or a frozen-field edit.
+
+    `kind` is 'transition' (illegal state change) or 'frozen' (edit blocked
+    because the visit is in a terminal/locked state)."""
+    def __init__(self, message, kind="transition", current=None, requested=None):
+        super().__init__(message)
+        self.kind = kind
+        self.current = current
+        self.requested = requested
+
+
+def normalize_visit_status(status):
+    """Canonicalise a status string (apply aliases). Returns the input
+    unchanged if it isn't a known alias."""
+    s = (status or "").strip()
+    return _VISIT_STATUS_ALIASES.get(s, s)
+
+
+def visit_transition_allowed(current, new_status):
+    """Pure predicate: is current → new_status a legal lifecycle move?
+    A no-op (new == current) is always allowed. Aliases are normalised."""
+    cur = normalize_visit_status(current)
+    nxt = normalize_visit_status(new_status)
+    if nxt == cur:
+        return True
+    return nxt in _VISIT_LIFECYCLE.get(cur, set())
+
+
+def transition_visit(visit_id: int, new_status: str, *,
+                     actor_kind: str = None, actor_id: int = None,
+                     reason: str = None) -> dict:
+    """The single authority for visit lifecycle status changes.
+
+    Validates the move against _VISIT_LIFECYCLE (raising VisitTransitionError
+    on an illegal jump), applies the canonical side-effects for the target
+    state (start_time / submitted_at / completed_date / closed_at /
+    cancelled_at), and returns {"old": ..., "new": ...}. A no-op transition
+    (new == current) returns early without a write.
+
+    Does NOT log audit — callers (routes) own the audit row, matching the
+    existing transition_* helpers."""
+    nxt = normalize_visit_status(new_status)
+    if nxt not in _ALL_VISIT_STATES:
+        raise VisitTransitionError(
+            f"Unknown visit status: {new_status!r}", kind="transition",
+            requested=new_status)
+    con = _con()
+    row = con.execute(
+        "SELECT status, submitted_at FROM maintenance_visits WHERE id = ?",
+        (int(visit_id),),
+    ).fetchone()
+    if row is None:
+        con.close()
+        raise VisitTransitionError("Visit not found", kind="transition")
+    cur = normalize_visit_status(row["status"])
+    if nxt == cur:
+        con.close()
+        return {"old": cur, "new": cur, "noop": True}
+    if nxt not in _VISIT_LIFECYCLE.get(cur, set()):
+        con.close()
+        raise VisitTransitionError(
+            f"Illegal transition: {cur} → {nxt}", kind="transition",
+            current=cur, requested=nxt)
+    now = datetime.now(timezone.utc).isoformat()
+    if nxt == "in_progress":
+        con.execute(
+            "UPDATE maintenance_visits SET status = 'in_progress', "
+            "start_time = COALESCE(start_time, ?) WHERE id = ?",
+            (now, int(visit_id)),
+        )
+    elif nxt == "completed":
+        con.execute(
+            "UPDATE maintenance_visits SET status = 'completed', "
+            "submitted_at = COALESCE(submitted_at, ?), "
+            "completed_date = COALESCE(completed_date, ?), "
+            "end_time = COALESCE(end_time, ?) WHERE id = ?",
+            (now, now[:10], now, int(visit_id)),
+        )
+    elif nxt == "closed":
+        con.execute(
+            "UPDATE maintenance_visits SET status = 'closed', "
+            "closed_at = COALESCE(closed_at, ?), closed_by_kind = ?, "
+            "closed_by_id = ? WHERE id = ?",
+            (now, actor_kind, actor_id, int(visit_id)),
+        )
+    elif nxt == "cancelled":
+        con.execute(
+            "UPDATE maintenance_visits SET status = 'cancelled', "
+            "cancelled_at = COALESCE(cancelled_at, ?), cancelled_reason = ?, "
+            "cancelled_by_kind = ?, cancelled_by_id = ? WHERE id = ?",
+            (now, (reason or None), actor_kind, actor_id, int(visit_id)),
+        )
+    else:  # 'scheduled' (e.g. created → scheduled)
+        con.execute(
+            "UPDATE maintenance_visits SET status = ? WHERE id = ?",
+            (nxt, int(visit_id)),
+        )
+    con.commit()
+    con.close()
+    return {"old": cur, "new": nxt, "noop": False}
+
+
+def assert_visit_edit_allowed(visit_id: int, data: dict):
+    """Guard for descriptive edits: raises VisitTransitionError(kind='frozen')
+    if the visit is in a frozen state AND `data` would change a descriptive
+    field. A pure status change (handled by transition_visit) is exempt, as is
+    a no-op edit that doesn't touch any descriptive field. Encrypted fields are
+    decrypted before comparison so re-saving identical content is allowed."""
+    con = _con()
+    row = con.execute(
+        "SELECT * FROM maintenance_visits WHERE id = ?", (int(visit_id),)
+    ).fetchone()
+    con.close()
+    if row is None:
+        return
+    cur = normalize_visit_status(row["status"])
+    if cur not in _VISIT_FROZEN_STATES:
+        return
+    current = dict(row)
+    for field in _VISIT_DESCRIPTIVE_FIELDS:
+        if field not in data:
+            continue
+        incoming = data.get(field)
+        existing = current.get(field)
+        if field in _VISIT_DESCRIPTIVE_ENC:
+            try:
+                existing = _dec(existing) if existing else existing
+            except Exception:
+                pass
+        # Normalise empty-ish values so None/"" don't read as a change.
+        a = "" if incoming is None else str(incoming)
+        b = "" if existing is None else str(existing)
+        if field in ("equipment_id", "estimated_duration_min"):
+            a = "" if incoming in (None, "") else str(incoming)
+            b = "" if existing in (None, "") else str(existing)
+        if a != b:
+            raise VisitTransitionError(
+                f"Visit is {cur} — descriptive fields are locked. Reverse the "
+                f"confirmation to re-open it before editing.",
+                kind="frozen", current=cur)
 
 
 # ── Visit crew (multi-tech assignment) ────────────────────────────────
@@ -5474,6 +6162,27 @@ def get_onboarding_status(staff_kind: str, staff_id: int) -> str:
     ).fetchone()
     con.close()
     return (row["onboarding_status"] if row and row["onboarding_status"] else "")
+
+
+def get_onboarding_meta(staff_kind: str, staff_id: int) -> dict:
+    """Lifecycle metadata for the HR review surface: status plus the submitted
+    and e-signature timestamps. None of these live in STAFF_PERSONAL_FIELDS, so
+    get_staff_personal doesn't surface them. Empty strings when unset."""
+    con = _con()
+    row = con.execute(
+        "SELECT onboarding_status, onboarding_submitted_at, esign_agreed_at "
+        "FROM staff_personal WHERE staff_kind = ? AND staff_id = ?",
+        (staff_kind, int(staff_id)),
+    ).fetchone()
+    con.close()
+    if not row:
+        return {"status": "", "submitted_at": "", "esign_agreed_at": ""}
+    d = dict(row)
+    return {
+        "status": d.get("onboarding_status") or "",
+        "submitted_at": d.get("onboarding_submitted_at") or "",
+        "esign_agreed_at": d.get("esign_agreed_at") or "",
+    }
 
 
 def is_onboarding_locked(staff_kind: str, staff_id: int) -> bool:
@@ -7133,6 +7842,313 @@ def build_invoice_lines_from_visit(visit_id: int):
         "tracked_hours": hours,
         "hourly_rate":   rate,
     }
+
+
+# ── Billing-class layer (CMMS Gap #2) ─────────────────────────────────────────
+#
+# Every order (visit) resolves to ONE billing class that decides who pays for
+# the work its confirmations recorded. Resolution precedence:
+#
+#   1. manual override  (billing_class_overridden=1 → respected verbatim;
+#                         the only way a visit becomes 'goodwill')
+#   2. warranty   — equipment under manufacturer warranty at the visit's date
+#   3. contract   — attached to an active PM contract AND within its yearly
+#                   entitlement (overage past the included count → billable)
+#   4. billable   — the customer pays (the default fallback)
+#
+# Draft invoices then price BILLABLE work normally and zero-out warranty /
+# contract / goodwill lines (documented at 0 so the work is still recorded).
+
+BILLING_CLASSES = ("warranty", "contract", "billable", "goodwill")
+
+
+def _parse_date(s):
+    """Lenient ISO date/datetime → date, or None."""
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00")).date()
+    except (ValueError, AttributeError):
+        try:
+            return datetime.strptime(str(s)[:10], "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            return None
+
+
+def _visit_billing_ref_date(visit: dict):
+    """The date a visit's billing coverage is judged on: the intended/actual
+    service date (scheduled), else completion, else when the row was created.
+    Scheduled is preferred so coverage tracks WHEN the work was for, not the
+    clock-time the row was flipped to completed. Returns a date."""
+    for k in ("scheduled_date", "completed_date", "created_at"):
+        d = _parse_date(visit.get(k))
+        if d:
+            return d
+    return datetime.now(timezone.utc).date()
+
+
+def _add_years(d, n):
+    """date + n years, clamping Feb-29 → Feb-28 on non-leap targets."""
+    try:
+        return d.replace(year=d.year + n)
+    except ValueError:
+        return d.replace(year=d.year + n, day=28)
+
+
+def _contract_year_window(start_date_iso: str, ref_date):
+    """The [window_start, window_end) contract-year window (anchored on the
+    contract start anniversary) that CONTAINS ref_date. Returns (start, end)
+    dates, or (None, None) if the start date can't be parsed."""
+    start = _parse_date(start_date_iso)
+    if not start or not ref_date:
+        return (None, None)
+    n = ref_date.year - start.year
+    win_start = _add_years(start, n)
+    if win_start > ref_date:
+        n -= 1
+        win_start = _add_years(start, n)
+    win_end = _add_years(start, n + 1)
+    return (win_start, win_end)
+
+
+def count_contract_visits_in_year(contract_id: int, ref_date, *,
+                                   visit_id: int = None) -> dict:
+    """Entitlement accounting for the contract-year window containing ref_date.
+
+    Counts the confirmed (completed/closed) PM visits attached to the contract
+    inside the window, ordered chronologically, and — when `visit_id` is given —
+    reports that visit's 1-based ordinal within the window so the caller can tell
+    whether it falls inside the included allotment or is overage.
+
+    Returns {window_start, window_end, included, used, ordinal, exhausted}.
+    `included == 0` means unlimited (the contract value covers every PM visit)."""
+    con = _con()
+    c = con.execute("SELECT start_date, included_pm_visits_per_year "
+                    "FROM pm_contracts WHERE id = ?", (int(contract_id),)).fetchone()
+    if not c:
+        con.close()
+        return {"window_start": None, "window_end": None, "included": 0,
+                "used": 0, "ordinal": None, "exhausted": False}
+    if isinstance(ref_date, str):
+        ref_date = _parse_date(ref_date)
+    win_start, win_end = _contract_year_window(c["start_date"], ref_date)
+    included = int(c["included_pm_visits_per_year"] or 0)
+    rows = con.execute(
+        """
+        SELECT id, COALESCE(scheduled_date, completed_date, created_at) AS d
+        FROM maintenance_visits
+        WHERE pm_contract_id = ? AND visit_type = 'PM'
+              AND status IN ('completed', 'closed')
+        ORDER BY d, id
+        """,
+        (int(contract_id),),
+    ).fetchall()
+    con.close()
+    in_window = []
+    for r in rows:
+        rd = _parse_date(r["d"])
+        if rd is None or win_start is None:
+            continue
+        if win_start <= rd < win_end:
+            in_window.append(r["id"])
+    used = len(in_window)
+    ordinal = None
+    if visit_id is not None:
+        if int(visit_id) in in_window:
+            ordinal = in_window.index(int(visit_id)) + 1
+        else:
+            # not yet counted (e.g. resolving before completion) → it would land
+            # next in this window
+            ordinal = used + 1
+    exhausted = included > 0 and used > included
+    return {"window_start": win_start.isoformat() if win_start else None,
+            "window_end": win_end.isoformat() if win_end else None,
+            "included": included, "used": used, "ordinal": ordinal,
+            "exhausted": exhausted}
+
+
+def resolve_billing_class(visit_id: int) -> dict:
+    """Resolve the billing class for a visit (see precedence above).
+
+    Returns {billing_class, reason, source, overridden, contract_id,
+    warranty_expiry, entitlement} or None when the visit doesn't exist.
+    `source` ∈ {'override','warranty','contract','default'}. Pure read — does
+    NOT persist; call set_visit_billing_class() to store an override."""
+    v = get_visit_by_id(visit_id)
+    if not v:
+        return None
+
+    # 1. Manual override wins.
+    if v.get("billing_class_overridden") and v.get("billing_class"):
+        return {"billing_class": v["billing_class"],
+                "reason": v.get("billing_class_reason") or "Manual override",
+                "source": "override", "overridden": True,
+                "contract_id": v.get("pm_contract_id"),
+                "warranty_expiry": None, "entitlement": None}
+
+    ref = _visit_billing_ref_date(v)
+
+    # 2. Warranty — equipment under manufacturer warranty at the visit date.
+    warranty_expiry = None
+    if v.get("equipment_id"):
+        eq = get_equipment_by_id(v["equipment_id"])
+        warranty_expiry = compute_warranty_expiry(eq) if eq else None
+        exp = _parse_date(warranty_expiry)
+        if exp and ref <= exp:
+            return {"billing_class": "warranty",
+                    "reason": f"Equipment under manufacturer warranty until {warranty_expiry}",
+                    "source": "warranty", "overridden": False,
+                    "contract_id": v.get("pm_contract_id"),
+                    "warranty_expiry": warranty_expiry, "entitlement": None}
+
+    # 3. Contract — attached to an active PM contract within entitlement.
+    cid = v.get("pm_contract_id")
+    if cid:
+        contract = get_pm_contract(cid)
+        if contract and contract.get("status") == "active":
+            ent = count_contract_visits_in_year(cid, ref, visit_id=visit_id)
+            within = ent["included"] == 0 or (ent["ordinal"] is not None
+                                              and ent["ordinal"] <= ent["included"])
+            if within:
+                if ent["included"] == 0:
+                    why = "Covered by active PM contract (unlimited visits)"
+                else:
+                    why = (f"Covered by active PM contract "
+                           f"(visit {ent['ordinal']} of {ent['included']} included)")
+                return {"billing_class": "contract", "reason": why,
+                        "source": "contract", "overridden": False,
+                        "contract_id": cid, "warranty_expiry": warranty_expiry,
+                        "entitlement": ent}
+            # past the included allotment → overage → billable
+            return {"billing_class": "billable",
+                    "reason": (f"PM contract entitlement exhausted "
+                               f"(visit {ent['ordinal']} > {ent['included']} included) — overage billed"),
+                    "source": "default", "overridden": False,
+                    "contract_id": cid, "warranty_expiry": warranty_expiry,
+                    "entitlement": ent}
+
+    # 4. Default — the customer pays.
+    return {"billing_class": "billable",
+            "reason": "Billable to customer (no warranty or contract coverage)",
+            "source": "default", "overridden": False,
+            "contract_id": cid, "warranty_expiry": warranty_expiry,
+            "entitlement": None}
+
+
+def set_visit_billing_class(visit_id: int, billing_class: str, *,
+                            reason: str = None, actor_kind: str = None,
+                            actor_id: int = None, overridden: bool = True) -> dict:
+    """Store a billing class on a visit. With overridden=True (default) it
+    becomes a manual decision resolve_billing_class() will respect verbatim —
+    the only path to 'goodwill'. With overridden=False it just caches an
+    auto-resolved value. Returns the stored row fields."""
+    bc = (billing_class or "").strip().lower()
+    if bc not in BILLING_CLASSES:
+        raise ValueError(f"Unknown billing class: {billing_class!r} "
+                         f"(expected one of {', '.join(BILLING_CLASSES)})")
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    if not con.execute("SELECT 1 FROM maintenance_visits WHERE id = ?",
+                       (int(visit_id),)).fetchone():
+        con.close()
+        raise ValueError(f"Visit {visit_id} not found")
+    con.execute(
+        "UPDATE maintenance_visits SET billing_class=?, billing_class_reason=?, "
+        "billing_class_overridden=?, billing_class_set_at=?, "
+        "billing_class_set_by_kind=?, billing_class_set_by_id=? WHERE id=?",
+        (bc, reason, 1 if overridden else 0, now, actor_kind, actor_id,
+         int(visit_id)),
+    )
+    con.commit()
+    con.close()
+    return {"visit_id": int(visit_id), "billing_class": bc, "reason": reason,
+            "overridden": bool(overridden), "set_at": now}
+
+
+def build_draft_invoice_from_visit(visit_id: int, *, tax_rate: float = 0.0) -> dict:
+    """Preview a billing-class-aware draft invoice for a completed visit WITHOUT
+    writing anything. Aggregates the visit's confirmed work (labor + parts) into
+    lines, then applies the resolved billing class: BILLABLE lines keep their
+    price; warranty/contract/goodwill lines are documented at zero (covered).
+
+    Returns the create_invoice()-shaped payload plus billing metadata, or None
+    if the visit doesn't exist."""
+    base = build_invoice_lines_from_visit(visit_id)
+    if not base:
+        return None
+    resolved = resolve_billing_class(visit_id) or {}
+    bc = resolved.get("billing_class", "billable")
+    chargeable = bc == "billable"
+    label = {"warranty": "warranty", "contract": "PM contract",
+             "goodwill": "goodwill"}.get(bc)
+
+    lines = []
+    gross = 0.0
+    for li in base["line_items"]:
+        qty = float(li.get("quantity") or 0)
+        unit = float(li.get("unit_price") or 0)
+        gross += round(qty * unit, 2)
+        desc = li.get("description", "")
+        out_unit = unit if chargeable else 0.0
+        if not chargeable and label:
+            desc = f"{desc} — covered ({label})"
+        lines.append({"line_type": li.get("line_type", "other"),
+                      "part_id": li.get("part_id"),
+                      "description": desc, "quantity": qty,
+                      "unit_price": out_unit})
+
+    note_bits = [f"Billing class: {bc}"]
+    if resolved.get("reason"):
+        note_bits.append(resolved["reason"])
+    payload = {
+        "customer_id": base["customer_id"],
+        "visit_id": visit_id,
+        "issue_date": base["issue_date"],
+        "due_date": base["due_date"],
+        "tax_rate": float(tax_rate or 0),
+        "line_items": lines,
+        "notes": " — ".join(note_bits),
+        # metadata (not consumed by create_invoice)
+        "billing_class": bc,
+        "billing_reason": resolved.get("reason"),
+        "billing_source": resolved.get("source"),
+        "chargeable": chargeable,
+        "gross_before_class": round(gross, 2),
+        "entitlement": resolved.get("entitlement"),
+        "warranty_expiry": resolved.get("warranty_expiry"),
+        "tracked_hours": base.get("tracked_hours"),
+        "hourly_rate": base.get("hourly_rate"),
+    }
+    return payload
+
+
+def generate_draft_invoice_for_visit(visit_id: int, *, tax_rate: float = 0.0,
+                                     created_by: int = None,
+                                     persist_class: bool = True) -> dict:
+    """Create a real draft invoice for a completed visit, billing-class aware.
+    Persists the resolved class onto the visit (cache, non-override) unless it
+    was a manual override already. Returns
+    {invoice_id, invoice_number, billing_class, chargeable, subtotal, total, ...}."""
+    payload = build_draft_invoice_from_visit(visit_id, tax_rate=tax_rate)
+    if not payload:
+        raise ValueError(f"Visit {visit_id} not found")
+    invoice_id = create_invoice(payload, created_by=created_by)
+    if persist_class:
+        v = get_visit_by_id(visit_id)
+        if v and not v.get("billing_class_overridden"):
+            set_visit_billing_class(visit_id, payload["billing_class"],
+                                    reason=payload.get("billing_reason"),
+                                    overridden=False)
+    inv = get_invoice_by_id(invoice_id)
+    return {"invoice_id": invoice_id,
+            "invoice_number": inv["invoice_number"] if inv else None,
+            "billing_class": payload["billing_class"],
+            "billing_reason": payload.get("billing_reason"),
+            "chargeable": payload["chargeable"],
+            "subtotal": inv["subtotal"] if inv else 0,
+            "tax_amount": inv["tax_amount"] if inv else 0,
+            "total": inv["total"] if inv else 0,
+            "gross_before_class": payload["gross_before_class"]}
 
 
 # ── Invoices ─────────────────────────────────────────────────────────────────
@@ -18004,14 +19020,65 @@ def list_visit_confirmation_events(visit_id: int) -> list:
     return out
 
 
+def _restore_visit_stock(con, visit_id: int, now: str,
+                         actor_kind: str = None, actor_id: int = None,
+                         actor_label: str = None) -> list:
+    """CMMS Gap #4 — give back the parts a visit consumed, on the SAME
+    connection/transaction as the reversal so stock + ledger move atomically.
+
+    Works off the *net* movement per part for this visit (SUM of quantity_delta
+    over part_movements.visit_id). A part still net-out (net < 0) gets a single
+    compensating positive 'received' movement of exactly -net, which both
+    restores parts.quantity and writes an auditable ledger row. Because the post
+    drives the visit's net for that part back to 0, a second reversal restores
+    nothing — the operation is idempotent and safe to run on every reversal."""
+    rows = con.execute(
+        "SELECT part_id, COALESCE(SUM(quantity_delta), 0) AS net "
+        "FROM part_movements WHERE visit_id = ? GROUP BY part_id "
+        "HAVING net < 0",
+        (int(visit_id),),
+    ).fetchall()
+    restored = []
+    for r in rows:
+        part_id = r["part_id"]
+        give_back = -float(r["net"])
+        if give_back <= 0:
+            continue
+        prow = con.execute(
+            "SELECT quantity FROM parts WHERE id = ?", (part_id,)
+        ).fetchone()
+        if prow is None:
+            continue
+        new_qty = float(prow["quantity"]) + give_back
+        con.execute(
+            "INSERT INTO part_movements "
+            "  (part_id, movement_type, quantity_delta, reason, visit_id, "
+            "   performed_by_type, performed_by_id, performed_by_label, created_at) "
+            "VALUES (?, 'received', ?, ?, ?, ?, ?, ?, ?)",
+            (part_id, give_back,
+             f"Confirmation reversal — restored to stock (visit #{visit_id})",
+             int(visit_id), actor_kind, actor_id, actor_label, now),
+        )
+        con.execute("UPDATE parts SET quantity = ?, updated_at = ? WHERE id = ?",
+                    (new_qty, now, part_id))
+        restored.append({"part_id": part_id, "quantity": give_back,
+                         "new_quantity": new_qty})
+    return restored
+
+
 def reverse_visit_confirmation(visit_id: int, reason: str,
                                actor_kind: str = None, actor_id: int = None,
-                               actor_label: str = None) -> dict:
+                               actor_label: str = None,
+                               restore_stock: bool = True) -> dict:
     """SAP IW45-style reversal-by-append. Captures the current completion data
     as a snapshot in an append-only event row, then re-opens the visit:
     clears the submitted_at lock and sets status back to 'scheduled' so the
     work can be re-confirmed. The original completion data is NOT deleted from
     the ledger snapshot. Returns the inserted event row id + snapshot.
+
+    CMMS Gap #4: unless restore_stock=False, the parts the visit consumed are
+    returned to inventory in the SAME transaction (see _restore_visit_stock),
+    and the returned dict + snapshot carry a `restored` list of what went back.
 
     Raises ValueError if the visit isn't currently a confirmed/completed
     record (nothing to reverse)."""
@@ -18064,6 +19131,23 @@ def reverse_visit_confirmation(visit_id: int, reason: str,
         "WHERE id = ?",
         (int(visit_id),),
     )
+    # CMMS Gap #4 — return consumed parts to stock atomically with the reopen.
+    restored = []
+    if restore_stock:
+        restored = _restore_visit_stock(
+            con, visit_id, now, actor_kind=actor_kind, actor_id=actor_id,
+            actor_label=actor_label)
+        if restored:
+            # Persist what we gave back onto the event snapshot so the ledger
+            # row is self-describing (re-read via list_visit_confirmation_events
+            # would otherwise only show the completion fields).
+            snapshot["restored_stock"] = restored
+            con.execute(
+                "UPDATE visit_confirmation_events SET snapshot_json = ? "
+                "WHERE id = ?",
+                (_json.dumps(snapshot), event_id),
+            )
     con.commit()
     con.close()
-    return {"event_id": event_id, "snapshot": snapshot, "created_at": now}
+    return {"event_id": event_id, "snapshot": snapshot, "created_at": now,
+            "restored": restored}

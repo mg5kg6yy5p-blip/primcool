@@ -58,6 +58,7 @@ from database import (
     create_pm_contract, get_pm_contract, list_pm_contracts, update_pm_contract,
     list_visits_for_contract, generate_due_pm_visits, pm_contract_schedule,
     get_visit_by_id, update_visit_time, tech_complete_visit, get_tech_jobs,
+    transition_visit, VisitTransitionError,
     add_visit_reading, get_visit_readings,
     set_visit_signature, get_visit_signature,
     set_visit_checklist, get_visit_checklist,
@@ -100,6 +101,9 @@ from database import (
     delete_estimate, expire_stale_estimates, list_scheduled_visits_on,
     get_visit_parts, add_visit_part, remove_visit_part, get_visit_part_by_id,
     build_invoice_lines_from_visit,
+    # CMMS Gap #2 — billing-class layer + draft-invoice-from-confirmations
+    resolve_billing_class, set_visit_billing_class, build_draft_invoice_from_visit,
+    generate_draft_invoice_for_visit, BILLING_CLASSES,
     # Admin users + audit
     verify_admin_user, get_admin_user_by_id, get_admin_user_by_username, get_all_admin_users,
     create_admin_user, update_admin_user, set_admin_role, set_admin_active,
@@ -2612,6 +2616,43 @@ class EquipmentUpdate(BaseModel):
     serial_number: Optional[str] = None
     location:      Optional[str] = None
     notes:         Optional[str] = None
+    # CMMS Gap #1: lifecycle fields. status is validated against the enum in
+    # the route (the DB column has no CHECK because it was added via ALTER).
+    status:          Optional[str] = None
+    warranty_months: Optional[int] = None
+
+
+# ── CMMS Gap #1: functional-location ↔ equipment temporal split ──────────────
+
+class FunctionalLocationCreate(BaseModel):
+    customer_id:  int
+    name:         str
+    fl_class:     str = "slot"          # site | building | space | slot
+    parent_fl_id: Optional[int] = None
+    code:         Optional[str] = None
+    notes:        Optional[str] = None
+
+
+class FunctionalLocationUpdate(BaseModel):
+    name:         Optional[str] = None
+    fl_class:     Optional[str] = None
+    parent_fl_id: Optional[int] = None
+    code:         Optional[str] = None
+    notes:        Optional[str] = None
+    active:       Optional[bool] = None
+
+
+class EquipmentInstallBody(BaseModel):
+    """Install a unit into a slot. equipment_id comes from the path."""
+    functional_location_id: int
+    install_note:           Optional[str] = None
+
+
+class EquipmentRemoveBody(BaseModel):
+    """Remove a unit from its current slot. new_status defaults to
+    'in_storage'; pass 'in_repair' when pulling for refurb."""
+    new_status:  str = "in_storage"
+    remove_note: Optional[str] = None
 
 
 class PMContractCreate(BaseModel):
@@ -2693,6 +2734,27 @@ class VisitUserStatus(BaseModel):
     # SAP "User Status" layer. Empty string clears it. Validated against the
     # _VISIT_USER_STATUSES whitelist at the route.
     user_status: str = ""
+
+
+class VisitTransition(BaseModel):
+    # CMMS Gap #3 — explicit lifecycle move via the single state machine.
+    # `status` is the target state (spec aliases like 'tech_complete' are
+    # normalised server-side); `reason` is recorded when cancelling.
+    status: str
+    reason: str = ""
+
+
+class VisitBillingClass(BaseModel):
+    # CMMS Gap #2 — manual billing-class override on a visit (the only path to
+    # 'goodwill'). Validated against BILLING_CLASSES at the route.
+    billing_class: str
+    reason: str = ""
+
+
+class VisitDraftInvoice(BaseModel):
+    # CMMS Gap #2 — generate a billing-class-aware draft invoice from a visit's
+    # confirmed work. `tax_rate` is the optional single GCT line (e.g. 0.15).
+    tax_rate: float = 0.0
 
 
 class ReverseConfirmation(BaseModel):
@@ -7847,6 +7909,79 @@ def admin_invoice_prefill(request: Request, visit_id: int):
     return payload
 
 
+# ── CMMS Gap #2 — billing-class layer + draft-invoice-from-confirmations ──────
+
+@app.get("/api/admin/visits/{visit_id}/billing-class", response_model=Dict[str, Any])
+def admin_visit_billing_class(request: Request, visit_id: int):
+    """Resolve (preview) the billing class for a visit. Read-only — respects a
+    stored manual override, else computes warranty → contract → billable."""
+    _require_record_access(request, "visit", visit_id, write=False)
+    resolved = resolve_billing_class(visit_id)
+    if not resolved:
+        raise HTTPException(404, "Visit not found")
+    return resolved
+
+
+@app.post("/api/admin/visits/{visit_id}/billing-class", response_model=Dict[str, Any])
+def admin_set_visit_billing_class(request: Request, visit_id: int,
+                                  body: VisitBillingClass):
+    """Manually set/override a visit's billing class (the only path to
+    'goodwill'). Recorded as an override that resolution will respect verbatim."""
+    admin = _require_record_access(request, "visit", visit_id, write=True)
+    bc = (body.billing_class or "").strip().lower()
+    if bc not in BILLING_CLASSES:
+        raise HTTPException(422, f"Unknown billing class (expected one of "
+                                 f"{', '.join(BILLING_CLASSES)})")
+    before = resolve_billing_class(visit_id)
+    if before is None:
+        raise HTTPException(404, "Visit not found")
+    try:
+        result = set_visit_billing_class(
+            visit_id, bc, reason=body.reason or None,
+            actor_kind="admin", actor_id=admin["id"])
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    _audit_from(admin, "visit.billing_class", request, target_type="visit",
+                target_id=visit_id, target_label=f"Visit #{visit_id}",
+                before={"billing_class": before.get("billing_class")},
+                after={"billing_class": bc, "reason": body.reason})
+    return {"ok": True, **result}
+
+
+@app.get("/api/admin/visits/{visit_id}/draft-invoice", response_model=Dict[str, Any])
+def admin_preview_draft_invoice(request: Request, visit_id: int,
+                                tax_rate: float = 0.0):
+    """Preview a billing-class-aware draft invoice WITHOUT writing anything:
+    billable lines keep their price, covered (warranty/contract/goodwill) lines
+    are documented at zero."""
+    _require_perm(request, "invoice:create")
+    _require_record_access(request, "visit", visit_id, write=False)
+    payload = build_draft_invoice_from_visit(visit_id, tax_rate=tax_rate)
+    if not payload:
+        raise HTTPException(404, "Visit not found")
+    return payload
+
+
+@app.post("/api/admin/visits/{visit_id}/draft-invoice", response_model=Dict[str, Any])
+def admin_generate_draft_invoice(request: Request, visit_id: int,
+                                 body: VisitDraftInvoice):
+    """Create a real draft invoice from a visit's confirmed work, billing-class
+    aware. Persists the resolved class onto the visit (unless already overridden)."""
+    _require_perm(request, "invoice:create")
+    admin = _require_record_access(request, "visit", visit_id, write=False)
+    try:
+        result = generate_draft_invoice_for_visit(
+            visit_id, tax_rate=body.tax_rate, created_by=admin["id"])
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    _audit_from(admin, "invoice.generate_from_visit", request, target_type="invoice",
+                target_id=result["invoice_id"],
+                target_label=result.get("invoice_number") or f"Invoice {result['invoice_id']}",
+                after={"visit_id": visit_id, "billing_class": result["billing_class"],
+                       "total": result["total"]})
+    return {"ok": True, **result}
+
+
 @app.get("/api/admin/visits/{visit_id}/parts", response_model=List[Dict[str, Any]])
 def admin_visit_parts(request: Request, visit_id: int):
     _require_perm(request, "visit:update")
@@ -12117,7 +12252,7 @@ def admin_update_equipment(request: Request, equipment_id: int, body: EquipmentU
     serial/location/notes). customer_id is intentionally not changeable
     here. before/after diffs are written to the audit log so reviewers can
     see what was changed."""
-    from database import update_equipment
+    from database import update_equipment, set_equipment_status, _EQUIPMENT_VALID_STATUS
     admin = _require_perm(request, "customer:update")
     before = get_equipment_by_id(equipment_id)
     if not before:
@@ -12125,8 +12260,17 @@ def admin_update_equipment(request: Request, equipment_id: int, body: EquipmentU
     updates = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
     if not updates:
         return {"ok": True, "id": equipment_id, "no_changes": True}
-    update_equipment(equipment_id, updates,
-                     updated_by_kind="admin", updated_by_id=admin["id"])
+    # status has an enum + its own setter (keeps it out of the generic helper's
+    # encrypted-column path); validate then apply separately.
+    status_change = updates.pop("status", None)
+    if status_change is not None:
+        if status_change not in _EQUIPMENT_VALID_STATUS:
+            raise HTTPException(422, f"invalid status: {status_change!r}")
+        set_equipment_status(equipment_id, status_change,
+                             updated_by_kind="admin", updated_by_id=admin["id"])
+    if updates:
+        update_equipment(equipment_id, updates,
+                         updated_by_kind="admin", updated_by_id=admin["id"])
     after = get_equipment_by_id(equipment_id)
     _audit_from(admin, "equipment.update", request,
                 target_type="equipment", target_id=equipment_id,
@@ -12152,6 +12296,167 @@ def admin_deactivate_equipment(request: Request, equipment_id: int):
                 target_type="equipment", target_id=equipment_id,
                 target_label=eq.get("name"))
     return {"ok": True}
+
+
+# ── CMMS Gap #1: functional locations + equipment installs ───────────────────
+#
+# A functional_location ("FL") is a fixed slot in a customer's property; an
+# equipment_install is the temporal record of which unit occupied that slot.
+# Two partial-unique invariants (enforced in the DB) guarantee one active unit
+# per slot and one active slot per unit — the install/remove endpoints catch
+# the resulting InstallConflict and return a friendly 409.
+
+@app.get("/api/admin/customers/{customer_id}/functional-locations",
+         response_model=List[Dict[str, Any]])
+def admin_list_functional_locations(request: Request, customer_id: int,
+                                     include_inactive: bool = False):
+    """Flat list of a customer's FL nodes (the client assembles the tree from
+    parent_fl_id). Each row carries the active install's equipment id/name so
+    the FL view can show what's currently in each slot without N+1 calls."""
+    from database import (get_customer_functional_locations,
+                          get_active_install_for_fl, get_equipment_by_id)
+    admin = _require_admin(request)
+    if not _admin_can(admin["role"], "customer:view"):
+        raise HTTPException(403, "Forbidden")
+    if not get_customer_by_id(customer_id):
+        raise HTTPException(404, "Customer not found")
+    rows = get_customer_functional_locations(customer_id,
+                                             include_inactive=include_inactive)
+    for r in rows:
+        active = get_active_install_for_fl(r["id"])
+        if active:
+            eq = get_equipment_by_id(active["equipment_id"])
+            r["active_equipment_id"] = active["equipment_id"]
+            r["active_equipment_name"] = (eq or {}).get("name")
+            r["active_install_id"] = active["id"]
+        else:
+            r["active_equipment_id"] = None
+            r["active_equipment_name"] = None
+            r["active_install_id"] = None
+    return rows
+
+
+@app.post("/api/admin/functional-locations")
+def admin_create_functional_location(request: Request, body: FunctionalLocationCreate):
+    from database import create_functional_location
+    admin = _require_perm(request, "customer:update")
+    if not get_customer_by_id(body.customer_id):
+        raise HTTPException(404, "Customer not found")
+    try:
+        fl_id = create_functional_location(body.model_dump())
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    _audit_from(admin, "functional_location.create", request,
+                target_type="functional_location", target_id=fl_id,
+                target_label=body.name, after=body.model_dump())
+    return {"id": fl_id}
+
+
+@app.patch("/api/admin/functional-locations/{fl_id}")
+def admin_update_functional_location(request: Request, fl_id: int,
+                                     body: FunctionalLocationUpdate):
+    from database import get_functional_location, update_functional_location
+    admin = _require_perm(request, "customer:update")
+    before = get_functional_location(fl_id)
+    if not before:
+        raise HTTPException(404, "Functional location not found")
+    updates = {k: v for k, v in body.model_dump(exclude_unset=True).items()}
+    if not updates:
+        return {"ok": True, "id": fl_id, "no_changes": True}
+    try:
+        update_functional_location(fl_id, updates)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    after = get_functional_location(fl_id)
+    _audit_from(admin, "functional_location.update", request,
+                target_type="functional_location", target_id=fl_id,
+                target_label=(after or before).get("name"),
+                before=before, after=after)
+    return {"ok": True, "id": fl_id, "functional_location": after}
+
+
+@app.get("/api/admin/functional-locations/{fl_id}/history",
+         response_model=List[Dict[str, Any]])
+def admin_fl_history(request: Request, fl_id: int):
+    """Occupancy timeline for a slot (every unit that lived here)."""
+    from database import get_functional_location, get_fl_install_history
+    admin = _require_admin(request)
+    if not _admin_can(admin["role"], "customer:view"):
+        raise HTTPException(403, "Forbidden")
+    if not get_functional_location(fl_id):
+        raise HTTPException(404, "Functional location not found")
+    return get_fl_install_history(fl_id)
+
+
+@app.post("/api/admin/equipment/{equipment_id}/install")
+def admin_install_equipment(request: Request, equipment_id: int,
+                            body: EquipmentInstallBody):
+    """Install a unit into a slot. Surfaces an active-install invariant
+    violation as a 409 with a human-friendly message (which invariant tripped
+    is carried in the body's `scope`)."""
+    from database import (install_equipment, get_functional_location,
+                          InstallConflict)
+    admin = _require_perm(request, "customer:update")
+    eq = get_equipment_by_id(equipment_id)
+    if not eq:
+        raise HTTPException(404, "Equipment not found")
+    fl = get_functional_location(body.functional_location_id)
+    if not fl:
+        raise HTTPException(404, "Functional location not found")
+    try:
+        install_id = install_equipment(
+            equipment_id, body.functional_location_id,
+            installed_by_kind="admin", installed_by_id=admin["id"],
+            install_note=body.install_note)
+    except InstallConflict as e:
+        raise HTTPException(409, detail={"scope": e.scope, "message": str(e)})
+    _audit_from(admin, "equipment.install", request,
+                target_type="equipment", target_id=equipment_id,
+                target_label=eq.get("name"),
+                after={"functional_location_id": body.functional_location_id,
+                       "install_id": install_id})
+    return {"ok": True, "install_id": install_id,
+            "equipment": get_equipment_by_id(equipment_id)}
+
+
+@app.post("/api/admin/equipment/{equipment_id}/remove-install")
+def admin_remove_equipment_install(request: Request, equipment_id: int,
+                                   body: EquipmentRemoveBody):
+    """Remove a unit from its current slot. Default new_status='in_storage';
+    pass 'in_repair' when pulling for refurb."""
+    from database import (remove_equipment_install, get_active_install_for_equipment,
+                          _EQUIPMENT_VALID_STATUS)
+    admin = _require_perm(request, "customer:update")
+    eq = get_equipment_by_id(equipment_id)
+    if not eq:
+        raise HTTPException(404, "Equipment not found")
+    if body.new_status not in _EQUIPMENT_VALID_STATUS:
+        raise HTTPException(422, f"invalid new_status: {body.new_status!r}")
+    active = get_active_install_for_equipment(equipment_id)
+    if not active:
+        raise HTTPException(409, detail={"message": "That unit is not currently installed."})
+    removed = remove_equipment_install(
+        equipment_id, removed_by_kind="admin", removed_by_id=admin["id"],
+        remove_note=body.remove_note, new_status=body.new_status)
+    _audit_from(admin, "equipment.remove_install", request,
+                target_type="equipment", target_id=equipment_id,
+                target_label=eq.get("name"),
+                before={"functional_location_id": active["functional_location_id"]},
+                after={"new_status": body.new_status})
+    return {"ok": removed, "equipment": get_equipment_by_id(equipment_id)}
+
+
+@app.get("/api/admin/equipment/{equipment_id}/history",
+         response_model=List[Dict[str, Any]])
+def admin_equipment_history(request: Request, equipment_id: int):
+    """Install/remove timeline for a unit (every slot it has occupied)."""
+    from database import get_equipment_install_history
+    admin = _require_admin(request)
+    if not _admin_can(admin["role"], "customer:view"):
+        raise HTTPException(403, "Forbidden")
+    if not get_equipment_by_id(equipment_id):
+        raise HTTPException(404, "Equipment not found")
+    return get_equipment_install_history(equipment_id)
 
 
 # ── Tech-side equipment endpoints ────────────────────────────────────────────
@@ -12333,7 +12638,13 @@ def admin_update_visit(request: Request, visit_id: int, body: VisitUpdate):
     # `crew_tech_ids` is None when the caller doesn't want to touch the
     # crew (legacy edit modals); only update when it's an actual list.
     crew_ids = payload.pop("crew_tech_ids", None)
-    update_visit(visit_id, payload)
+    try:
+        update_visit(visit_id, payload)
+    except VisitTransitionError as e:
+        # Illegal lifecycle jump or a frozen-visit content edit. 409 = conflict
+        # with the resource's current state; the message tells the user what to
+        # do (reverse the confirmation to re-open a completed visit).
+        raise HTTPException(409, str(e))
     if crew_ids is not None:
         set_visit_crew(visit_id, crew_ids,
                        by_kind="admin", by_id=admin["id"])
@@ -12342,6 +12653,32 @@ def admin_update_visit(request: Request, visit_id: int, body: VisitUpdate):
                 target_label=f"{body.visit_type} #{visit_id}",
                 before=before, after=body.model_dump())
     return {"ok": True}
+
+
+@app.post("/api/admin/visits/{visit_id}/transition", response_model=Dict[str, Any])
+def admin_transition_visit(request: Request, visit_id: int, body: VisitTransition):
+    """CMMS Gap #3 — the single enforced lifecycle endpoint. Validates the
+    requested move against the state machine (created→scheduled→in_progress→
+    completed→closed, cancel from created/scheduled) and applies the canonical
+    side-effects (start/submitted/completed/closed/cancelled timestamps).
+    Illegal moves return 409 with the {current → requested} reason."""
+    admin = _require_record_access(request, "visit", visit_id, write=True)
+    before = get_visit_by_id(visit_id)
+    if not before:
+        raise HTTPException(404, "Visit not found")
+    try:
+        result = transition_visit(
+            visit_id, body.status, actor_kind="admin", actor_id=admin["id"],
+            reason=(body.reason or None))
+    except VisitTransitionError as e:
+        raise HTTPException(409, {"scope": e.kind, "message": str(e),
+                                  "current": e.current, "requested": e.requested})
+    _audit_from(admin, "visit.transition", request,
+                target_type="visit", target_id=visit_id,
+                target_label=f"{result['old']} → {result['new']}",
+                before={"status": result["old"]},
+                after={"status": result["new"], "reason": body.reason or None})
+    return {"ok": True, **result}
 
 
 @app.get("/api/admin/visits/{visit_id}/crew")
@@ -14074,6 +14411,75 @@ async def admin_onboarding_invite(request: Request):
                 details={"expires_in_days": days})
     return {"token": token, "link": link, "expires_in_days": days,
             "staff_kind": kind, "staff_id": sid, "name": subj.get("name")}
+
+
+@app.get("/api/admin/onboarding/submission/{kind}/{sid}")
+def admin_onboarding_submission(request: Request, kind: str, sid: int):
+    """HR/super_admin: retrieve a staff member's full onboarding submission —
+    personal details, statutory IDs (TRN/NIS/NHT), banking, the list-type
+    collections (emergency contacts, education, work history, policy sign-offs)
+    and the e-signature. This is Tier-3 sensitive data, so it is gated to the
+    same roles that may mint the invite. Read-only; HR edits go through POST."""
+    admin = _require_admin(request)
+    if admin.get("role") not in ("super_admin", "hr_admin"):
+        raise HTTPException(
+            403, "Onboarding records are restricted to super_admin and hr_admin.")
+    kind = "admin" if kind == "admin" else "tech"
+    subj = get_tech_by_id(sid) if kind == "tech" else get_admin_user_by_id(sid)
+    if not subj:
+        raise HTTPException(404, "No such staff member")
+    from database import (get_staff_personal, list_staff_profile_items,
+                          get_onboarding_meta)
+    meta = get_onboarding_meta(kind, sid)
+    _audit_from(admin, "onboarding.submission_view", request,
+                target_type=kind, target_id=sid, target_label=subj.get("name"))
+    return {
+        "ok": True,
+        "staff_kind": kind, "staff_id": sid,
+        "name": subj.get("name"),
+        "work_email": subj.get("email"),
+        "work_phone": subj.get("phone"),
+        "status": meta["status"],
+        "locked": meta["status"] == "submitted",
+        "submitted_at": meta["submitted_at"],
+        "esign_agreed_at": meta["esign_agreed_at"],
+        "personal": get_staff_personal(kind, sid),
+        "collections": {c: list_staff_profile_items(kind, sid, c)
+                        for c in _ONBOARD_COLLECTIONS},
+    }
+
+
+@app.post("/api/admin/onboarding/submission/{kind}/{sid}")
+async def admin_onboarding_submission_edit(request: Request, kind: str, sid: int):
+    """HR/super_admin correction path. The hire's record locks on submit, but
+    HR holds the unlock — this lets them fix the singleton personal / statutory
+    / banking fields after the fact. upsert_staff_personal filters to
+    STAFF_PERSONAL_FIELDS, so the lifecycle/lock columns can't be touched here.
+    Collections are not edited through this endpoint. Audited."""
+    admin = _require_admin(request)
+    if admin.get("role") not in ("super_admin", "hr_admin"):
+        raise HTTPException(
+            403, "Onboarding records are restricted to super_admin and hr_admin.")
+    kind = "admin" if kind == "admin" else "tech"
+    subj = get_tech_by_id(sid) if kind == "tech" else get_admin_user_by_id(sid)
+    if not subj:
+        raise HTTPException(404, "No such staff member")
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "expected an object")
+    personal = body.get("personal") or {}
+    if not isinstance(personal, dict) or not personal:
+        raise HTTPException(400, "No personal fields to update.")
+    from database import (upsert_staff_personal, get_staff_personal,
+                          get_onboarding_meta)
+    upsert_staff_personal(kind, sid, personal)
+    after = get_staff_personal(kind, sid)
+    _audit_from(admin, "onboarding.submission_edit", request,
+                target_type=kind, target_id=sid, target_label=subj.get("name"),
+                after={"fields": sorted(str(k) for k in personal.keys())})
+    meta = get_onboarding_meta(kind, sid)
+    return {"ok": True, "personal": after, "status": meta["status"],
+            "locked": meta["status"] == "submitted"}
 
 
 @app.get("/onboard")
