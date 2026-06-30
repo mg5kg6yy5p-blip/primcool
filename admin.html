@@ -5342,6 +5342,12 @@
     if (set.has('invoice:create')) { set.add('estimate:create'); set.add('estimate:update'); set.add('estimate:send'); set.add('estimate:convert'); }
     if (set.has('invoice:delete')) set.add('estimate:delete');
   });
+  // HR-1 employee master — MIRRORS the backend grants (main.py adds hr:view /
+  // hr:edit at startup): super_admin + hr_admin read & write, supervisor_admin
+  // read-only. Kept as an explicit block so this client mirror never drifts.
+  ADMIN_PERMS.super_admin.add('hr:view');       ADMIN_PERMS.super_admin.add('hr:edit');
+  ADMIN_PERMS.hr_admin.add('hr:view');          ADMIN_PERMS.hr_admin.add('hr:edit');
+  ADMIN_PERMS.supervisor_admin.add('hr:view');
   function can(perm) {
     return currentAdmin && ADMIN_PERMS[currentAdmin.role]?.has(perm);
   }
