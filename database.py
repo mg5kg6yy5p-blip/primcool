@@ -186,6 +186,20 @@ _PII_RAND = {
     # contain wage details, gossip, etc.) so we encrypt them at rest.
     "tech_cv_entries":              ["description"],
     "company_messages":             ["body"],
+    # HR-1 unified employee master. Jamaica statutory identity + personal
+    # contact data is the most sensitive PII surface in the system, so every
+    # free-text / identifier column is field-encrypted at rest. Parish, gender,
+    # marital_status and the name columns stay plaintext (needed for list
+    # display / sort and are low-sensitivity); date_of_birth, address, personal
+    # contact and emergency-contact details are encrypted.
+    "employee_profiles":            ["date_of_birth", "address_line1",
+                                     "address_line2", "personal_phone",
+                                     "personal_email", "emergency_contact_name",
+                                     "emergency_contact_phone",
+                                     "emergency_contact_relationship", "notes"],
+    # National IDs (TRN, NIS, driver's licence, passport…). The number itself
+    # is always encrypted; id_type / dates stay plaintext for filtering.
+    "employee_ids":                 ["id_number"],
 }
 # Columns that need equality lookup → deterministic encryption + blind index.
 _PII_DET = {
@@ -448,6 +462,21 @@ def init_db():
         # billing-class layer (Gap #2) to resolve 'warranty' coverage. NULL or 0
         # means no manufacturer warranty on record.
         ("warranty_months",   "ALTER TABLE equipment ADD COLUMN warranty_months INTEGER"),
+        # --- CMMS Phase 6: asset-registry nameplate / specification depth ------
+        # The asset register grows from "name/model/serial" into a real nameplate
+        # so a tech standing in front of a chiller can confirm make, refrigerant
+        # charge, electrical supply and capacity from the record. All NULLable,
+        # all plaintext (none are PII the way serial_number is), all editable via
+        # update_equipment. `specification` is the free-form catch-all for the
+        # rest of the nameplate; the typed columns are the fields we filter and
+        # report on.
+        ("manufacturer",      "ALTER TABLE equipment ADD COLUMN manufacturer TEXT"),
+        ("specification",     "ALTER TABLE equipment ADD COLUMN specification TEXT"),
+        ("commissioned_date", "ALTER TABLE equipment ADD COLUMN commissioned_date TEXT"),
+        ("refrigerant_type",  "ALTER TABLE equipment ADD COLUMN refrigerant_type TEXT"),
+        ("capacity_btu",      "ALTER TABLE equipment ADD COLUMN capacity_btu INTEGER"),
+        ("voltage",           "ALTER TABLE equipment ADD COLUMN voltage TEXT"),
+        ("phase",             "ALTER TABLE equipment ADD COLUMN phase TEXT"),
     ):
         if name not in eq_cols:
             try: con.execute(sql)
@@ -3052,6 +3081,124 @@ def init_db():
     con.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_active_install_per_equipment "
                 "ON equipment_install(equipment_id) WHERE removed_at IS NULL")
 
+    # CMMS Gap #5 — contract_site: a contract can cover MANY functional
+    # locations (a multi-site service agreement), not just the single optional
+    # equipment_id on pm_contracts. This is the structured many-to-many between
+    # pm_contracts and the functional_location tree. The FL must belong to the
+    # same customer as the contract (enforced in add_contract_site). A contract
+    # may also still pin a single equipment_id for legacy single-unit deals;
+    # the two coexist. Defined here, after both referenced tables exist.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS contract_site (
+            id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+            contract_id            INTEGER NOT NULL REFERENCES pm_contracts(id),
+            functional_location_id INTEGER NOT NULL REFERENCES functional_location(id),
+            created_at             TEXT NOT NULL,
+            created_by_kind        TEXT,
+            created_by_id          INTEGER
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_contract_site_contract "
+                "ON contract_site(contract_id)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_contract_site_fl "
+                "ON contract_site(functional_location_id)")
+    # A given FL is linked to a given contract at most once.
+    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_contract_site "
+                "ON contract_site(contract_id, functional_location_id)")
+
+    # CMMS Phase 6 — asset_bom: the bill of materials for a piece of equipment.
+    # Lists the parts that make up / are routinely consumed by an asset, so a
+    # tech opening a work order can pick the right spares without hunting, and
+    # planning can answer "what parts does this chiller need?" and the reverse,
+    # "which assets use this compressor?" (where-used). quantity is the count
+    # per asset; position is an optional reference designator / fitment note.
+    # UNIQUE(equipment_id, part_id) means a part appears on an asset's BOM at
+    # most once (re-adding updates the line — see add_asset_bom_item). Defined
+    # here, after both equipment and parts exist.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS asset_bom (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            equipment_id    INTEGER NOT NULL REFERENCES equipment(id),
+            part_id         INTEGER NOT NULL REFERENCES parts(id),
+            quantity        REAL NOT NULL DEFAULT 1,
+            position        TEXT,
+            notes           TEXT,
+            created_at      TEXT NOT NULL,
+            updated_at      TEXT,
+            created_by_kind TEXT,
+            created_by_id   INTEGER
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_asset_bom_equipment "
+                "ON asset_bom(equipment_id)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_asset_bom_part "
+                "ON asset_bom(part_id)")
+    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_asset_bom "
+                "ON asset_bom(equipment_id, part_id)")
+
+    # ── HR-1: unified employee master (CMMS + ERP + HR all-in-one) ───────────
+    # PrimeCool's staff identity is split across technicians (field) and
+    # admin_users (office). employee_profiles is the ONE personal/statutory
+    # record that overlays either via (subject_type, subject_id) — Jamaica-aware
+    # (TRN/NIS live in the employee_ids child, parish + JMD context here). This
+    # is additive: it never touches the existing technicians / admin_users rows,
+    # it just hangs an HR profile off them. Sensitive columns are field-encrypted
+    # (see _PII_RAND["employee_profiles"]).
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS employee_profiles (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            subject_type        TEXT NOT NULL
+                                CHECK (subject_type IN ('admin','tech')),
+            subject_id          INTEGER NOT NULL,
+            legal_first_name    TEXT,
+            legal_middle_name   TEXT,
+            legal_last_name     TEXT,
+            preferred_name      TEXT,
+            date_of_birth       TEXT,
+            gender              TEXT,
+            marital_status      TEXT,
+            parish              TEXT,
+            address_line1       TEXT,
+            address_line2       TEXT,
+            city_town           TEXT,
+            personal_phone      TEXT,
+            personal_email      TEXT,
+            emergency_contact_name          TEXT,
+            emergency_contact_phone         TEXT,
+            emergency_contact_relationship  TEXT,
+            notes               TEXT,
+            created_at          TEXT NOT NULL,
+            updated_at          TEXT,
+            created_by_kind     TEXT,
+            created_by_id       INTEGER,
+            updated_by_kind     TEXT,
+            updated_by_id       INTEGER
+        )
+    """)
+    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_employee_subject "
+                "ON employee_profiles(subject_type, subject_id)")
+
+    # National / statutory IDs — the Workday "National ID 1 / Add Another"
+    # pattern, Jamaica-flavoured: TRN, NIS, driver's licence, passport, voter ID.
+    # The number is encrypted; type + dates stay plaintext for filtering and
+    # expiry tracking. UNIQUE(employee_id, id_type) — one TRN per employee, etc.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS employee_ids (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            employee_id     INTEGER NOT NULL REFERENCES employee_profiles(id),
+            id_type         TEXT NOT NULL,
+            id_number       TEXT NOT NULL,
+            issued_date     TEXT,
+            expiry_date     TEXT,
+            created_at      TEXT NOT NULL,
+            updated_at      TEXT
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_employee_ids_employee "
+                "ON employee_ids(employee_id)")
+    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_employee_id_type "
+                "ON employee_ids(employee_id, id_type)")
+
     con.commit()
     con.close()
     _backfill_prids()
@@ -4188,6 +4335,18 @@ def create_equipment(data: dict) -> int:
         try: con.execute("UPDATE equipment SET warranty_months=? WHERE id=?",
                          (int(data["warranty_months"]), equipment_id))
         except sqlite3.OperationalError: pass
+    # CMMS Phase 6 nameplate / spec columns — same per-column guard so a DB
+    # that hasn't run the additive ALTERs yet still creates the base row.
+    for key in ("manufacturer", "specification", "commissioned_date",
+                "refrigerant_type", "voltage", "phase"):
+        if data.get(key) is not None:
+            try: con.execute("UPDATE equipment SET %s=? WHERE id=?" % key,
+                             (data[key], equipment_id))
+            except sqlite3.OperationalError: pass
+    if data.get("capacity_btu") is not None:
+        try: con.execute("UPDATE equipment SET capacity_btu=? WHERE id=?",
+                         (int(data["capacity_btu"]), equipment_id))
+        except (sqlite3.OperationalError, ValueError, TypeError): pass
     con.commit()
     con.close()
     return equipment_id
@@ -4211,7 +4370,10 @@ def delete_equipment(equipment_id: int):
 # customers would orphan visit_id → equipment_id history and should be a
 # separate, audited admin action when needed.
 
-_EQUIPMENT_PLAIN_COLS  = ("name", "type", "model", "active", "warranty_months")
+_EQUIPMENT_PLAIN_COLS  = ("name", "type", "model", "active", "warranty_months",
+                          # CMMS Phase 6 nameplate / spec columns (all plaintext).
+                          "manufacturer", "specification", "commissioned_date",
+                          "refrigerant_type", "capacity_btu", "voltage", "phase")
 _EQUIPMENT_ENC_COLS    = ("serial_number", "location", "notes")
 _EQUIPMENT_ALL_EDITABLE = _EQUIPMENT_PLAIN_COLS + _EQUIPMENT_ENC_COLS
 
@@ -4260,6 +4422,400 @@ def deactivate_equipment(equipment_id, updated_by_kind=None, updated_by_id=None)
         updated_by_kind=updated_by_kind,
         updated_by_id=updated_by_id,
     )
+
+
+# ── Asset bill of materials (CMMS Phase 6) ───────────────────────────────────
+#
+# asset_bom is the many-to-many between equipment and parts: the spares list for
+# an asset. add_asset_bom_item is an UPSERT keyed on (equipment_id, part_id) —
+# adding a part that's already on the BOM updates its quantity/position/notes
+# rather than erroring, which is how the UI's add/edit flow round-trips. The
+# UNIQUE(equipment_id, part_id) index is the backstop. list_asset_bom joins the
+# parts master so the caller gets sku/name/unit_cost + a computed line_cost in
+# one query; list_part_where_used is the reverse lookup ("which assets use this
+# part?").
+
+def add_asset_bom_item(equipment_id, part_id, *, quantity=1.0,
+                       position=None, notes=None, by_kind=None, by_id=None):
+    """Upsert a part onto an asset's BOM. Validates that both the equipment and
+    the part exist (raises ValueError otherwise). If the part is already on the
+    BOM, updates quantity/position/notes in place. Returns the asset_bom row id.
+
+    quantity must be > 0 (a zero-qty BOM line is meaningless — remove the line
+    instead). position/notes are optional free-form strings.
+    """
+    try:
+        qty = float(quantity)
+    except (TypeError, ValueError):
+        raise ValueError("quantity must be a number")
+    if qty <= 0:
+        raise ValueError("quantity must be greater than 0")
+    pos = (position or None)
+    note = (notes or None)
+    now = datetime.now(timezone.utc).isoformat()
+    con = _con()
+    try:
+        if not con.execute("SELECT 1 FROM equipment WHERE id = ?",
+                           (equipment_id,)).fetchone():
+            raise ValueError("equipment %r does not exist" % equipment_id)
+        if not con.execute("SELECT 1 FROM parts WHERE id = ?",
+                           (part_id,)).fetchone():
+            raise ValueError("part %r does not exist" % part_id)
+        existing = con.execute(
+            "SELECT id FROM asset_bom WHERE equipment_id = ? AND part_id = ?",
+            (equipment_id, part_id)).fetchone()
+        if existing:
+            con.execute(
+                "UPDATE asset_bom SET quantity = ?, position = ?, notes = ?, "
+                "updated_at = ? WHERE id = ?",
+                (qty, pos, note, now, existing[0]))
+            con.commit()
+            return existing[0]
+        cur = con.execute(
+            "INSERT INTO asset_bom (equipment_id, part_id, quantity, position, "
+            "notes, created_at, created_by_kind, created_by_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (equipment_id, part_id, qty, pos, note, now, by_kind, by_id))
+        con.commit()
+        return cur.lastrowid
+    finally:
+        con.close()
+
+
+def remove_asset_bom_item(equipment_id, part_id) -> bool:
+    """Unlink a part from an asset's BOM. Returns True if a row was removed,
+    False if the part wasn't on the BOM (no-op, not an error)."""
+    con = _con()
+    try:
+        cur = con.execute(
+            "DELETE FROM asset_bom WHERE equipment_id = ? AND part_id = ?",
+            (equipment_id, part_id))
+        con.commit()
+        return cur.rowcount > 0
+    finally:
+        con.close()
+
+
+def list_asset_bom(equipment_id):
+    """The BOM lines for an asset, joined to the parts master. Each row carries
+    the part's sku/name/unit/unit_cost/on-hand quantity plus the BOM line's
+    quantity/position/notes and a computed line_cost (unit_cost * qty). Ordered
+    by part name. Newest-first is not useful for a BOM; alphabetical is."""
+    con = _con()
+    rows = con.execute(
+        """
+        SELECT ab.id            AS bom_id,
+               ab.equipment_id  AS equipment_id,
+               ab.part_id       AS part_id,
+               ab.quantity      AS quantity,
+               ab.position      AS position,
+               ab.notes         AS notes,
+               ab.created_at    AS linked_at,
+               p.sku            AS sku,
+               p.name           AS name,
+               p.unit           AS unit,
+               p.unit_cost      AS unit_cost,
+               p.quantity       AS on_hand,
+               p.active         AS part_active
+          FROM asset_bom ab
+          JOIN parts p ON p.id = ab.part_id
+         WHERE ab.equipment_id = ?
+         ORDER BY p.name COLLATE NOCASE
+        """,
+        (equipment_id,)).fetchall()
+    con.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["line_cost"] = round((d.get("unit_cost") or 0) * (d.get("quantity") or 0), 2)
+        out.append(d)
+    return out
+
+
+def list_part_where_used(part_id):
+    """Reverse lookup: the assets whose BOM includes this part. Returns the
+    equipment id/name/type/customer + the BOM line quantity/position, ordered by
+    equipment name. Powers a part's 'where-used' panel."""
+    con = _con()
+    rows = con.execute(
+        """
+        SELECT ab.id            AS bom_id,
+               ab.quantity      AS quantity,
+               ab.position      AS position,
+               e.id             AS equipment_id,
+               e.name           AS equipment_name,
+               e.type           AS equipment_type,
+               e.customer_id    AS customer_id,
+               e.active         AS equipment_active
+          FROM asset_bom ab
+          JOIN equipment e ON e.id = ab.equipment_id
+         WHERE ab.part_id = ?
+         ORDER BY e.name COLLATE NOCASE
+        """,
+        (part_id,)).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+# ── HR-1: unified employee master (Jamaica-aware) ────────────────────────────
+#
+# employee_profiles overlays a personal/statutory HR record onto an existing
+# technicians or admin_users row via (subject_type, subject_id). The helpers
+# below mirror the equipment helpers: encrypt sensitive columns on the way in,
+# decrypt on the way out (_dec_row), validate the subject exists, and keep a
+# single source of truth. National IDs (TRN/NIS/…) live in employee_ids and use
+# the same UPSERT-keyed-on-(employee_id, id_type) pattern as asset_bom.
+
+# The 14 parishes of Jamaica — used to validate the parish field and to drive
+# the address dropdown in the HR UI.
+JAMAICA_PARISHES = (
+    "Kingston", "St. Andrew", "St. Catherine", "Clarendon", "Manchester",
+    "St. Elizabeth", "Westmoreland", "Hanover", "St. James", "Trelawny",
+    "St. Ann", "St. Mary", "Portland", "St. Thomas",
+)
+
+# Recognised national / statutory ID types. TRN + NIS are the Jamaica payroll
+# essentials; the rest are common supporting documents.
+EMPLOYEE_ID_TYPES = (
+    "TRN", "NIS", "DRIVERS_LICENSE", "PASSPORT", "VOTER_ID", "NHT",
+)
+
+_EMPLOYEE_PLAIN_COLS = (
+    "legal_first_name", "legal_middle_name", "legal_last_name", "preferred_name",
+    "gender", "marital_status", "parish", "city_town",
+)
+_EMPLOYEE_ENC_COLS = (
+    "date_of_birth", "address_line1", "address_line2", "personal_phone",
+    "personal_email", "emergency_contact_name", "emergency_contact_phone",
+    "emergency_contact_relationship", "notes",
+)
+_EMPLOYEE_ALL_EDITABLE = _EMPLOYEE_PLAIN_COLS + _EMPLOYEE_ENC_COLS
+
+
+def _employee_subject_exists(con, subject_type, subject_id):
+    """True if the (subject_type, subject_id) points at a real staff row."""
+    table = "technicians" if subject_type == "tech" else "admin_users"
+    row = con.execute("SELECT 1 FROM %s WHERE id = ?" % table,
+                      (int(subject_id),)).fetchone()
+    return row is not None
+
+
+def create_employee_profile(data: dict, by_kind=None, by_id=None) -> int:
+    """Create the HR master record for a staff member.
+
+    Requires subject_type ('admin'|'tech') + subject_id pointing at an existing
+    row. Raises ValueError if the subject is unknown, the parish is not a real
+    Jamaican parish, or a profile already exists for that subject. Sensitive
+    columns are encrypted before insert. Returns the new employee_profiles id.
+    """
+    subject_type = (data.get("subject_type") or "").strip()
+    if subject_type not in ("admin", "tech"):
+        raise ValueError("subject_type must be 'admin' or 'tech'")
+    subject_id = data.get("subject_id")
+    if subject_id is None:
+        raise ValueError("subject_id is required")
+    parish = data.get("parish")
+    if parish and parish not in JAMAICA_PARISHES:
+        raise ValueError("parish must be one of the 14 Jamaican parishes")
+    con = _con()
+    try:
+        if not _employee_subject_exists(con, subject_type, subject_id):
+            raise ValueError("no such %s (id=%s)" % (subject_type, subject_id))
+        dup = con.execute(
+            "SELECT id FROM employee_profiles WHERE subject_type=? AND subject_id=?",
+            (subject_type, int(subject_id))).fetchone()
+        if dup:
+            raise ValueError("employee profile already exists for this subject")
+        enc = _enc_dict("employee_profiles", data)
+        cols = ["subject_type", "subject_id"] + list(_EMPLOYEE_ALL_EDITABLE)
+        vals = [subject_type, int(subject_id)] + [enc.get(c) for c in _EMPLOYEE_ALL_EDITABLE]
+        cols += ["created_at", "created_by_kind", "created_by_id"]
+        vals += [datetime.now(timezone.utc).isoformat(), by_kind,
+                 int(by_id) if by_id is not None else None]
+        placeholders = ", ".join("?" for _ in cols)
+        cur = con.execute(
+            "INSERT INTO employee_profiles (%s) VALUES (%s)"
+            % (", ".join(cols), placeholders), vals)
+        con.commit()
+        return cur.lastrowid
+    finally:
+        con.close()
+
+
+def _employee_subject_join(con, row):
+    """Attach subject display fields (name/code/role/active) to a profile row."""
+    d = _dec_row("employee_profiles", row)
+    table = "technicians" if d["subject_type"] == "tech" else "admin_users"
+    code_col = "tech_code" if d["subject_type"] == "tech" else "username"
+    srow = con.execute(
+        "SELECT name, %s AS code, role, active FROM %s WHERE id = ?"
+        % (code_col, table), (d["subject_id"],)).fetchone()
+    if srow:
+        d["subject_name"] = srow["name"]
+        d["subject_code"] = srow["code"]
+        d["subject_role"] = srow["role"]
+        d["subject_active"] = srow["active"]
+    # Lightweight roll-up for the list view: which statutory ID *types* are on
+    # file. id_type is plaintext (only id_number is encrypted), so this needs
+    # no decryption and stays cheap.
+    d["id_types"] = [r["id_type"] for r in con.execute(
+        "SELECT id_type FROM employee_ids WHERE employee_id = ? ORDER BY id_type",
+        (d["id"],)).fetchall()]
+    return d
+
+
+def get_employee_profile(employee_id: int):
+    """Full decrypted profile + subject display fields, or None."""
+    con = _con()
+    try:
+        row = con.execute("SELECT * FROM employee_profiles WHERE id = ?",
+                          (int(employee_id),)).fetchone()
+        if row is None:
+            return None
+        return _employee_subject_join(con, row)
+    finally:
+        con.close()
+
+
+def get_employee_profile_by_subject(subject_type, subject_id):
+    """Look up a profile by the staff member it overlays, or None."""
+    con = _con()
+    try:
+        row = con.execute(
+            "SELECT * FROM employee_profiles WHERE subject_type=? AND subject_id=?",
+            (subject_type, int(subject_id))).fetchone()
+        if row is None:
+            return None
+        return _employee_subject_join(con, row)
+    finally:
+        con.close()
+
+
+def list_employee_profiles(subject_type=None, parish=None, q=None):
+    """Master list for the HR panel. Returns decrypted profiles with subject
+    name/code joined, optionally filtered by subject_type, parish, or a name
+    substring (matched against the plaintext legal-name columns)."""
+    con = _con()
+    try:
+        sql = "SELECT * FROM employee_profiles WHERE 1=1"
+        args = []
+        if subject_type in ("admin", "tech"):
+            sql += " AND subject_type = ?"
+            args.append(subject_type)
+        if parish:
+            sql += " AND parish = ?"
+            args.append(parish)
+        if q:
+            like = "%" + q.strip() + "%"
+            sql += (" AND (legal_first_name LIKE ? OR legal_last_name LIKE ? "
+                    "OR preferred_name LIKE ?)")
+            args += [like, like, like]
+        sql += (" ORDER BY legal_last_name COLLATE NOCASE, "
+                "legal_first_name COLLATE NOCASE")
+        rows = con.execute(sql, args).fetchall()
+        return [_employee_subject_join(con, r) for r in rows]
+    finally:
+        con.close()
+
+
+def update_employee_profile(employee_id, updates, by_kind=None, by_id=None):
+    """Patch any subset of the editable columns. Encrypts the sensitive ones,
+    validates parish, stamps updated_at/by. Returns True if a row changed."""
+    if not isinstance(updates, dict) or not updates:
+        return False
+    if updates.get("parish") and updates["parish"] not in JAMAICA_PARISHES:
+        raise ValueError("parish must be one of the 14 Jamaican parishes")
+    enc = _enc_dict("employee_profiles", updates)
+    set_parts, args = [], []
+    for col in _EMPLOYEE_ALL_EDITABLE:
+        if col not in updates:
+            continue
+        set_parts.append("%s = ?" % col)
+        args.append(enc.get(col))
+    if not set_parts:
+        return False
+    set_parts.append("updated_at = ?")
+    args.append(datetime.now(timezone.utc).isoformat())
+    if by_kind is not None:
+        set_parts.append("updated_by_kind = ?")
+        args.append(by_kind)
+    if by_id is not None:
+        set_parts.append("updated_by_id = ?")
+        args.append(int(by_id))
+    args.append(int(employee_id))
+    con = _con()
+    try:
+        cur = con.execute(
+            "UPDATE employee_profiles SET %s WHERE id = ?" % ", ".join(set_parts),
+            args)
+        con.commit()
+        return cur.rowcount > 0
+    finally:
+        con.close()
+
+
+def add_employee_id(employee_id, id_type, id_number, issued_date=None,
+                    expiry_date=None):
+    """Upsert a national/statutory ID onto an employee. Keyed on
+    (employee_id, id_type) so re-adding a TRN updates it in place. Validates the
+    employee exists, the type is recognised, and the number is non-empty. The
+    number is encrypted at rest. Returns the employee_ids row id."""
+    id_type = (id_type or "").strip().upper()
+    if id_type not in EMPLOYEE_ID_TYPES:
+        raise ValueError("id_type must be one of %s" % (EMPLOYEE_ID_TYPES,))
+    if not id_number or not str(id_number).strip():
+        raise ValueError("id_number is required")
+    con = _con()
+    try:
+        exists = con.execute("SELECT 1 FROM employee_profiles WHERE id = ?",
+                             (int(employee_id),)).fetchone()
+        if not exists:
+            raise ValueError("no such employee profile (id=%s)" % employee_id)
+        now = datetime.now(timezone.utc).isoformat()
+        enc_num = _enc(str(id_number).strip())
+        row = con.execute(
+            "SELECT id FROM employee_ids WHERE employee_id=? AND id_type=?",
+            (int(employee_id), id_type)).fetchone()
+        if row:
+            con.execute(
+                "UPDATE employee_ids SET id_number=?, issued_date=?, "
+                "expiry_date=?, updated_at=? WHERE id=?",
+                (enc_num, issued_date, expiry_date, now, row["id"]))
+            con.commit()
+            return row["id"]
+        cur = con.execute(
+            "INSERT INTO employee_ids (employee_id, id_type, id_number, "
+            "issued_date, expiry_date, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (int(employee_id), id_type, enc_num, issued_date, expiry_date, now))
+        con.commit()
+        return cur.lastrowid
+    finally:
+        con.close()
+
+
+def list_employee_ids(employee_id):
+    """Decrypted national IDs for an employee, ordered by type."""
+    con = _con()
+    try:
+        rows = con.execute(
+            "SELECT * FROM employee_ids WHERE employee_id=? ORDER BY id_type",
+            (int(employee_id),)).fetchall()
+        return _dec_rows("employee_ids", rows)
+    finally:
+        con.close()
+
+
+def remove_employee_id(employee_id, id_type):
+    """Delete one national ID. Returns True if a row was removed."""
+    con = _con()
+    try:
+        cur = con.execute(
+            "DELETE FROM employee_ids WHERE employee_id=? AND id_type=?",
+            (int(employee_id), (id_type or "").strip().upper()))
+        con.commit()
+        return cur.rowcount > 0
+    finally:
+        con.close()
 
 
 # ── Functional locations + equipment installs (CMMS Gap #1) ──────────────────
@@ -4912,6 +5468,89 @@ def list_visits_for_contract(contract_id: int) -> list:
     ).fetchall()
     con.close()
     return [dict(r) for r in rows]
+
+
+# ── CMMS Gap #5 — contract ↔ site (functional location) coverage ────────────
+def add_contract_site(contract_id: int, functional_location_id: int, *,
+                      by_kind: str = None, by_id: int = None) -> int:
+    """Link a functional location to a contract (multi-site coverage).
+
+    Authoritative integrity guard: the FL must exist and belong to the SAME
+    customer as the contract, else ValueError. Idempotent — re-linking an
+    already-linked FL returns the existing row id rather than erroring (the
+    UNIQUE index backs this). Returns the contract_site row id."""
+    con = _con()
+    try:
+        crow = con.execute(
+            "SELECT customer_id FROM pm_contracts WHERE id = ?", (int(contract_id),)
+        ).fetchone()
+        if not crow:
+            raise ValueError("Contract not found")
+        frow = con.execute(
+            "SELECT customer_id FROM functional_location WHERE id = ?",
+            (int(functional_location_id),)).fetchone()
+        if not frow:
+            raise ValueError("Functional location not found")
+        if int(frow["customer_id"]) != int(crow["customer_id"]):
+            raise ValueError("Functional location belongs to a different customer")
+        existing = con.execute(
+            "SELECT id FROM contract_site WHERE contract_id = ? "
+            "AND functional_location_id = ?",
+            (int(contract_id), int(functional_location_id))).fetchone()
+        if existing:
+            return int(existing["id"])
+        cur = con.execute(
+            "INSERT INTO contract_site (contract_id, functional_location_id, "
+            "created_at, created_by_kind, created_by_id) VALUES (?, ?, ?, ?, ?)",
+            (int(contract_id), int(functional_location_id),
+             datetime.now(timezone.utc).isoformat(), by_kind, by_id))
+        con.commit()
+        return int(cur.lastrowid)
+    finally:
+        con.close()
+
+
+def remove_contract_site(contract_id: int, functional_location_id: int) -> bool:
+    """Unlink an FL from a contract. Returns True if a link was removed."""
+    con = _con()
+    cur = con.execute(
+        "DELETE FROM contract_site WHERE contract_id = ? "
+        "AND functional_location_id = ?",
+        (int(contract_id), int(functional_location_id)))
+    con.commit()
+    removed = cur.rowcount > 0
+    con.close()
+    return removed
+
+
+def list_contract_sites(contract_id: int) -> list:
+    """FL rows covered by a contract, joined for display (newest link first)."""
+    con = _con()
+    rows = con.execute(
+        "SELECT fl.id, fl.code, fl.name, fl.fl_class, fl.parent_fl_id, "
+        "fl.active, cs.id AS link_id, cs.created_at AS linked_at "
+        "FROM contract_site cs "
+        "JOIN functional_location fl ON fl.id = cs.functional_location_id "
+        "WHERE cs.contract_id = ? "
+        "ORDER BY cs.id DESC", (int(contract_id),)).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def list_site_contracts(functional_location_id: int, *, active_only: bool = False) -> list:
+    """Contracts that cover a given FL (reverse lookup). active_only filters to
+    status='active' contracts — used to answer 'is this slot under contract?'"""
+    sql = ("SELECT c.* FROM contract_site cs "
+           "JOIN pm_contracts c ON c.id = cs.contract_id "
+           "WHERE cs.functional_location_id = ?")
+    params = [int(functional_location_id)]
+    if active_only:
+        sql += " AND c.status = 'active'"
+    sql += " ORDER BY (c.status='active') DESC, c.end_date ASC, c.id DESC"
+    con = _con()
+    rows = con.execute(sql, params).fetchall()
+    con.close()
+    return _dec_rows("pm_contracts", rows)
 
 
 def list_scheduled_visits_on(date_iso: str) -> list:

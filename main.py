@@ -57,6 +57,12 @@ from database import (
     get_customer_visits, get_all_visits, create_visit, update_visit, delete_visit,
     create_pm_contract, get_pm_contract, list_pm_contracts, update_pm_contract,
     list_visits_for_contract, generate_due_pm_visits, pm_contract_schedule,
+    add_contract_site, remove_contract_site, list_contract_sites,
+    add_asset_bom_item, remove_asset_bom_item, list_asset_bom, list_part_where_used,
+    create_employee_profile, get_employee_profile, get_employee_profile_by_subject,
+    list_employee_profiles, update_employee_profile,
+    add_employee_id, list_employee_ids, remove_employee_id,
+    JAMAICA_PARISHES, EMPLOYEE_ID_TYPES,
     get_visit_by_id, update_visit_time, tech_complete_visit, get_tech_jobs,
     transition_visit, VisitTransitionError,
     add_visit_reading, get_visit_readings,
@@ -356,6 +362,17 @@ ADMIN_PERMS = {
         "audit:view_self",
     },
 }
+
+# ── HR-1: employee-master permissions ────────────────────────────────────────
+# The unified employee record holds the most sensitive PII in the system (TRN,
+# NIS, DOB, home address, emergency contacts), so access is tight: only HR and
+# the director can see or edit it. hr:view = read the master; hr:edit = create /
+# update profiles and manage national IDs. supervisor_admin gets read-only so a
+# manager can see a direct report's emergency contact in the field, but cannot
+# alter statutory identity.
+ADMIN_PERMS["super_admin"].update({"hr:view", "hr:edit"})
+ADMIN_PERMS["hr_admin"].update({"hr:view", "hr:edit"})
+ADMIN_PERMS["supervisor_admin"].update({"hr:view"})
 
 
 # ── KPI Module phases 5–7 permission additions ───────────────────────────────
@@ -2603,6 +2620,14 @@ class EquipmentCreate(BaseModel):
     serial_number: str = ""
     location:      str = ""
     notes:         str = ""
+    # CMMS Phase 6 nameplate / specification depth (all optional).
+    manufacturer:      Optional[str] = None
+    specification:     Optional[str] = None
+    commissioned_date: Optional[str] = None
+    refrigerant_type:  Optional[str] = None
+    capacity_btu:      Optional[int] = None
+    voltage:           Optional[str] = None
+    phase:             Optional[str] = None
 
 
 class EquipmentUpdate(BaseModel):
@@ -2620,6 +2645,81 @@ class EquipmentUpdate(BaseModel):
     # the route (the DB column has no CHECK because it was added via ALTER).
     status:          Optional[str] = None
     warranty_months: Optional[int] = None
+    # CMMS Phase 6 nameplate / specification depth.
+    manufacturer:      Optional[str] = None
+    specification:     Optional[str] = None
+    commissioned_date: Optional[str] = None
+    refrigerant_type:  Optional[str] = None
+    capacity_btu:      Optional[int] = None
+    voltage:           Optional[str] = None
+    phase:             Optional[str] = None
+
+
+class AssetBomAdd(BaseModel):
+    """Add/update a part on an asset's BOM. equipment_id comes from the path.
+    quantity defaults to 1; position/notes are optional fitment annotations."""
+    part_id:  int
+    quantity: float = 1.0
+    position: Optional[str] = None
+    notes:    Optional[str] = None
+
+
+# ── HR-1: unified employee master (Jamaica-aware) ────────────────────────────
+
+class EmployeeProfileCreate(BaseModel):
+    """Create the HR master record over an existing staff member. subject_type
+    + subject_id identify which technicians/admin_users row this profile
+    overlays; everything else is optional personal/statutory data."""
+    subject_type: str                       # 'admin' | 'tech'
+    subject_id:   int
+    legal_first_name:  Optional[str] = None
+    legal_middle_name: Optional[str] = None
+    legal_last_name:   Optional[str] = None
+    preferred_name:    Optional[str] = None
+    date_of_birth:     Optional[str] = None
+    gender:            Optional[str] = None
+    marital_status:    Optional[str] = None
+    parish:            Optional[str] = None
+    address_line1:     Optional[str] = None
+    address_line2:     Optional[str] = None
+    city_town:         Optional[str] = None
+    personal_phone:    Optional[str] = None
+    personal_email:    Optional[str] = None
+    emergency_contact_name:         Optional[str] = None
+    emergency_contact_phone:        Optional[str] = None
+    emergency_contact_relationship: Optional[str] = None
+    notes:             Optional[str] = None
+
+
+class EmployeeProfileUpdate(BaseModel):
+    """PATCH body — every field optional. subject_type/subject_id are NOT
+    editable (you can't re-point a profile at a different person)."""
+    legal_first_name:  Optional[str] = None
+    legal_middle_name: Optional[str] = None
+    legal_last_name:   Optional[str] = None
+    preferred_name:    Optional[str] = None
+    date_of_birth:     Optional[str] = None
+    gender:            Optional[str] = None
+    marital_status:    Optional[str] = None
+    parish:            Optional[str] = None
+    address_line1:     Optional[str] = None
+    address_line2:     Optional[str] = None
+    city_town:         Optional[str] = None
+    personal_phone:    Optional[str] = None
+    personal_email:    Optional[str] = None
+    emergency_contact_name:         Optional[str] = None
+    emergency_contact_phone:        Optional[str] = None
+    emergency_contact_relationship: Optional[str] = None
+    notes:             Optional[str] = None
+
+
+class EmployeeIdAdd(BaseModel):
+    """Add/update a national/statutory ID (TRN, NIS, …) on an employee.
+    Keyed on id_type — re-posting the same type updates it in place."""
+    id_type:     str
+    id_number:   str
+    issued_date: Optional[str] = None
+    expiry_date: Optional[str] = None
 
 
 # ── CMMS Gap #1: functional-location ↔ equipment temporal split ──────────────
@@ -2678,6 +2778,10 @@ class PMContractUpdate(BaseModel):
     status:         Optional[str] = None
     notes:          Optional[str] = None
     equipment_id:   Optional[int] = None
+
+
+class ContractSiteAdd(BaseModel):
+    functional_location_id: int
 
 
 class VisitCreate(BaseModel):
@@ -10411,6 +10515,7 @@ def _pm_contract_with_visits(contract: dict) -> dict:
     out["visits"] = list_visits_for_contract(contract["id"])
     out["schedule"] = pm_contract_schedule(
         contract.get("start_date"), contract.get("end_date"), contract.get("frequency"))
+    out["sites"] = list_contract_sites(contract["id"])
     return out
 
 
@@ -10554,6 +10659,57 @@ def admin_pm_contract_cancel(request: Request, contract_id: int):
                 before={"status": contract["status"]},
                 after={"status": "cancelled", "contract_id": contract_id})
     return {"ok": True, "contract": get_pm_contract(contract_id)}
+
+
+# ── CMMS Gap #5 — contract ↔ site (functional-location) coverage ─────────────
+@app.get("/api/admin/pm-contracts/{contract_id}/sites", response_model=Dict[str, Any])
+def admin_pm_contract_sites(request: Request, contract_id: int):
+    """Functional locations covered by a contract (multi-site coverage)."""
+    contract = get_pm_contract(contract_id)
+    if not contract:
+        _require_admin(request)
+        raise HTTPException(404, "Contract not found")
+    _require_record_access(request, "customer", contract["customer_id"], write=False)
+    sites = list_contract_sites(contract_id)
+    return {"sites": sites, "count": len(sites)}
+
+
+@app.post("/api/admin/pm-contracts/{contract_id}/sites", response_model=Dict[str, Any])
+def admin_pm_contract_add_site(request: Request, contract_id: int, body: ContractSiteAdd):
+    contract = get_pm_contract(contract_id)
+    if not contract:
+        _require_admin(request)
+        raise HTTPException(404, "Contract not found")
+    admin = _require_record_access(request, "customer", contract["customer_id"], write=True)
+    try:
+        link_id = add_contract_site(contract_id, body.functional_location_id,
+                                    by_kind="admin", by_id=admin["id"])
+    except ValueError as e:
+        raise HTTPException(422, detail={"errors": [
+            {"field": "functional_location_id", "message": str(e)}]})
+    _audit_from(admin, "pm_contract.site_added", request,
+                target_type="customer", target_id=contract["customer_id"],
+                after={"contract_id": contract_id,
+                       "functional_location_id": body.functional_location_id,
+                       "link_id": link_id})
+    return {"ok": True, "link_id": link_id, "sites": list_contract_sites(contract_id)}
+
+
+@app.delete("/api/admin/pm-contracts/{contract_id}/sites/{fl_id}",
+            response_model=Dict[str, Any])
+def admin_pm_contract_remove_site(request: Request, contract_id: int, fl_id: int):
+    contract = get_pm_contract(contract_id)
+    if not contract:
+        _require_admin(request)
+        raise HTTPException(404, "Contract not found")
+    admin = _require_record_access(request, "customer", contract["customer_id"], write=True)
+    removed = remove_contract_site(contract_id, fl_id)
+    if not removed:
+        raise HTTPException(404, "Site is not linked to this contract")
+    _audit_from(admin, "pm_contract.site_removed", request,
+                target_type="customer", target_id=contract["customer_id"],
+                before={"contract_id": contract_id, "functional_location_id": fl_id})
+    return {"ok": True, "sites": list_contract_sites(contract_id)}
 
 
 # ── Visit Detail View (super_admin only) ─────────────────────────────────────
@@ -12296,6 +12452,198 @@ def admin_deactivate_equipment(request: Request, equipment_id: int):
                 target_type="equipment", target_id=equipment_id,
                 target_label=eq.get("name"))
     return {"ok": True}
+
+
+# ── CMMS Phase 6: asset bill of materials (equipment ↔ parts) ────────────────
+#
+# A BOM is the spares list for an asset. These three routes manage the list and
+# one reverse-lookup route answers "which assets use this part?". All require
+# customer:update (the same gate as editing equipment); reads use customer:view.
+
+@app.get("/api/admin/equipment/{equipment_id}/bom")
+def admin_equipment_bom(request: Request, equipment_id: int):
+    """List the parts on an asset's BOM (joined to the parts master)."""
+    admin = _require_admin(request)
+    if not _admin_can(admin["role"], "customer:view"):
+        raise HTTPException(403, "Forbidden")
+    if not get_equipment_by_id(equipment_id):
+        raise HTTPException(404, "Equipment not found")
+    items = list_asset_bom(equipment_id)
+    return {"equipment_id": equipment_id, "count": len(items), "items": items}
+
+
+@app.post("/api/admin/equipment/{equipment_id}/bom")
+def admin_equipment_add_bom(request: Request, equipment_id: int, body: AssetBomAdd):
+    """Add (or update) a part on an asset's BOM. Re-posting an existing part
+    updates its quantity/position/notes. A non-existent part or a non-positive
+    quantity is a 422."""
+    admin = _require_perm(request, "customer:update")
+    eq = get_equipment_by_id(equipment_id)
+    if not eq:
+        raise HTTPException(404, "Equipment not found")
+    try:
+        add_asset_bom_item(equipment_id, body.part_id,
+                           quantity=body.quantity, position=body.position,
+                           notes=body.notes, by_kind="admin", by_id=admin["id"])
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    items = list_asset_bom(equipment_id)
+    _audit_from(admin, "equipment.bom_added", request,
+                target_type="equipment", target_id=equipment_id,
+                target_label=eq.get("name"),
+                after={"part_id": body.part_id, "quantity": body.quantity,
+                       "position": body.position})
+    return {"equipment_id": equipment_id, "count": len(items), "items": items}
+
+
+@app.delete("/api/admin/equipment/{equipment_id}/bom/{part_id}")
+def admin_equipment_remove_bom(request: Request, equipment_id: int, part_id: int):
+    """Remove a part from an asset's BOM. 404 if the part isn't on the BOM."""
+    admin = _require_perm(request, "customer:update")
+    eq = get_equipment_by_id(equipment_id)
+    if not eq:
+        raise HTTPException(404, "Equipment not found")
+    removed = remove_asset_bom_item(equipment_id, part_id)
+    if not removed:
+        raise HTTPException(404, "Part is not on this asset's BOM")
+    items = list_asset_bom(equipment_id)
+    _audit_from(admin, "equipment.bom_removed", request,
+                target_type="equipment", target_id=equipment_id,
+                target_label=eq.get("name"),
+                before={"part_id": part_id})
+    return {"equipment_id": equipment_id, "count": len(items), "items": items}
+
+
+@app.get("/api/admin/parts/{part_id}/where-used")
+def admin_part_where_used(request: Request, part_id: int):
+    """Reverse lookup: which assets list this part on their BOM."""
+    from database import get_part_by_id
+    admin = _require_admin(request)
+    if not _admin_can(admin["role"], "customer:view"):
+        raise HTTPException(403, "Forbidden")
+    if not get_part_by_id(part_id):
+        raise HTTPException(404, "Part not found")
+    rows = list_part_where_used(part_id)
+    return {"part_id": part_id, "count": len(rows), "assets": rows}
+
+
+# ── HR-1: unified employee master (Jamaica-aware) ────────────────────────────
+#
+# The CMMS+ERP+HR all-in-one: one personal/statutory record over either a
+# technician or an admin user. Reads need hr:view; writes need hr:edit. National
+# IDs (TRN/NIS/…) hang off the profile. A small reference route exposes the 14
+# parishes + recognised ID types so the UI dropdowns stay server-driven.
+
+@app.get("/api/admin/hr/reference")
+def admin_hr_reference(request: Request):
+    """Static reference data for the HR forms: the 14 Jamaican parishes and the
+    recognised national-ID types. Behind hr:view so only HR/eligible roles load
+    it, but it carries no personal data."""
+    admin = _require_admin(request)
+    if not _admin_can(admin["role"], "hr:view"):
+        raise HTTPException(403, "Forbidden")
+    return {"parishes": list(JAMAICA_PARISHES),
+            "id_types": list(EMPLOYEE_ID_TYPES)}
+
+
+@app.get("/api/admin/hr/employees")
+def admin_list_employees(request: Request, subject_type: Optional[str] = None,
+                         parish: Optional[str] = None, q: Optional[str] = None):
+    """Master list for the HR panel. Optional filters: subject_type
+    ('admin'|'tech'), parish, and q (name substring)."""
+    admin = _require_admin(request)
+    if not _admin_can(admin["role"], "hr:view"):
+        raise HTTPException(403, "Forbidden")
+    rows = list_employee_profiles(subject_type=subject_type, parish=parish, q=q)
+    return {"count": len(rows), "employees": rows}
+
+
+@app.post("/api/admin/hr/employees")
+def admin_create_employee(request: Request, body: EmployeeProfileCreate):
+    """Create the HR master record for a staff member. 422 if the subject
+    doesn't exist, the parish is invalid, or a profile already exists."""
+    admin = _require_perm(request, "hr:edit")
+    try:
+        emp_id = create_employee_profile(
+            body.dict(exclude_unset=True), by_kind="admin", by_id=admin["id"])
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    emp = get_employee_profile(emp_id)
+    _audit_from(admin, "employee.created", request,
+                target_type="employee", target_id=emp_id,
+                target_label=(emp or {}).get("subject_name"),
+                after={"subject_type": body.subject_type,
+                       "subject_id": body.subject_id})
+    return {"employee": emp}
+
+
+@app.get("/api/admin/hr/employees/{employee_id}")
+def admin_get_employee(request: Request, employee_id: int):
+    """Full decrypted profile + its national IDs."""
+    admin = _require_admin(request)
+    if not _admin_can(admin["role"], "hr:view"):
+        raise HTTPException(403, "Forbidden")
+    emp = get_employee_profile(employee_id)
+    if not emp:
+        raise HTTPException(404, "Employee not found")
+    emp["national_ids"] = list_employee_ids(employee_id)
+    return {"employee": emp}
+
+
+@app.patch("/api/admin/hr/employees/{employee_id}")
+def admin_update_employee(request: Request, employee_id: int,
+                          body: EmployeeProfileUpdate):
+    """Patch personal/statutory fields. 422 on an invalid parish."""
+    admin = _require_perm(request, "hr:edit")
+    if not get_employee_profile(employee_id):
+        raise HTTPException(404, "Employee not found")
+    updates = body.dict(exclude_unset=True)
+    updates = {k: v for k, v in updates.items() if v is not None}
+    try:
+        update_employee_profile(employee_id, updates,
+                                by_kind="admin", by_id=admin["id"])
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    emp = get_employee_profile(employee_id)
+    _audit_from(admin, "employee.updated", request,
+                target_type="employee", target_id=employee_id,
+                target_label=(emp or {}).get("subject_name"),
+                after={k: "***" for k in updates})   # redact PII values in audit
+    return {"employee": emp}
+
+
+@app.post("/api/admin/hr/employees/{employee_id}/ids")
+def admin_add_employee_id(request: Request, employee_id: int, body: EmployeeIdAdd):
+    """Add/update a national ID (TRN, NIS, …). 422 on an unknown type or empty
+    number; 404 if the employee doesn't exist."""
+    admin = _require_perm(request, "hr:edit")
+    if not get_employee_profile(employee_id):
+        raise HTTPException(404, "Employee not found")
+    try:
+        add_employee_id(employee_id, body.id_type, body.id_number,
+                        issued_date=body.issued_date, expiry_date=body.expiry_date)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    ids = list_employee_ids(employee_id)
+    _audit_from(admin, "employee.id_added", request,
+                target_type="employee", target_id=employee_id,
+                after={"id_type": body.id_type.upper()})   # never log the number
+    return {"employee_id": employee_id, "count": len(ids), "national_ids": ids}
+
+
+@app.delete("/api/admin/hr/employees/{employee_id}/ids/{id_type}")
+def admin_remove_employee_id(request: Request, employee_id: int, id_type: str):
+    """Remove a national ID. 404 if the employee or that ID type isn't present."""
+    admin = _require_perm(request, "hr:edit")
+    if not get_employee_profile(employee_id):
+        raise HTTPException(404, "Employee not found")
+    if not remove_employee_id(employee_id, id_type):
+        raise HTTPException(404, "That ID type is not on this employee")
+    ids = list_employee_ids(employee_id)
+    _audit_from(admin, "employee.id_removed", request,
+                target_type="employee", target_id=employee_id,
+                before={"id_type": id_type.upper()})
+    return {"employee_id": employee_id, "count": len(ids), "national_ids": ids}
 
 
 # ── CMMS Gap #1: functional locations + equipment installs ───────────────────

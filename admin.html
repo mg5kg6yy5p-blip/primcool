@@ -1361,6 +1361,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 11h-6"/><path d="M19 8v6"/></svg>
         Technicians
       </div>
+      <div class="nav-item" onclick="showPanel('employees')" id="nav-employees" style="display:none;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><rect x="14" y="3" width="7" height="9" rx="1"/></svg>
+        Employees
+      </div>
       <div class="nav-item" onclick="showPanel('contracts')" id="nav-contracts" style="display:none;">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 13l2 2 4-4"/></svg>
         PM Contracts
@@ -2346,6 +2350,58 @@
       </div>
 
       <!-- ── Technicians panel ── -->
+      <!-- ── HR-1: unified Employee master (CMMS + ERP + HR all-in-one) ── -->
+      <div class="panel" id="panel-employees">
+        <!-- List view -->
+        <div id="hrEmpList">
+          <div class="top-bar">
+            <h2>Employees</h2>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+              <button class="filter-btn active" id="hrFilter-all"   onclick="hrSetFilter('',this)">All</button>
+              <button class="filter-btn"        id="hrFilter-tech"  onclick="hrSetFilter('tech',this)">Field</button>
+              <button class="filter-btn"        id="hrFilter-admin" onclick="hrSetFilter('admin',this)">Office</button>
+              <input type="search" id="hrSearch" placeholder="Search name…" oninput="hrDebouncedSearch()"
+                     style="padding:7px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;min-width:160px;">
+              <button class="btn btn-primary" id="hrAddBtn" onclick="hrOpenCreate()" style="display:none;">+ New Employee</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr>
+                <th>Name</th><th>Code</th><th>Type</th><th>Parish</th><th>Statutory IDs</th><th>Actions</th>
+              </tr></thead>
+              <tbody id="hrEmpTableBody"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Detail view -->
+        <div id="hrEmpDetail" style="display:none;">
+          <div class="back-btn" onclick="hrShowList()" style="cursor:pointer;display:inline-flex;align-items:center;gap:6px;margin-bottom:14px;color:var(--ink);font-weight:600;font-size:13px;">
+            ← Back to Employees
+          </div>
+          <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:18px;">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">
+              <div>
+                <h3 style="margin:0;color:var(--ink);font-size:18px;" id="hrd-name"></h3>
+                <div style="font-size:12px;color:var(--muted);margin-top:3px;" id="hrd-meta"></div>
+              </div>
+              <button class="btn btn-primary btn-sm" id="hrd-edit-btn" onclick="hrOpenEdit()" style="display:none;">✎ Edit</button>
+            </div>
+            <div id="hrd-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px 24px;font-size:13px;margin-top:14px;"></div>
+          </div>
+
+          <!-- National / statutory IDs (Workday "National ID / Add Another" pattern) -->
+          <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px 20px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:10px;">
+              <h3 style="margin:0;color:var(--ink);font-size:16px;">Statutory IDs <span style="font-weight:400;color:var(--muted);font-size:12px;">(TRN, NIS…)</span></h3>
+              <button class="btn btn-ghost btn-sm" id="hrd-addid-btn" onclick="hrOpenAddId()" style="display:none;">+ Add ID</button>
+            </div>
+            <div id="hrd-ids"></div>
+          </div>
+        </div>
+      </div>
+
       <div class="panel" id="panel-techs">
         <div id="techList">
           <div class="top-bar">
@@ -3196,6 +3252,110 @@
 </div>
 
 <!-- ── Modals ── -->
+
+<!-- ── HR-1: Create / edit employee profile ── -->
+<div class="modal-overlay" id="modal-hrCreate">
+  <div class="modal" style="max-width:680px;">
+    <div class="modal-header">
+      <h3 id="hr-create-title">New Employee</h3>
+      <button class="modal-close" onclick="closeModal('hrCreate')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:12px;"><span style="color:var(--danger);">*</span> indicates a required field</div>
+
+      <!-- Who (create only) -->
+      <div id="hr-who-section">
+        <div style="font-weight:700;color:var(--ink);font-size:13px;margin:4px 0 8px;">Staff member</div>
+        <div style="display:grid;grid-template-columns:1fr 2fr;gap:10px;">
+          <div class="field"><label>Type <span style="color:var(--danger);">*</span></label>
+            <select id="hr-subject-type" class="input" onchange="hrPopulateSubjects()">
+              <option value="tech">Field (Technician)</option>
+              <option value="admin">Office (Admin)</option>
+            </select>
+          </div>
+          <div class="field"><label>Person <span style="color:var(--danger);">*</span></label>
+            <select id="hr-subject-id" class="input"><option value="">Loading…</option></select>
+          </div>
+        </div>
+      </div>
+
+      <div style="font-weight:700;color:var(--ink);font-size:13px;margin:14px 0 8px;">Legal name</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <div class="field"><label>First name <span style="color:var(--danger);">*</span></label><input id="hr-first" class="input" type="text" maxlength="80"></div>
+        <div class="field"><label>Last name <span style="color:var(--danger);">*</span></label><input id="hr-last" class="input" type="text" maxlength="80"></div>
+        <div class="field"><label>Middle name</label><input id="hr-middle" class="input" type="text" maxlength="80"></div>
+        <div class="field"><label>Preferred name</label><input id="hr-preferred" class="input" type="text" maxlength="80"></div>
+      </div>
+
+      <div style="font-weight:700;color:var(--ink);font-size:13px;margin:14px 0 8px;">Personal</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
+        <div class="field"><label>Date of birth</label><input id="hr-dob" class="input" type="date"></div>
+        <div class="field"><label>Gender</label>
+          <select id="hr-gender" class="input">
+            <option value="">—</option><option>Female</option><option>Male</option><option>Other</option><option>Prefer not to say</option>
+          </select>
+        </div>
+        <div class="field"><label>Marital status</label>
+          <select id="hr-marital" class="input">
+            <option value="">—</option><option>Single</option><option>Married</option><option>Common-law</option><option>Divorced</option><option>Widowed</option>
+          </select>
+        </div>
+      </div>
+
+      <div style="font-weight:700;color:var(--ink);font-size:13px;margin:14px 0 8px;">Address (Jamaica)</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <div class="field"><label>Parish</label><select id="hr-parish" class="input"><option value="">—</option></select></div>
+        <div class="field"><label>City / town</label><input id="hr-city" class="input" type="text" maxlength="80"></div>
+        <div class="field"><label>Address line 1</label><input id="hr-addr1" class="input" type="text" maxlength="160"></div>
+        <div class="field"><label>Address line 2</label><input id="hr-addr2" class="input" type="text" maxlength="160"></div>
+      </div>
+
+      <div style="font-weight:700;color:var(--ink);font-size:13px;margin:14px 0 8px;">Contact</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <div class="field"><label>Personal phone</label><input id="hr-phone" class="input" type="tel" maxlength="40"></div>
+        <div class="field"><label>Personal email</label><input id="hr-email" class="input" type="email" maxlength="120"></div>
+      </div>
+
+      <div style="font-weight:700;color:var(--ink);font-size:13px;margin:14px 0 8px;">Emergency contact</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
+        <div class="field"><label>Name</label><input id="hr-ec-name" class="input" type="text" maxlength="120"></div>
+        <div class="field"><label>Phone</label><input id="hr-ec-phone" class="input" type="tel" maxlength="40"></div>
+        <div class="field"><label>Relationship</label><input id="hr-ec-rel" class="input" type="text" maxlength="60"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('hrCreate')">Cancel</button>
+      <button class="btn btn-primary" id="hr-create-submit" onclick="hrSubmitProfile()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── HR-1: Add statutory ID (TRN/NIS/…) ── -->
+<div class="modal-overlay" id="modal-hrAddId">
+  <div class="modal" style="max-width:480px;">
+    <div class="modal-header">
+      <h3>Add statutory ID</h3>
+      <button class="modal-close" onclick="closeModal('hrAddId')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field"><label>ID type <span style="color:var(--danger);">*</span></label>
+        <select id="hr-id-type" class="input"><option value="">—</option></select>
+      </div>
+      <div class="field"><label>ID number <span style="color:var(--danger);">*</span></label>
+        <input id="hr-id-number" class="input" type="text" maxlength="60" autocomplete="off">
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <div class="field"><label>Issued date</label><input id="hr-id-issued" class="input" type="date"></div>
+        <div class="field"><label>Expiry date</label><input id="hr-id-expiry" class="input" type="date"></div>
+      </div>
+      <div style="font-size:11px;color:var(--muted);">Stored encrypted at rest. The number is never written to the audit log.</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('hrAddId')">Cancel</button>
+      <button class="btn btn-primary" onclick="hrSubmitId()">Add</button>
+    </div>
+  </div>
+</div>
 
 <!-- Upload Document -->
 <div class="modal-overlay" id="modal-uploadDoc">
@@ -4425,6 +4585,8 @@
       <div id="eqd-lifecycle" style="margin-top:16px;"></div>
       <!-- CMMS Gap #1: install/remove timeline -->
       <div id="eqd-timeline" style="margin-top:16px;"></div>
+      <!-- CMMS Phase 6: asset bill of materials (spares list) -->
+      <div id="eqd-bom" style="margin-top:16px;"></div>
     </div>
     <div class="modal-footer" style="justify-content:flex-end;">
       <button class="btn btn-ghost" onclick="closeModal('equipmentDetail')">Close</button>
@@ -4619,6 +4781,24 @@
         <div class="field"><label>Serial Number</label><input id="eq-serial" placeholder="SN-XXXXXXXX"></div>
         <div class="field"><label>Location</label><input id="eq-location" placeholder="3rd Floor, East Wing"></div>
       </div>
+      <details style="margin:4px 0 10px;">
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--muted);">Nameplate / specification (optional)</summary>
+        <div style="margin-top:8px;">
+          <div class="field-row">
+            <div class="field"><label>Manufacturer</label><input id="eq-manufacturer" placeholder="e.g. Carrier"></div>
+            <div class="field"><label>Specification</label><input id="eq-specification" placeholder="e.g. 30RB-080 air-cooled"></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label>Capacity (BTU/h)</label><input id="eq-capacity" type="number" min="0" step="1" placeholder="e.g. 48000"></div>
+            <div class="field"><label>Refrigerant</label><input id="eq-refrigerant" placeholder="e.g. R-410A"></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label>Voltage</label><input id="eq-voltage" placeholder="e.g. 230"></div>
+            <div class="field"><label>Phase</label><input id="eq-phase" placeholder="e.g. 1 or 3"></div>
+          </div>
+          <div class="field"><label>Commissioned date</label><input id="eq-commissioned" type="date"></div>
+        </div>
+      </details>
       <div class="field"><label>Notes</label><textarea id="eq-notes" placeholder="Additional notes…"></textarea></div>
       <div class="form-error" id="err-addEquipment"></div>
     </div>
@@ -5386,6 +5566,16 @@
       const nb = document.getElementById('nav-backups');
       if (nb) nb.style.display = 'flex';
     }
+    // HR-1: Employee master — hr:view gates the panel, hr:edit the write buttons.
+    if (can('hr:view')) {
+      const ne = document.getElementById('nav-employees');
+      if (ne) ne.style.display = 'flex';
+      if (can('hr:edit')) {
+        ['hrAddBtn', 'hrd-edit-btn', 'hrd-addid-btn'].forEach(function (id) {
+          const el = document.getElementById(id); if (el) el.style.display = '';
+        });
+      }
+    }
     if (can('timesheet:view_all')) document.getElementById('nav-timesheets').style.display = 'flex';
     if (can('schedule:view')) document.getElementById('nav-schedule').style.display = 'flex';
     if (can('inventory:view')) document.getElementById('nav-inventory').style.display = 'flex';
@@ -5920,6 +6110,7 @@
   // visit, etc.) push a third step.
   const _PANEL_TITLES = {
     customers: 'Customers', visits: 'All Visits', techs: 'Technicians',
+    employees: 'Employees',
     invoices: 'Invoices',   documents: 'Documents', inventory: 'Warehouse',
     warehouse: 'Warehouse Ops', schedule: 'Schedule', timesheets: 'Timesheets',
     payroll: 'Payroll', mypay: 'My Payslips', admins: 'Admins',
@@ -6187,6 +6378,342 @@
   // after we consolidated panels (e.g. Warehouse Ops merged into Inventory).
   const _PANEL_ALIASES = { 'warehouse': 'inventory' };
 
+  // ════════════════════════════════════════════════════════════════════════
+  //  HR-1 — unified Employee master (CMMS + ERP + HR all-in-one)
+  //  Overlays employee_profiles (+ statutory IDs) onto a technician or
+  //  admin_user. Jamaica-aware: 14 parishes, TRN/NIS/… national IDs.
+  //  Sensitive fields are encrypted at rest server-side; this panel only
+  //  ever sees the decrypted values for users who hold hr:view / hr:edit.
+  // ════════════════════════════════════════════════════════════════════════
+  let hrState = { filter: '', q: '', employees: [], current: null,
+                  reference: null, editingId: null, _searchTimer: null };
+
+  const HR_LABELS = {
+    legal_first_name: 'First name', legal_middle_name: 'Middle name',
+    legal_last_name: 'Last name', preferred_name: 'Preferred name',
+    date_of_birth: 'Date of birth', gender: 'Gender',
+    marital_status: 'Marital status', parish: 'Parish', city_town: 'City / town',
+    address_line1: 'Address line 1', address_line2: 'Address line 2',
+    personal_phone: 'Personal phone', personal_email: 'Personal email',
+    emergency_contact_name: 'Emergency contact', emergency_contact_phone: 'Emergency phone',
+    emergency_contact_relationship: 'Relationship', notes: 'Notes',
+  };
+  const HR_ID_LABELS = {
+    TRN: 'TRN', NIS: 'NIS', DRIVERS_LICENSE: "Driver's Licence",
+    PASSPORT: 'Passport', VOTER_ID: 'Voter ID', NHT: 'NHT',
+  };
+
+  async function hrEnsureReference() {
+    if (hrState.reference) return hrState.reference;
+    try {
+      hrState.reference = await api('GET', '/api/admin/hr/reference');
+    } catch (e) {
+      hrState.reference = { parishes: [], id_types: [] };
+    }
+    return hrState.reference;
+  }
+
+  async function hrLoadEmployees() {
+    const tbody = document.getElementById('hrEmpTableBody');
+    if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="empty">Loading…</td></tr>';
+    await hrEnsureReference();
+    const params = [];
+    if (hrState.filter) params.push('subject_type=' + encodeURIComponent(hrState.filter));
+    if (hrState.q)      params.push('q=' + encodeURIComponent(hrState.q));
+    const qs = params.length ? ('?' + params.join('&')) : '';
+    try {
+      const data = await api('GET', '/api/admin/hr/employees' + qs);
+      hrState.employees = data.employees || [];
+      hrRenderTable();
+    } catch (e) {
+      if (tbody) tbody.innerHTML = `<tr><td colspan="6" class="empty">${escHtml(e.message || 'Failed to load.')}</td></tr>`;
+    }
+  }
+
+  function hrRenderTable() {
+    const tbody = document.getElementById('hrEmpTableBody');
+    if (!tbody) return;
+    if (!hrState.employees.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty">No employee records yet. Click “+ New Employee” to create one.</td></tr>';
+      return;
+    }
+    const canEdit = can('hr:edit');
+    tbody.innerHTML = hrState.employees.map(e => {
+      const nm = [e.legal_first_name, e.legal_last_name].filter(Boolean).join(' ')
+                 || e.subject_name || '—';
+      const typeBadge = e.subject_type === 'tech'
+        ? '<span class="badge" style="background:var(--steel-bg);color:var(--steel);">Field</span>'
+        : '<span class="badge" style="background:var(--surface-2);color:var(--muted);">Office</span>';
+      const idCount = (e.id_types && e.id_types.length) ? e.id_types.join(', ') : '—';
+      return `
+      <tr style="cursor:pointer;" onclick="hrOpenDetail(${e.id})">
+        <td><strong>${escHtml(nm)}</strong>${e.preferred_name ? `<br><span style="font-size:11px;color:var(--muted);">“${escHtml(e.preferred_name)}”</span>` : ''}</td>
+        <td><span class="code-pill">${escHtml(e.subject_code || '—')}</span></td>
+        <td>${typeBadge}</td>
+        <td>${escHtml(e.parish) || '—'}</td>
+        <td style="font-size:12px;color:var(--muted);">${escHtml(idCount)}</td>
+        <td style="white-space:nowrap;" onclick="event.stopPropagation();">
+          <button class="btn btn-ghost btn-sm" onclick="hrOpenDetail(${e.id})">View →</button>
+          ${canEdit ? `<button class="btn btn-edit btn-sm" onclick="hrOpenEdit(${e.id})" style="margin-left:6px;">Edit</button>` : ''}
+        </td>
+      </tr>`;
+    }).join('');
+  }
+
+  function hrSetFilter(type, btn) {
+    hrState.filter = type;
+    document.querySelectorAll('#hrEmpList .filter-btn').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    hrLoadEmployees();
+  }
+
+  function hrDebouncedSearch() {
+    const el = document.getElementById('hrSearch');
+    clearTimeout(hrState._searchTimer);
+    hrState._searchTimer = setTimeout(() => {
+      hrState.q = (el && el.value || '').trim();
+      hrLoadEmployees();
+    }, 280);
+  }
+
+  function hrShowList() {
+    document.getElementById('hrEmpDetail').style.display = 'none';
+    document.getElementById('hrEmpList').style.display = '';
+    hrState.current = null;
+  }
+
+  async function hrOpenDetail(id) {
+    try {
+      const data = await api('GET', '/api/admin/hr/employees/' + id);
+      hrState.current = data.employee;
+      hrRenderDetail(data.employee);
+      document.getElementById('hrEmpList').style.display = 'none';
+      document.getElementById('hrEmpDetail').style.display = '';
+    } catch (e) {
+      toast(e.message || 'Failed to open record.', 'error');
+    }
+  }
+
+  function hrRenderDetail(emp) {
+    const nm = [emp.legal_first_name, emp.legal_last_name].filter(Boolean).join(' ')
+               || emp.subject_name || '—';
+    document.getElementById('hrd-name').textContent = nm;
+    const typeWord = emp.subject_type === 'tech' ? 'Field (Technician)' : 'Office (Admin)';
+    document.getElementById('hrd-meta').textContent =
+      `${typeWord} · ${emp.subject_code || '—'} · linked to ${emp.subject_name || '—'}`;
+
+    // Edit / Add-ID buttons are display:none by default; applyRoleVisibility
+    // reveals them for hr:edit. Re-assert here in case detail opened first.
+    if (can('hr:edit')) {
+      const eb = document.getElementById('hrd-edit-btn');   if (eb) eb.style.display = '';
+      const ab = document.getElementById('hrd-addid-btn');  if (ab) ab.style.display = '';
+    }
+
+    const fields = [
+      'preferred_name', 'date_of_birth', 'gender', 'marital_status',
+      'parish', 'city_town', 'address_line1', 'address_line2',
+      'personal_phone', 'personal_email',
+      'emergency_contact_name', 'emergency_contact_phone', 'emergency_contact_relationship',
+      'notes',
+    ];
+    const grid = document.getElementById('hrd-grid');
+    const cells = fields.filter(f => emp[f]).map(f => `
+      <div>
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">${escHtml(HR_LABELS[f] || f)}</div>
+        <div style="color:var(--ink);margin-top:2px;">${escHtml(String(emp[f]))}</div>
+      </div>`);
+    grid.innerHTML = cells.length ? cells.join('')
+      : '<div style="color:var(--muted);font-size:13px;">No personal details captured yet. Use Edit to add them.</div>';
+
+    // Statutory IDs
+    const idWrap = document.getElementById('hrd-ids');
+    const ids = emp.national_ids || [];
+    if (!ids.length) {
+      idWrap.innerHTML = '<div style="color:var(--muted);font-size:13px;">No statutory IDs on file.</div>';
+    } else {
+      const canEdit = can('hr:edit');
+      idWrap.innerHTML = `<div style="display:flex;flex-direction:column;gap:8px;">${ids.map(i => `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;border:1px solid var(--border);border-radius:8px;padding:8px 12px;">
+          <div>
+            <span class="badge" style="background:var(--steel-bg);color:var(--steel);">${escHtml(HR_ID_LABELS[i.id_type] || i.id_type)}</span>
+            <span style="font-family:'Courier New',monospace;color:var(--ink);margin-left:8px;">${escHtml(i.id_number)}</span>
+            ${(i.issued_date || i.expiry_date) ? `<span style="font-size:11px;color:var(--muted);margin-left:8px;">${i.issued_date ? 'issued ' + escHtml(i.issued_date) : ''}${i.expiry_date ? (i.issued_date ? ' · ' : '') + 'expires ' + escHtml(i.expiry_date) : ''}</span>` : ''}
+          </div>
+          ${canEdit ? `<button class="btn btn-danger btn-sm" onclick="hrRemoveId('${escHtml(i.id_type)}')">Remove</button>` : ''}
+        </div>`).join('')}</div>`;
+    }
+  }
+
+  // ── Create / Edit ──────────────────────────────────────────────────────────
+  function hrFillSelect(sel, options, placeholder) {
+    if (!sel) return;
+    const opts = (placeholder ? `<option value="">${placeholder}</option>` : '')
+      + options.map(o => `<option value="${escHtml(o)}">${escHtml(HR_ID_LABELS[o] || o)}</option>`).join('');
+    sel.innerHTML = opts;
+  }
+
+  async function hrPopulateSubjects() {
+    const type = document.getElementById('hr-subject-type').value;
+    const sel = document.getElementById('hr-subject-id');
+    sel.innerHTML = '<option value="">Loading…</option>';
+    try {
+      if (type === 'tech') {
+        if (!allTechs.length) allTechs = await api('GET', '/api/admin/techs');
+        sel.innerHTML = '<option value="">— select —</option>' +
+          allTechs.filter(t => t.active).map(t =>
+            `<option value="${t.id}">${escHtml(t.name)} (${escHtml(t.tech_code)})</option>`).join('');
+      } else {
+        if (!allAdmins.length) allAdmins = await api('GET', '/api/admin/users');
+        sel.innerHTML = '<option value="">— select —</option>' +
+          allAdmins.filter(a => a.active).map(a =>
+            `<option value="${a.id}">${escHtml(a.name || a.username)} (${escHtml(a.username)})</option>`).join('');
+      }
+    } catch (e) {
+      sel.innerHTML = '<option value="">Failed to load</option>';
+    }
+  }
+
+  async function hrOpenCreate() {
+    await hrEnsureReference();
+    hrState.editingId = null;
+    document.getElementById('hr-create-title').textContent = 'New Employee';
+    document.getElementById('hr-create-submit').textContent = 'Save';
+    document.getElementById('hr-who-section').style.display = '';
+    hrFillSelect(document.getElementById('hr-parish'),
+                 (hrState.reference.parishes || []), '—');
+    // reset every field
+    ['hr-first','hr-last','hr-middle','hr-preferred','hr-dob','hr-city',
+     'hr-addr1','hr-addr2','hr-phone','hr-email','hr-ec-name','hr-ec-phone',
+     'hr-ec-rel'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+    ['hr-gender','hr-marital','hr-parish'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+    document.getElementById('hr-subject-type').value = 'tech';
+    await hrPopulateSubjects();
+    document.getElementById('modal-hrCreate').classList.add('open');
+  }
+
+  async function hrOpenEdit(id) {
+    // From the row Edit button we may not have loaded the full record yet.
+    const targetId = id || (hrState.current && hrState.current.id);
+    if (!targetId) return;
+    let emp = hrState.current;
+    if (!emp || emp.id !== targetId) {
+      try { emp = (await api('GET', '/api/admin/hr/employees/' + targetId)).employee; }
+      catch (e) { toast(e.message || 'Failed to load.', 'error'); return; }
+      hrState.current = emp;
+    }
+    await hrEnsureReference();
+    hrState.editingId = targetId;
+    document.getElementById('hr-create-title').textContent = 'Edit Employee';
+    document.getElementById('hr-create-submit').textContent = 'Save changes';
+    document.getElementById('hr-who-section').style.display = 'none';   // subject is immutable
+    hrFillSelect(document.getElementById('hr-parish'),
+                 (hrState.reference.parishes || []), '—');
+    const setv = (id2, v) => { const el = document.getElementById(id2); if (el) el.value = v || ''; };
+    setv('hr-first', emp.legal_first_name);   setv('hr-last', emp.legal_last_name);
+    setv('hr-middle', emp.legal_middle_name); setv('hr-preferred', emp.preferred_name);
+    setv('hr-dob', emp.date_of_birth);        setv('hr-gender', emp.gender);
+    setv('hr-marital', emp.marital_status);   setv('hr-parish', emp.parish);
+    setv('hr-city', emp.city_town);           setv('hr-addr1', emp.address_line1);
+    setv('hr-addr2', emp.address_line2);       setv('hr-phone', emp.personal_phone);
+    setv('hr-email', emp.personal_email);     setv('hr-ec-name', emp.emergency_contact_name);
+    setv('hr-ec-phone', emp.emergency_contact_phone);
+    setv('hr-ec-rel', emp.emergency_contact_relationship);
+    document.getElementById('modal-hrCreate').classList.add('open');
+  }
+
+  function hrCollectProfile() {
+    const val = id => { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
+    return {
+      legal_first_name: val('hr-first'), legal_last_name: val('hr-last'),
+      legal_middle_name: val('hr-middle'), preferred_name: val('hr-preferred'),
+      date_of_birth: val('hr-dob'), gender: val('hr-gender'),
+      marital_status: val('hr-marital'), parish: val('hr-parish'),
+      city_town: val('hr-city'), address_line1: val('hr-addr1'),
+      address_line2: val('hr-addr2'), personal_phone: val('hr-phone'),
+      personal_email: val('hr-email'), emergency_contact_name: val('hr-ec-name'),
+      emergency_contact_phone: val('hr-ec-phone'),
+      emergency_contact_relationship: val('hr-ec-rel'),
+    };
+  }
+
+  async function hrSubmitProfile() {
+    const btn = document.getElementById('hr-create-submit');
+    const payload = hrCollectProfile();
+    // Drop empties so we never overwrite with blank on patch / clutter create.
+    Object.keys(payload).forEach(k => { if (!payload[k]) delete payload[k]; });
+    try {
+      btn.disabled = true;
+      if (hrState.editingId) {
+        await api('PATCH', '/api/admin/hr/employees/' + hrState.editingId, payload);
+        toast('Employee updated.', 'success');
+        closeModal('hrCreate');
+        await hrOpenDetail(hrState.editingId);
+      } else {
+        const type = document.getElementById('hr-subject-type').value;
+        const subjId = document.getElementById('hr-subject-id').value;
+        if (!subjId) { toast('Pick the staff member this record belongs to.', 'error'); btn.disabled = false; return; }
+        if (!payload.legal_first_name || !payload.legal_last_name) {
+          toast('First and last name are required.', 'error'); btn.disabled = false; return;
+        }
+        payload.subject_type = type;
+        payload.subject_id = Number(subjId);
+        const res = await api('POST', '/api/admin/hr/employees', payload);
+        toast('Employee created.', 'success');
+        closeModal('hrCreate');
+        await hrLoadEmployees();
+        if (res.employee) hrOpenDetail(res.employee.id);
+      }
+    } catch (e) {
+      toast(e.message || 'Save failed.', 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // ── Statutory IDs ──────────────────────────────────────────────────────────
+  async function hrOpenAddId() {
+    if (!hrState.current) return;
+    await hrEnsureReference();
+    hrFillSelect(document.getElementById('hr-id-type'),
+                 (hrState.reference.id_types || []), '—');
+    ['hr-id-number','hr-id-issued','hr-id-expiry'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.value = '';
+    });
+    document.getElementById('modal-hrAddId').classList.add('open');
+  }
+
+  async function hrSubmitId() {
+    if (!hrState.current) return;
+    const idType = document.getElementById('hr-id-type').value;
+    const idNum  = document.getElementById('hr-id-number').value.trim();
+    if (!idType || !idNum) { toast('ID type and number are required.', 'error'); return; }
+    const payload = {
+      id_type: idType, id_number: idNum,
+      issued_date: document.getElementById('hr-id-issued').value || null,
+      expiry_date: document.getElementById('hr-id-expiry').value || null,
+    };
+    try {
+      await api('POST', `/api/admin/hr/employees/${hrState.current.id}/ids`, payload);
+      toast('Statutory ID saved.', 'success');
+      closeModal('hrAddId');
+      await hrOpenDetail(hrState.current.id);
+    } catch (e) {
+      toast(e.message || 'Could not save ID.', 'error');
+    }
+  }
+
+  async function hrRemoveId(idType) {
+    if (!hrState.current) return;
+    if (!confirm(`Remove the ${HR_ID_LABELS[idType] || idType} record from this employee?`)) return;
+    try {
+      await api('DELETE', `/api/admin/hr/employees/${hrState.current.id}/ids/${encodeURIComponent(idType)}`);
+      toast('Statutory ID removed.', 'success');
+      await hrOpenDetail(hrState.current.id);
+    } catch (e) {
+      toast(e.message || 'Could not remove ID.', 'error');
+    }
+  }
+
   function showPanel(name) {
     // Any panel switch on mobile also closes the drawer.
     closeNav();
@@ -6239,6 +6766,7 @@
     if (name === 'pto') { _safeLoad('loadPtoQueue', loadPtoQueue); }
     if (name === 'delegations') { _safeLoad('loadDelegationsPanel', loadDelegationsPanel); }
     if (name === 'contracts') { _safeLoad('loadPmContracts', loadPmContracts); }
+    if (name === 'employees') { _safeLoad('hrLoadEmployees', hrLoadEmployees); }
     if (name === 'companymsg') { _safeLoad('cmLoad', cmLoad); }
     if (name === 'svcreq') { _safeLoad('svcReqLoad', svcReqLoad); }
     if (name === 'warehouse') { _safeLoad('whInit', whInit); }
@@ -6684,6 +7212,20 @@
       ['Name',          eq.name || '—'],
       ['Type',          eq.type || '—'],
       ['Model',         eq.model || '—'],
+    ];
+    // CMMS Phase 6 nameplate / specification — only surface populated fields so
+    // assets without a full nameplate stay tidy.
+    if (eq.manufacturer)      rows.push(['Manufacturer',  eq.manufacturer]);
+    if (eq.specification)     rows.push(['Specification', eq.specification]);
+    if (eq.capacity_btu)      rows.push(['Capacity',      eq.capacity_btu + ' BTU/h']);
+    if (eq.refrigerant_type)  rows.push(['Refrigerant',   eq.refrigerant_type]);
+    if (eq.voltage || eq.phase) {
+      const elec = [eq.voltage ? (eq.voltage + 'V') : null,
+                    eq.phase ? (eq.phase + '-phase') : null].filter(Boolean).join(' · ');
+      rows.push(['Electrical', elec]);
+    }
+    if (eq.commissioned_date) rows.push(['Commissioned', String(eq.commissioned_date).slice(0,10)]);
+    rows.push(
       ['Serial Number', eq.serial_number || '—'],
       ['Location',      eq.location || '—'],
       ['Status',        eqdStatusLabel(eq.status)],
@@ -6692,7 +7234,7 @@
       ['Created',       PC.fmtDateTime(eq.created_at) || '—'],
       ['Last PM',       eq.last_pm_visit ? String(eq.last_pm_visit).slice(0,10) : '—'],
       ['Last CM',       eq.last_cm_visit ? String(eq.last_cm_visit).slice(0,10) : '—'],
-    ];
+    );
     rows.forEach(([k, v]) => {
       const label = document.createElement('div');
       label.style.cssText = 'color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:0.4px;font-weight:600;';
@@ -6737,6 +7279,8 @@
     // CMMS Gap #1: render the install/remove controls + timeline (async).
     eqdRenderLifecycle(eq);
     eqdLoadTimeline(eq.id);
+    // CMMS Phase 6: load the asset's bill of materials (spares list).
+    eqdLoadBom(eq.id, eq.customer_id);
   }
 
   // ── CMMS Gap #1: equipment lifecycle (status / install / timeline) ──
@@ -6832,6 +7376,119 @@
         </table></div>`;
     } catch (e) {
       box.innerHTML = `<div style="font-size:12px;color:var(--muted);">Unable to load timeline: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  // ── CMMS Phase 6: asset bill of materials (spares list) ──────────────
+  // The BOM is the list of parts an asset is built from / routinely consumes,
+  // so a tech opening a work order can pick the right spares. Add/remove are
+  // perm-gated server-side (customer:update); we mirror that gate in the UI.
+  let _eqdBomCtx = null;
+
+  async function eqdLoadBom(equipmentId, customerId) {
+    _eqdBomCtx = { id: equipmentId, customer_id: customerId };
+    const box = document.getElementById('eqd-bom');
+    if (!box) return;
+    box.innerHTML = '<div style="border-top:1px solid var(--border);padding-top:12px;font-size:12px;color:var(--muted);">Loading bill of materials…</div>';
+    try {
+      const r = await api('GET', `/api/admin/equipment/${equipmentId}/bom`);
+      eqdRenderBom(r.items || []);
+    } catch (e) {
+      box.innerHTML = `<div style="border-top:1px solid var(--border);padding-top:12px;font-size:12px;color:var(--muted);">Unable to load BOM: ${escHtml(e.message || '')}</div>`;
+    }
+  }
+
+  function eqdRenderBom(items) {
+    const box = document.getElementById('eqd-bom');
+    if (!box) return;
+    const canEdit = (typeof can === 'function') && can('customer:update');
+    const totalCost = (items || []).reduce((s, i) => s + (i.line_cost || 0), 0);
+    const rowsHtml = (items && items.length)
+      ? items.map(i => `<tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:4px 8px;"><code style="color:var(--muted);">${escHtml(i.sku||'')}</code></td>
+            <td style="padding:4px 8px;">${escHtml(i.name||'')}${i.part_active ? '' : ' <span style="color:var(--muted);font-size:11px;">(inactive)</span>'}</td>
+            <td style="padding:4px 8px;text-align:right;">${i.quantity}</td>
+            <td style="padding:4px 8px;color:var(--muted);">${escHtml(i.position||'')}</td>
+            <td style="padding:4px 8px;text-align:right;">${(typeof fmtJMD==='function') ? fmtJMD(i.line_cost||0) : ('$'+(i.line_cost||0))}</td>
+            ${canEdit ? `<td style="padding:4px 8px;text-align:right;"><button class="btn btn-ghost btn-sm" style="color:var(--danger);" title="Remove from BOM" onclick="eqdRemoveBomPart(${i.part_id})">×</button></td>` : ''}
+          </tr>`).join('')
+      : `<tr><td colspan="${canEdit ? 6 : 5}" style="padding:6px 8px;color:var(--muted);">No parts on this asset's bill of materials yet.</td></tr>`;
+    box.innerHTML = `
+      <div style="border-top:1px solid var(--border);padding-top:12px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin:0 0 8px;">
+          <div style="font-weight:700;font-size:13px;">Bill of materials (${(items||[]).length})</div>
+          ${canEdit ? `<button class="btn btn-ghost btn-sm" onclick="eqdOpenAddBomPart()">+ Add part</button>` : ''}
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+          <thead><tr style="text-align:left;color:var(--muted);">
+            <th style="padding:4px 8px;font-weight:600;">SKU</th>
+            <th style="padding:4px 8px;font-weight:600;">Part</th>
+            <th style="padding:4px 8px;font-weight:600;text-align:right;">Qty</th>
+            <th style="padding:4px 8px;font-weight:600;">Position</th>
+            <th style="padding:4px 8px;font-weight:600;text-align:right;">Line cost</th>
+            ${canEdit ? '<th style="padding:4px 8px;"></th>' : ''}
+          </tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+        ${(items && items.length) ? `<div style="text-align:right;font-size:12px;color:var(--muted);margin-top:6px;">Total: <strong style="color:var(--text);">${(typeof fmtJMD==='function') ? fmtJMD(totalCost) : ('$'+totalCost)}</strong></div>` : ''}
+        <div id="eqdBomAdd"></div>
+      </div>`;
+  }
+
+  async function eqdOpenAddBomPart() {
+    if (!_eqdBomCtx) return;
+    const slot = document.getElementById('eqdBomAdd');
+    if (!slot) return;
+    slot.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:6px 0;">Loading parts…</div>';
+    try {
+      const parts = await api('GET', '/api/admin/parts');
+      const opts = (parts || []).map(p =>
+        `<option value="${p.id}">${escHtml((p.sku||'') + ' · ' + (p.name||''))}</option>`).join('');
+      if (!opts) {
+        slot.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:6px 0;">No parts in inventory yet. Create one in the Inventory tab first.</div>';
+        return;
+      }
+      slot.innerHTML = `
+        <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
+          <select id="eqdBomPartSelect" class="input" style="flex:2;min-width:180px;">${opts}</select>
+          <input id="eqdBomQty" class="input" type="number" min="0.01" step="0.01" value="1" style="width:80px;" title="Quantity per asset">
+          <input id="eqdBomPos" class="input" type="text" placeholder="Position (optional)" style="flex:1;min-width:120px;">
+          <button class="btn btn-primary btn-sm" onclick="eqdAddBomPart()">Add</button>
+          <button class="btn btn-ghost btn-sm" onclick="document.getElementById('eqdBomAdd').innerHTML='';">Cancel</button>
+        </div>`;
+    } catch (e) {
+      slot.innerHTML = `<div style="color:var(--danger);font-size:12px;padding:6px 0;">Could not load parts: ${escHtml(e.message||'')}</div>`;
+    }
+  }
+
+  async function eqdAddBomPart() {
+    if (!_eqdBomCtx) return;
+    const sel = document.getElementById('eqdBomPartSelect');
+    const qty = document.getElementById('eqdBomQty');
+    const pos = document.getElementById('eqdBomPos');
+    if (!sel || !sel.value) return;
+    try {
+      const r = await api('POST', `/api/admin/equipment/${_eqdBomCtx.id}/bom`, {
+        part_id: parseInt(sel.value, 10),
+        quantity: parseFloat(qty && qty.value ? qty.value : '1') || 1,
+        position: (pos && pos.value.trim()) ? pos.value.trim() : null,
+      });
+      toast('Part added to BOM', 'success');
+      eqdRenderBom(r.items || []);
+    } catch (e) {
+      toast(e.message || 'Could not add part', 'error');
+    }
+  }
+
+  async function eqdRemoveBomPart(partId) {
+    if (!_eqdBomCtx) return;
+    if (!confirm('Remove this part from the asset BOM?')) return;
+    try {
+      const r = await api('DELETE', `/api/admin/equipment/${_eqdBomCtx.id}/bom/${partId}`);
+      toast('Part removed', 'success');
+      eqdRenderBom(r.items || []);
+    } catch (e) {
+      toast(e.message || 'Could not remove part', 'error');
     }
   }
 
@@ -9951,11 +10608,25 @@
       location:      document.getElementById('eq-location').value.trim(),
       notes:         document.getElementById('eq-notes').value.trim(),
     };
+    // CMMS Phase 6 nameplate / spec — only include populated optional fields.
+    const _np = {
+      manufacturer:      document.getElementById('eq-manufacturer').value.trim(),
+      specification:     document.getElementById('eq-specification').value.trim(),
+      refrigerant_type:  document.getElementById('eq-refrigerant').value.trim(),
+      voltage:           document.getElementById('eq-voltage').value.trim(),
+      phase:             document.getElementById('eq-phase').value.trim(),
+      commissioned_date: document.getElementById('eq-commissioned').value.trim(),
+    };
+    Object.keys(_np).forEach(k => { if (_np[k]) body[k] = _np[k]; });
+    const _cap = document.getElementById('eq-capacity').value.trim();
+    if (_cap) body.capacity_btu = parseInt(_cap, 10);
     if (!body.name) { showErr('err-addEquipment','Equipment name is required.'); return; }
     try {
       await api('POST', '/api/admin/equipment', body);
       closeModal('addEquipment');
-      clearForm(['eq-name','eq-type','eq-model','eq-serial','eq-location','eq-notes']);
+      clearForm(['eq-name','eq-type','eq-model','eq-serial','eq-location','eq-notes',
+                 'eq-manufacturer','eq-specification','eq-capacity','eq-refrigerant',
+                 'eq-voltage','eq-phase','eq-commissioned']);
       loadCustomerEquipment();
     } catch(e) { showErr('err-addEquipment', e.message); }
   }
@@ -10697,11 +11368,14 @@
           <div><div style="color:var(--muted);">Value</div><div class="pc-mono">${fmtJMD(c.contract_value)}</div></div>
           ${c.notes ? `<div style="grid-column:1/-1;"><div style="color:var(--muted);">Notes</div><div style="white-space:pre-wrap;">${escHtml(c.notes)}</div></div>` : ''}
         </div>
+        <div id="pmContractSites" style="margin-bottom:18px;"></div>
         <h4 style="margin:0 0 8px;font-size:13px;color:var(--ink);">Materialised visits (${visits.length})</h4>
         <div class="table-wrap"><table>
           <thead><tr><th>Scheduled</th><th>Status</th><th>Tech</th></tr></thead>
           <tbody>${rows}</tbody>
         </table></div>`;
+      renderContractSites(c.id, c.customer_id, d.sites || c.sites || [],
+                          c.status !== 'cancelled');
       const parts = [`<button class="btn btn-ghost" onclick="closeModal('pmContractDetail')">Close</button>`];
       if (c.status !== 'cancelled') {
         parts.push(`<button class="btn btn-primary" onclick="closeModal('pmContractDetail');openPmContractModal(${c.id})">Edit</button>`);
@@ -10710,6 +11384,85 @@
     } catch (e) {
       body.innerHTML = `<div style="color:var(--danger);">Could not load contract: ${escHtml(e.message)}</div>`;
       footer.innerHTML = `<button class="btn btn-ghost" onclick="closeModal('pmContractDetail')">Close</button>`;
+    }
+  }
+
+  // ── CMMS Gap #5 — contract ↔ site (functional-location) coverage ──────────
+  const _FL_CLASS_LABEL = {site:'Site', building:'Building', space:'Space', slot:'Slot'};
+  // Cache of the contract currently shown in the detail modal so add/remove can
+  // re-render without re-opening. {id, customer_id, editable}
+  let _contractSitesCtx = null;
+
+  function renderContractSites(contractId, customerId, sites, editable) {
+    _contractSitesCtx = {id: contractId, customer_id: customerId, editable: !!editable};
+    const host = document.getElementById('pmContractSites');
+    if (!host) return;
+    const canEdit = editable && (typeof can === 'function') && can('customer:update');
+    const list = (sites && sites.length)
+      ? sites.map(s => `<li style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);">
+            <span style="font-size:11px;font-weight:700;color:var(--teal);text-transform:uppercase;min-width:62px;">${escHtml(_FL_CLASS_LABEL[s.fl_class]||s.fl_class||'')}</span>
+            <span style="flex:1;">${escHtml(s.name||'')}${s.code ? ` <code style="color:var(--muted);">${escHtml(s.code)}</code>` : ''}${s.active ? '' : ' <span style="color:var(--muted);font-size:11px;">(inactive)</span>'}</span>
+            ${canEdit ? `<button class="btn btn-ghost btn-sm" style="color:var(--danger);" title="Remove from contract" onclick="removeContractSite(${s.id})">×</button>` : ''}
+          </li>`).join('')
+      : '<li class="empty" style="padding:6px 0;color:var(--muted);">No sites linked. This contract is not yet scoped to any functional location.</li>';
+    host.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin:0 0 8px;">
+        <h4 style="margin:0;font-size:13px;color:var(--ink);">Covered sites (${(sites||[]).length})</h4>
+        ${canEdit ? `<button class="btn btn-ghost btn-sm" onclick="openAddContractSite()">+ Add site</button>` : ''}
+      </div>
+      <ul style="list-style:none;margin:0;padding:0;">${list}</ul>
+      <div id="pmContractSiteAdd"></div>`;
+  }
+
+  async function openAddContractSite() {
+    if (!_contractSitesCtx) return;
+    const slot = document.getElementById('pmContractSiteAdd');
+    if (!slot) return;
+    slot.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:6px 0;">Loading locations…</div>';
+    try {
+      const fls = await api('GET', `/api/admin/customers/${_contractSitesCtx.customer_id}/functional-locations`);
+      const opts = (fls || []).map(f =>
+        `<option value="${f.id}">${escHtml((_FL_CLASS_LABEL[f.fl_class]||f.fl_class||'')+' · '+(f.name||''))}${f.code ? ' ('+escHtml(f.code)+')' : ''}</option>`).join('');
+      if (!opts) {
+        slot.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:6px 0;">This customer has no functional locations yet. Create one under the customer first.</div>';
+        return;
+      }
+      slot.innerHTML = `
+        <div style="display:flex;gap:8px;align-items:center;margin-top:8px;">
+          <select id="pmContractSiteSelect" class="input" style="flex:1;">${opts}</select>
+          <button class="btn btn-primary btn-sm" onclick="addContractSite()">Add</button>
+          <button class="btn btn-ghost btn-sm" onclick="document.getElementById('pmContractSiteAdd').innerHTML='';">Cancel</button>
+        </div>`;
+    } catch (e) {
+      slot.innerHTML = `<div style="color:var(--danger);font-size:12px;padding:6px 0;">Could not load locations: ${escHtml(e.message||'')}</div>`;
+    }
+  }
+
+  async function addContractSite() {
+    if (!_contractSitesCtx) return;
+    const sel = document.getElementById('pmContractSiteSelect');
+    if (!sel || !sel.value) return;
+    try {
+      const r = await api('POST', `/api/admin/pm-contracts/${_contractSitesCtx.id}/sites`,
+                          {functional_location_id: parseInt(sel.value, 10)});
+      toast('Site added to contract', 'success');
+      renderContractSites(_contractSitesCtx.id, _contractSitesCtx.customer_id,
+                          r.sites || [], _contractSitesCtx.editable);
+    } catch (e) {
+      toast(e.message || 'Could not add site', 'error');
+    }
+  }
+
+  async function removeContractSite(flId) {
+    if (!_contractSitesCtx) return;
+    if (!confirm('Remove this site from the contract?')) return;
+    try {
+      const r = await api('DELETE', `/api/admin/pm-contracts/${_contractSitesCtx.id}/sites/${flId}`);
+      toast('Site removed', 'success');
+      renderContractSites(_contractSitesCtx.id, _contractSitesCtx.customer_id,
+                          r.sites || [], _contractSitesCtx.editable);
+    } catch (e) {
+      toast(e.message || 'Could not remove site', 'error');
     }
   }
 

@@ -37,19 +37,19 @@ existing `audit_log` already uses this pattern via `_audit_guard`).
 | customer_account | **Partial** | `customers` | No `type` (apartment/strip/commercial/residential), no per-customer `billing_currency`, no `status`. Currency handled globally via `display_currency`/`fx_rates`, base `currency` defaults `'TTD'`. |
 | site / building / space | **Missing** | — | No customer-property hierarchy. `customers → equipment.location` (free text). `hub_id` is PrimeCool's *internal* depots, not customer sites. |
 | functional_location (FL tree) | **Missing** | — | No "slot" concept, no FL parent/child tree, no `fl_class`. |
-| equipment | **Partial** | `equipment` | Bound directly to `customer_id` with free-text `location`; no `equipment_class` enum, no `warranty_months`, no `status` (installed/in_storage/in_repair/scrapped). |
+| equipment | **Present** *(Gaps #1, #4, Phase 6)* | `equipment` | Bound to `customer_id`; has `status` (installed/in_storage/in_repair/scrapped) *(Gap #1)*, `warranty_months` *(Gap #2)*, and a full **nameplate / specification** layer *(Phase 6: `manufacturer`, `specification`, `commissioned_date`, `refrigerant_type`, `capacity_btu`, `voltage`, `phase`)*. Remaining: formal `equipment_class` enum (still free-text `type`). |
 | equipment_install (temporal swap) | **Missing** | — | **The backbone of the refurbish-and-swap workflow is absent.** No install/remove history, no active-install invariants. |
 | meter / meter_reading (run_hours) | **Partial** | `visit_readings` | Readings are AC diagnostics (pressures/temps), captured per visit — not a cumulative run-hours/starts meter that could drive runtime PM triggers. |
 | material / stock_location / stock_quant | **Partial** | `parts`, `part_movements`, `goods_received`, `purchase_orders(_lines)`, `physical_counts`, `warehouse_deliveries` | Single on-hand `parts.quantity` (no per-location quants/van vs. shop split as first-class). Movement ledger exists. |
-| equipment_bom / bom_item | **Missing** | — | No BOM, therefore no where-used reverse query. |
+| equipment_bom / bom_item | **Present** *(Phase 6)* | `asset_bom` | Many-to-many `equipment` ↔ `parts` (spares list per asset). Upsert keyed on (equipment, part); UNIQUE(equipment, part); computed `line_cost`. Helpers `add/remove/list_asset_bom`, `list_part_where_used` (the reverse where-used query). |
 | **notification** (customer request) | **Present** | `service_requests` | Lifecycle `new → triaged → scheduled → closed`, links to `visit_id`. NB: the repo's `notifications` table is *in-app alerts*, a different thing. |
 | work_order | **Partial** | `maintenance_visits` (+ `visit_techs`, `visit_parts`, `visit_photos`, `visit_readings`, `visit_signatures`, `visit_checklists`) | Rich visit model exists, now with **`billing_class`** *(Gap #2)* and a **single enforced state machine** *(Gap #3)*. Remaining gaps: FL/equipment slot link, explicit `order_type` enum, `pm_schedule_id` link. |
 | operation (op-level work) | **Missing** | — | Work is tracked at the *visit* level, not decomposed into sequenced operations. |
 | confirmation (append-only) + reversal | **Partial→Present on stock** *(Gap #4)* | `visit_confirmation_events` + `reverse_visit_confirmation()` | IW41/IW45 reversal-by-append is **implemented** (snapshot + reason, re-opens visit) and now **restores stock** atomically (net-per-part, idempotent). Remaining: confirmations are visit-level, not operation-level. |
 | confirmation_part (+ stock decrement) | **Partial** | `visit_parts` + `part_movements` | Parts logged per visit and decrement stock; `unit_price` snapshotted. Not tied to a reversible confirmation row. |
 | saved_view | **Present** | `saved_views` | `subject_type/subject_id/scope/name/payload(JSON)/is_default`. Matches intent. |
-| service_contract | **Present** *(Gap #2)* | `pm_contracts` | Has customer/equipment/frequency/value/status/dates **+ `included_pm_visits_per_year`** (yearly entitlement; 0 = unlimited). Remaining: `response_sla`, multi-site coverage (`contract_site`). |
-| contract_site | **Missing** | — | Contract covers a single `equipment_id`, not a set of sites. (Deferred; entitlement is per-contract.) |
+| service_contract | **Present** *(Gap #2)* | `pm_contracts` | Has customer/equipment/frequency/value/status/dates **+ `included_pm_visits_per_year`** (yearly entitlement; 0 = unlimited) **+ multi-site coverage** *(Gap #5, `contract_site`)*. Remaining: `response_sla`. |
+| contract_site | **Present** *(Gap #5)* | `contract_site` | Many-to-many `pm_contracts` ↔ `functional_location`. A contract can cover many sites; same-customer integrity enforced; UNIQUE(contract, fl). Helpers `add/remove/list_contract_sites`, `list_site_contracts`. The single optional `equipment_id` still coexists for legacy single-unit deals. |
 | invoice_draft / line | **Present** *(Gap #2)* | `invoices` + `invoice_line_items`, `estimates` | Draft→issued lifecycle + line items exist. **Auto-generation now aggregates a visit's confirmed work (labor + parts) into draft lines, billing-class aware** (`generate_draft_invoice_for_visit`): billable lines priced, warranty/contract/goodwill documented at 0; GCT as one optional `tax_rate` % line. |
 | pm_schedule (engine) | **Partial** | `pm_contracts` (+ `last_generated_date`) | Calendar generation exists via contract frequency. Missing: runtime/meter triggers, `billing_class` default, one-open-cycle/cadence-hold guarantees as described. |
 | audit_log (immutable) | **Present** | `audit_log` + `_audit_guard` trigger | Append-only with delete-blocking trigger and `chain_hash`. Matches/exceeds intent. |
@@ -67,7 +67,7 @@ existing `audit_log` already uses this pattern via `_audit_guard`).
 | Saved views on the work queue | **Present** | `saved_views`. |
 | Customer-account row scoping (portal) | **Present** | Existing customer portal (`portal_dashboard.html`) scopes to the logged-in customer. (No distinct `dispatcher`/`portal_user` *roles* in `ADMIN_PERMS` — portal auth is separate.) |
 | **Billing-class resolution** (contract/billable/warranty/goodwill) | **Present** *(Gap #2 built)* | `resolve_billing_class()` resolves every visit to ONE class by precedence (override → warranty → contract-within-entitlement → billable); `compute_warranty_expiry()` drives warranty; `count_contract_visits_in_year()` is the per-contract-year entitlement counter. See Build progress → Phase 4. |
-| Where-used (material → equipment) | **Missing** | Needs BOM. |
+| Where-used (material → equipment) | **Present** *(Phase 6)* | `list_part_where_used()` + `GET /api/admin/parts/{id}/where-used` — reverse lookup from a part to every asset whose `asset_bom` lists it. |
 | Equipment timeline (one history view) | **Partial** | Per-visit history exists; no unified install+order+reading+confirmation timeline (blocked on FL/install model). |
 
 ---
@@ -78,9 +78,9 @@ existing `audit_log` already uses this pattern via `_audit_guard`).
 2. **Billing-class layer + draft-invoice-from-confirmations** (`billing_class` on the order; resolve warranty/contract/billable/goodwill; aggregate visit confirmations into draft lines; GCT as one optional % line). *This is the service-company payoff of every confirmation.* — **Present** *(Gap #2 built — see Phase 4)*
 3. **Single enforced visit state machine** (`created→scheduled→in_progress→tech_complete→closed`; cancel from created/scheduled; freeze descriptive fields after tech_complete; reject all else). — **Partial**
 4. **Reversal restores stock** (extend `reverse_visit_confirmation()` to reverse `part_movements`). — **Partial**
-5. **Contract entitlement** (`included_pm_visits_per_year` + per-contract-year usage counter; `contract_site` for multi-site). — **Partial** *(Gap #2: `included_pm_visits_per_year` + `count_contract_visits_in_year()` done; `contract_site` multi-site still deferred)*
+5. **Contract entitlement** (`included_pm_visits_per_year` + per-contract-year usage counter; `contract_site` for multi-site). — **Present** *(Gap #2: `included_pm_visits_per_year` + `count_contract_visits_in_year()`; Gap #5: `contract_site` multi-site coverage delivered)*
 6. **Customer property hierarchy** (site/building/space) + customer `type`/`billing_currency`. — **Missing**
-7. **Runtime/meter triggers + BOM/where-used.** — **Missing** (lower urgency).
+7. **Runtime/meter triggers + BOM/where-used.** — **BOM/where-used Present** *(Phase 6: `asset_bom` + `list_part_where_used`)*; runtime/meter triggers still **Missing** (lower urgency).
 
 ---
 
@@ -276,14 +276,151 @@ confirmed work with that class applied. Additive-only; live data untouched.
 Behavior-map delta: **Billing-class resolution** → **Present**;
 `service_contract` and `invoice_draft / line` → **Present**.
 
-### 🎯 Build complete — Gaps #1, #3, #4, #2 all delivered.
+## ✅ Phase 5 — Gap #5 (`contract_site` multi-site coverage) — BUILT
 
-The committed sequence (Gap #1 → #3 → #4 → #2) is done end-to-end (DB → API → UI
-→ tests) for each phase, additive-only, live DB pristine. Remaining spec items
-are the lower-urgency ones: `contract_site` multi-site coverage, customer
-property hierarchy (site/building/space) + customer `type`/`billing_currency`,
-operation-level work decomposition, runtime/meter PM triggers, and BOM/
-where-used.
+A PM contract can now cover **many** functional locations, not just the single
+optional `equipment_id`.
+
+- **Schema** (`database.py`, additive): `contract_site` (id, contract_id →
+  `pm_contracts`, functional_location_id → `functional_location`, created_at,
+  created_by_*). Indexes on each FK + **UNIQUE(contract_id, functional_location_id)**.
+  Defined after both referenced tables exist.
+- **DB layer**: `add_contract_site()` (authoritative same-customer integrity guard
+  → `ValueError`; idempotent — re-linking returns the existing row),
+  `remove_contract_site()` (bool), `list_contract_sites()` (joined FL display
+  rows), `list_site_contracts()` (reverse lookup, `active_only` filter).
+- **API** (`main.py`): `GET/POST /api/admin/pm-contracts/{id}/sites`,
+  `DELETE /api/admin/pm-contracts/{id}/sites/{fl_id}` — admin-gated via
+  `_require_record_access` (customer write for mutations), 422 on cross-customer
+  FL, 404 on missing contract/link, audited `pm_contract.site_added/removed`.
+  Contract-detail GET now also returns `sites`.
+- **UI** (`admin.html`): a **Covered sites** section in the contract detail modal
+  listing linked FLs (class/name/code), with **+ Add site** (picks from the
+  customer's functional locations) and per-row remove (×), gated by
+  `customer:update`.
+- **Tests**: `tests/test_cmms_contract_site.py` (8 DB: schema, add/list, idempotent
+  re-link, remove + no-op, cross-customer reject, missing contract/FL reject,
+  UNIQUE-index backstop, reverse lookup with active filter) +
+  `tests/test_cmms_contract_site_api.py` (6 HTTP: add→list, remove + 404-on-repeat,
+  sites surface in contract detail, cross-customer 422, missing-contract 404,
+  admin-auth required on all routes).
+
+Behavior-map delta: **Contract entitlement / multi-site** → **Present**;
+entity-map `service_contract` updated, `contract_site` → **Present**.
+
+## ✅ Phase 6 — Asset registry depth + bill of materials — BUILT
+
+The asset register grows from "name/model/serial" into a real **nameplate**, and
+assets gain a **bill of materials** (spares list) with a **where-used** reverse query.
+
+- **Schema** (`database.py`, additive): seven nameplate/spec columns on `equipment`
+  (`manufacturer`, `specification`, `commissioned_date`, `refrigerant_type`,
+  `capacity_btu`, `voltage`, `phase` — all NULLable plaintext, none PII). New
+  **`asset_bom`** table (id, equipment_id → `equipment`, part_id → `parts`,
+  quantity, position, notes, created/updated + created_by_*). Indexes on each FK
+  + **UNIQUE(equipment_id, part_id)**. Defined after both referenced tables exist.
+- **DB layer**: nameplate columns flow through `create_equipment` (per-column
+  guarded write) and `update_equipment` (added to `_EQUIPMENT_PLAIN_COLS`).
+  `add_asset_bom_item()` is an **upsert** keyed on (equipment, part) — re-adding a
+  part updates its qty/position/notes; validates both rows exist and quantity > 0
+  (→ `ValueError`). `remove_asset_bom_item()` (bool), `list_asset_bom()` (joined
+  part display rows + computed `line_cost`), `list_part_where_used()` (reverse
+  lookup: which assets use a part).
+- **API** (`main.py`): `GET/POST /api/admin/equipment/{id}/bom`,
+  `DELETE /api/admin/equipment/{id}/bom/{part_id}`, and
+  `GET /api/admin/parts/{id}/where-used` — admin-gated (`customer:update` for
+  mutations, `customer:view`/`inventory` for reads), 422 on bad part / non-positive
+  qty, 404 on missing equipment/part/link, audited `equipment.bom_added/removed`.
+  `EquipmentCreate`/`EquipmentUpdate` extended with the nameplate fields.
+- **UI** (`admin.html`): equipment-detail modal now surfaces populated nameplate
+  fields and a **Bill of materials** table (SKU/part/qty/position/line-cost +
+  total) with **+ Add part** (picks from inventory, qty + position) and per-row
+  remove (×), gated by `customer:update`. The Add-Equipment form gains a
+  collapsible **Nameplate / specification** section.
+- **Tests**: `tests/test_cmms_asset_bom.py` (10 DB: schema, nameplate round-trip +
+  update, add/list with line_cost, upsert idempotency, remove + no-op, missing
+  equipment/part reject, non-positive qty reject, UNIQUE backstop, where-used) +
+  `tests/test_cmms_asset_bom_api.py` (11 HTTP: nameplate create/patch, BOM
+  add→list, repost-updates, remove + 404-on-repeat, bad-part 422, zero-qty 422,
+  missing-equipment 404, where-used, admin-auth required on all routes).
+
+Behavior-map delta: **Where-used** → **Present**; entity-map `equipment` →
+**Present**, `equipment_bom / bom_item` → **Present**.
+
+## Phase HR-1 — unified Employee master (CMMS + ERP + HR all-in-one)
+
+PrimeCool already carried a Jamaica statutory-payroll engine (`JAMAICA_TAX_REFERENCE`:
+PAYE, NIS, NHT, Education Tax, HEART), the `hr_admin` role, onboarding, timesheets,
+PTO, KPIs, reviews, certs and CV entries — but had **no single employee master**
+holding each person's statutory identity (TRN/NIS), parish, DOB, address and
+emergency contact, and nothing that spanned **both** technicians and admin_users.
+HR-1 fills that gap with an **overlay** record (Option A) rather than forking the
+two staff tables.
+
+- **Schema** (`database.py`, additive `init_db` migration): **`employee_profiles`**
+  — overlay keyed by `(subject_type ∈ {admin,tech}, subject_id)` with
+  **UNIQUE(subject_type, subject_id)** so a staff member has at most one profile.
+  Columns: legal/preferred name, DOB, gender, marital status, parish, city/town,
+  two address lines, personal phone/email, emergency contact (name/phone/
+  relationship), notes, created/updated + by-kind/by-id. **`employee_ids`** child
+  (employee_id → `employee_profiles`, id_type, id_number, issued/expiry) with
+  **UNIQUE(employee_id, id_type)** + FK index. Sensitive columns (DOB, address,
+  phones, emails, emergency contact, notes, and every `id_number`) are registered
+  in `_PII_RAND` so they are **encrypted at rest** — verified raw-bytes ≠ plaintext.
+- **DB layer**: `JAMAICA_PARISHES` (the 14), `EMPLOYEE_ID_TYPES`
+  (TRN, NIS, DRIVERS_LICENSE, PASSPORT, VOTER_ID, NHT). `create_employee_profile()`
+  validates subject existence, parish membership and duplicate-profile guard.
+  `get_employee_profile()` / `_by_subject()` join the subject's name/code/role/
+  active and roll up `id_types`. `list_employee_profiles(subject_type, parish, q)`
+  filters by type/parish/name-substring. `update_employee_profile()` patches any
+  editable column (parish re-validated). `add_employee_id()` is an **upsert** keyed
+  on (employee, id_type) — uppercases the type, validates against
+  `EMPLOYEE_ID_TYPES`, rejects empty numbers; `list_employee_ids()`,
+  `remove_employee_id()` (bool).
+- **API** (`main.py`): new perms — `hr:view`/`hr:edit` granted to **super_admin**
+  and **hr_admin**, `hr:view` to **supervisor_admin**. Routes (all admin-gated):
+  `GET /api/admin/hr/reference` (parishes + id_types, no PII),
+  `GET /api/admin/hr/employees` (list + filters),
+  `POST /api/admin/hr/employees` (422 on bad subject/parish/duplicate),
+  `GET /api/admin/hr/employees/{id}` (full decrypted profile + national_ids),
+  `PATCH /api/admin/hr/employees/{id}` (422 on bad parish; **audit values
+  redacted to `***`**), `POST /api/admin/hr/employees/{id}/ids` (upsert; **the
+  number is never written to the audit log**), `DELETE …/ids/{id_type}` (404 if
+  absent). `EmployeeProfileCreate`/`Update` + `EmployeeIdAdd` Pydantic models.
+- **UI** (`admin.html`): new **Employees** nav item + panel (gated by `hr:view`),
+  skinned in PrimeCool's teal/ink theme (Workday screenshots used as *pattern*
+  inspiration, not a pixel template). List view: All/Field/Office filter pills,
+  debounced name search, sortable master table (Name/Code/Type/Parish/Statutory
+  IDs). Detail view: header + auto-fitting field grid + a **Statutory IDs** card
+  with the Workday "National ID / Add Another" pattern (per-row Remove). Create/
+  Edit modal (sectioned: Staff member / Legal name / Personal / Address (Jamaica,
+  parish dropdown) / Contact / Emergency) with red-asterisk required-field
+  convention; subject picker is create-only (immutable thereafter). Add-ID modal
+  notes the encrypt-at-rest + never-audited guarantee. Write controls
+  (`+ New Employee`, Edit, Add ID) gated by `hr:edit`.
+- **Tests**: `tests/test_cmms_hr_employee.py` (16 DB: schema smoke,
+  parish/id-type constants, create-over-tech/admin + subject join,
+  encryption-at-rest, bad-subject/parish/duplicate rejection, UNIQUE backstops,
+  update round-trip, list + filters, national-ID add/list/remove/upsert/
+  validation) + `tests/test_cmms_hr_employee_api.py` (11 HTTP: reference,
+  create→get, dup 422, bad-subject/parish 422, patch + bad-parish-patch 422,
+  national-ID lifecycle incl. upsert/remove/404, bad-id-type 422, missing-employee
+  404, admin-auth required on every route). **27/27 pass.**
+
+Behavior-map delta: **Unified employee master / statutory identity (TRN/NIS,
+parish, DOB, emergency contact)** → **Present** for both technicians and
+admin_users; entity-map `employee_profiles`, `employee_ids` → **Present**.
+
+### 🎯 Build status — Gaps #1, #3, #4, #2, #5 + Phase 6 + HR-1 all delivered.
+
+The committed sequence (Gap #1 → #3 → #4 → #2) plus **Gap #5**, **Phase 6
+(asset registry depth + BOM/where-used)** and **Phase HR-1 (unified employee
+master)** is done end-to-end (DB → API → UI → tests) for each phase,
+additive-only, live DB pristine. Remaining spec items are
+the lower-urgency ones: customer property hierarchy (site/building/space) +
+customer `type`/`billing_currency` (#6), explicit work-order `order_type`
+(reactive/preventive/predictive) + priorities/SLAs, operation-level work
+decomposition, and runtime/meter PM triggers (#7).
 
 ## Recommended first build
 
