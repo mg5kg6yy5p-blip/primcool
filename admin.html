@@ -1238,6 +1238,41 @@
     /* Smooth fade-in on chart re-render */
     .adm-org-wrap{animation:adm-org-fade .22s ease;}
     @keyframes adm-org-fade{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:translateY(0);}}
+    /* ── Home dashboard (Pulse-style daily overview) ── */
+    .home-hero{display:flex;gap:16px;flex-wrap:wrap;align-items:stretch;margin-bottom:16px;}
+    .home-gauge-card{background:var(--card);border:1px solid var(--border);border-radius:14px;
+      padding:18px 22px;display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:230px;}
+    .home-gauge-cap{font-size:13px;font-weight:600;color:var(--muted);margin-top:6px;text-align:center;}
+    #homeGauge text.g-num{font:700 38px/1 system-ui,sans-serif;fill:var(--ink);}
+    #homeGauge text.g-den{font:600 15px/1 system-ui,sans-serif;fill:var(--muted);}
+    .home-kpis{display:grid;grid-template-columns:repeat(2,minmax(150px,1fr));gap:12px;flex:1;}
+    .home-kpi{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:14px 16px;
+      display:flex;flex-direction:column;justify-content:center;}
+    .home-kpi .k-val{font-size:30px;font-weight:800;color:var(--ink);line-height:1;}
+    .home-kpi .k-lab{font-size:12.5px;font-weight:600;color:var(--muted);margin-top:6px;}
+    .home-quick{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px;}
+    .home-quick-btn{display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--border);
+      border-radius:10px;padding:10px 16px;font-size:13.5px;font-weight:600;color:var(--ink);cursor:pointer;
+      transition:border-color .12s ease,transform .06s ease;}
+    .home-quick-btn:hover{border-color:var(--teal);}
+    .home-quick-btn:active{transform:translateY(1px);}
+    .home-quick-btn .hq-ic{font-size:16px;}
+    .home-lists{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;}
+    .home-list-card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:6px 18px 14px;}
+    .home-list-head{display:flex;align-items:center;justify-content:space-between;margin:8px 0 4px;}
+    .home-list-head h3{margin:0;font-size:15px;color:var(--ink);}
+    .home-list-head a{font-size:12.5px;font-weight:600;color:var(--teal);}
+    .home-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;
+      border-top:1px solid var(--border);font-size:13.5px;}
+    .home-row:first-child{border-top:none;}
+    .home-row .hr-main{color:var(--ink);font-weight:600;}
+    .home-row .hr-sub{color:var(--muted);font-size:12px;margin-top:2px;}
+    .home-pill{font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px;white-space:nowrap;}
+    .home-pill.done{background:var(--teal-bg,#e6f7f2);color:var(--teal-deep);}
+    .home-pill.prog{background:#eaf2ff;color:#1d4ed8;}
+    .home-pill.pend{background:#fff4e5;color:#b45309;}
+    .home-pill.misc{background:var(--surface-2,#f1f5f9);color:var(--muted);}
+    .home-empty{color:var(--muted);font-size:13px;padding:14px 0;text-align:center;}
   </style>
   <script src="/static/pc_shared.js?v=1781191429"></script>
 </head>
@@ -1349,7 +1384,11 @@
 
   <div class="layout">
     <nav class="sidebar" id="adminSidebar">
-      <div class="nav-item active" onclick="showPanel('customers')" id="nav-customers">
+      <div class="nav-item active" onclick="showPanel('home')" id="nav-home">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        Home
+      </div>
+      <div class="nav-item" onclick="showPanel('customers')" id="nav-customers">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
         Customers
       </div>
@@ -1486,8 +1525,56 @@
       <!-- Cascade re-grant banner stack -->
       <div id="delegCascadeBannerStack"></div>
 
+      <!-- ── Home dashboard panel ──
+           Pulse-style daily overview: an arc gauge of jobs completed / scheduled
+           today, a strip of "created today" KPI counters, quick-create shortcuts,
+           today's jobs and recent customers. All content is rendered by
+           loadHomeDashboard() from GET /api/admin/dashboard/overview, which omits
+           any section the signed-in admin lacks read access to. -->
+      <div class="panel active" id="panel-home">
+        <div class="top-bar">
+          <h2 id="homeGreeting">Home</h2>
+          <button class="btn btn-ghost" onclick="loadHomeDashboard()" title="Refresh">↻ Refresh</button>
+        </div>
+
+        <!-- Hero row: arc gauge + today's KPI counters -->
+        <div class="home-hero" id="homeHero">
+          <div class="home-gauge-card">
+            <svg id="homeGauge" viewBox="0 0 200 200" width="190" height="190" aria-label="Jobs completed today"></svg>
+            <div class="home-gauge-cap">Jobs Completed Today</div>
+          </div>
+          <div class="home-kpis" id="homeKpis"><!-- KPI tiles injected here --></div>
+        </div>
+
+        <!-- Quick-create shortcuts (each hidden unless the role can create it) -->
+        <div class="home-quick" id="homeQuick">
+          <button class="home-quick-btn" id="hqCustomer" onclick="openModal('addCustomer')">
+            <span class="hq-ic">＋</span><span>New Customer</span></button>
+          <button class="home-quick-btn" id="hqVisit" onclick="showPanel('visits'); openModal('addVisit');">
+            <span class="hq-ic">🛠</span><span>New Visit</span></button>
+          <button class="home-quick-btn" id="hqEstimate" style="display:none;" onclick="showPanel('estimates'); setTimeout(()=>{try{openEstimateModal()}catch(e){}},60);">
+            <span class="hq-ic">🧾</span><span>New Estimate</span></button>
+          <button class="home-quick-btn" id="hqInvoice" style="display:none;" onclick="showPanel('invoices'); setTimeout(()=>{try{openInvoiceModal()}catch(e){}},60);">
+            <span class="hq-ic">💵</span><span>New Invoice</span></button>
+        </div>
+
+        <!-- Two-column lists: today's jobs + recent customers -->
+        <div class="home-lists">
+          <div class="home-list-card" id="homeJobsCard">
+            <div class="home-list-head"><h3>Today's Jobs</h3>
+              <a href="javascript:void(0)" onclick="showPanel('visits')">View all</a></div>
+            <div id="homeJobsBody"><div class="home-empty">Loading…</div></div>
+          </div>
+          <div class="home-list-card">
+            <div class="home-list-head"><h3>Recent Customers</h3>
+              <a href="javascript:void(0)" onclick="showPanel('customers')">View all</a></div>
+            <div id="homeCustomersBody"><div class="home-empty">Loading…</div></div>
+          </div>
+        </div>
+      </div>
+
       <!-- ── Customers panel ── -->
-      <div class="panel active" id="panel-customers">
+      <div class="panel" id="panel-customers">
         <div id="customerList">
           <div class="top-bar">
             <h2>Customers</h2>
@@ -5496,6 +5583,7 @@
       applyRoleVisibility();
       _initSidebarReorder();
     } catch {}
+    loadHomeDashboard();          // Home is the default landing panel
     loadCustomers();
     loadAllVisits();
     loadReviews();
@@ -6115,6 +6203,7 @@
   // two-step crumb ("Admin > <Panel>") and detail openers (customer,
   // visit, etc.) push a third step.
   const _PANEL_TITLES = {
+    home: 'Home',
     customers: 'Customers', visits: 'All Visits', techs: 'Technicians',
     employees: 'Employees',
     invoices: 'Invoices',   documents: 'Documents', inventory: 'Warehouse',
@@ -6360,6 +6449,7 @@
   // are handled by their dedicated routers — we only catch the bare
   // panel name here so we don't fight them.
   const _PANEL_NAMES_FOR_HASH = new Set([
+    'home',
     'customers','visits','techs','invoices','documents','inventory',
     'schedule','timesheets','payroll','mypay','admins','audit','reviews',
     'fs','delegations','kpi','companymsg','warehouse','myprofile','onboarding',
@@ -6720,6 +6810,132 @@
     }
   }
 
+  // ── Home dashboard (Pulse-style daily overview) ──────────────────────────
+  // Renders an SVG arc gauge of "jobs completed / scheduled today", a strip of
+  // "created today" KPI tiles, quick-create shortcuts, and two lists (today's
+  // jobs + recent customers). Sections the server omits (because the admin
+  // lacks the read permission) simply don't render — no client perm logic
+  // needed beyond the quick-create buttons, which we gate to avoid dead modals.
+  const _HOME_KPI_LABELS = {
+    new_jobs: 'New Jobs', new_invoices: 'New Invoices',
+    new_estimates: 'New Estimates', new_customers: 'New Customers',
+  };
+  function _homeGaugeSvg(done, total) {
+    const cx = 100, cy = 100, r = 80, C = 2 * Math.PI * r;
+    const frac = total > 0 ? Math.max(0, Math.min(1, done / total)) : 0;
+    const green = (frac * C).toFixed(1);
+    const rest = (C - frac * C).toFixed(1);
+    // Track ring + value arc (rotated so it starts at 12 o'clock), big count
+    // in the middle over a "/ total" denominator. The value arc is omitted at
+    // 0% so the rounded line-cap doesn't leave a stray dot on an empty gauge.
+    const valueArc = frac > 0 ? `
+      <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--teal-solid)" stroke-width="16"
+              stroke-linecap="round" stroke-dasharray="${green} ${rest}"
+              transform="rotate(-90 ${cx} ${cy})"
+              style="transition:stroke-dasharray .6s ease;"/>` : '';
+    return `
+      <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--border)" stroke-width="16"/>${valueArc}
+      <text class="g-num" x="100" y="98" text-anchor="middle">${done}</text>
+      <text class="g-den" x="100" y="120" text-anchor="middle">of ${total} today</text>`;
+  }
+  function _homeStatusPill(status) {
+    const s = (status || '').toLowerCase();
+    if (s === 'completed' || s === 'closed') return ['done', s === 'closed' ? 'Closed' : 'Completed'];
+    if (s === 'in_progress') return ['prog', 'In Progress'];
+    if (s === 'scheduled' || s === 'created') return ['pend', s === 'created' ? 'Created' : 'Scheduled'];
+    if (s === 'cancelled' || s === 'canceled') return ['misc', 'Cancelled'];
+    return ['misc', status || '—'];
+  }
+  async function loadHomeDashboard() {
+    // Greeting with the signed-in admin's first name when we have it.
+    const greetEl = document.getElementById('homeGreeting');
+    if (greetEl && currentAdmin) {
+      const nm = (currentAdmin.name || currentAdmin.full_name || '').trim().split(/\s+/)[0];
+      const hr = new Date().getHours();
+      const part = hr < 12 ? 'Good morning' : hr < 18 ? 'Good afternoon' : 'Good evening';
+      greetEl.textContent = nm ? `${part}, ${nm}` : 'Home';
+    }
+    // Quick-create buttons: hide the ones this role can't actually use.
+    const qe = document.getElementById('hqEstimate'); if (qe) qe.style.display = can('estimate:create') ? '' : 'none';
+    const qi = document.getElementById('hqInvoice');  if (qi) qi.style.display = can('invoice:create')  ? '' : 'none';
+    const qv = document.getElementById('hqVisit');    if (qv) qv.style.display = can('visit:create')    ? '' : 'none';
+
+    let d;
+    try {
+      d = await api('GET', '/api/admin/dashboard/overview');
+    } catch (e) {
+      const jb = document.getElementById('homeJobsBody');
+      if (jb) jb.innerHTML = `<div class="home-empty">Couldn't load dashboard: ${escHtml(e.message || String(e))}</div>`;
+      return;
+    }
+
+    // Arc gauge — only if the server returned the jobs section (visit:view).
+    const gauge = document.getElementById('homeGauge');
+    const gcard = gauge ? gauge.closest('.home-gauge-card') : null;
+    if (d.jobs) {
+      if (gauge) gauge.innerHTML = _homeGaugeSvg(d.jobs.completed | 0, d.jobs.total | 0);
+      if (gcard) gcard.style.display = '';
+    } else if (gcard) {
+      gcard.style.display = 'none';
+    }
+
+    // KPI tiles — one per key the server chose to include.
+    const kEl = document.getElementById('homeKpis');
+    if (kEl) {
+      const order = ['new_jobs', 'new_invoices', 'new_estimates', 'new_customers'];
+      const kpis = d.kpis || {};
+      kEl.innerHTML = order.filter(k => k in kpis).map(k =>
+        `<div class="home-kpi"><div class="k-val">${kpis[k] | 0}</div>
+           <div class="k-lab">${_HOME_KPI_LABELS[k]}</div></div>`).join('')
+        || '<div class="home-empty">No metrics available.</div>';
+    }
+
+    // Today's jobs list.
+    const jb = document.getElementById('homeJobsBody');
+    const jcard = document.getElementById('homeJobsCard');
+    if (jb) {
+      if (!d.todays_jobs) {                       // section withheld (no visit:view)
+        if (jcard) jcard.style.display = 'none';
+      } else if (d.todays_jobs.length === 0) {
+        if (jcard) jcard.style.display = '';
+        jb.innerHTML = '<div class="home-empty">No jobs scheduled today.</div>';
+      } else {
+        if (jcard) jcard.style.display = '';
+        jb.innerHTML = d.todays_jobs.map(j => {
+          const [cls, lab] = _homeStatusPill(j.status);
+          const time = j.scheduled_time ? escHtml(j.scheduled_time) : '—';
+          const type = j.visit_type ? escHtml(j.visit_type) : 'Visit';
+          const tech = j.technician ? ' · ' + escHtml(j.technician) : '';
+          const who = j.customer_name ? escHtml(j.customer_name) : 'Unassigned customer';
+          return `<div class="home-row" onclick="pcGoVisit(${j.id})" style="cursor:pointer;">
+            <div><div class="hr-main">${who}</div>
+              <div class="hr-sub">${time} · ${type}${tech}</div></div>
+            <span class="home-pill ${cls}">${lab}</span></div>`;
+        }).join('');
+      }
+    }
+
+    // Recent customers list.
+    const cb = document.getElementById('homeCustomersBody');
+    if (cb) {
+      const list = d.recent_customers || [];
+      if (list.length === 0) {
+        cb.innerHTML = '<div class="home-empty">No customers yet.</div>';
+      } else {
+        cb.innerHTML = list.map(c => {
+          const sub = c.company ? escHtml(c.company)
+                    : (c.phone ? escHtml(c.phone) : '—');
+          const added = c.created_at ? escHtml(String(c.created_at).slice(0, 10)) : '';
+          return `<div class="home-row" onclick="pcGoCustomer(${c.id})" style="cursor:pointer;">
+            <div><div class="hr-main">${escHtml(c.name || '—')}</div>
+              <div class="hr-sub">${sub}</div></div>
+            <span class="hr-sub">${added}</span></div>`;
+        }).join('');
+      }
+    }
+  }
+  window.loadHomeDashboard = loadHomeDashboard;
+
   function showPanel(name) {
     // Any panel switch on mobile also closes the drawer.
     closeNav();
@@ -6763,6 +6979,7 @@
         } catch(_) {}
       }
     }
+    if (name === 'home') { _safeLoad('loadHomeDashboard', loadHomeDashboard); }
     if (name === 'fs') { _safeLoad('fsLoadCurrentTab', fsLoadCurrentTab); }
     if (name === 'kpi') {
       _safeLoad('kpiInitPanel', async () => {

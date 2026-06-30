@@ -411,7 +411,32 @@ Behavior-map delta: **Unified employee master / statutory identity (TRN/NIS,
 parish, DOB, emergency contact)** → **Present** for both technicians and
 admin_users; entity-map `employee_profiles`, `employee_ids` → **Present**.
 
-### 🎯 Build status — Gaps #1, #3, #4, #2, #5 + Phase 6 + HR-1 all delivered.
+## Phase UX-1 — Admin Home dashboard (arc-gauge daily overview) — BUILT
+
+App-Store-style "Pulse" radial gauge landing panel for the admin SPA, built end
+to end (API → UI → tests), additive-only, live DB pristine.
+
+- **API** — `GET /api/admin/dashboard/overview` (`main.py`). Single read-only
+  aggregate for *today* (UTC date). Returns `date`, a `jobs` gauge
+  (`{completed,total}` from `maintenance_visits` scheduled today, completed =
+  status in `completed`/`closed`), a `kpis` block (`new_jobs`, `new_invoices`,
+  `new_estimates`, `new_customers` — counts created today via `created_at LIKE`),
+  `todays_jobs` (≤12 rows, customer-joined, ordered by scheduled_time), and
+  `recent_customers` (≤5, phone decrypted via `_dec_row`). **Gated by DATA, not
+  feature:** `jobs`/`todays_jobs` only when the caller holds `visit:view`,
+  `new_invoices` behind `invoice:view`, `new_estimates` behind `estimate:view`;
+  customer KPIs/list always present. Admin-auth required.
+- **UI** — new `nav-home` item (default landing panel) + `panel-home`:
+  `_homeGaugeSvg()` draws the stroke-dasharray arc (green value over a full-circle
+  track), KPI tiles, quick-create buttons (`hqEstimate`/`hqInvoice`/`hqVisit`
+  shown per `can(...)`), today's-jobs list (row → `pcGoVisit`), recent-customers
+  list (row → `pcGoCustomer`). Time-of-day greeting from `currentAdmin`.
+- **Tests** — `tests/test_dashboard_overview_api.py` (3 HTTP: 401 unauth;
+  super_admin shape — `date`==today, `jobs` ints with completed≤total, all four
+  KPIs present as ints, capped lists; freshly-inserted visits reflected in the
+  gauge + `todays_jobs`). **3/3 pass.**
+
+### 🎯 Build status — Gaps #1, #3, #4, #2, #5 + Phase 6 + HR-1 + UX-1 all delivered.
 
 The committed sequence (Gap #1 → #3 → #4 → #2) plus **Gap #5**, **Phase 6
 (asset registry depth + BOM/where-used)** and **Phase HR-1 (unified employee

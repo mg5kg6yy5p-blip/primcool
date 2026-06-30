@@ -12646,6 +12646,90 @@ def admin_remove_employee_id(request: Request, employee_id: int, id_type: str):
     return {"employee_id": employee_id, "count": len(ids), "national_ids": ids}
 
 
+# ── Home dashboard — Pulse-style daily overview ──────────────────────────────
+#
+# One read-only aggregate that feeds the admin Home panel: an arc gauge of
+# "jobs completed / scheduled today", a strip of "created today" KPI counters,
+# today's job list, and the most-recent customers. Every section is gated on
+# the caller's OWN permissions and simply OMITTED when they lack it — the
+# feature (the dashboard) is available to all admins, but the DATA inside each
+# tile respects access (gate by data, never by feature). All "today" math uses
+# the same UTC calendar day as the rest of the app.
+
+@app.get("/api/admin/dashboard/overview")
+def admin_dashboard_overview(request: Request):
+    """Daily overview for the admin Home panel. Sections (jobs gauge, KPI
+    counters, today's jobs, recent customers) are included only when the
+    signed-in admin holds the matching read permission; otherwise the key is
+    absent and the UI just doesn't render that tile."""
+    from datetime import datetime as _dt, timezone as _tz
+    from database import _con as _dbcon, _dec_row as _dr
+    admin = _require_admin(request)
+    role = admin["role"]
+    today = _dt.now(_tz.utc).date().isoformat()
+    like = today + "%"                       # created_at is a full ISO timestamp
+    con = _dbcon()
+    out = {"date": today, "kpis": {}}
+    try:
+        can_visit = _admin_can(role, "visit:view")
+        can_inv = _admin_can(role, "invoice:view")
+        can_est = _admin_can(role, "estimate:view")
+
+        # ── Jobs gauge + today's job list (visit:view) ──────────────────────
+        if can_visit:
+            total = con.execute(
+                "SELECT COUNT(*) AS n FROM maintenance_visits "
+                "WHERE substr(scheduled_date,1,10) = ?", (today,)).fetchone()["n"]
+            done = con.execute(
+                "SELECT COUNT(*) AS n FROM maintenance_visits "
+                "WHERE substr(scheduled_date,1,10) = ? "
+                "AND status IN ('completed','closed')", (today,)).fetchone()["n"]
+            out["jobs"] = {"completed": int(done), "total": int(total)}
+            out["kpis"]["new_jobs"] = con.execute(
+                "SELECT COUNT(*) AS n FROM maintenance_visits "
+                "WHERE created_at LIKE ?", (like,)).fetchone()["n"]
+            rows = con.execute(
+                "SELECT v.id, v.scheduled_time, v.visit_type, v.status, "
+                "v.technician, c.name AS customer_name "
+                "FROM maintenance_visits v "
+                "LEFT JOIN customers c ON c.id = v.customer_id "
+                "WHERE substr(v.scheduled_date,1,10) = ? "
+                "ORDER BY COALESCE(v.scheduled_time,'99:99'), v.id LIMIT 12",
+                (today,)).fetchall()
+            out["todays_jobs"] = [dict(r) for r in rows]
+
+        # ── KPI counters (each gated on its own read perm) ──────────────────
+        if can_inv:
+            out["kpis"]["new_invoices"] = con.execute(
+                "SELECT COUNT(*) AS n FROM invoices WHERE created_at LIKE ?",
+                (like,)).fetchone()["n"]
+        if can_est:
+            out["kpis"]["new_estimates"] = con.execute(
+                "SELECT COUNT(*) AS n FROM estimates WHERE created_at LIKE ?",
+                (like,)).fetchone()["n"]
+
+        # ── Customers — every admin can see the customer book ───────────────
+        out["kpis"]["new_customers"] = con.execute(
+            "SELECT COUNT(*) AS n FROM customers WHERE created_at LIKE ?",
+            (like,)).fetchone()["n"]
+        cust = con.execute(
+            "SELECT id, name, company, phone, created_at FROM customers "
+            "ORDER BY created_at DESC, id DESC LIMIT 5").fetchall()
+        recent = []
+        for r in cust:
+            d = dict(r)
+            if d.get("phone"):
+                try:
+                    d["phone"] = _dr("customers", {"phone": d["phone"]})["phone"]
+                except Exception:
+                    pass
+            recent.append(d)
+        out["recent_customers"] = recent
+    finally:
+        con.close()
+    return out
+
+
 # ── CMMS Gap #1: functional locations + equipment installs ───────────────────
 #
 # A functional_location ("FL") is a fixed slot in a customer's property; an
