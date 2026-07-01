@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reset Password — PrimeCool Admin</title>
+  <style>
+    :root { --navy:#0B2545; --teal:#22A08A; --teal-deep:#1A7A6A; --bg:#f0f4f8;
+      --text:#1a2533; --muted:#5A6472; --border:#dde3ea; --red:#dc2626; --green:#059669; }
+    *{box-sizing:border-box;margin:0;padding:0;}
+    body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;flex-direction:column;}
+    header{background:var(--navy);color:white;padding:14px 22px;display:flex;align-items:center;}
+    .brand{font-size:17px;font-weight:700;}.brand span{color:var(--teal);}
+    .tag{background:rgba(34,160,138,0.25);color:var(--teal);font-size:11px;font-weight:700;padding:3px 9px;border-radius:14px;margin-left:8px;text-transform:uppercase;letter-spacing:0.7px;}
+    main{flex:1;display:flex;align-items:center;justify-content:center;padding:24px;}
+    .card{background:white;border-radius:16px;box-shadow:0 6px 30px rgba(11,37,69,0.12);padding:36px 28px;width:100%;max-width:400px;}
+    h1{color:var(--navy);font-size:22px;margin-bottom:6px;}
+    .sub{color:var(--muted);font-size:13px;margin-bottom:24px;line-height:1.5;}
+    label{display:block;font-size:11px;font-weight:700;letter-spacing:0.7px;text-transform:uppercase;color:var(--navy);margin-bottom:6px;}
+    input{width:100%;padding:13px 14px;border:2px solid var(--border);border-radius:10px;font-size:15px;color:var(--text);outline:none;transition:border-color 0.15s;margin-bottom:16px;font-family:inherit;}
+    input:focus{border-color:var(--teal);}
+    .btn{width:100%;padding:14px;background:var(--teal);color:white;border:none;border-radius:10px;font-size:15px;font-weight:600;cursor:pointer;}
+    .btn:hover:not(:disabled){background:var(--teal-deep);}
+    .btn:disabled{background:#b0bec5;cursor:not-allowed;}
+    .alert{padding:11px 14px;border-radius:8px;font-size:13px;margin-bottom:14px;display:none;line-height:1.5;}
+    .alert.error{background:#fff5f5;color:var(--red);border:1px solid #fed7d7;}
+    .alert.success{background:#f0fdf4;color:var(--green);border:1px solid #bbf7d0;}
+    .alert.show{display:block;}
+    .back{text-align:center;margin-top:18px;font-size:13px;color:var(--muted);}
+    .back a{color:var(--teal);text-decoration:none;font-weight:600;}
+  </style>
+</head>
+<body>
+  <header>
+    <span class="brand">Prime<span>Cool</span></span>
+    <span class="tag">Admin</span>
+  </header>
+  <main>
+    <div class="card">
+      <h1>Reset Admin Password</h1>
+      <p class="sub">Choose a new password (minimum 8 characters).</p>
+      <div class="alert error" id="alertErr"></div>
+      <div class="alert success" id="alertOk">Password updated. Redirecting to sign in…</div>
+      <div id="form">
+        <label>New Password</label>
+        <input type="password" id="pw1" autocomplete="new-password">
+        <label>Confirm Password</label>
+        <input type="password" id="pw2" autocomplete="new-password">
+        <button class="btn" id="submitBtn" onclick="doReset()">Set New Password</button>
+      </div>
+      <div class="back"><a href="/admin">← Back to Sign In</a></div>
+    </div>
+  </main>
+  <script>
+    const token = new URLSearchParams(window.location.search).get('token');
+    if (!token) {
+      document.getElementById('alertErr').textContent = 'Missing reset token.';
+      document.getElementById('alertErr').classList.add('show');
+      document.getElementById('form').style.display = 'none';
+    }
+    document.getElementById('pw2').addEventListener('keydown', e => { if (e.key === 'Enter') doReset(); });
+    async function doReset() {
+      const p1 = document.getElementById('pw1').value;
+      const p2 = document.getElementById('pw2').value;
+      const btn = document.getElementById('submitBtn');
+      document.querySelectorAll('.alert').forEach(a => a.classList.remove('show'));
+      if (p1.length < 8) return showErr('Password must be at least 8 characters.');
+      if (p1 !== p2) return showErr('Passwords do not match.');
+      btn.disabled = true; btn.textContent = 'Saving…';
+      try {
+        const res = await fetch('/api/admin/reset-password', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ token, password: p1, confirm_password: p2 })
+        });
+        if (!res.ok) {
+          const d = await res.json().catch(()=>({}));
+          showErr(d.detail || 'Could not reset password.');
+          btn.disabled = false; btn.textContent = 'Set New Password';
+          return;
+        }
+        document.getElementById('form').style.display = 'none';
+        document.getElementById('alertOk').classList.add('show');
+        setTimeout(() => { window.location.href = '/admin'; }, 2000);
+      } catch {
+        showErr('Connection error.'); btn.disabled = false; btn.textContent = 'Set New Password';
+      }
+    }
+    function showErr(m) {
+      const el = document.getElementById('alertErr');
+      el.textContent = m; el.classList.add('show');
+    }
+  </script>
+</body>
+</html>

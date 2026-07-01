@@ -1,0 +1,3654 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#0B2545">
+  <title>Tech Portal — PrimeCool Services</title>
+  <link rel="manifest" href="/manifest-tech.json">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="PrimeCool Tech">
+  <link rel="apple-touch-icon" href="/icons/tech-apple.png">
+  <!-- PrimeCool brand fonts (shared across surfaces). -->
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800;900&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --navy: #0F2A4A;
+      --navy-2: #11335A;
+      --navy-deep: #0B1F38;
+      --teal: #22A08A;
+      --teal-deep: #1A7A6A;
+      --ice:  #7DD3E8;
+      --lime: #22A08A;
+      --mist: #F2F6FA;
+      --amber: #f59e0b;
+      --red: #dc2626;
+      --green: #059669;
+      --bg: #f0f4f8;
+      --white: #ffffff;
+      --text: #1a2533;
+      --muted: #5A6472;
+      --border: #dde3ea;
+      --light: #f8fafc;
+      --font-display: 'Archivo','Segoe UI',system-ui,-apple-system,sans-serif;
+      --font-body:    'IBM Plex Sans','Segoe UI',system-ui,-apple-system,sans-serif;
+      --font-mono:    'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace;
+      --shadow-sm: 0 1px 3px rgba(15,42,74,0.08), 0 8px 24px -16px rgba(15,42,74,0.25);
+      --gradient-cool: var(--navy);
+      /* Semantic tokens (light values = prior literals, so light theme is unchanged) */
+      --ink: #0F2A4A;            /* primary text (was var(--navy)); dark theme remaps this */
+      --card: #ffffff;           /* card / surface background */
+      --surface-2: #eef2f7;      /* subtle nested panel / hover */
+      --teal-solid: #1A7A6A;     /* solid teal that always carries white text */
+      --danger-solid: #dc2626;   /* solid red that always carries white text */
+      --ok-solid: #059669;       /* solid green that always carries white text */
+      --ok-bg: #d1fae5; --ok-fg: #065f46; --ok-border: #bbf7d0;
+      --warn-bg: #fef3c7; --warn-fg: #92400e; --warn-border: #fde68a;
+      --err-bg: #fee2e2; --err-fg: #991b1b; --err-border: #fed7d7;
+      --info-bg: #dbeafe; --info-fg: #1e40af; --info-border: #bfdbfe;
+      --muted-2: #94a3b8;
+      --overlay: rgba(15,42,74,0.45);
+    }
+    /* ─── Dark theme ─── applied via html[data-pc-theme="dark"] (set in <head> by pc_shared, zero flash) */
+    html[data-pc-theme="dark"] {
+      --navy: #0e1b2e; --navy-2: #16243b; --navy-deep: #0a121d;
+      --ink: #e9eef5;
+      --teal: #2bb89e; --teal-deep: #5fe0c4; --lime: #2bb89e;
+      --ice: #5fe0c4;
+      --amber: #fbbf24; --red: #fca5a5; --green: #5fe0c4;
+      --bg: #0b1320; --light: #111c2c; --mist: #111c2c; --white: #16212f;
+      --card: #16212f; --surface-2: #1d2a3a;
+      --text: #d3dbe6; --muted: #9aa6b6; --muted-2: #7e8b9c;
+      --border: #2a3848;
+      --teal-solid: #1A7A6A; --danger-solid: #dc2626; --ok-solid: #059669;
+      --ok-bg: rgba(34,160,138,0.18); --ok-fg: #5fe0c4; --ok-border: rgba(34,160,138,0.4);
+      --warn-bg: rgba(245,158,11,0.16); --warn-fg: #fbbf24; --warn-border: rgba(245,158,11,0.4);
+      --err-bg: rgba(229,62,62,0.18); --err-fg: #fca5a5; --err-border: rgba(229,62,62,0.4);
+      --info-bg: rgba(59,130,246,0.18); --info-fg: #93c5fd; --info-border: rgba(59,130,246,0.4);
+      --overlay: rgba(0,0,0,0.65);
+      --shadow-sm: 0 1px 3px rgba(0,0,0,0.4), 0 8px 24px -16px rgba(0,0,0,0.6);
+    }
+    /* Form-control defaults so native inputs follow the theme (lowest specificity; class/inline styles win) */
+    input,select,textarea{background:var(--card);color:var(--ink);}
+    input::placeholder,textarea::placeholder{color:var(--muted-2);}
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    body {
+      font-family: var(--font-body);
+      background: var(--bg);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      font-feature-settings: "tnum" 1, "kern" 1;
+      color: var(--text);
+      min-height: 100vh;
+      font-size: 15px;
+      line-height: 1.5;
+    }
+    button, input, textarea, select { font: inherit; }
+    h1, h2, h3, .pc-display { font-family: var(--font-display); letter-spacing: -0.01em; }
+    .pc-mono, code, kbd, samp { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+    .pc-snowflake { display:inline-block;width:18px;height:18px;background:var(--lime);border-radius:5px;flex-shrink:0;position:relative;vertical-align:middle; }
+    .pc-snowflake::before { content:"";position:absolute;inset:3px;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230F2A4A' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><line x1='12' y1='2' x2='12' y2='22'/><line x1='2' y1='12' x2='22' y2='12'/><line x1='4.93' y1='4.93' x2='19.07' y2='19.07'/><line x1='19.07' y1='4.93' x2='4.93' y2='19.07'/></svg>");background-size:contain;background-repeat:no-repeat; }
+    .pc-skeleton-line,.pc-skeleton-block{background:linear-gradient(90deg,var(--surface-2) 0%,var(--card) 50%,var(--surface-2) 100%);background-size:200% 100%;border-radius:6px;animation:pcShimmer 1.4s ease-in-out infinite;}
+    .pc-skeleton-line{height:12px;margin:6px 0;} .pc-skeleton-block{height:38px;}
+    @keyframes pcShimmer{0%{background-position:100% 0;}100%{background-position:-100% 0;}}
+    .pc-empty{padding:32px 20px;text-align:center;color:var(--muted);font-size:13px;}
+    .pc-empty-glyph{font-size:28px;margin-bottom:8px;opacity:0.7;}
+    .pc-empty-title{font-family:var(--font-display);font-weight:700;color:var(--ink);font-size:15px;margin-bottom:4px;}
+    .pc-empty-sub{font-size:12px;color:var(--muted);max-width:360px;margin:0 auto;line-height:1.5;}
+
+    /* ── Top bar ── */
+    header {
+      background: var(--navy);
+      color: white;
+      padding: 14px 18px;
+      display: flex; align-items: center; justify-content: space-between;
+      position: sticky; top: 0; z-index: 100;
+      box-shadow: 0 1px 0 rgba(0,0,0,0.08), 0 6px 14px rgba(15,42,74,0.22);
+    }
+    .brand { font-size: 17px; font-weight: 800; letter-spacing: -0.01em; font-family: var(--font-display); display:inline-flex; align-items:center; gap:10px; }
+    .brand span { color: var(--teal); }
+    .tech-badge {
+      font-size: 11px; font-weight: 700;
+      background: rgba(34,160,138,0.25); color: var(--teal);
+      padding: 3px 9px; border-radius: 14px;
+      text-transform: uppercase; letter-spacing: 0.7px;
+      margin-left: 8px;
+    }
+    .header-right { display: flex; align-items: center; gap: 12px; }
+    .tech-name { font-size: 13px; opacity: 0.8; }
+    .logout {
+      background: rgba(255,255,255,0.1);
+      color: white;
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 6px;
+      padding: 5px 11px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .back-bar {
+      background: var(--navy-2); color: white;
+      padding: 12px 18px; font-size: 14px; font-weight: 500;
+      display: flex; align-items: center; gap: 8px;
+      cursor: pointer;
+      position: sticky; top: 50px; z-index: 99;
+    }
+
+    /* ── Login ── */
+    #loginScreen {
+      min-height: calc(100vh - 50px);
+      display: flex; align-items: center; justify-content: center;
+      padding: 24px;
+    }
+    .login-card {
+      background: var(--card); border-radius: 16px;
+      box-shadow: 0 6px 30px rgba(11,37,69,0.12);
+      padding: 36px 28px; width: 100%; max-width: 360px;
+    }
+    .login-card h1 { color: var(--ink); font-size: 22px; margin-bottom: 6px; }
+    .login-card .sub { color: var(--muted); font-size: 13px; margin-bottom: 28px; }
+    .field { margin-bottom: 16px; }
+    .field label {
+      display: block; font-size: 11px; font-weight: 700;
+      letter-spacing: 0.7px; text-transform: uppercase;
+      color: var(--ink); margin-bottom: 6px;
+    }
+    .field input {
+      width: 100%; padding: 13px 14px;
+      border: 2px solid var(--border); border-radius: 10px;
+      font-size: 17px; color: var(--text);
+      letter-spacing: 2px; text-transform: uppercase;
+      font-family: 'Courier New', monospace;
+      outline: none; transition: border-color 0.15s;
+    }
+    .field input.pin { letter-spacing: 12px; font-size: 22px; text-align: center; }
+    .field input::placeholder { letter-spacing: 1px; font-size: 14px; color: var(--border); text-transform: none; }
+    .field input:focus { border-color: var(--teal); }
+
+    .btn {
+      width: 100%; padding: 15px;
+      background: var(--teal); color: white;
+      border: none; border-radius: 10px;
+      font-size: 15px; font-weight: 600;
+      cursor: pointer; transition: background 0.15s;
+      letter-spacing: 0.3px;
+    }
+    .btn:hover:not(:disabled) { background: var(--teal-solid); }
+    .btn:disabled { background: var(--border); cursor: not-allowed; }
+    .err {
+      background: var(--err-bg); color: var(--red);
+      padding: 11px 14px; border-radius: 8px;
+      font-size: 13px; margin-bottom: 14px;
+      border: 1px solid var(--err-border);
+      display: none;
+    }
+
+    /* ── Tabs ── */
+    .tabs {
+      display: flex; background: var(--card);
+      border-bottom: 1px solid var(--border);
+      position: sticky; top: 50px; z-index: 99;
+    }
+    .tab {
+      flex: 1; padding: 14px 8px;
+      text-align: center; cursor: pointer;
+      font-size: 13px; font-weight: 600;
+      color: var(--muted);
+      border-bottom: 3px solid transparent;
+    }
+    .tab.active { color: var(--teal); border-bottom-color: var(--teal); }
+    .tab .count {
+      background: var(--bg); color: var(--muted);
+      font-size: 11px; padding: 1px 7px; border-radius: 10px;
+      margin-left: 4px;
+    }
+    .tab.active .count { background: rgba(34,160,138,0.15); color: var(--teal); }
+
+    /* ── Job list ── */
+    .list { padding: 14px 14px 80px; }
+    .job-card {
+      background: var(--card); border-radius: 12px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+      margin-bottom: 12px; padding: 16px;
+      border-left: 4px solid var(--border);
+      cursor: pointer;
+      transition: transform 0.1s;
+    }
+    .job-card:active { transform: scale(0.99); }
+    .job-card.scheduled  { border-left-color: var(--amber); }
+    .job-card.confirmed  { border-left-color: #3b82f6; }
+    .job-card.in_progress{ border-left-color: var(--teal); background: linear-gradient(90deg, rgba(34,160,138,0.06) 0%, white 100%); }
+    .job-card.completed  { border-left-color: var(--green); opacity: 0.78; }
+
+    .job-top {
+      display: flex; justify-content: space-between; align-items: flex-start;
+      gap: 10px; margin-bottom: 8px;
+    }
+    .job-type {
+      font-size: 10px; font-weight: 800;
+      padding: 3px 8px; border-radius: 14px;
+      letter-spacing: 0.6px;
+      flex-shrink: 0;
+    }
+    .pm-pill { background: var(--info-bg); color: var(--info-fg); }
+    .cm-pill { background: var(--warn-bg); color: var(--warn-fg); }
+    .job-status {
+      font-size: 10px; font-weight: 700;
+      padding: 3px 9px; border-radius: 14px;
+      letter-spacing: 0.4px; text-transform: uppercase;
+    }
+    .status-scheduled  { background: var(--warn-bg); color: var(--warn-fg); }
+    .status-confirmed  { background: var(--info-bg); color: var(--info-fg); }
+    .status-in_progress{ background: rgba(34,160,138,0.15); color: var(--teal-deep); }
+    .status-completed  { background: var(--ok-bg); color: var(--ok-fg); }
+
+    .job-customer {
+      font-weight: 700; font-size: 16px;
+      color: var(--ink); margin-bottom: 3px;
+    }
+    .job-meta { font-size: 13px; color: var(--muted); }
+    .job-meta .row { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+    .job-meta svg { width: 14px; height: 14px; opacity: 0.7; flex-shrink: 0; }
+
+    .empty {
+      text-align: center; padding: 50px 20px;
+      color: var(--muted); font-size: 14px;
+    }
+    .empty svg { width: 40px; height: 40px; color: var(--border); margin-bottom: 10px; }
+
+    /* ── Job detail ── */
+    .detail { padding: 14px 14px 100px; }
+
+    .detail-card {
+      background: var(--card); border-radius: 12px;
+      padding: 18px; margin-bottom: 14px;
+    }
+    .detail-card h3 {
+      font-size: 11px; font-weight: 700;
+      letter-spacing: 0.8px; text-transform: uppercase;
+      color: var(--muted); margin-bottom: 12px;
+    }
+    .detail-row {
+      display: flex; justify-content: space-between;
+      padding: 9px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 14px;
+    }
+    .detail-row:last-child { border-bottom: none; padding-bottom: 0; }
+    .detail-row .l { color: var(--muted); }
+    .detail-row .v { color: var(--ink); font-weight: 600; text-align: right; }
+    .detail-row .v a { color: var(--teal); text-decoration: none; }
+
+    .status-banner {
+      background: var(--navy);
+      color: white;
+      border-radius: 12px;
+      padding: 16px 18px;
+      margin-bottom: 14px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .status-banner.in_progress { background: linear-gradient(135deg, #22A08A 0%, #1A7A6A 100%); }
+    .status-banner.completed   { background: linear-gradient(135deg, #059669 0%, #047857 100%); }
+    .status-banner .lt {
+      font-size: 11px; opacity: 0.7; letter-spacing: 0.7px;
+      text-transform: uppercase; margin-bottom: 3px;
+    }
+    .status-banner .vt { font-size: 16px; font-weight: 700; }
+    .status-banner .timer { font-family: 'Courier New', monospace; font-size: 13px; opacity: 0.9; margin-top: 4px; }
+
+    .big-btn {
+      width: 100%; padding: 18px;
+      font-size: 16px; font-weight: 700;
+      letter-spacing: 0.4px;
+      border: none; border-radius: 12px;
+      cursor: pointer;
+      margin-bottom: 14px;
+      transition: transform 0.1s;
+    }
+    .big-btn:active { transform: scale(0.98); }
+    .btn-start { background: var(--teal); color: white; }
+    .btn-end   { background: var(--green); color: white; }
+
+    textarea {
+      width: 100%; padding: 12px 14px;
+      border: 2px solid var(--border); border-radius: 10px;
+      font-size: 14px; color: var(--text);
+      outline: none; resize: vertical; min-height: 80px;
+      transition: border-color 0.15s;
+      font-family: inherit;
+    }
+    textarea:focus { border-color: var(--teal); }
+    .field-detail { margin-bottom: 14px; }
+    .field-detail label {
+      display: block; font-size: 11px; font-weight: 700;
+      letter-spacing: 0.7px; text-transform: uppercase;
+      color: var(--ink); margin-bottom: 6px;
+    }
+
+    /* ── Photos ── */
+    .photo-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .photo-item {
+      position: relative;
+      aspect-ratio: 1;
+      border-radius: 8px;
+      overflow: hidden;
+      background: var(--bg);
+    }
+    .photo-item img {
+      width: 100%; height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .photo-cat {
+      position: absolute; top: 4px; left: 4px;
+      background: rgba(0,0,0,0.65); color: white;
+      font-size: 9px; font-weight: 700;
+      padding: 2px 6px; border-radius: 4px;
+      letter-spacing: 0.5px; text-transform: uppercase;
+    }
+    .photo-del {
+      position: absolute; top: 4px; right: 4px;
+      background: rgba(220,38,38,0.85); color: white;
+      width: 22px; height: 22px; border-radius: 50%;
+      border: none; cursor: pointer;
+      font-size: 14px; line-height: 1; padding: 0;
+    }
+    .photo-upload-row {
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: 10px; margin-bottom: 14px;
+    }
+    .upload-btn {
+      background: var(--card); border: 2px dashed var(--border);
+      color: var(--ink); padding: 14px;
+      border-radius: 10px; font-weight: 600; font-size: 13px;
+      cursor: pointer; transition: all 0.15s;
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+    }
+    .upload-btn:hover { border-color: var(--teal); color: var(--teal); }
+    .upload-btn.uploading { opacity: 0.5; cursor: wait; }
+    .upload-btn svg { width: 18px; height: 18px; }
+    .upload-btn input { display: none; }
+
+    /* ── Lightbox ── */
+    .lightbox {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.92); z-index: 1000;
+      align-items: center; justify-content: center;
+      padding: 20px;
+    }
+    .lightbox.open { display: flex; }
+    .lightbox img { max-width: 100%; max-height: 100%; object-fit: contain; }
+    .lightbox-close {
+      position: absolute; top: 16px; right: 16px;
+      background: rgba(255,255,255,0.15); color: white;
+      border: none; width: 40px; height: 40px;
+      border-radius: 50%; font-size: 22px; cursor: pointer;
+    }
+
+    /* ── Toast ── */
+    .toast {
+      position: fixed; bottom: 24px; left: 50%;
+      transform: translateX(-50%) translateY(80px);
+      background: var(--navy); color: white;
+      padding: 12px 22px; border-radius: 50px;
+      box-shadow: 0 6px 24px rgba(0,0,0,0.25);
+      font-size: 14px; z-index: 999;
+      opacity: 0; transition: all 0.3s;
+      pointer-events: none;
+      max-width: 90vw;
+    }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    .toast.error { background: var(--danger-solid); }
+    .toast.success { background: var(--ok-solid); }
+
+    @media (max-width: 380px) {
+      .photo-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    /* PWA install banner */
+    .install-banner {
+      display: none;
+      background: var(--navy); color: white;
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin: 14px 14px 0;
+      align-items: center; justify-content: space-between; gap: 10px;
+    }
+    .install-banner.show { display: flex; }
+    .install-banner .txt { font-size: 12px; line-height: 1.4; }
+    .install-banner .txt strong { color: var(--teal); }
+    .install-banner button {
+      background: var(--teal); color: white; border: none;
+      padding: 6px 12px; border-radius: 6px;
+      font-size: 12px; font-weight: 600; cursor: pointer;
+    }
+    .install-banner .dismiss {
+      background: rgba(255,255,255,0.12);
+    }
+    #iosHint {
+      display: none;
+      background: var(--light); color: var(--ink);
+      font-size: 12px; line-height: 1.5;
+      padding: 10px 14px;
+      margin: 12px 14px 0;
+      border-radius: 8px;
+      text-align: center;
+    }
+
+    /* ── Equipment view + customer-equipment cards ───────────────────── */
+    .header-right .nav-pill {
+      background: rgba(255,255,255,0.10);
+      color: white;
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 14px;
+      padding: 5px 11px;
+      font-size: 12px;
+      cursor: pointer;
+      margin-right: 4px;
+    }
+    .header-right .nav-pill:hover { background: rgba(255,255,255,0.18); }
+    #equipView { padding: 14px 14px 80px; display: none; }
+    .eq-search {
+      display: flex; align-items: center; gap: 10px;
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 0 14px; height: 46px;
+      margin-bottom: 14px;
+    }
+    .eq-search input {
+      flex: 1; border: none; outline: none; background: transparent;
+      font-size: 15px; color: var(--text); font-family: inherit;
+    }
+    .eq-search .ico { color: var(--muted); }
+    .eq-section-title {
+      font-size: 11px; font-weight: 700; letter-spacing: 0.8px;
+      text-transform: uppercase; color: var(--muted);
+      margin: 6px 4px 8px;
+    }
+    .eq-customer-card {
+      background: var(--card); border-radius: 12px;
+      padding: 14px; margin-bottom: 10px;
+      cursor: pointer;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+      transition: transform 0.1s, box-shadow 0.1s;
+    }
+    .eq-customer-card:active { transform: scale(0.99); }
+    .eq-customer-card .name { font-weight: 700; color: var(--ink); font-size: 15px; }
+    .eq-customer-card .sub  { font-size: 12px; color: var(--muted); margin-top: 3px; }
+    .eq-customer-header {
+      background: var(--navy); color: white;
+      border-radius: 12px; padding: 14px 16px; margin-bottom: 14px;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .eq-customer-header .name { font-weight: 700; font-size: 15px; }
+    .eq-customer-header .sub  { font-size: 12px; opacity: 0.8; margin-top: 3px; }
+    .eq-customer-header .switch-btn {
+      background: rgba(255,255,255,0.12); color: white;
+      border: 1px solid rgba(255,255,255,0.20);
+      border-radius: 10px; padding: 6px 12px;
+      font-size: 12px; cursor: pointer;
+    }
+    .eq-list { display: flex; flex-direction: column; gap: 10px; }
+    .eq-row {
+      background: var(--card); border-radius: 12px;
+      padding: 14px 16px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+      border-left: 4px solid var(--teal);
+    }
+    .eq-row .name { font-weight: 700; color: var(--ink); font-size: 15px; margin-bottom: 4px; }
+    .eq-row .meta { font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+    .eq-row .meta strong { color: var(--text); font-weight: 600; }
+    .eq-row .actions { margin-top: 10px; display: flex; gap: 8px; }
+    .eq-row .actions button {
+      flex: 1; padding: 9px 12px;
+      background: var(--light); color: var(--ink);
+      border: 1px solid var(--border); border-radius: 8px;
+      font-size: 13px; font-weight: 600;
+      cursor: pointer;
+    }
+    .eq-row .actions button:hover { background: var(--bg); border-color: var(--teal); }
+    .eq-add-btn {
+      width: 100%; padding: 14px;
+      background: var(--teal); color: white;
+      border: none; border-radius: 12px;
+      font-size: 14px; font-weight: 700;
+      letter-spacing: 0.4px;
+      cursor: pointer;
+      margin-bottom: 14px;
+    }
+    .eq-add-btn:active { background: var(--teal-solid); }
+
+    /* Equipment add/edit modal (full-screen on mobile) */
+    .eq-modal-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.55); z-index: 600;
+      align-items: flex-end; justify-content: center;
+    }
+    .eq-modal-overlay.open { display: flex; }
+    .eq-modal {
+      background: var(--card); width: 100%; max-width: 520px;
+      border-radius: 16px 16px 0 0;
+      max-height: 90vh; overflow-y: auto;
+      padding: 18px 18px calc(18px + env(safe-area-inset-bottom, 0px));
+    }
+    @media (min-width: 520px) {
+      .eq-modal-overlay { align-items: center; padding: 20px; }
+      .eq-modal { border-radius: 16px; }
+    }
+    .eq-modal h2 { color: var(--ink); font-size: 18px; margin-bottom: 4px; }
+    .eq-modal .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+    .eq-modal .field { margin-bottom: 12px; }
+    .eq-modal .field label {
+      display: block; font-size: 11px; font-weight: 700;
+      letter-spacing: 0.7px; text-transform: uppercase;
+      color: var(--ink); margin-bottom: 6px;
+    }
+    .eq-modal .field input,
+    .eq-modal .field textarea {
+      width: 100%; padding: 11px 13px;
+      border: 2px solid var(--border); border-radius: 10px;
+      font-size: 15px; color: var(--text);
+      outline: none; font-family: inherit;
+    }
+    .eq-modal .field input:focus,
+    .eq-modal .field textarea:focus { border-color: var(--teal); }
+    .eq-modal .field textarea { min-height: 70px; resize: vertical; }
+    .eq-modal .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .eq-modal .err {
+      background: var(--err-bg); color: var(--red);
+      padding: 10px 12px; border-radius: 8px;
+      font-size: 13px; margin: 10px 0;
+      border: 1px solid var(--err-border);
+      display: none;
+    }
+    .eq-modal .footer {
+      display: flex; gap: 10px; margin-top: 16px;
+    }
+    .eq-modal .footer button {
+      flex: 1; padding: 13px;
+      border-radius: 10px; border: none;
+      font-size: 14px; font-weight: 600; cursor: pointer;
+    }
+    .eq-modal .footer .cancel {
+      background: var(--light); color: var(--ink);
+      border: 1px solid var(--border);
+    }
+    .eq-modal .footer .save {
+      background: var(--teal); color: white;
+    }
+    .eq-modal .footer .save:disabled { opacity: 0.6; }
+  </style>
+  <script src="/static/pc_shared.js?v=1781191429"></script>
+</head>
+<body>
+
+<!-- ═══ LOGIN ═══ -->
+<div id="loginScreen">
+  <div class="login-card">
+    <h1>Tech Portal</h1>
+    <p class="sub">PrimeCool Services — field tech access.</p>
+    <div class="err" id="loginErr"></div>
+    <div class="field">
+      <label>Tech Code</label>
+      <input type="text" id="techCode" placeholder="T-001" maxlength="10" autocomplete="off" inputmode="text">
+    </div>
+    <div class="field">
+      <label>PIN</label>
+      <input type="password" id="techPin" class="pin" placeholder="••••" maxlength="16" autocomplete="off" inputmode="numeric" pattern="[0-9]*">
+    </div>
+    <button class="btn" id="loginBtn" onclick="doLogin()">Sign In</button>
+    <p style="text-align:center;margin-top:16px;font-size:13px;">
+      <a href="#" onclick="event.preventDefault();openForgot()" style="color:var(--teal);text-decoration:none;font-weight:600;">Forgot PIN?</a>
+    </p>
+  </div>
+</div>
+
+<!-- Forgot PIN modal -->
+<div id="forgotModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:500;align-items:center;justify-content:center;padding:20px;">
+  <div style="background:var(--card);border-radius:16px;width:100%;max-width:380px;padding:28px 24px;">
+    <h2 style="color:var(--ink);font-size:20px;margin-bottom:6px;">Reset Your PIN</h2>
+    <p style="color:var(--muted);font-size:13px;margin-bottom:20px;line-height:1.5;">Enter your tech code and the email PrimeCool has on file. If they match, we'll send you a reset link.</p>
+
+    <div class="err" id="forgotErr"></div>
+    <div id="forgotOk" style="display:none;background:var(--ok-bg);color:var(--ok-fg);border:1px solid var(--ok-border);padding:11px 14px;border-radius:8px;font-size:13px;line-height:1.5;margin-bottom:14px;">
+      If a matching account exists, a reset link has been sent. Check your email (and spam folder) within a few minutes.
+    </div>
+
+    <div class="field">
+      <label>Tech Code</label>
+      <input type="text" id="forgotCode" placeholder="T-001" maxlength="10" autocomplete="off">
+    </div>
+    <div class="field">
+      <label>Email on File</label>
+      <input type="email" id="forgotEmail" placeholder="you@example.com" style="letter-spacing:0;text-transform:none;font-family:inherit;font-size:15px;" autocomplete="email">
+    </div>
+    <button class="btn" id="forgotBtn" onclick="submitForgot()">Send Reset Link</button>
+    <p style="text-align:center;margin-top:14px;font-size:13px;">
+      <a href="#" onclick="event.preventDefault();closeForgot()" style="color:var(--muted);text-decoration:none;">← Back to Sign In</a>
+    </p>
+    <p style="text-align:center;margin-top:16px;font-size:11px;color:var(--muted);line-height:1.5;">
+      No email on file? Ask your admin to reset your PIN.
+    </p>
+  </div>
+</div>
+
+<!-- ═══ APP ═══ -->
+<div id="app" style="display:none;">
+  <header>
+    <div>
+      <!-- Brand acts as the "home" button — clicking it returns the tech
+           to the 2-tab landing at /tech/home. Per spec there's no
+           dedicated back button in the topbar, so the logo + name is the
+           way back. -->
+      <a href="/home" title="Home" style="text-decoration:none;color:inherit;display:inline-flex;align-items:center;gap:6px;">
+        <span class="brand"><span class="pc-snowflake" aria-hidden="true"></span><span style="display:inline-flex;align-items:baseline;color:#fff;">Prime<span>Cool</span></span></span>
+        <span class="tech-badge">Tech</span>
+      </a>
+    </div>
+    <div class="header-right">
+      <span class="tech-name" id="hdrName"></span>
+      <button class="nav-pill" onclick="showEquipView()" title="Search customer equipment">Equipment</button>
+      <!-- Inline mount for the shared notification bell (pc_shared.js). Keeping
+           it in-flow here stops it floating over the Sign out button. -->
+      <span data-pc-notif-bell style="display:inline-flex;align-items:center;"></span>
+      <button class="logout" onclick="doLogout()">Sign out</button>
+    </div>
+  </header>
+
+  <!-- Offline / pending-sync banner (#4 field offline mode). Hidden until
+       the device goes offline or there are queued writes waiting to sync. -->
+  <div id="offlineBanner" role="status" aria-live="polite"
+       style="display:none;align-items:center;gap:8px;justify-content:center;
+              padding:7px 12px;font-size:12.5px;font-weight:600;
+              background:#92400e;color:#fff;text-align:center;">
+    <span id="offlineBannerText">Offline — changes will sync when you reconnect.</span>
+  </div>
+
+  <!-- Back bar (only on detail view) -->
+  <div class="back-bar" id="backBar" style="display:none;" onclick="showList()">
+    ← Back to Jobs
+  </div>
+
+  <!-- PWA install banner -->
+  <div class="install-banner" id="installBanner">
+    <div class="txt">
+      <strong>📲 Install PrimeCool Tech</strong><br>
+      Add to your home screen for one-tap access.
+    </div>
+    <button onclick="doInstall()">Install</button>
+    <button class="dismiss" onclick="dismissInstall()">×</button>
+  </div>
+  <div id="iosHint">
+    📱 To install: tap <strong>Share</strong> in Safari, then <strong>"Add to Home Screen"</strong>.
+  </div>
+
+  <!-- LIST VIEW -->
+  <div id="listView">
+    <!-- The 5S Audit card used to live here as a shortcut, but it let
+         the tech bypass the sign-in gate (tap card → run audit → never
+         sign in). The 5S audit is now reached ONLY through the landing
+         page's Sign In / Sign Out flow, which guarantees the audit is
+         tied to a clock event. -->
+
+    <!-- My Pay + My Performance tabs were also removed from this jobs
+         queue; both now live in /tech/home → My Profile. -->
+    <div class="tabs">
+      <div class="tab active" data-tab="today" onclick="setTab('today')">Today <span class="count" id="cnt-today">0</span></div>
+      <div class="tab" data-tab="upcoming" onclick="setTab('upcoming')">Upcoming <span class="count" id="cnt-upcoming">0</span></div>
+      <div class="tab" data-tab="done" onclick="setTab('done')">Done <span class="count" id="cnt-done">0</span></div>
+    </div>
+    <div class="list" id="jobList"></div>
+  </div>
+
+  <!-- DETAIL VIEW -->
+  <div id="detailView" style="display:none;"></div>
+
+  <!-- 5S VIEW -->
+  <div id="fsView" style="display:none;padding:14px;font-family:'Barlow',-apple-system,system-ui,sans-serif;"></div>
+
+  <!-- EQUIPMENT VIEW (standalone — search → customer → equipment list) -->
+  <!-- Reached via the header "Equipment" pill OR via the Customer Equipment
+       card on the visit detail screen (which jumps straight to detail mode
+       for that visit's customer). Two modes:
+         search   — search bar + customer result cards
+         customer — header card + equipment list + Add Equipment button
+       _eqMode tracks which one is visible. -->
+  <div id="equipView">
+    <div id="eqSearchPane">
+      <div class="eq-search">
+        <span class="ico">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        </span>
+        <input id="eqSearchInput" type="search" autocomplete="off"
+               placeholder="Search customer name, code, phone…">
+      </div>
+      <div class="eq-section-title">Customers</div>
+      <div id="eqCustomerResults">
+        <div class="empty" style="padding:24px 12px;color:var(--muted);font-size:13px;text-align:center;">
+          Type to search, or browse all customers below.
+        </div>
+      </div>
+    </div>
+
+    <div id="eqCustomerPane" style="display:none;">
+      <div class="eq-customer-header" id="eqCustomerHeader"></div>
+      <button class="eq-add-btn" onclick="openTechEquipModal(null)">+ Add Equipment</button>
+      <div class="eq-section-title">Equipment on file</div>
+      <div class="eq-list" id="eqList">
+        <div class="empty" style="padding:24px 12px;color:var(--muted);font-size:13px;text-align:center;">
+          Loading…
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Tech-side Equipment add/edit modal (full-screen on mobile) -->
+<div class="eq-modal-overlay" id="techEquipModal">
+  <div class="eq-modal">
+    <h2 id="techEquipModalTitle">Add Equipment</h2>
+    <div class="subtitle" id="techEquipModalSub">For this customer</div>
+    <div class="field">
+      <label>Equipment Name *</label>
+      <input id="tem-name" placeholder="Server Room AC Unit">
+    </div>
+    <div class="row-2">
+      <div class="field">
+        <label>Type</label>
+        <input id="tem-type" placeholder="Split / Chiller">
+      </div>
+      <div class="field">
+        <label>Model</label>
+        <input id="tem-model" placeholder="LG S18ET">
+      </div>
+    </div>
+    <div class="row-2">
+      <div class="field">
+        <label>Serial Number</label>
+        <input id="tem-serial" placeholder="SN-XXXXXXXX">
+      </div>
+      <div class="field">
+        <label>Location</label>
+        <input id="tem-location" placeholder="3rd Floor, East Wing">
+      </div>
+    </div>
+    <div class="field">
+      <label>Notes</label>
+      <textarea id="tem-notes" placeholder="Additional notes…"></textarea>
+    </div>
+    <div class="err" id="tem-err"></div>
+    <div class="footer">
+      <button class="cancel" onclick="closeTechEquipModal()">Cancel</button>
+      <button class="save"   id="tem-save-btn" onclick="submitTechEquipForm()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Lightbox -->
+<div class="lightbox" id="lightbox" onclick="closeLightbox()">
+  <button class="lightbox-close" onclick="closeLightbox()">×</button>
+  <img id="lightboxImg" src="" alt="">
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+  // ── State ───────────────────────────────────────────────────────────────
+  let token       = localStorage.getItem('pc_tech_token') || null;
+  let techInfo    = null;
+  let allJobs     = [];
+  let currentTab  = 'today';
+  let currentJob  = null;
+  let timerInterval = null;
+
+  // ── Privacy / sign-in gate ───────────────────────────────────────────
+  // Customer name + address are PII. They are revealed in the jobs queue
+  // ONLY after the tech has clocked in for the day. Until then, every
+  // card shows "Locked — sign in to view" in place of the name and
+  // hides the address row entirely. Refreshed in showApp() and after
+  // every sign-in / sign-out roundtrip.
+  let isSignedInForWork = false;
+  function gateCust(name) {
+    return isSignedInForWork
+      ? esc(name || '—')
+      : '<span style="color:var(--muted);font-style:italic;">Locked — sign in to view</span>';
+  }
+  async function _refreshSignInState() {
+    try {
+      const o = await api('GET', '/api/tech/me/today-overview');
+      isSignedInForWork = (o && o.sign_in_status === 'signed_in');
+    } catch (_) { isSignedInForWork = false; }
+  }
+
+  // ── Init ────────────────────────────────────────────────────────────────
+  // TP-2 routing: the tech's home is the 2-tab landing at /tech/home, NOT
+  // this jobs/5S/payslips PWA. If we land here with a valid token and no
+  // ?view=jobs|5s override, bounce to the landing.
+  //
+  // ?pending=signout (with view=5s) means the landing's Sign Out button
+  // redirected the tech here to complete the end-of-shift 5S audit; on
+  // a successful audit submission the audit code below will auto-call
+  // /api/tech/me/sign-out and return to /tech/home.
+  const _qs = new URLSearchParams(window.location.search);
+  const _view = _qs.get('view');
+  const _pendingAction = _qs.get('pending'); // 'signout' | null
+  window.__pcPendingAction = _pendingAction; // expose for fsSubmit post-hook
+  if (token) {
+    if (!_view) {
+      window.location.replace('/home');
+    } else {
+      showApp();
+      if (_view === '5s') { setTimeout(() => { try { fsShowHome(); } catch(_){} }, 100); }
+    }
+  } else {
+    // No tech session. Funnel to the unified PrimeCool staff portal at
+    // /staff, which handles admin + tech + warehouse sign-in and the
+    // MFA enrolment / verify flow. The legacy #loginScreen DOM stays
+    // as a defensive fallback for offline-cached PWAs.
+    try { window.location.replace('/staff'); } catch (_) {}
+  }
+
+  // ── Auth ────────────────────────────────────────────────────────────────
+  async function doLogin() {
+    const code = document.getElementById('techCode').value.trim().toUpperCase();
+    const pin  = document.getElementById('techPin').value.trim();
+    const err  = document.getElementById('loginErr');
+    const btn  = document.getElementById('loginBtn');
+    err.style.display = 'none';
+
+    if (!code || !pin) { showErr('Enter your tech code and PIN.'); return; }
+
+    btn.disabled = true; btn.textContent = 'Signing in…';
+    try {
+      const res = await fetch('/api/tech/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tech_code: code, pin }),
+      });
+      if (!res.ok) { showErr('Incorrect tech code or PIN.'); return; }
+      const data = await res.json();
+      token = data.token;
+      localStorage.setItem('pc_tech_token', token);
+      // TP-2: route into the 2-tab landing rather than straight to jobs.
+      window.location.replace('/home');
+    } catch {
+      showErr('Connection error. Try again.');
+    } finally {
+      btn.disabled = false; btn.textContent = 'Sign In';
+    }
+  }
+
+  function showErr(msg) {
+    const err = document.getElementById('loginErr');
+    err.textContent = msg; err.style.display = 'block';
+  }
+
+  async function doLogout() {
+    try {
+      await fetch('/api/tech/logout', {
+        method: 'POST',
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+      });
+    } catch {}
+    // Clear every client-side trace of the prior identity before the next
+    // tech signs in on the same device (shared-tablet handover, spec S7).
+    localStorage.removeItem('pc_tech_token');
+    token = null;
+    try { sessionStorage.clear(); } catch {}
+    // Full reload flushes in-memory job lists, parts catalog, and any cached
+    // images so the back button can't replay the previous user's session.
+    window.location.replace('/tech');
+  }
+
+  async function showApp() {
+    document.getElementById('loginScreen').style.display = 'none';
+    document.getElementById('app').style.display = 'block';
+    await _refreshSignInState();
+    await loadJobs();
+    // Deep-link from the staff landing's "Today's Jobs" tile. When ?focus=active
+    // (or ?job=<id>) is present, open the relevant job directly so the tech
+    // lands on what they're working on right now (or what's next today).
+    try {
+      const _focus = _qs.get('focus');
+      const _jobId = _qs.get('job');
+      if (_jobId) {
+        await openJob(Number(_jobId));
+      } else if (_focus === 'active') {
+        const inProg = (allJobs || []).find(j => j.status === 'in_progress');
+        let target = inProg;
+        if (!target) {
+          const todays = (allJobs || []).filter(j =>
+            isToday(j.scheduled_date) && j.status !== 'completed');
+          todays.sort((a, b) => (a.scheduled_time || '99:99').localeCompare(b.scheduled_time || '99:99'));
+          target = todays[0];
+        }
+        if (target) await openJob(target.id);
+      }
+    } catch (_) {}
+    fsRefreshBadge();
+    fsFlushQueue();
+    // Drain any job writes queued while offline in a previous session, and
+    // reflect current connectivity in the banner (#4).
+    updateOfflineBanner();
+    flushJobQueue();
+    // ── Pattern A: re-render once the PC access-bundle resolves so PC.gateRow /
+    //    PC.gateLinkHtml gating reflects the actual session-scoped permissions.
+    if (typeof PC !== 'undefined' && PC.access) {
+      PC.access().then(function () {
+        try { if (typeof renderList === 'function') renderList(); } catch(_) {}
+        try { if (currentJob && typeof renderDetail === 'function') renderDetail(); } catch(_) {}
+        try { if (currentTab === 'kpi' && typeof renderMyKpi === 'function') renderMyKpi(); } catch(_) {}
+        try { if (currentTab === 'payslips' && typeof renderMyPayslips === 'function') renderMyPayslips(); } catch(_) {}
+        try { if (fsState && fsState.mode === 'home' && typeof fsShowHome === 'function' && document.getElementById('fsView') && document.getElementById('fsView').style.display === 'block') fsShowHome(); } catch(_) {}
+      }).catch(function (e) { try { console.warn('access-bundle load failed:', e); } catch(_) {} });
+    }
+  }
+
+  // ── API helper ──────────────────────────────────────────────────────────
+  async function api(method, url, body) {
+    const opts = { method, headers: { 'Authorization': `Bearer ${token}` } };
+    if (body && !(body instanceof FormData)) {
+      opts.headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify(body);
+    } else if (body instanceof FormData) {
+      opts.body = body;
+    }
+    const res = await fetch(url, opts);
+    if (res.status === 401) { doLogout(); throw new Error('auth'); }
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      throw new Error(d.detail || 'Request failed');
+    }
+    return res.json();
+  }
+
+  // ── Load jobs ───────────────────────────────────────────────────────────
+  // Caches the last good /api/tech/me payload so the field app still shows the
+  // tech's jobs when offline (#4). On a network failure we fall back to that
+  // cache rather than leaving the list blank.
+  async function loadJobs() {
+    try {
+      const data = await api('GET', '/api/tech/me');
+      techInfo = data.tech;
+      allJobs  = data.jobs;
+      try { localStorage.setItem('pc.job.cache.me', JSON.stringify(data)); } catch (_) {}
+      document.getElementById('hdrName').textContent = techInfo.name;
+      renderList();
+    } catch (e) {
+      // Offline (or transient) — hydrate from the last cached snapshot.
+      try {
+        const cached = JSON.parse(localStorage.getItem('pc.job.cache.me') || 'null');
+        if (cached && cached.jobs) {
+          techInfo = cached.tech;
+          allJobs  = cached.jobs;
+          if (techInfo) document.getElementById('hdrName').textContent = techInfo.name;
+          renderList();
+        }
+      } catch (_) {}
+    }
+    updateOfflineBanner();
+  }
+
+  // ── List view ───────────────────────────────────────────────────────────
+  function setTab(t) {
+    currentTab = t;
+    document.querySelectorAll('.tab').forEach(el => el.classList.toggle('active', el.dataset.tab === t));
+    renderList();
+  }
+
+  function isToday(dateStr) {
+    if (!dateStr) return false;
+    const today = new Date(); today.setHours(0,0,0,0);
+    const d = new Date(dateStr + (dateStr.includes('T') ? '' : 'T00:00:00'));
+    d.setHours(0,0,0,0);
+    return d.getTime() === today.getTime();
+  }
+
+  function bucketize(j) {
+    if (j.status === 'completed') return 'done';
+    if (j.status === 'in_progress' || isToday(j.scheduled_date)) return 'today';
+    return 'upcoming';
+  }
+
+  function renderList() {
+    const buckets = { today: [], upcoming: [], done: [] };
+    for (const j of allJobs) buckets[bucketize(j)].push(j);
+    // Sort within each bucket: today/upcoming by date then time, done by most recent first
+    const sortByTime = (a, b) => {
+      const da = (a.scheduled_date || '') + ' ' + (a.scheduled_time || '99:99');
+      const db = (b.scheduled_date || '') + ' ' + (b.scheduled_time || '99:99');
+      return da.localeCompare(db);
+    };
+    buckets.today.sort(sortByTime);
+    buckets.upcoming.sort(sortByTime);
+    buckets.done.sort((a, b) => (b.scheduled_date || '').localeCompare(a.scheduled_date || ''));
+
+    document.getElementById('cnt-today').textContent    = buckets.today.length;
+    document.getElementById('cnt-upcoming').textContent = buckets.upcoming.length;
+    document.getElementById('cnt-done').textContent     = buckets.done.length;
+
+    // My-Pay and My-Performance tabs were moved to /tech/home → My Profile.
+    // The renderMyPayslips() and renderMyKpi() functions are kept defined
+    // below so /tech/home can call them via include, but they no longer
+    // surface here as queue tabs.
+
+    // Today tab — reveal ONE job at a time. The next non-completed job
+    // shows with all its details; once the tech marks it complete and
+    // returns here, it falls into the Done bucket and the next job
+    // (if any) takes its place. Other tabs stay as full lists.
+    let rows;
+    if (currentTab === 'today') {
+      const next = buckets.today.find(j => j.status !== 'completed');
+      rows = next ? [next] : [];
+    } else {
+      rows = buckets[currentTab];
+    }
+    const wrap = document.getElementById('jobList');
+    if (!rows.length) {
+      const emptyMsg = currentTab === 'today'
+        ? (buckets.today.length
+            ? 'All today\'s jobs are complete — well done!'
+            : 'No jobs scheduled for today.')
+        : currentTab === 'upcoming' ? 'No upcoming jobs.' : 'No completed jobs yet.';
+      wrap.innerHTML = `
+        <div class="empty">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          <div>${emptyMsg}</div>
+        </div>`;
+      return;
+    }
+    // Surface "N more after this" copy below the single Today card so
+    // the tech knows there's more work coming after the current job.
+    const moreAfter = (currentTab === 'today')
+      ? buckets.today.filter(j => j.status !== 'completed' && j.id !== rows[0].id).length
+      : 0;
+    const _gate = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    const todayHeader = (currentTab === 'today')
+      ? `<div style="margin:0 14px 12px;font-size:13px;color:var(--ink);font-weight:600;display:flex;align-items:center;gap:8px;">
+           Now serving · next job
+           ${moreAfter ? `<span style="background:rgba(11,37,69,0.08);color:var(--ink);padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;">${moreAfter} more after this</span>` : '<span style="background:rgba(34,160,138,0.15);color:var(--teal-deep,#0a7261);padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;">Last one today</span>'}
+         </div>`
+      : '';
+    const isTodayTab = (currentTab === 'today');
+    wrap.innerHTML = todayHeader + rows.map(j => `
+      <div class="job-card ${j.status}" data-pc-row-visit="${j.id}"
+           ${isTodayTab ? 'style="border:2px solid var(--teal);background:var(--card);padding:18px;"' : ''}>
+        <div class="job-top">
+          <span class="job-type ${j.visit_type === 'PM' ? 'pm-pill' : 'cm-pill'}">${j.visit_type}</span>
+          <span class="job-status status-${j.status}">${j.status.replace('_',' ')}</span>
+        </div>
+        <div class="job-customer" ${isTodayTab ? 'style="font-size:18px;margin-top:6px;"' : ''}>${gateCust(j.customer_name)}</div>
+        <div class="job-meta">
+          ${(j.customer_company && isSignedInForWork) ? `<div>${esc(j.customer_company)}</div>` : ''}
+          ${j.equipment_name ? `<div class="row">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            ${(j.equipment_id && _gate) ? PC.gateLinkHtml('equipment', j.equipment_id, j.equipment_name, {}) : esc(j.equipment_name)}</div>` : ''}
+          ${(isTodayTab && j.contact_person_name && isSignedInForWork) ? `<div class="row">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+            ${esc(j.contact_person_name)}${j.contact_person_phone ? ' · ' + esc(j.contact_person_phone) : ''}</div>` : ''}
+          ${(j.customer_address && isSignedInForWork) ? `<div class="row">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+            ${esc(j.customer_address)}</div>` : ''}
+          ${j.scheduled_date ? `<div class="row">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+            ${fmtDate(j.scheduled_date)}${j.scheduled_time ? ' · ' + fmtTime12(j.scheduled_time) : ''}</div>` : ''}
+        </div>
+        ${isTodayTab ? `<div style="margin-top:14px;"><button type="button" data-pc-open-visit="${j.id}" class="btn btn-primary" style="width:100%;padding:12px;background:var(--teal);color:#fff;border:none;border-radius:8px;font-weight:700;font-size:14px;cursor:pointer;">Open job →</button></div>` : ''}
+      </div>`).join('');
+    // The Today-tab "Open job →" button lives INSIDE the gated card, but
+    // PC.gateRow's card handler deliberately ignores clicks whose target is a
+    // <button> (so nested controls keep their own behavior). That left this
+    // primary CTA dead — clicking it did nothing. Bind it directly here so it
+    // always opens the job; stopPropagation avoids a double-fire with the card.
+    wrap.querySelectorAll('[data-pc-open-visit]').forEach(function (btn) {
+      const vid = Number(btn.getAttribute('data-pc-open-visit'));
+      btn.addEventListener('click', function (e) { e.stopPropagation(); openJob(vid); });
+    });
+    // Decorate each job card with PC.gateRow so click-through honors access bundle.
+    if (typeof PC !== 'undefined' && PC.gateRow) {
+      wrap.querySelectorAll('[data-pc-row-visit]').forEach(function (card) {
+        const vid = Number(card.getAttribute('data-pc-row-visit'));
+        PC.gateRow(card, 'visit', vid, {
+          onClick: function () { openJob(vid); },
+          ariaLabel: 'Open job #' + vid,
+        });
+      });
+    } else {
+      wrap.querySelectorAll('[data-pc-row-visit]').forEach(function (card) {
+        const vid = Number(card.getAttribute('data-pc-row-visit'));
+        card.addEventListener('click', function () { openJob(vid); });
+      });
+    }
+    document.getElementById('listView').style.display   = 'block';
+    document.getElementById('detailView').style.display = 'none';
+    document.getElementById('backBar').style.display    = 'none';
+    if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+  }
+
+  // ── Detail view ─────────────────────────────────────────────────────────
+  async function openJob(id) {
+    try {
+      currentJob = await api('GET', `/api/tech/jobs/${id}`);
+      _cacheVisit(id, currentJob);
+      renderDetail();
+    } catch (e) {
+      // Standardized access-denied path (stale token / scope drift).
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && e && e.body) {
+        if (PC.handleAccessDenied(e)) return;
+      }
+      // Offline fallback — open the last cached copy of this visit so the tech
+      // can keep working in the field even with no signal (#4).
+      const cached = _cachedVisit(id);
+      if (cached) {
+        currentJob = cached;
+        renderDetail();
+        toast('Offline — showing last saved copy of this job', 'ok');
+        return;
+      }
+      toast('Could not load job: ' + e.message, 'error');
+    }
+  }
+
+  function showList() {
+    currentJob = null;
+    if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+    document.getElementById('listView').style.display   = 'block';
+    document.getElementById('detailView').style.display = 'none';
+    document.getElementById('backBar').style.display    = 'none';
+    // The Equipment view + 5S view are siblings of listView — hide them too
+    // so the back-button never leaves the user on a stale screen.
+    const ev = document.getElementById('equipView');
+    if (ev) ev.style.display = 'none';
+    const fv = document.getElementById('fsView');
+    if (fv) fv.style.display = 'none';
+    loadJobs();
+  }
+
+  function renderDetail() {
+    const j = currentJob;
+    const view = document.getElementById('detailView');
+    document.getElementById('listView').style.display   = 'none';
+    document.getElementById('detailView').style.display = 'block';
+    document.getElementById('backBar').style.display    = 'flex';
+
+    const photosBefore = (j.photos || []).filter(p => p.category === 'before');
+    const photosAfter  = (j.photos || []).filter(p => p.category === 'after');
+
+    const contactPhoneClean = (j.contact_person_phone || '').replace(/[^\d+]/g, '');
+    const mapsLink   = j.customer_address ? `https://maps.google.com/?q=${encodeURIComponent(j.customer_address)}` : null;
+    const isLocked   = !!j.submitted_at;
+
+    view.innerHTML = `
+      <div class="detail">
+        <!-- Status banner -->
+        <div class="status-banner ${j.status}">
+          <div>
+            <div class="lt">${j.visit_type === 'PM' ? 'Preventive' : 'Corrective'} Maintenance</div>
+            <div class="vt">${j.status === 'in_progress' ? 'In Progress' : j.status.charAt(0).toUpperCase() + j.status.slice(1).replace('_',' ')}</div>
+            ${j.start_time ? `<div class="timer" id="liveTimer">${liveTimerLabel(j)}</div>` : ''}
+          </div>
+        </div>
+
+        ${isLocked ? `
+        <div class="detail-card" style="background:var(--warn-bg);border-left:4px solid #d97706;">
+          <h3 style="color:var(--warn-fg);">🔒 Submitted — locked</h3>
+          <p style="font-size:13px;color:var(--warn-fg);line-height:1.5;margin:0;">
+            This job report was submitted on ${fmtTimeFull(j.submitted_at)}.
+            You cannot edit it. If a correction is needed, ask a manager to flag it for review.
+          </p>
+          ${j.flagged_for_review ? `<p style="font-size:13px;color:var(--err-fg);margin-top:8px;"><strong>Flagged for review:</strong> ${esc(j.review_note || '')}</p>` : ''}
+        </div>` : ''}
+
+        <!-- Customer card (phone intentionally omitted — see contact person below) -->
+        <!-- Until signed in for the day, customer PII (name, company,
+             address) is locked even on the detail view. -->
+        <div class="detail-card">
+          <h3>Customer</h3>
+          <div class="detail-row"><span class="l">Name</span><span class="v">${gateCust(j.customer_name)}</span></div>
+          ${(j.customer_company && isSignedInForWork) ? `<div class="detail-row"><span class="l">Company</span><span class="v">${esc(j.customer_company)}</span></div>` : ''}
+          ${(j.customer_address && isSignedInForWork) ? `<div class="detail-row"><span class="l">Address</span><span class="v"><a href="${mapsLink}" target="_blank">📍 ${esc(j.customer_address)}</a></span></div>` : ''}
+          ${!isSignedInForWork ? `<div class="detail-row"><span class="l">Locked</span><span class="v" style="color:var(--muted);font-style:italic;">Sign in to view full customer details.</span></div>` : ''}
+        </div>
+
+        ${(() => {
+          // Crew card — only render when there's more than one tech on the
+          // visit (lead + at least one crew member). techInfo.id is the
+          // signed-in tech; we compute their role relative to this job.
+          const allIds = j.all_tech_ids || (
+            j.assigned_tech_id ? [j.assigned_tech_id, ...(j.crew_tech_ids || [])] : (j.crew_tech_ids || [])
+          );
+          if (!allIds || allIds.length < 2) return '';
+          const myId = (typeof techInfo !== 'undefined' && techInfo) ? techInfo.id : null;
+          const iAmLead = (j.assigned_tech_id === myId);
+          const leadName = j.tech_name || '(lead unset)';
+          // Names of everyone EXCEPT the viewing tech, in lead-first order.
+          const others = [];
+          if (j.assigned_tech_id && j.assigned_tech_id !== myId && j.tech_name) {
+            others.push(esc(j.tech_name) + ' <span style="color:var(--muted);font-size:10px;font-weight:600;letter-spacing:0.3px;text-transform:uppercase;">Lead</span>');
+          }
+          (j.crew_tech_ids || []).forEach((cid, i) => {
+            if (cid === myId) return;
+            const cname = (j.crew_tech_names || [])[i] || ('Tech #' + cid);
+            others.push(esc(cname));
+          });
+          if (!others.length) return '';
+          const myRoleLabel = iAmLead
+            ? '<span style="background:var(--teal);color:white;padding:2px 8px;border-radius:10px;font-size:10.5px;font-weight:700;letter-spacing:0.4px;">YOU · LEAD</span>'
+            : '<span style="background:var(--surface-2);color:var(--info-fg);padding:2px 8px;border-radius:10px;font-size:10.5px;font-weight:700;letter-spacing:0.4px;border:1px solid var(--border);">YOU · CREW</span>';
+          return `
+          <div class="detail-card" style="border-left:4px solid var(--teal);">
+            <h3>On this job with you</h3>
+            <div style="margin-bottom:8px;">${myRoleLabel}</div>
+            <div style="display:flex;flex-direction:column;gap:6px;font-size:14px;">
+              ${others.map(o => `<div style="display:flex;align-items:center;gap:8px;"><span style="color:var(--muted);">👷</span><span>${o}</span></div>`).join('')}
+            </div>
+          </div>`;
+        })()}
+
+        ${(j.contact_person_name || j.contact_person_phone) ? `
+        <div class="detail-card">
+          <h3>On-site Contact</h3>
+          ${j.contact_person_name ? `<div class="detail-row"><span class="l">Name</span><span class="v">${esc(j.contact_person_name)}</span></div>` : ''}
+          ${j.contact_person_phone ? `<div class="detail-row"><span class="l">Phone</span><span class="v"><a href="tel:${contactPhoneClean}">📞 ${esc(j.contact_person_phone)}</a></span></div>` : ''}
+        </div>` : ''}
+
+        ${(j.scope_of_work || j.estimated_duration_min) ? `
+        <div class="detail-card">
+          <h3>Job Brief</h3>
+          ${j.scope_of_work ? `<div style="font-size:14px;line-height:1.6;margin-bottom:8px;">${esc(j.scope_of_work).replace(/\n/g,'<br>')}</div>` : ''}
+          ${j.estimated_duration_min ? `<div class="detail-row"><span class="l">Est. duration</span><span class="v">${j.estimated_duration_min} min</span></div>` : ''}
+        </div>` : ''}
+
+        ${j.hazards ? `
+        <div class="detail-card" style="background:var(--err-bg);border-left:4px solid var(--red);">
+          <h3 style="color:var(--err-fg);">⚠ Site Hazards</h3>
+          <div style="font-size:14px;line-height:1.6;color:var(--err-fg);">${esc(j.hazards).replace(/\n/g,'<br>')}</div>
+        </div>` : ''}
+
+        ${j.access_codes ? `
+        <div class="detail-card" style="border-left:4px solid #6366f1;">
+          <h3>🔐 Access Code</h3>
+          <details style="font-size:14px;"><summary style="cursor:pointer;color:var(--teal);font-weight:600;">Tap to reveal</summary>
+            <div style="font-family:monospace;font-size:16px;padding:8px 0;letter-spacing:2px;">${esc(j.access_codes)}</div>
+          </details>
+        </div>` : ''}
+
+        <!-- Equipment card (visit's primary unit) -->
+        ${j.equipment_name ? `
+        <div class="detail-card">
+          <h3>Equipment</h3>
+          <div class="detail-row"><span class="l">Unit</span><span class="v">${(j.equipment_id && typeof PC !== 'undefined' && PC.gateLinkHtml) ? PC.gateLinkHtml('equipment', j.equipment_id, j.equipment_name, {}) : esc(j.equipment_name)}</span></div>
+          ${j.equipment_type ? `<div class="detail-row"><span class="l">Type</span><span class="v">${esc(j.equipment_type)}</span></div>` : ''}
+          ${j.equipment_model ? `<div class="detail-row"><span class="l">Model</span><span class="v">${esc(j.equipment_model)}</span></div>` : ''}
+          ${j.equipment_location ? `<div class="detail-row"><span class="l">Location</span><span class="v">${esc(j.equipment_location)}</span></div>` : ''}
+        </div>` : ''}
+
+        <!-- Customer Equipment card — full register for j.customer_id, with
+             inline add/edit. Populated by loadVisitCustomerEquipment() after
+             renderDetail() paints the rest. -->
+        ${j.customer_id ? `
+        <div class="detail-card" id="visitEquipCard" data-customer-id="${j.customer_id}">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <h3 style="margin:0;">Customer Equipment</h3>
+            <button onclick="openTechEquipModal(null, ${j.customer_id}, ${esc(JSON.stringify(j.customer_name || '')).replace(/"/g,'&quot;')})"
+                    style="background:var(--teal);color:white;border:none;border-radius:8px;padding:7px 14px;font-size:12px;font-weight:700;cursor:pointer;">+ Add</button>
+          </div>
+          <div id="visitEquipList" style="display:flex;flex-direction:column;gap:8px;">
+            <div style="color:var(--muted);font-size:13px;padding:8px 0;">Loading…</div>
+          </div>
+          <button onclick="showEquipView(${j.customer_id}, ${esc(JSON.stringify(j.customer_name || '')).replace(/"/g,'&quot;')})"
+                  style="margin-top:10px;width:100%;padding:9px;background:var(--light);color:var(--ink);border:1px solid var(--border);border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;">
+            Open full equipment screen →
+          </button>
+        </div>` : ''}
+
+        <!-- Times card -->
+        ${(j.scheduled_date || j.start_time || j.end_time) ? `
+        <div class="detail-card">
+          <h3>Job Time</h3>
+          ${j.scheduled_date ? `<div class="detail-row"><span class="l">Scheduled</span><span class="v">${fmtDate(j.scheduled_date)}${j.scheduled_time ? ' · ' + fmtTime12(j.scheduled_time) : ''}</span></div>` : ''}
+          ${j.start_time ? `<div class="detail-row"><span class="l">Started</span><span class="v">${fmtTimeFull(j.start_time)}</span></div>` : ''}
+          ${j.end_time ? `<div class="detail-row"><span class="l">Ended</span><span class="v">${fmtTimeFull(j.end_time)}</span></div>` : ''}
+          ${j.start_time && j.end_time ? `<div class="detail-row"><span class="l">Duration</span><span class="v">${duration(j.start_time, j.end_time)}</span></div>` : ''}
+        </div>` : ''}
+
+        <!-- Start Job button (hidden when locked) -->
+        ${!isLocked && j.status !== 'in_progress' && j.status !== 'completed' ? `
+          <button class="big-btn btn-start" onclick="startJob()">▶ Start Job</button>
+        ` : ''}
+
+        <!-- Work form (in_progress only, only if not locked) -->
+        ${!isLocked && j.status === 'in_progress' ? `
+          <div class="detail-card">
+            <h3>Work Performed</h3>
+            <div class="field-detail">
+              <label>What was done?</label>
+              <textarea id="f-work" placeholder="Describe the work carried out…">${esc(j.work_done || '')}</textarea>
+            </div>
+            <div class="field-detail">
+              <label>Parts replaced</label>
+              <textarea id="f-parts" placeholder="List any parts replaced…">${esc(j.parts_replaced || '')}</textarea>
+            </div>
+            <div class="field-detail" style="margin-bottom:0;">
+              <label>Notes</label>
+              <textarea id="f-notes" placeholder="Anything else worth noting…">${esc(j.notes || '')}</textarea>
+            </div>
+          </div>
+
+          <div class="detail-card">
+            <h3>Checklist</h3>
+            <p style="font-size:11px;color:var(--muted);margin:0 0 10px;line-height:1.4;">Tick off each step as you complete it. Add a note if something needs attention.</p>
+            <div id="checklistRows" style="display:flex;flex-direction:column;gap:8px;"></div>
+            <div style="display:grid;grid-template-columns:1fr auto;gap:6px;align-items:end;margin-top:10px;">
+              <div>
+                <label style="display:block;font-size:10px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:var(--ink);margin-bottom:4px;">Add an item</label>
+                <input id="clNewLabel" type="text" placeholder="e.g. Check refrigerant charge" style="width:100%;padding:9px 10px;border:2px solid var(--border);border-radius:8px;font-size:13px;outline:none;">
+              </div>
+              <button onclick="clAddItem()" style="padding:9px 16px;background:var(--teal);color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;height:38px;">Add</button>
+            </div>
+            <button onclick="saveChecklist()" style="padding:9px 16px;background:var(--navy);color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;margin-top:10px;">Save checklist</button>
+          </div>
+
+          <div class="detail-card">
+            <h3>Parts Used</h3>
+            <div id="partsUsedList" style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px;"></div>
+            <div style="display:grid;grid-template-columns:1fr 80px auto;gap:6px;align-items:end;">
+              <div>
+                <label style="display:block;font-size:10px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:var(--ink);margin-bottom:4px;">Add a part</label>
+                <select id="partPicker" style="width:100%;padding:9px 10px;border:2px solid var(--border);border-radius:8px;font-size:13px;outline:none;">
+                  <option value="">Select part…</option>
+                </select>
+              </div>
+              <div>
+                <label style="display:block;font-size:10px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:var(--ink);margin-bottom:4px;">Qty</label>
+                <input id="partQty" type="number" step="0.01" min="0.01" value="1" style="width:100%;padding:9px 10px;border:2px solid var(--border);border-radius:8px;font-size:13px;outline:none;text-align:right;">
+              </div>
+              <button onclick="addPartToVisit()" style="padding:9px 16px;background:var(--teal);color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;height:38px;">Add</button>
+            </div>
+            <p style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.4;">Adding a part deducts it from inventory. Tap × to remove and put it back.</p>
+          </div>
+
+          <div class="detail-card">
+            <h3>Photos</h3>
+            <div class="photo-upload-row">
+              <label class="upload-btn" id="upload-before">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                Add Before
+                <input type="file" accept="image/*" capture="environment" onchange="uploadPhoto('before', this)">
+              </label>
+              <label class="upload-btn" id="upload-after">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                Add After
+                <input type="file" accept="image/*" capture="environment" onchange="uploadPhoto('after', this)">
+              </label>
+            </div>
+            ${photosBefore.length ? `<div style="font-size:11px;font-weight:700;letter-spacing:0.7px;color:var(--muted);text-transform:uppercase;margin:8px 0 6px;">Before (${photosBefore.length})</div>
+              <div class="photo-grid">${photosBefore.map(p => photoTile(p, true)).join('')}</div>` : ''}
+            ${photosAfter.length ? `<div style="font-size:11px;font-weight:700;letter-spacing:0.7px;color:var(--muted);text-transform:uppercase;margin:8px 0 6px;">After (${photosAfter.length})</div>
+              <div class="photo-grid">${photosAfter.map(p => photoTile(p, true)).join('')}</div>` : ''}
+          </div>
+
+          <div class="detail-card">
+            <h3>Field Readings</h3>
+            <p style="font-size:11px;color:var(--muted);margin:0 0 10px;line-height:1.4;">Enter what you measured. Numbers only — leave blank if not applicable.</p>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+              <div class="field-detail"><label>High pressure (psi)</label><input id="r-pressure_high" type="number" step="0.1" inputmode="decimal"></div>
+              <div class="field-detail"><label>Low pressure (psi)</label><input id="r-pressure_low" type="number" step="0.1" inputmode="decimal"></div>
+              <div class="field-detail"><label>Supply temp (°F)</label><input id="r-temp_supply" type="number" step="0.1" inputmode="decimal"></div>
+              <div class="field-detail"><label>Return temp (°F)</label><input id="r-temp_return" type="number" step="0.1" inputmode="decimal"></div>
+              <div class="field-detail"><label>Δ-T</label><input id="r-delta_t" type="number" step="0.1" inputmode="decimal"></div>
+              <div class="field-detail"><label>Superheat (°F)</label><input id="r-superheat" type="number" step="0.1" inputmode="decimal"></div>
+              <div class="field-detail"><label>Subcool (°F)</label><input id="r-subcool" type="number" step="0.1" inputmode="decimal"></div>
+              <div class="field-detail"><label>Approach (°F)</label><input id="r-approach_temp" type="number" step="0.1" inputmode="decimal"></div>
+            </div>
+            <button onclick="saveReading()" style="padding:9px 16px;background:var(--navy);color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;margin-top:8px;">Save reading</button>
+            <div id="savedReadings" style="margin-top:12px;font-size:12px;color:var(--muted);">
+              ${(j.readings||[]).length ? `${(j.readings||[]).length} reading${(j.readings||[]).length===1?'':'s'} saved` : 'No readings saved yet.'}
+            </div>
+          </div>
+
+          <div class="detail-card">
+            <h3>Next PM Due</h3>
+            <div class="field-detail" style="margin-bottom:0;">
+              <label>Date for next preventive maintenance</label>
+              <input id="f-next-pm" type="date" value="${esc(j.next_pm_due||'')}" style="padding:9px 10px;border:2px solid var(--border);border-radius:8px;font-size:14px;width:100%;">
+            </div>
+          </div>
+
+          <div class="detail-card">
+            <h3>Client Signature ${j.signature_captured ? '<span style="color:var(--ok-fg);font-size:12px;">✓ captured</span>' : '<span style="color:var(--err-fg);font-size:12px;">required</span>'}</h3>
+            ${j.signature_captured ? `
+              <p style="font-size:13px;color:var(--muted);margin:0;">Signed by <strong>${esc(j.signer_name||'')}</strong>. Signature cannot be replaced.</p>
+            ` : `
+              <div class="field-detail">
+                <label>Signer's name</label>
+                <input id="sig-name" type="text" placeholder="Full name of person signing">
+              </div>
+              <canvas id="sigCanvas" width="600" height="180" style="width:100%;height:180px;border:2px dashed var(--border);border-radius:8px;background:#fff;touch-action:none;"></canvas>
+              <div style="display:flex;gap:8px;margin-top:8px;">
+                <button onclick="clearSignature()" style="flex:1;padding:9px;background:var(--card);color:var(--ink);border:2px solid var(--border);border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;">Clear</button>
+                <button onclick="saveSignature()" style="flex:2;padding:9px;background:var(--teal);color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;">Capture signature</button>
+              </div>
+            `}
+          </div>
+
+          <button class="big-btn btn-end" onclick="endJob()">✓ End Job &amp; Submit Report</button>
+        ` : ''}
+
+        <!-- Read-only completed view -->
+        ${j.status === 'completed' ? `
+          ${j.work_done ? `<div class="detail-card"><h3>Work Performed</h3><p style="font-size:14px;line-height:1.6;">${esc(j.work_done).replace(/\n/g,'<br>')}</p></div>` : ''}
+          ${(j.parts_used || []).length ? `
+            <div class="detail-card">
+              <h3>Parts Used</h3>
+              ${(j.parts_used || []).map(p => `
+                <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;">
+                  <div><strong>${esc(p.sku)}</strong> — ${esc(p.part_name)}</div>
+                  <div style="color:var(--muted);">×${p.quantity} ${esc(p.part_unit || '')}</div>
+                </div>`).join('')}
+            </div>` : ''}
+          ${j.parts_replaced ? `<div class="detail-card"><h3>Notes on Parts</h3><p style="font-size:14px;line-height:1.6;">${esc(j.parts_replaced).replace(/\n/g,'<br>')}</p></div>` : ''}
+          ${j.notes ? `<div class="detail-card"><h3>Notes</h3><p style="font-size:14px;line-height:1.6;">${esc(j.notes).replace(/\n/g,'<br>')}</p></div>` : ''}
+          ${(j.readings || []).length ? `
+            <div class="detail-card">
+              <h3>Field Readings</h3>
+              ${(j.readings || []).map(r => `
+                <div style="border-bottom:1px solid var(--border);padding:6px 0;font-size:13px;line-height:1.5;">
+                  <div style="font-size:11px;color:var(--muted);">${fmtTimeFull(r.recorded_at)}</div>
+                  ${r.pressure_high != null ? `High: ${r.pressure_high} psi ` : ''}
+                  ${r.pressure_low  != null ? `Low: ${r.pressure_low} psi ` : ''}
+                  ${r.temp_supply   != null ? `Supply: ${r.temp_supply}°F ` : ''}
+                  ${r.temp_return   != null ? `Return: ${r.temp_return}°F ` : ''}
+                  ${r.delta_t       != null ? `Δ-T: ${r.delta_t} ` : ''}
+                  ${r.superheat     != null ? `SH: ${r.superheat}°F ` : ''}
+                  ${r.subcool       != null ? `SC: ${r.subcool}°F ` : ''}
+                  ${r.approach_temp != null ? `Approach: ${r.approach_temp}°F ` : ''}
+                </div>`).join('')}
+            </div>` : ''}
+          ${(j.checklist || []).length ? `
+            <div class="detail-card">
+              <h3>Checklist</h3>
+              ${(j.checklist || []).map(it => `
+                <div style="display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;">
+                  <span style="flex:none;color:${it.checked ? 'var(--ok-fg,#1b7f3b)' : 'var(--muted)'};font-weight:700;">${it.checked ? '✓' : '○'}</span>
+                  <div style="min-width:0;">
+                    <div style="${it.checked ? '' : 'color:var(--muted);'}">${esc(it.label || '')}</div>
+                    ${it.note ? `<div style="font-size:11px;color:var(--muted);margin-top:2px;">${esc(it.note)}</div>` : ''}
+                  </div>
+                </div>`).join('')}
+            </div>` : ''}
+          ${j.signature_captured ? `<div class="detail-card"><h3>Client Signature</h3><p style="font-size:14px;">Signed by <strong>${esc(j.signer_name||'')}</strong></p></div>` : ''}
+          ${j.next_pm_due ? `<div class="detail-card"><h3>Next PM Due</h3><p style="font-size:14px;">${fmtDate(j.next_pm_due)}</p></div>` : ''}
+          ${(photosBefore.length || photosAfter.length) ? `
+            <div class="detail-card">
+              <h3>Photos</h3>
+              ${photosBefore.length ? `<div style="font-size:11px;font-weight:700;letter-spacing:0.7px;color:var(--muted);text-transform:uppercase;margin-bottom:6px;">Before</div>
+                <div class="photo-grid">${photosBefore.map(p => photoTile(p, false)).join('')}</div>` : ''}
+              ${photosAfter.length ? `<div style="font-size:11px;font-weight:700;letter-spacing:0.7px;color:var(--muted);text-transform:uppercase;margin:10px 0 6px;">After</div>
+                <div class="photo-grid">${photosAfter.map(p => photoTile(p, false)).join('')}</div>` : ''}
+            </div>` : ''}
+        ` : ''}
+
+      </div>`;
+
+    if (j.start_time && j.status === 'in_progress') {
+      timerInterval = setInterval(() => {
+        const el = document.getElementById('liveTimer');
+        if (el) el.textContent = liveTimerLabel(currentJob);
+      }, 1000);
+    }
+
+    if (j.status === 'in_progress' && !isLocked) {
+      renderPartsUsed();
+      loadPartsCatalog();
+      initSigPad();
+      renderChecklistRows();
+    }
+
+    // Customer Equipment card on the visit detail screen is populated
+    // asynchronously so renderDetail doesn't block on the network. If the
+    // visit has no customer_id (rare) the card markup is omitted upstream
+    // and this becomes a no-op.
+    if (j.customer_id) loadVisitCustomerEquipment(j.customer_id);
+  }
+
+  // ── Parts catalog (tech-side) ──
+  let partsCatalog = [];
+  async function loadPartsCatalog() {
+    if (partsCatalog.length) { fillPartPicker(); return; }
+    try {
+      partsCatalog = await api('GET', '/api/tech/parts');
+      try { localStorage.setItem('pc.job.cache.parts', JSON.stringify(partsCatalog)); } catch (_) {}
+      fillPartPicker();
+    } catch {
+      // Offline — fall back to the last cached parts catalog so the tech can
+      // still pick parts to log against the job (#4).
+      try {
+        const cached = JSON.parse(localStorage.getItem('pc.job.cache.parts') || 'null');
+        if (Array.isArray(cached)) { partsCatalog = cached; fillPartPicker(); }
+      } catch (_) {}
+    }
+  }
+  function fillPartPicker() {
+    const sel = document.getElementById('partPicker');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">Select part…</option>' +
+      partsCatalog.map(p => {
+        const stockNote = p.quantity <= 0 ? ' · OUT OF STOCK'
+                        : p.quantity <= p.reorder_point ? ` · low (${formatQty(p.quantity)} ${p.unit||''})`
+                        : ` · ${formatQty(p.quantity)} ${p.unit||''} in stock`;
+        const locNote = p.location ? ` · @ ${p.location}` : '';
+        return `<option value="${p.id}" ${p.quantity<=0?'disabled':''}>${esc(p.sku)} — ${esc(p.name)}${stockNote}${locNote}</option>`;
+      }).join('');
+    sel.onchange = renderPartPreview;
+    renderPartPreview();
+  }
+  function renderPartPreview() {
+    const sel = document.getElementById('partPicker');
+    if (!sel) return;
+    let preview = document.getElementById('partPreview');
+    if (!preview) {
+      preview = document.createElement('div');
+      preview.id = 'partPreview';
+      preview.style.cssText = 'grid-column:1/-1;margin-top:8px;display:none;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px;font-size:12px;';
+      sel.closest('[style*="grid"]').appendChild(preview);
+    }
+    const p = partsCatalog.find(x => String(x.id) === sel.value);
+    if (!p) { preview.style.display = 'none'; return; }
+    preview.style.display = 'block';
+    preview.innerHTML = `
+      <div style="display:flex;gap:10px;align-items:flex-start;">
+        ${p.image_url ? `<img src="${p.image_url}" alt="${esc(p.name)}" style="width:80px;height:80px;object-fit:cover;border-radius:6px;border:1px solid var(--border);">` : `<div style="width:80px;height:80px;border-radius:6px;background:var(--surface-2);display:flex;align-items:center;justify-content:center;color:var(--muted-2);font-size:24px;">📦</div>`}
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:700;color:var(--ink);">${esc(p.name)}</div>
+          <div style="color:var(--muted);font-size:11px;">SKU ${esc(p.sku)}${p.category ? ' · '+esc(p.category) : ''}</div>
+          ${p.description ? `<div style="margin-top:4px;line-height:1.4;">${esc(p.description)}</div>` : ''}
+          ${p.location ? `<div style="margin-top:4px;color:var(--teal);font-weight:600;">📍 ${esc(p.location)}</div>` : ''}
+          <div style="margin-top:4px;">${formatQty(p.quantity)} ${esc(p.unit||'')} in stock</div>
+        </div>
+      </div>`;
+  }
+  function formatQty(n) { return (Number(n) % 1 === 0) ? String(Number(n)) : Number(n).toFixed(2); }
+
+  function renderPartsUsed() {
+    const wrap = document.getElementById('partsUsedList');
+    if (!wrap) return;
+    const parts = currentJob.parts_used || [];
+    if (!parts.length) {
+      wrap.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px 0;">No parts added yet.</div>';
+      return;
+    }
+    wrap.innerHTML = parts.map(p => `
+      <div style="display:flex;align-items:center;justify-content:space-between;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:13px;">
+        <div style="min-width:0;flex:1;">
+          <strong style="color:var(--ink);">${esc(p.sku)}</strong> — ${esc(p.part_name)}
+          ${p._tempQid ? '<span style="font-size:10px;color:#92400e;font-weight:700;margin-left:6px;">⏳ queued</span>' : ''}
+          <div style="font-size:11px;color:var(--muted);margin-top:2px;">Qty ${formatQty(p.quantity)} ${esc(p.part_unit || '')}</div>
+        </div>
+        <button onclick="removePartFromVisit('${p.id}')" style="background:none;border:none;color:var(--red);font-size:20px;cursor:pointer;padding:0 4px;line-height:1;" title="Remove and return to inventory">×</button>
+      </div>`).join('');
+  }
+
+  async function addPartToVisit() {
+    const sel = document.getElementById('partPicker');
+    const partId = parseInt(sel.value);
+    const qty    = parseFloat(document.getElementById('partQty').value);
+    if (!partId) { toast('Pick a part first.', 'error'); return; }
+    if (!qty || qty <= 0) { toast('Quantity must be positive.', 'error'); return; }
+    const cat = partsCatalog.find(x => x.id === partId) || {};
+    try {
+      const r = await submitJobWrite({
+        op: 'part_add', scope: 'job.part_add', method: 'POST',
+        url: `/api/tech/jobs/${currentJob.id}/parts`,
+        body: { part_id: partId, quantity: qty }, visit_id: currentJob.id,
+      });
+      if (r.queued) {
+        // Optimistic: show the part with a temp id tied to the queue entry so
+        // an offline remove can simply cancel the queued add (no server id yet).
+        _applyOptimistic('part_add', {
+          _tempQid: r.entry.qid,
+          sku: cat.sku || ('#' + partId), part_name: cat.name || 'Part',
+          part_unit: cat.unit || '', quantity: qty,
+        });
+        toast('Saved offline — will sync', 'ok'); renderDetail(); return;
+      }
+      toast('Part added to job', 'success');
+      // Refresh job + catalog (stock changed)
+      currentJob = await _refreshJob(currentJob.id);
+      partsCatalog = [];
+      renderDetail();
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  }
+
+  async function removePartFromVisit(vpId) {
+    if (!confirm('Remove this part and return it to inventory?')) return;
+    // Offline-added part that hasn't synced yet → just cancel the queued add.
+    // There is no server-side row to delete, so we drop the pending write and
+    // remove the optimistic line item locally.
+    const sVpId = String(vpId);
+    if (sVpId.startsWith('tmp_')) {
+      // The temp id is 'tmp_' + entry.qid (entry.qid already starts 'jw_').
+      const qid = sVpId.slice(4);
+      _cancelQueuedWriteByQid(qid);
+      currentJob.parts_used = (currentJob.parts_used || []).filter(p => String(p.id) !== sVpId);
+      toast('Queued part removed', 'ok'); renderDetail(); return;
+    }
+    try {
+      const r = await submitJobWrite({
+        op: 'part_remove', scope: 'job.part_remove', method: 'DELETE',
+        url: `/api/tech/jobs/${currentJob.id}/parts/${vpId}`, visit_id: currentJob.id,
+      });
+      if (r.queued) {
+        _applyOptimistic('part_remove', { id: vpId });
+        toast('Saved offline — will sync', 'ok'); renderDetail(); return;
+      }
+      toast('Part removed and returned to stock', 'success');
+      currentJob = await _refreshJob(currentJob.id);
+      partsCatalog = [];
+      renderDetail();
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  }
+
+  function photoTile(p, canDelete) {
+    // Chain-of-custody chip: shows what the system actually captured for
+    // this photo so the tech can confirm geo+timestamp made it through.
+    const cap = p.client_captured_at ? PC.fmtDateTime(p.client_captured_at) : null;
+    const geo = (p.geo_lat != null && p.geo_lng != null)
+      ? `📍 ${Number(p.geo_lat).toFixed(4)}, ${Number(p.geo_lng).toFixed(4)} (±${Math.round(p.geo_accuracy_m || 0)}m)`
+      : null;
+    const chips = [];
+    if (cap) chips.push(`<span title="captured ${esc(cap)}" style="background:rgba(0,0,0,0.55);color:white;font-size:9px;padding:1px 5px;border-radius:8px;">🕒 ${esc(PC.fmtTime(p.client_captured_at))}</span>`);
+    if (geo) chips.push(`<span title="${esc(geo)}" style="background:rgba(0,0,0,0.55);color:white;font-size:9px;padding:1px 5px;border-radius:8px;">📍</span>`);
+    return `
+      <div class="photo-item" onclick="event.target.tagName==='BUTTON'||openLightbox('${p.url}')">
+        <span class="photo-cat">${p.category}</span>
+        ${chips.length ? `<div style="position:absolute;bottom:4px;left:4px;display:flex;gap:3px;pointer-events:none;">${chips.join('')}</div>` : ''}
+        ${canDelete ? `<button class="photo-del" onclick="event.stopPropagation();deletePhoto(${p.id})">×</button>` : ''}
+        <img src="${p.url}" alt="${p.category}" loading="lazy">
+      </div>`;
+  }
+
+  // ── Actions ─────────────────────────────────────────────────────────────
+  async function startJob() {
+    if (!confirm('Start this job now? Your start time will be recorded.')) return;
+    try {
+      const r = await submitJobWrite({
+        op: 'start', scope: 'job.start', method: 'PUT',
+        url: `/api/tech/jobs/${currentJob.id}/start`, visit_id: currentJob.id,
+      });
+      if (r.queued) {
+        _applyOptimistic('start', {});
+        toast('Saved offline — will sync', 'ok'); renderDetail(); return;
+      }
+      toast('Job started', 'success');
+      currentJob = await _refreshJob(currentJob.id);
+      renderDetail();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function saveReading() {
+    const num = (id) => {
+      const v = document.getElementById(id)?.value;
+      return v === '' || v == null ? null : parseFloat(v);
+    };
+    const body = {
+      pressure_high: num('r-pressure_high'),
+      pressure_low:  num('r-pressure_low'),
+      temp_supply:   num('r-temp_supply'),
+      temp_return:   num('r-temp_return'),
+      delta_t:       num('r-delta_t'),
+      superheat:     num('r-superheat'),
+      subcool:       num('r-subcool'),
+      approach_temp: num('r-approach_temp'),
+      notes:         ''
+    };
+    if (Object.values(body).filter(v => v !== null && v !== '').length === 0) {
+      toast('Enter at least one reading.', 'error'); return;
+    }
+    try {
+      const r = await submitJobWrite({
+        op: 'reading', scope: 'job.reading', method: 'POST',
+        url: `/api/tech/jobs/${currentJob.id}/readings`, body, visit_id: currentJob.id,
+      });
+      if (r.queued) {
+        _applyOptimistic('reading', body);
+        toast('Saved offline — will sync', 'ok'); renderDetail(); return;
+      }
+      toast('Reading saved', 'success');
+      currentJob = await _refreshJob(currentJob.id);
+      renderDetail();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  // ── Visit checklist ────────────────────────────────────────────────────
+  // Free-form list of [{label, checked, note}] stored against the visit.
+  // We render rows from currentJob.checklist, let the tech tick/note/add/
+  // remove, then POST the whole list. Re-rendering only the rows (not the
+  // full detail) preserves unsaved Work-Performed/Readings form fields.
+  function _clItems() {
+    if (!Array.isArray(currentJob.checklist)) currentJob.checklist = [];
+    return currentJob.checklist;
+  }
+  function renderChecklistRows() {
+    const wrap = document.getElementById('checklistRows');
+    if (!wrap) return;
+    const items = _clItems();
+    if (!items.length) {
+      wrap.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:6px 0;">No checklist items yet. Add one below.</div>';
+      return;
+    }
+    wrap.innerHTML = items.map((it, i) => `
+      <div class="cl-row" data-idx="${i}" style="display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:center;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:8px 10px;">
+        <input type="checkbox" class="cl-check" ${it.checked ? 'checked' : ''} style="width:20px;height:20px;flex:none;">
+        <div style="min-width:0;">
+          <div style="font-size:13px;font-weight:600;color:var(--ink);word-break:break-word;">${esc(it.label || '')}</div>
+          <input type="text" class="cl-note" value="${esc(it.note || '')}" placeholder="Note (optional)…" style="width:100%;margin-top:5px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;outline:none;">
+        </div>
+        <button onclick="clRemove(${i})" title="Remove" style="flex:none;width:30px;height:30px;background:var(--card);color:var(--err-fg,#c0392b);border:1px solid var(--border);border-radius:6px;font-size:16px;line-height:1;cursor:pointer;">×</button>
+      </div>`).join('');
+  }
+  // Pull current DOM state back into the model before any mutation/save so
+  // in-flight ticks and notes aren't lost on re-render.
+  function _clSyncFromDom() {
+    const items = _clItems();
+    document.querySelectorAll('#checklistRows .cl-row').forEach(row => {
+      const i = parseInt(row.getAttribute('data-idx'), 10);
+      if (isNaN(i) || !items[i]) return;
+      const chk = row.querySelector('.cl-check');
+      const note = row.querySelector('.cl-note');
+      if (chk)  items[i].checked = chk.checked;
+      if (note) items[i].note = note.value;
+    });
+  }
+  function clAddItem() {
+    const inp = document.getElementById('clNewLabel');
+    const label = (inp?.value || '').trim();
+    if (!label) { toast('Type an item first.', 'error'); return; }
+    _clSyncFromDom();
+    _clItems().push({ label, checked: false, note: '' });
+    if (inp) inp.value = '';
+    renderChecklistRows();
+  }
+  function clRemove(i) {
+    _clSyncFromDom();
+    const items = _clItems();
+    if (items[i]) items.splice(i, 1);
+    renderChecklistRows();
+  }
+  async function saveChecklist() {
+    _clSyncFromDom();
+    const items = _clItems().map(it => ({
+      label: String(it.label || ''),
+      checked: !!it.checked,
+      note: String(it.note || ''),
+    }));
+    try {
+      const r = await submitJobWrite({
+        op: 'checklist', scope: 'job.checklist', method: 'POST',
+        url: `/api/tech/jobs/${currentJob.id}/checklist`, body: { items },
+        visit_id: currentJob.id,
+      });
+      if (r.queued) {
+        _applyOptimistic('checklist', { items });
+        toast('Saved offline — will sync', 'ok'); return;
+      }
+      toast('Checklist saved', 'success');
+      currentJob = await _refreshJob(currentJob.id);
+      renderDetail();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  // ── Signature pad ──────────────────────────────────────────────────────
+  let sigPad = { drawing: false, last: null, hasInk: false };
+  function initSigPad() {
+    const c = document.getElementById('sigCanvas');
+    if (!c) return;
+    const ctx = c.getContext('2d');
+    ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.strokeStyle = '#0f172a';
+    const pos = (e) => {
+      const r = c.getBoundingClientRect();
+      const t = e.touches ? e.touches[0] : e;
+      return { x: (t.clientX - r.left) * (c.width / r.width),
+               y: (t.clientY - r.top)  * (c.height / r.height) };
+    };
+    const start = (e) => { e.preventDefault(); sigPad.drawing = true; sigPad.last = pos(e); };
+    const move  = (e) => {
+      if (!sigPad.drawing) return;
+      e.preventDefault();
+      const p = pos(e);
+      ctx.beginPath(); ctx.moveTo(sigPad.last.x, sigPad.last.y);
+      ctx.lineTo(p.x, p.y); ctx.stroke();
+      sigPad.last = p; sigPad.hasInk = true;
+    };
+    const end = () => { sigPad.drawing = false; };
+    c.addEventListener('mousedown', start);  c.addEventListener('mousemove', move);  c.addEventListener('mouseup', end); c.addEventListener('mouseleave', end);
+    c.addEventListener('touchstart', start, {passive:false}); c.addEventListener('touchmove', move, {passive:false}); c.addEventListener('touchend', end);
+  }
+  function clearSignature() {
+    const c = document.getElementById('sigCanvas');
+    if (!c) return;
+    c.getContext('2d').clearRect(0,0,c.width,c.height);
+    sigPad.hasInk = false;
+  }
+  async function saveSignature() {
+    const name = document.getElementById('sig-name')?.value.trim();
+    const c    = document.getElementById('sigCanvas');
+    if (!name) { toast('Enter the signer\'s name.', 'error'); return; }
+    if (!sigPad.hasInk) { toast('Please sign the canvas.', 'error'); return; }
+    const dataUrl = c.toDataURL('image/png');
+    try {
+      const r = await submitJobWrite({
+        op: 'signature', scope: 'job.signature', method: 'POST',
+        url: `/api/tech/jobs/${currentJob.id}/signature`,
+        body: { signer_name: name, signature_b64: dataUrl }, visit_id: currentJob.id,
+      });
+      if (r.queued) {
+        _applyOptimistic('signature', { signer_name: name });
+        toast('Saved offline — will sync', 'ok'); renderDetail(); return;
+      }
+      toast('Signature captured ✓', 'success');
+      currentJob = await _refreshJob(currentJob.id);
+      renderDetail();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function endJob() {
+    const work  = document.getElementById('f-work').value.trim();
+    const parts = document.getElementById('f-parts').value.trim();
+    const notes = document.getElementById('f-notes').value.trim();
+    const nextPm = document.getElementById('f-next-pm')?.value || null;
+    if (!currentJob.signature_captured) {
+      toast('Capture the client signature before submitting.', 'error'); return;
+    }
+    if (!work) {
+      if (!confirm('No work description entered. Submit the report anyway?')) return;
+    } else {
+      if (!confirm('Submit this job report? Once submitted you cannot edit it.')) return;
+    }
+    try {
+      const body = { work_done: work, parts_replaced: parts, notes, next_pm_due: nextPm };
+      const r = await submitJobWrite({
+        op: 'complete', scope: 'job.complete', method: 'PUT',
+        url: `/api/tech/jobs/${currentJob.id}/complete`, body, visit_id: currentJob.id,
+      });
+      if (r.queued) {
+        _applyOptimistic('complete', body);
+        toast('Saved offline — report will submit when you reconnect', 'ok');
+        renderDetail(); loadJobs(); return;
+      }
+      toast('Job completed ✓', 'success');
+      currentJob = await _refreshJob(currentJob.id);
+      renderDetail();
+      loadJobs();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  // ── App-version constant (bumped on each PWA release) ─────────────────
+  const PC_APP_VERSION = 'tech-1.4.0';
+
+  // Best-effort geolocation. Returns null on permission denial / timeout
+  // / unavailable. NEVER throws — a missing geo must not block the upload.
+  function _captureGeolocation(timeoutMs = 8000) {
+    return new Promise(resolve => {
+      if (!navigator.geolocation) return resolve(null);
+      let settled = false;
+      const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+      const t = setTimeout(() => done(null), timeoutMs);
+      navigator.geolocation.getCurrentPosition(
+        pos => {
+          clearTimeout(t);
+          done({
+            lat:          pos.coords.latitude,
+            lng:          pos.coords.longitude,
+            accuracy_m:   pos.coords.accuracy,
+            captured_at:  new Date(pos.timestamp).toISOString(),
+          });
+        },
+        _err => { clearTimeout(t); done(null); },
+        { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: 30000 }
+      );
+    });
+  }
+
+  // Device info gathered from APIs available everywhere we ship.
+  function _captureDevice() {
+    const uad = navigator.userAgentData;
+    return {
+      platform: (uad && uad.platform) || navigator.platform || '',
+      model:    navigator.userAgent || '',     // server caps + encrypts in server_ua
+      screen:   `${screen.width}x${screen.height}@${window.devicePixelRatio || 1}`,
+    };
+  }
+
+  // Camera info — only useful when the photo originated from getUserMedia.
+  // For the legacy file-input path we pass null so the columns stay empty.
+  function _captureCameraFromTrack(track) {
+    if (!track) return null;
+    try {
+      const s = track.getSettings ? track.getSettings() : {};
+      return {
+        facing: s.facingMode || null,
+        width:  s.width  || null,
+        height: s.height || null,
+      };
+    } catch { return null; }
+  }
+
+  async function _assembleClientMeta(cameraInfo) {
+    const geo = await _captureGeolocation();
+    const conn = navigator.connection || {};
+    return {
+      client_captured_at: new Date().toISOString(),
+      geo:                geo,                          // may be null
+      device:             _captureDevice(),
+      camera:             cameraInfo,                   // may be null
+      network_type:       conn.effectiveType || null,
+      app_version:        PC_APP_VERSION,
+    };
+  }
+
+  async function uploadPhoto(category, inputEl) {
+    const file = inputEl.files[0];
+    if (!file) return;
+    if (file.size > 12 * 1024 * 1024) {
+      toast('Photo is too large (max 12 MB)', 'error');
+      inputEl.value = '';
+      return;
+    }
+    const btn = document.getElementById(`upload-${category}`);
+    btn.classList.add('uploading');
+
+    // Capture metadata BEFORE the upload so even slow geo lookup doesn't
+    // race the network call. Geolocation prompt may appear here on first
+    // use — handled by the browser, not by us.
+    const meta = await _assembleClientMeta(null);
+
+    // Re-encode/downscale so the blob is small enough to stash in IndexedDB
+    // for offline queueing (reuses the 5S photo pipeline).
+    const shrunk = await _fsDownscalePhoto(file);
+    const blob = (shrunk && shrunk.blob) || file;
+    const mime = (shrunk && shrunk.mime) || file.type || 'image/jpeg';
+    const dataUrl = shrunk && shrunk.dataUrl;
+    try {
+      const r = await submitJobWrite({
+        op: 'photo', scope: 'job.photo', method: 'POST',
+        url: `/api/tech/jobs/${currentJob.id}/photos`, visit_id: currentJob.id,
+        isForm: true,
+        formFields: [['category', category], ['client_meta', JSON.stringify(meta)]],
+        photoBlob: blob, photoMime: mime,
+      });
+      if (r.queued) {
+        if (dataUrl) _applyOptimistic('photo', { id: 'tmp_' + r.entry.qid, category, url: dataUrl });
+        toast('Saved offline — photo will upload when you reconnect', 'ok');
+        renderDetail(); return;
+      }
+      toast(`${category === 'before' ? 'Before' : 'After'} photo added`, 'success');
+      currentJob = await _refreshJob(currentJob.id);
+      renderDetail();
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      btn.classList.remove('uploading');
+      inputEl.value = '';
+    }
+  }
+
+  async function deletePhoto(id) {
+    if (!confirm('Delete this photo?')) return;
+    try {
+      await api('DELETE', `/api/tech/photos/${id}`);
+      currentJob = await api('GET', `/api/tech/jobs/${currentJob.id}`);
+      renderDetail();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  // ── Lightbox ────────────────────────────────────────────────────────────
+  function openLightbox(src) {
+    document.getElementById('lightboxImg').src = src;
+    document.getElementById('lightbox').classList.add('open');
+  }
+  function closeLightbox() {
+    document.getElementById('lightbox').classList.remove('open');
+    document.getElementById('lightboxImg').src = '';
+  }
+
+  // ── Helpers ─────────────────────────────────────────────────────────────
+  function esc(s) {
+    return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function fmtDate(d) {
+    if (!d) return '';
+    return PC.fmtDate(d);
+  }
+  function fmtTime12(t) {
+    if (!t) return '';
+    const [h, m] = t.split(':').map(Number);
+    if (isNaN(h)) return '';
+    const period = h >= 12 ? 'PM' : 'AM';
+    const h12 = h % 12 || 12;
+    return `${h12}:${String(m).padStart(2,'0')} ${period}`;
+  }
+  function fmtTimeFull(iso) {
+    if (!iso) return '';
+    return PC.fmtDateTime(iso);
+  }
+  function duration(startIso, endIso) {
+    const ms = new Date(endIso) - new Date(startIso);
+    const h = Math.floor(ms / 3600000);
+    const m = Math.floor((ms % 3600000) / 60000);
+    return h ? `${h}h ${m}m` : `${m}m`;
+  }
+  function liveTimerLabel(j) {
+    if (j.status === 'completed' && j.end_time) {
+      return `Total: ${duration(j.start_time, j.end_time)}`;
+    }
+    const ms = new Date() - new Date(j.start_time);
+    const h = Math.floor(ms / 3600000);
+    const m = Math.floor((ms % 3600000) / 60000);
+    const s = Math.floor((ms % 60000) / 1000);
+    return `⏱  ${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  }
+
+  // toast() delegated to PC.toast via window.toast shim in /static/pc_shared.js.
+  // (Removed local 5-line implementation that used the inline #toast element.)
+
+  document.getElementById('techCode').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+  document.getElementById('techPin').addEventListener('keydown',  e => { if (e.key === 'Enter') doLogin(); });
+
+  // ── Forgot PIN ──
+  function openForgot() {
+    document.getElementById('forgotModal').style.display = 'flex';
+    document.getElementById('forgotErr').style.display = 'none';
+    document.getElementById('forgotOk').style.display  = 'none';
+    document.getElementById('forgotCode').value  = document.getElementById('techCode').value || '';
+    document.getElementById('forgotEmail').value = '';
+  }
+  function closeForgot() {
+    document.getElementById('forgotModal').style.display = 'none';
+  }
+  async function submitForgot() {
+    const code  = document.getElementById('forgotCode').value.trim().toUpperCase();
+    const email = document.getElementById('forgotEmail').value.trim();
+    const err   = document.getElementById('forgotErr');
+    const ok    = document.getElementById('forgotOk');
+    const btn   = document.getElementById('forgotBtn');
+    err.style.display = 'none'; ok.style.display = 'none';
+
+    if (!code || !email) {
+      err.textContent = 'Enter your tech code and email.';
+      err.style.display = 'block';
+      return;
+    }
+
+    btn.disabled = true; btn.textContent = 'Sending…';
+    try {
+      await fetch('/api/tech/forgot-pin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tech_code: code, email }),
+      });
+      ok.style.display = 'block';
+      document.getElementById('forgotCode').value = '';
+      document.getElementById('forgotEmail').value = '';
+    } catch {
+      err.textContent = 'Connection error. Try again.';
+      err.style.display = 'block';
+    } finally {
+      btn.disabled = false; btn.textContent = 'Send Reset Link';
+    }
+  }
+  document.getElementById('forgotModal').addEventListener('click', e => {
+    if (e.target.id === 'forgotModal') closeForgot();
+  });
+
+  // ── PWA install ──
+  let deferredPrompt = null;
+  window.addEventListener('beforeinstallprompt', e => {
+    e.preventDefault();
+    deferredPrompt = e;
+    if (!localStorage.getItem('pc_tech_install_dismissed')) {
+      document.getElementById('installBanner').classList.add('show');
+    }
+  });
+  async function doInstall() {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    await deferredPrompt.userChoice;
+    deferredPrompt = null;
+    document.getElementById('installBanner').classList.remove('show');
+  }
+  function dismissInstall() {
+    localStorage.setItem('pc_tech_install_dismissed', '1');
+    document.getElementById('installBanner').classList.remove('show');
+    document.getElementById('iosHint').style.display = 'none';
+  }
+  const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+  if (isIos && !isStandalone && !localStorage.getItem('pc_tech_install_dismissed')) {
+    document.getElementById('iosHint').style.display = 'block';
+  }
+  // ── My Payslips ─────────────────────────────────────────────────────────
+  function _fmtMoneyTech(n, cur='JMD') {
+    const v = Number(n||0);
+    const sym = cur === 'JMD' ? 'J$' : (cur === 'USD' ? '$' : cur + ' ');
+    return sym + v.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+  }
+
+  // ── My Performance (Phase 4 — KPI scorecard, read-only) ──────────────────
+  const TECH_KPI_LABELS = {
+    callback_rate: 'Callback',
+    documentation_quality: 'Docs',
+    pm_completion: 'PM',
+    utilization: 'Utilization',
+    sla_adherence: 'SLA',
+    safety_compliance: 'Safety',
+    first_time_fix: 'First-time Fix',
+    revenue_per_tech: 'Rev/Tech',
+  };
+  function _techBandPill(band) {
+    const cmap = {
+      green: 'background:var(--ok-bg);color:var(--ok-fg);',
+      amber: 'background:var(--warn-bg);color:var(--warn-fg);',
+      red:   'background:var(--err-bg);color:var(--err-fg);',
+      insufficient_data: 'background:var(--surface-2);color:var(--muted);',
+    };
+    const label = !band || band === 'insufficient_data' ? 'N/A' : band.toUpperCase();
+    return `<span style="${cmap[band] || cmap.insufficient_data}padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;">${label}</span>`;
+  }
+  async function renderMyKpi() {
+    const wrap = document.getElementById('jobList');
+    wrap.innerHTML = '<div class="empty"><div>Loading your performance…</div></div>';
+    try {
+      const sc = await api('GET', '/api/tech/me/kpi');
+      const fl = await api('GET', '/api/tech/me/kpi/flags').catch(() => ({flags: []}));
+      const hist = await api('GET', '/api/tech/me/kpi/history').catch(() => ({released_periods: []}));
+      const comp = (sc.current && sc.current.composite) || {};
+      const kpis = (sc.current && sc.current.kpis) || {};
+      const trend = sc.trend || [];
+      const updated = PC.fmtDateTime(comp.computed_at);
+      const trendStrip = trend.slice().reverse().map(t => {
+        const b = t.band || 'insufficient_data';
+        const c = b === 'green' ? '#10b981' : b === 'amber' ? '#f59e0b' : b === 'red' ? '#ef4444' : '#9ca3af';
+        return `<div title="${esc(t.period_key)}"
+          style="flex:1;height:26px;border-radius:4px;background:${c};display:flex;align-items:center;justify-content:center;color:white;font-size:10px;font-weight:600;">
+          ${t.composite_pct == null ? '—' : t.composite_pct + '%'}
+        </div>`;
+      }).join('');
+      const kpiRows = Object.keys(TECH_KPI_LABELS).map(k => {
+        const r = kpis[k] || {};
+        return `<tr>
+          <td style="padding:8px;">${TECH_KPI_LABELS[k]}</td>
+          <td style="padding:8px;">${_techBandPill(r.band)}</td>
+          <td style="padding:8px;text-align:right;color:var(--muted);">${r.raw_value == null ? '—' : r.raw_value}</td>
+        </tr>`;
+      }).join('');
+      const _g = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+      const released = (hist.released_periods || []);
+      const releasedItems = released.map(r => `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;background:var(--card);font-size:13px;">
+          <span style="font-weight:600;color:var(--ink);">${esc(r.period_key)}</span>
+          <span style="font-size:11px;color:var(--muted);">Shared ${PC.fmtDate(r.released_at)}</span>
+        </div>`).join('');
+      const flagItems = (fl.flags || []).map(f => {
+        const respondable = !['resolved','overridden'].includes(f.status);
+        const scoreRef = (f.score_id && _g) ? PC.gateLinkHtml('kpi_score', f.score_id, esc(f.period_key), {}) : esc(f.period_key);
+        return `
+        <div data-pc-row-flag="${f.id}" style="padding:10px;border-radius:8px;border:1px solid var(--border);margin-bottom:8px;background:var(--card);">
+          <div style="font-weight:600;color:var(--err-fg);">${esc(f.severity)}${f.has_override ? ' <span style="font-size:11px;color:var(--muted);font-weight:400;">(' + esc(f.override_note || 'Override on file') + ')</span>' : ''}</div>
+          <div style="margin-top:4px;font-size:13px;color:var(--text);">${esc(f.reason || '')}</div>
+          <div style="margin-top:4px;font-size:11px;color:var(--muted);">${scoreRef} · ${esc(f.status)}</div>
+          ${respondable ? `<button class="btn btn-ghost pc-stop-prop" style="margin-top:8px;font-size:12px;" onclick="event.stopPropagation();techRespondToFlag(${f.id})">Add Your Response</button>` : ''}
+        </div>`;
+      }).join('');
+      wrap.innerHTML = `
+        <div style="padding:14px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+            <h3 style="margin:0;color:var(--ink);">My Performance</h3>
+            <div style="font-size:11px;color:var(--muted);">${updated ? 'Updated ' + updated : ''}</div>
+          </div>
+          <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:12px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <div>
+                <div style="font-size:11px;text-transform:uppercase;color:var(--muted);letter-spacing:.4px;">Composite</div>
+                <div style="font-size:32px;font-weight:700;color:var(--ink);">${comp.composite_pct == null ? '—' : comp.composite_pct + '%'}</div>
+              </div>
+              ${_techBandPill(comp.band)}
+            </div>
+            ${trendStrip ? `<div style="margin-top:12px;">
+              <div style="font-size:11px;color:var(--muted);margin-bottom:4px;">Trend</div>
+              <div style="display:flex;gap:4px;">${trendStrip}</div>
+            </div>` : ''}
+          </div>
+          <table style="width:100%;background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden;border-collapse:collapse;">
+            <thead><tr style="background:var(--surface-2);font-size:11px;text-transform:uppercase;color:var(--muted);">
+              <th style="padding:8px;text-align:left;">KPI</th>
+              <th style="padding:8px;text-align:left;">Band</th>
+              <th style="padding:8px;text-align:right;">Value</th>
+            </tr></thead>
+            <tbody>${kpiRows}</tbody>
+          </table>
+          ${flagItems ? `
+            <h4 style="margin:16px 0 8px 0;color:var(--ink);">My coaching flags</h4>
+            ${flagItems}
+          ` : ''}
+          ${releasedItems ? `
+            <h4 style="margin:16px 0 8px 0;color:var(--ink);">Released scorecards</h4>
+            <p style="font-size:11px;color:var(--muted);margin:0 0 8px;">Periods your manager has officially shared with you.</p>
+            ${releasedItems}
+          ` : ''}
+          <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="btn btn-ghost pc-stop-prop" onclick="techViewNotes()">View notes about me</button>
+            <button class="btn btn-ghost pc-stop-prop" onclick="techViewGoals()">My Goals &amp; PIPs</button>
+          </div>
+        </div>
+      `;
+      // Decorate flag rows post-render (kpi_flag is in tech self-scope).
+      if (typeof PC !== 'undefined' && PC.gateRow) {
+        wrap.querySelectorAll('[data-pc-row-flag]').forEach(function (row) {
+          const fid = Number(row.getAttribute('data-pc-row-flag'));
+          PC.gateRow(row, 'kpi_flag', fid, { ariaLabel: 'Open flag #' + fid });
+        });
+      }
+    } catch (e) {
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && e && e.body && PC.handleAccessDenied(e)) return;
+      wrap.innerHTML = `<div class="empty"><div>Could not load: ${esc(e.message)}</div></div>`;
+    }
+  }
+
+  async function renderMyPayslips() {
+    const wrap = document.getElementById('jobList');
+    wrap.innerHTML = '<div class="empty"><div>Loading payslips…</div></div>';
+    try {
+      const rows = await api('GET', '/api/tech/me/payslips');
+      if (!rows.length) {
+        wrap.innerHTML = `<div class="empty">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+          <div>No payslips yet. They appear here once the Director approves the pay period.</div>
+        </div>`;
+        return;
+      }
+      wrap.innerHTML = rows.map(p => {
+        const cur = p.currency || 'JMD';
+        // net_pay is sensitive — only render the figure when canRead('payslip').
+        const canSeeNet = (typeof PC === 'undefined' || !PC.canRead) ? true : PC.canRead('payslip', p.id);
+        const netCell = canSeeNet ? _fmtMoneyTech(p.net_pay, cur) : '<span class="pc-text-only">—</span>';
+        return `<div class="job-card" data-pc-row-payslip="${p.id}">
+          <div class="job-customer">${esc(p.period_label)}</div>
+          <div class="job-meta">${esc(p.period_start)} → ${esc(p.period_end)}</div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;">
+            <span style="font-size:12px;color:var(--muted);">Net pay</span>
+            <strong style="color:var(--ink);">${netCell}</strong>
+          </div>
+        </div>`;
+      }).join('');
+      if (typeof PC !== 'undefined' && PC.gateRow) {
+        wrap.querySelectorAll('[data-pc-row-payslip]').forEach(function (card) {
+          const pid = Number(card.getAttribute('data-pc-row-payslip'));
+          PC.gateRow(card, 'payslip', pid, {
+            onClick: function () { openMyPayslip(pid); },
+            ariaLabel: 'Open payslip #' + pid,
+          });
+        });
+      } else {
+        wrap.querySelectorAll('[data-pc-row-payslip]').forEach(function (card) {
+          const pid = Number(card.getAttribute('data-pc-row-payslip'));
+          card.addEventListener('click', function () { openMyPayslip(pid); });
+        });
+      }
+    } catch (e) {
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && e && e.body && PC.handleAccessDenied(e)) return;
+      wrap.innerHTML = `<div class="empty"><div>Could not load payslips: ${esc(e.message)}</div></div>`;
+    }
+  }
+
+  async function openMyPayslip(id) {
+    // On-screen quick-view (summary + Net pay). The rich, print-ready document
+    // — the ONE shared template in /static/pc_shared.js, matching /home,
+    // /admin and /profile — is one tap away via "View full payslip"/Print.
+    try {
+      const p = await api('GET', `/api/tech/me/payslips/${id}`);
+      PC.openPayslipQuickView(p);
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  // ── Tech-side equipment management ──────────────────────────────────────
+  //
+  // Two access paths land here:
+  //   1) Header "Equipment" pill            → showEquipView() with no args
+  //      → search pane, then tap a customer → customer pane.
+  //   2) Visit detail "Customer Equipment"  → showEquipView(custId, custName)
+  //      → jumps straight to customer pane for the visit's customer.
+  // The same modal handles add (eqEditing=null) and edit (eqEditing=row).
+  let _eqMode    = 'search';   // 'search' | 'customer'
+  let _eqCustomer = null;       // {id, name, ...} when in customer mode
+  let _eqList    = [];          // last-loaded equipment for _eqCustomer
+  let _eqEditing = null;        // row currently being edited (or null = add)
+  let _eqSearchTimer = null;
+
+  async function showEquipView(customerId, customerName) {
+    // Hide siblings so we never stack views.
+    document.getElementById('listView').style.display    = 'none';
+    document.getElementById('detailView').style.display  = 'none';
+    const fv = document.getElementById('fsView');
+    if (fv) fv.style.display = 'none';
+    const bb = document.getElementById('backBar');
+    if (bb) {
+      bb.style.display = 'flex';
+      bb.textContent   = '← Back to Jobs';
+    }
+    document.getElementById('equipView').style.display = 'block';
+
+    if (customerId) {
+      // Direct-to-customer mode (from visit detail). Hydrate header from the
+      // arg first so the screen draws immediately, then refresh from the
+      // server to pick up anything richer.
+      _eqMode = 'customer';
+      _eqCustomer = { id: customerId, name: customerName || '' };
+      document.getElementById('eqSearchPane').style.display   = 'none';
+      document.getElementById('eqCustomerPane').style.display = 'block';
+      renderEqCustomerHeader();
+      try {
+        const c = await api('GET', `/api/tech/customers/${customerId}`);
+        _eqCustomer = c;
+        renderEqCustomerHeader();
+      } catch (e) { /* leave the stub header in place */ }
+      await loadEqList();
+      return;
+    }
+
+    // Search mode (header pill).
+    _eqMode = 'search';
+    _eqCustomer = null;
+    document.getElementById('eqSearchPane').style.display   = 'block';
+    document.getElementById('eqCustomerPane').style.display = 'none';
+    document.getElementById('eqSearchInput').value = '';
+    runEqCustomerSearch('');
+    // Focus the input on desktop; on mobile we don't, to avoid popping the
+    // keyboard before the user has even seen the screen.
+    if (window.matchMedia && !window.matchMedia('(pointer:coarse)').matches) {
+      setTimeout(() => document.getElementById('eqSearchInput').focus(), 50);
+    }
+  }
+  window.showEquipView = showEquipView;
+
+  function renderEqCustomerHeader() {
+    const el = document.getElementById('eqCustomerHeader');
+    if (!el || !_eqCustomer) return;
+    const sub = [
+      _eqCustomer.customer_code,
+      _eqCustomer.company,
+      _eqCustomer.address,
+      _eqCustomer.phone,
+    ].filter(Boolean).join(' · ');
+    el.innerHTML = `
+      <div>
+        <div class="name">${esc(_eqCustomer.name || '#' + _eqCustomer.id)}</div>
+        ${sub ? `<div class="sub">${esc(sub)}</div>` : ''}
+      </div>
+      <button class="switch-btn" onclick="eqSwitchCustomer()">Switch</button>`;
+  }
+
+  function eqSwitchCustomer() {
+    _eqMode = 'search';
+    _eqCustomer = null;
+    document.getElementById('eqSearchPane').style.display   = 'block';
+    document.getElementById('eqCustomerPane').style.display = 'none';
+    runEqCustomerSearch(document.getElementById('eqSearchInput').value || '');
+  }
+  window.eqSwitchCustomer = eqSwitchCustomer;
+
+  async function runEqCustomerSearch(q) {
+    const wrap = document.getElementById('eqCustomerResults');
+    wrap.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:18px;text-align:center;">Loading…</div>';
+    try {
+      const rows = await api('GET', `/api/tech/customers/search?q=${encodeURIComponent(q || '')}&limit=30`);
+      if (!rows || !rows.length) {
+        wrap.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:24px;text-align:center;">No customers matched “${esc(q || '')}”.</div>`;
+        return;
+      }
+      wrap.innerHTML = rows.map(c => {
+        const sub = [c.customer_code, c.company, c.phone].filter(Boolean).join(' · ');
+        return `<div class="eq-customer-card" onclick="pickEqCustomer(${c.id})">
+          <div class="name">${esc(c.name || '#' + c.id)}</div>
+          ${sub ? `<div class="sub">${esc(sub)}</div>` : ''}
+          ${c.address ? `<div class="sub">${esc(c.address)}</div>` : ''}
+        </div>`;
+      }).join('');
+    } catch (e) {
+      wrap.innerHTML = `<div style="color:var(--red);font-size:13px;padding:18px;text-align:center;">${esc(e.message || 'Search failed.')}</div>`;
+    }
+  }
+
+  async function pickEqCustomer(customerId) {
+    _eqMode = 'customer';
+    document.getElementById('eqSearchPane').style.display   = 'none';
+    document.getElementById('eqCustomerPane').style.display = 'block';
+    try {
+      _eqCustomer = await api('GET', `/api/tech/customers/${customerId}`);
+    } catch (e) {
+      _eqCustomer = { id: customerId, name: 'Customer #' + customerId };
+    }
+    renderEqCustomerHeader();
+    await loadEqList();
+  }
+  window.pickEqCustomer = pickEqCustomer;
+
+  async function loadEqList() {
+    const wrap = document.getElementById('eqList');
+    if (!_eqCustomer) return;
+    wrap.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:8px 0;">Loading…</div>';
+    try {
+      _eqList = await api('GET', `/api/tech/customers/${_eqCustomer.id}/equipment`) || [];
+      renderEqList(wrap, _eqList);
+    } catch (e) {
+      wrap.innerHTML = `<div style="color:var(--red);font-size:13px;padding:8px 0;">${esc(e.message || 'Could not load equipment.')}</div>`;
+    }
+  }
+
+  function renderEqList(wrap, rows) {
+    if (!rows || !rows.length) {
+      wrap.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:14px;text-align:center;background:var(--card);border-radius:12px;">No equipment on file yet. Tap + Add Equipment to record the first unit.</div>`;
+      return;
+    }
+    wrap.innerHTML = rows.map((e, i) => {
+      const meta = [];
+      if (e.type)          meta.push(`<strong>${esc(e.type)}</strong>`);
+      if (e.model)         meta.push(esc(e.model));
+      if (e.serial_number) meta.push(`SN: ${esc(e.serial_number)}`);
+      if (e.location)      meta.push(esc(e.location));
+      const metaLine = meta.join(' · ');
+      const notes    = e.notes ? `<div class="meta" style="margin-top:6px;">${esc(e.notes).replace(/\n/g,'<br>')}</div>` : '';
+      return `<div class="eq-row" data-eq-id="${e.id}" data-eq-idx="${i}">
+        <div class="name">${esc(e.name)}</div>
+        ${metaLine ? `<div class="meta">${metaLine}</div>` : ''}
+        ${notes}
+        <div class="actions">
+          <button onclick="openTechEquipModal(${i})">Edit</button>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  // ── Visit-detail Customer Equipment card population ─────────────────────
+  async function loadVisitCustomerEquipment(customerId) {
+    const list = document.getElementById('visitEquipList');
+    if (!list) return;
+    try {
+      const rows = await api('GET', `/api/tech/customers/${customerId}/equipment`) || [];
+      if (!rows.length) {
+        list.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:6px 0;">No other equipment on file for this customer.</div>';
+        return;
+      }
+      // Compact rendering — this is a sub-section on the visit detail, not
+      // the full equipment screen. Tap any row to open the edit modal in
+      // place.
+      list.innerHTML = rows.map((e, i) => {
+        const tags = [e.type, e.model, e.location].filter(Boolean).join(' · ');
+        return `<div data-eq-id="${e.id}" data-customer-id="${customerId}"
+                     onclick="openTechEquipModal(${i}, ${customerId}, ${esc(JSON.stringify(e.customer_name || '')).replace(/"/g,'&quot;')}, true)"
+                     style="padding:10px 12px;background:var(--light);border:1px solid var(--border);border-radius:8px;cursor:pointer;">
+          <div style="font-weight:700;color:var(--ink);font-size:14px;">${esc(e.name)}</div>
+          ${tags ? `<div style="font-size:12px;color:var(--muted);margin-top:2px;">${esc(tags)}</div>` : ''}
+        </div>`;
+      }).join('');
+      // Cache so the modal can read by index without re-fetching.
+      list.dataset.cache = JSON.stringify(rows);
+    } catch (e) {
+      list.innerHTML = `<div style="color:var(--red);font-size:13px;padding:6px 0;">Could not load equipment: ${esc(e.message)}</div>`;
+    }
+  }
+  window.loadVisitCustomerEquipment = loadVisitCustomerEquipment;
+
+  // ── Add/Edit modal ──────────────────────────────────────────────────────
+  // openTechEquipModal can be called from three places:
+  //   (a) Equipment view's "+ Add" button         → openTechEquipModal(null)
+  //   (b) Equipment view row edit              → openTechEquipModal(idx)
+  //   (c) Visit detail Customer Equipment       → openTechEquipModal(idx, custId, custName, true)
+  //                                              or openTechEquipModal(null, custId, custName)
+  function openTechEquipModal(idx, customerId, customerName, fromVisitCache) {
+    _eqEditing = null;
+    const overlay = document.getElementById('techEquipModal');
+    const title   = document.getElementById('techEquipModalTitle');
+    const sub     = document.getElementById('techEquipModalSub');
+    const err     = document.getElementById('tem-err');
+
+    // Pick the cache to read from depending on the entry point.
+    let row = null;
+    let custLabel = customerName || (_eqCustomer && _eqCustomer.name) || '';
+    let custId    = customerId  || (_eqCustomer && _eqCustomer.id)   || null;
+    if (idx !== null && idx !== undefined) {
+      if (fromVisitCache) {
+        try {
+          const cache = JSON.parse(document.getElementById('visitEquipList').dataset.cache || '[]');
+          row = cache[idx] || null;
+        } catch { row = null; }
+      } else {
+        row = (_eqList || [])[idx] || null;
+      }
+      if (!row) {
+        toast('Could not load that equipment row. Reload and retry.', 'error');
+        return;
+      }
+      _eqEditing = row;
+      custId    = row.customer_id || custId;
+      title.textContent = 'Edit Equipment';
+      sub.textContent   = custLabel ? `For ${custLabel}` : 'Editing equipment';
+      document.getElementById('tem-name').value     = row.name          || '';
+      document.getElementById('tem-type').value     = row.type          || '';
+      document.getElementById('tem-model').value    = row.model         || '';
+      document.getElementById('tem-serial').value   = row.serial_number || '';
+      document.getElementById('tem-location').value = row.location      || '';
+      document.getElementById('tem-notes').value    = row.notes         || '';
+    } else {
+      if (!custId) {
+        toast('Pick a customer first.', 'error');
+        return;
+      }
+      title.textContent = 'Add Equipment';
+      sub.textContent   = custLabel ? `For ${custLabel}` : 'New equipment record';
+      ['tem-name','tem-type','tem-model','tem-serial','tem-location','tem-notes']
+        .forEach(id => { document.getElementById(id).value = ''; });
+    }
+    // Stash the customer id on the overlay so the submit handler doesn't
+    // have to walk state again.
+    overlay.dataset.customerId = String(custId || '');
+    overlay.dataset.fromVisit  = fromVisitCache ? '1' : '';
+    err.style.display = 'none';
+    err.textContent   = '';
+    overlay.classList.add('open');
+    setTimeout(() => document.getElementById('tem-name').focus(), 80);
+  }
+  window.openTechEquipModal = openTechEquipModal;
+
+  function closeTechEquipModal() {
+    document.getElementById('techEquipModal').classList.remove('open');
+    _eqEditing = null;
+  }
+  window.closeTechEquipModal = closeTechEquipModal;
+
+  async function submitTechEquipForm() {
+    const overlay = document.getElementById('techEquipModal');
+    const err     = document.getElementById('tem-err');
+    const btn     = document.getElementById('tem-save-btn');
+    err.style.display = 'none';
+    err.textContent   = '';
+    const body = {
+      name:          document.getElementById('tem-name').value.trim(),
+      type:          document.getElementById('tem-type').value.trim(),
+      model:         document.getElementById('tem-model').value.trim(),
+      serial_number: document.getElementById('tem-serial').value.trim(),
+      location:      document.getElementById('tem-location').value.trim(),
+      notes:         document.getElementById('tem-notes').value.trim(),
+    };
+    if (!body.name) {
+      err.textContent = 'Equipment name is required.';
+      err.style.display = 'block';
+      return;
+    }
+    btn.disabled = true;
+    const fromVisit = overlay.dataset.fromVisit === '1';
+    try {
+      if (_eqEditing) {
+        await api('PATCH', `/api/tech/equipment/${_eqEditing.id}`, body);
+        toast('Equipment updated', 'success');
+      } else {
+        body.customer_id = parseInt(overlay.dataset.customerId || '0', 10);
+        if (!body.customer_id) throw new Error('Missing customer id');
+        await api('POST', '/api/tech/equipment', body);
+        toast('Equipment added', 'success');
+      }
+      closeTechEquipModal();
+      // Refresh whichever surface we came from.
+      if (fromVisit && currentJob && currentJob.customer_id) {
+        loadVisitCustomerEquipment(currentJob.customer_id);
+      }
+      if (_eqMode === 'customer' && _eqCustomer) {
+        loadEqList();
+      }
+    } catch (e) {
+      err.textContent = e.message || 'Save failed.';
+      err.style.display = 'block';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+  window.submitTechEquipForm = submitTechEquipForm;
+
+  // Debounced search-as-you-type wiring (runs after DOM is parsed because
+  // the input lives in the markup added above).
+  document.addEventListener('DOMContentLoaded', () => {
+    const inp = document.getElementById('eqSearchInput');
+    if (!inp) return;
+    inp.addEventListener('input', () => {
+      const q = inp.value || '';
+      if (_eqSearchTimer) clearTimeout(_eqSearchTimer);
+      _eqSearchTimer = setTimeout(() => runEqCustomerSearch(q), 220);
+    });
+  });
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+  // ── 5S workplace-discipline ─────────────────────────────────────────────
+  const FS_QUEUE_KEY = 'pc.fs.audit.queue';
+  const FS_PHOTO_QUEUE_KEY = 'pc.fs.audit.photo.queue';
+  // Safety-critical item_keys — mirrors database.py FS_SAFETY_ITEM_KEYS.
+  // When a failed item is in this set, an evidence photo is REQUIRED.
+  const FS_SAFETY_ITEM_KEYS = new Set([
+    'fluids_checked', 'tires_visual_ok', 'lights_working',
+    'safety_gear_present', 'tools_no_damage', 'any_spills_cleaned',
+    'no_pest_evidence', 'no_new_damage', 'damage_reported',
+  ]);
+  let fsState = {
+    mode: 'home', assetId: null, phase: null, checklist: null, answers: {},
+    // photos: { item_key: { dataUrl, meta, mime, captured_at } }
+    photos: {},
+  };
+
+  // 5S exception photo upload — POST /api/tech/5s/exceptions/{exception_id}/photo (shipped in 713f634)
+
+  // ── IndexedDB for offline-safe photo blob storage ─────────────────────
+  const FS_IDB_NAME = 'pc_fs_photos';
+  const FS_IDB_STORE = 'photos';
+  function _fsIdbOpen() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(FS_IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(FS_IDB_STORE)) {
+          db.createObjectStore(FS_IDB_STORE, { keyPath: 'qid' });
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  async function _fsIdbPut(qid, blob, mime) {
+    try {
+      const db = await _fsIdbOpen();
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(FS_IDB_STORE, 'readwrite');
+        tx.objectStore(FS_IDB_STORE).put({ qid, blob, mime });
+        tx.oncomplete = () => { db.close(); resolve(true); };
+        tx.onerror = () => { db.close(); reject(tx.error); };
+      });
+    } catch (e) { return false; }
+  }
+  async function _fsIdbGet(qid) {
+    try {
+      const db = await _fsIdbOpen();
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(FS_IDB_STORE, 'readonly');
+        const r = tx.objectStore(FS_IDB_STORE).get(qid);
+        r.onsuccess = () => { db.close(); resolve(r.result || null); };
+        r.onerror = () => { db.close(); reject(r.error); };
+      });
+    } catch (e) { return null; }
+  }
+  async function _fsIdbDelete(qid) {
+    try {
+      const db = await _fsIdbOpen();
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(FS_IDB_STORE, 'readwrite');
+        tx.objectStore(FS_IDB_STORE).delete(qid);
+        tx.oncomplete = () => { db.close(); resolve(true); };
+        tx.onerror = () => { db.close(); reject(tx.error); };
+      });
+    } catch (e) { return false; }
+  }
+
+  // Downscale an image File to <= maxBytes by re-encoding via canvas.
+  // Returns { blob, dataUrl, mime, width, height }. Falls back to the
+  // original file if anything goes wrong.
+  async function _fsDownscalePhoto(file, maxBytes = 8 * 1024 * 1024) {
+    try {
+      if (file.size <= maxBytes && file.type === 'image/jpeg') {
+        const dataUrl = await new Promise((res, rej) => {
+          const fr = new FileReader();
+          fr.onload = () => res(fr.result);
+          fr.onerror = () => rej(fr.error);
+          fr.readAsDataURL(file);
+        });
+        return { blob: file, dataUrl, mime: file.type };
+      }
+      const bitmap = await createImageBitmap(file);
+      let w = bitmap.width, h = bitmap.height;
+      const maxDim = 1920;
+      if (Math.max(w, h) > maxDim) {
+        const s = maxDim / Math.max(w, h);
+        w = Math.round(w * s); h = Math.round(h * s);
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(bitmap, 0, 0, w, h);
+      let q = 0.85;
+      let blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', q));
+      while (blob && blob.size > maxBytes && q > 0.4) {
+        q -= 0.1;
+        blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', q));
+      }
+      const dataUrl = await new Promise((res, rej) => {
+        const fr = new FileReader();
+        fr.onload = () => res(fr.result);
+        fr.onerror = () => rej(fr.error);
+        fr.readAsDataURL(blob);
+      });
+      return { blob, dataUrl, mime: 'image/jpeg' };
+    } catch (e) {
+      // Fallback — return original
+      try {
+        const dataUrl = await new Promise((res, rej) => {
+          const fr = new FileReader();
+          fr.onload = () => res(fr.result);
+          fr.onerror = () => rej(fr.error);
+          fr.readAsDataURL(file);
+        });
+        return { blob: file, dataUrl, mime: file.type || 'image/jpeg' };
+      } catch (e2) { return null; }
+    }
+  }
+
+  async function fsRefreshBadge() {
+    try {
+      const today = await api('GET', '/api/tech/5s/today');
+      const excs  = await api('GET', '/api/tech/5s/exceptions/mine');
+      const now = new Date();
+      const isEvening = now.getHours() >= 16;
+      let summary = 'All audits up to date today';
+      let needAttn = false;
+      for (const a of (today.assets || [])) {
+        if (!a.start_shift_done) { summary = `Start-of-shift audit needed: ${a.label}`; needAttn = true; break; }
+        if (isEvening && !a.end_shift_done) { summary = `End-of-shift audit needed: ${a.label}`; needAttn = true; break; }
+      }
+      const line = document.getElementById('fsCardLine');
+      const badge = document.getElementById('fsCardBadge');
+      const eb = document.getElementById('fsExcBadge');
+      if (line)  line.textContent = summary;
+      if (badge) badge.style.display = needAttn ? 'inline-block' : 'none';
+      if (eb) {
+        if (excs && excs.length) { eb.style.display = 'inline-block'; eb.textContent = String(excs.length); }
+        else { eb.style.display = 'none'; }
+      }
+    } catch (e) { /* offline; leave card alone */ }
+  }
+
+  function fsBack() { fsState.mode = 'home'; fsShowHome(); }
+
+  async function fsShowHome() {
+    document.getElementById('listView').style.display = 'none';
+    document.getElementById('detailView').style.display = 'none';
+    const v = document.getElementById('fsView');
+    v.style.display = 'block';
+    v.innerHTML = '<div style="color:var(--muted);font-size:14px;padding:30px 0;text-align:center;">Loading 5S…</div>';
+    try {
+      const [assets, today, excs] = await Promise.all([
+        api('GET', '/api/tech/5s/assets/mine'),
+        api('GET', '/api/tech/5s/today'),
+        api('GET', '/api/tech/5s/exceptions/mine'),
+      ]);
+      const todayByAsset = {};
+      for (const a of (today.assets || [])) todayByAsset[a.asset_id] = a;
+      let html = `
+        <div onclick="fsCloseView()" style="display:inline-flex;align-items:center;gap:6px;color:var(--ink);font-weight:600;font-size:13px;cursor:pointer;margin-bottom:14px;">← Back to jobs</div>
+        <h2 style="font-size:20px;color:var(--ink);font-weight:800;margin-bottom:4px;">5S Audit</h2>
+        <p style="color:var(--muted);font-size:13px;margin-bottom:16px;">Sort · Set-in-order · Shine · Standardize</p>
+      `;
+      if (!assets.length) {
+        html += '<div style="background:var(--card);padding:24px;border-radius:10px;text-align:center;color:var(--muted);">No assets assigned to you yet. Ask your supervisor.</div>';
+      } else {
+        for (const a of assets) {
+          if (a.asset_type === 'storage') continue;
+          const t = todayByAsset[a.id] || {};
+          const startDone = !!t.start_shift_done, endDone = !!t.end_shift_done;
+          // Per-phase applicability follows the tech's clock-in state:
+          //   * Clocked in  → start is already satisfied for this
+          //                   cycle (the sign-in gate proved it).
+          //                   Only end-of-shift is actionable.
+          //   * Not clocked → no open cycle to end.
+          //                   Only start-of-shift is actionable.
+          // The inapplicable button stays in the layout so the asset
+          // card keeps a consistent width, but it's permanently
+          // disabled with helper copy explaining why.
+          const startApplicable = (t.start_applicable !== false);
+          const endApplicable   = (t.end_applicable   !== false);
+          function _btn({applicable, done, phase, activeBg, doneLabel, idleLabel, naLabel, naTitle}) {
+            if (!applicable) {
+              return `<button disabled title="${naTitle}"
+                       style="flex:1;padding:10px;border-radius:8px;border:none;background:var(--surface-2);color:var(--muted-2);font-weight:700;font-size:13px;cursor:not-allowed;">
+                 ${naLabel}
+               </button>`;
+            }
+            if (done) {
+              return `<button disabled title="${phase} audit already submitted this cycle"
+                       style="flex:1;padding:10px;border-radius:8px;border:none;background:var(--ok-bg);color:var(--teal-deep);font-weight:700;font-size:13px;cursor:not-allowed;opacity:0.85;">
+                 ✓ ${doneLabel}
+               </button>`;
+            }
+            return `<button onclick="fsStart(${a.id},'${phase}')"
+                       style="flex:1;padding:10px;border-radius:8px;border:none;background:${activeBg};color:#fff;font-weight:700;font-size:13px;cursor:pointer;">
+                 ${idleLabel}
+               </button>`;
+          }
+          const startBtnHtml = _btn({
+            applicable: startApplicable, done: startDone, phase: 'start_shift',
+            activeBg: 'var(--teal)', doneLabel: 'Start-of-shift done',
+            idleLabel: 'Start-of-shift',
+            naLabel: 'Start — done', naTitle: 'You are already signed in for this shift',
+          });
+          const endBtnHtml = _btn({
+            applicable: endApplicable, done: endDone, phase: 'end_shift',
+            activeBg: 'var(--navy)', doneLabel: 'End-of-shift done',
+            idleLabel: 'End-of-shift',
+            naLabel: 'End — sign in first', naTitle: 'You are not signed in for this shift',
+          });
+          html += `
+            <div style="background:var(--card);border-radius:12px;padding:14px;margin-bottom:12px;box-shadow:0 2px 6px rgba(11,37,69,0.06);">
+              <div style="font-weight:700;color:var(--ink);">${esc(a.label)}</div>
+              <div style="color:var(--muted);font-size:12px;margin-bottom:10px;">${esc(a.asset_code)} · ${esc(a.asset_type)}</div>
+              <div style="display:flex;gap:8px;">${startBtnHtml}${endBtnHtml}</div>
+            </div>
+          `;
+        }
+      }
+      html += `<div style="margin-top:18px;background:var(--card);border-radius:12px;padding:14px;box-shadow:0 2px 6px rgba(11,37,69,0.06);">
+        <div style="font-weight:700;color:var(--ink);margin-bottom:8px;">My open exceptions <span style="background:var(--amber);color:var(--ink);border-radius:10px;padding:2px 8px;font-size:11px;margin-left:4px;">${excs.length}</span></div>`;
+      if (!excs.length) html += '<div style="color:var(--muted);font-size:13px;">None — keep it up.</div>';
+      else for (const e of excs) {
+        const sev = e.severity === 'safety_loto' ? '<span style="background:var(--danger-solid);color:#fff;border-radius:8px;padding:2px 8px;font-size:11px;margin-right:6px;">SAFETY</span>' : '';
+        const _g = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+        const auditRef = (e.audit_id && _g) ? ' · ' + PC.gateLinkHtml('fs_audit', e.audit_id, 'audit #' + e.audit_id, {}) : '';
+        html += `<div data-pc-row-exc="${e.id}" style="border-top:1px solid var(--border);padding:8px 0;font-size:13px;">${sev}<strong>${esc(e.category)}</strong> · ${esc(e.status)}${auditRef}<div style="color:var(--muted);font-size:12px;">${esc(PC.fmtDateTime(e.opened_at))}</div></div>`;
+      }
+      html += '</div>';
+      const pendingPhotos = fsPendingPhotoCount();
+      if (pendingPhotos) {
+        html += `<div style="margin-top:12px;background:var(--warn-bg);border:1px solid var(--warn-border);border-radius:10px;padding:10px 12px;font-size:13px;color:var(--warn-fg);display:flex;align-items:center;justify-content:space-between;gap:10px;">
+          <span>📷 Pending evidence uploads: <strong>${pendingPhotos}</strong></span>
+          <button onclick="fsFlushPhotoQueue().then(()=>fsShowHome())" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:6px 10px;font-size:12px;font-weight:600;cursor:pointer;">Retry now</button>
+        </div>`;
+      }
+      v.innerHTML = html;
+      // PC.gateRow decoration for 5S exception rows (own-scope read for tech).
+      if (typeof PC !== 'undefined' && PC.gateRow) {
+        v.querySelectorAll('[data-pc-row-exc]').forEach(function (row) {
+          const xid = Number(row.getAttribute('data-pc-row-exc'));
+          PC.gateRow(row, 'fs_exception', xid, { ariaLabel: 'Open exception #' + xid });
+        });
+      }
+    } catch (e) {
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && e && e.body && PC.handleAccessDenied(e)) return;
+      v.innerHTML = `<div style="background:var(--card);padding:24px;border-radius:10px;text-align:center;color:var(--red);">Could not load 5S: ${esc(String(e.message || e))}</div>`;
+    }
+  }
+
+  function fsCloseView() {
+    document.getElementById('fsView').style.display = 'none';
+    document.getElementById('listView').style.display = 'block';
+    fsRefreshBadge();
+  }
+
+  async function fsStart(assetId, phase) {
+    fsState = { mode: 'audit', assetId, phase,
+                checklist: null, answers: {}, photos: {},
+                todayInfo: null };
+    const v = document.getElementById('fsView');
+    v.innerHTML = '<div style="color:var(--muted);font-size:14px;padding:30px 0;text-align:center;">Loading checklist…</div>';
+    try {
+      // Load the checklist AND a fresh cycle-scoped status snapshot so
+      // fsRenderAudit can decide whether the submit button should say
+      // "Submit audit" / "Next →" / "Submit & sign in / out".
+      const [cl, today] = await Promise.all([
+        api('GET', `/api/tech/5s/checklist?asset_id=${assetId}&phase=${phase}`),
+        api('GET', '/api/tech/5s/today').catch(() => null),
+      ]);
+      fsState.checklist = cl;
+      fsState.todayInfo = today;
+      fsRenderAudit();
+    } catch (e) {
+      v.innerHTML = `<div style="color:var(--red);">Could not load checklist: ${esc(String(e.message || e))}</div>`;
+    }
+  }
+
+  // Returns the next asset of the same phase that's still pending for
+  // the current cycle, EXCLUDING the one currently being audited.
+  // Returns null when this is the last one (so the post-submit hook
+  // should redirect to sign-in/sign-out instead of starting another).
+  function _fsNextPendingAsset(snapshot, currentAssetId, phase) {
+    if (!snapshot || !snapshot.assets) return null;
+    const key = (phase === 'start_shift') ? 'start_shift_done' : 'end_shift_done';
+    return snapshot.assets.find(a => !a[key] && a.asset_id !== currentAssetId) || null;
+  }
+
+  function fsRenderAudit() {
+    const { checklist, answers, phase } = fsState;
+    // 5S framework — all five categories must render. Sustain was added back
+    // after being lost in a refactor (see FS_DEFAULT_CHECKLIST comment).
+    const sections = ['sort', 'set', 'shine', 'standardize', 'sustain'];
+    const sectionLabels = { sort: 'Sort', set: 'Set in order', shine: 'Shine',
+                            standardize: 'Standardize', sustain: 'Sustain' };
+    const items = checklist.items;
+    const required = items.length;
+    const answered = items.filter(i => answers[i.item_key] && answers[i.item_key].status).length;
+    let html = `
+      <div onclick="fsShowHome()" style="display:inline-flex;align-items:center;gap:6px;color:var(--ink);font-weight:600;font-size:13px;cursor:pointer;margin-bottom:14px;">← Back</div>
+      <h2 style="font-size:18px;color:var(--ink);font-weight:800;margin-bottom:4px;">${esc(phase.replace('_',' '))}</h2>
+      <div style="color:var(--muted);font-size:13px;margin-bottom:16px;">${answered}/${required} items answered</div>
+    `;
+    for (const sec of sections) {
+      const secItems = items.filter(i => i.section === sec);
+      if (!secItems.length) continue;
+      html += `<div style="background:var(--card);border-radius:12px;padding:14px;margin-bottom:12px;box-shadow:0 2px 6px rgba(11,37,69,0.06);">
+        <div style="font-weight:700;color:var(--ink);text-transform:uppercase;letter-spacing:0.6px;font-size:12px;margin-bottom:10px;">${sectionLabels[sec]}</div>`;
+      for (const it of secItems) {
+        const cur = (answers[it.item_key] && answers[it.item_key].status) || '';
+        const isSafety = FS_SAFETY_ITEM_KEYS.has(it.item_key);
+        const photo = fsState.photos[it.item_key];
+        html += `<div style="border-top:1px solid var(--border);padding:10px 0;">
+          <div style="font-size:14px;margin-bottom:8px;">${esc(it.item_label)}${isSafety ? ' <span style="background:var(--danger-solid);color:#fff;border-radius:6px;padding:1px 6px;font-size:10px;vertical-align:middle;">SAFETY</span>' : ''}</div>
+          <div style="display:flex;gap:6px;">
+            ${['pass','fail','na'].map(s => `
+              <button onclick="fsSetStatus('${it.item_key}','${s}')" style="flex:1;padding:8px;border-radius:6px;border:1px solid var(--border);background:${cur===s?(s==='pass'?'#059669':s==='fail'?'#dc2626':'#5A6472'):'var(--card)'};color:${cur===s?'#fff':'var(--text)'};font-weight:600;font-size:12px;cursor:pointer;text-transform:uppercase;">${s==='na'?'N/A':s}</button>
+            `).join('')}
+          </div>
+          ${cur==='fail' ? `
+            <textarea id="fs-note-${esc(it.item_key)}" placeholder="What's wrong? (required)" style="width:100%;margin-top:8px;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:13px;" oninput="fsSetNote('${it.item_key}', this.value)">${esc((answers[it.item_key]&&answers[it.item_key].note)||'')}</textarea>
+            <div style="margin-top:8px;">
+              <div style="color:var(--muted);font-size:12px;margin-bottom:6px;">
+                ${isSafety
+                  ? '<span style="color:var(--red);font-weight:700;">📷 Photo required</span> — safety item evidence'
+                  : '📷 Photo recommended'}
+              </div>
+              ${photo ? `
+                <div style="display:flex;align-items:center;gap:10px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:8px;">
+                  <img src="${photo.dataUrl}" alt="Evidence preview for ${esc(it.item_label)}" style="width:64px;height:64px;object-fit:cover;border-radius:6px;cursor:pointer;" onclick="openLightbox('${photo.dataUrl}')">
+                  <div style="flex:1;font-size:12px;color:var(--muted);">
+                    Attached · ${Math.round(((photo.size||0)/1024))} KB
+                  </div>
+                  <label style="background:var(--navy);color:#fff;border-radius:6px;padding:6px 10px;font-size:12px;font-weight:600;cursor:pointer;" tabindex="0" aria-label="Retake photo for ${esc(it.item_label)}">
+                    Retake
+                    <input type="file" accept="image/*" capture="environment" style="display:none;" onchange="fsAttachPhoto('${it.item_key}', this)">
+                  </label>
+                  <button onclick="fsRemovePhoto('${it.item_key}')" aria-label="Remove photo for ${esc(it.item_label)}" style="background:transparent;color:var(--red);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:12px;cursor:pointer;">Remove</button>
+                </div>
+              ` : `
+                <label style="display:inline-flex;align-items:center;gap:6px;background:var(--card);border:1px dashed var(--teal);color:var(--teal-deep);border-radius:8px;padding:8px 12px;font-size:13px;font-weight:600;cursor:pointer;" tabindex="0" aria-label="Attach evidence photo for ${esc(it.item_label)}">
+                  📷 Attach photo
+                  <input type="file" accept="image/*" capture="environment" style="display:none;" onchange="fsAttachPhoto('${it.item_key}', this)">
+                </label>
+              `}
+            </div>
+          ` : ''}
+        </div>`;
+      }
+      html += '</div>';
+    }
+    const canSubmit = (answered === required);
+    // Label the submit button by what happens next:
+    //   * In a pending=signin/signout flow with another asset still
+    //     pending for THIS phase → "Next: <asset label> →"
+    //   * In a pending flow with no more assets pending →
+    //     "Submit & sign in / Submit & sign out"
+    //   * Standalone (ad-hoc audit, no pending) → "Submit audit"
+    let submitLabel = 'Submit audit';
+    const pending = window.__pcPendingAction;
+    if (canSubmit && pending) {
+      const next = _fsNextPendingAsset(fsState.todayInfo,
+                                        fsState.assetId, phase);
+      if (next) {
+        submitLabel = `Next: ${next.label || next.asset_code} →`;
+      } else if (pending === 'signin') {
+        submitLabel = 'Submit & sign in';
+      } else if (pending === 'signout') {
+        submitLabel = 'Submit & sign out';
+      }
+    }
+    if (!canSubmit) submitLabel = 'Answer every item to submit';
+    html += `<button onclick="fsSubmit()" ${canSubmit ? '' : 'disabled'} style="width:100%;padding:14px;background:${canSubmit?'var(--teal)':'var(--border)'};color:#fff;border:none;border-radius:10px;font-weight:700;font-size:15px;cursor:${canSubmit?'pointer':'not-allowed'};">${esc(submitLabel)}</button>`;
+    document.getElementById('fsView').innerHTML = html;
+  }
+
+  function fsSetStatus(key, status) {
+    if (!fsState.answers[key]) fsState.answers[key] = {};
+    fsState.answers[key].status = status;
+    if (status !== 'fail') {
+      delete fsState.answers[key].note;
+      // Drop any attached photo when no longer a fail.
+      if (fsState.photos[key]) delete fsState.photos[key];
+    }
+    fsRenderAudit();
+  }
+
+  function fsSetNote(key, value) {
+    if (!fsState.answers[key]) fsState.answers[key] = {};
+    fsState.answers[key].note = value;
+  }
+
+  async function fsAttachPhoto(itemKey, inputEl) {
+    const file = inputEl.files && inputEl.files[0];
+    if (!file) return;
+    if (!/^image\//.test(file.type || '')) {
+      toast('Please choose an image file', 'err');
+      inputEl.value = '';
+      return;
+    }
+    const processed = await _fsDownscalePhoto(file, 8 * 1024 * 1024);
+    if (!processed) {
+      toast('Could not read photo', 'err');
+      inputEl.value = '';
+      return;
+    }
+    // Fresh client_meta captured at the moment of capture (not at submit).
+    let meta = null;
+    try { meta = await _assembleClientMeta(null); } catch (e) { meta = null; }
+    fsState.photos[itemKey] = {
+      dataUrl: processed.dataUrl,
+      mime: processed.mime,
+      size: processed.blob.size,
+      meta,
+      captured_at: new Date().toISOString(),
+    };
+    inputEl.value = '';
+    fsRenderAudit();
+  }
+
+  function fsRemovePhoto(itemKey) {
+    delete fsState.photos[itemKey];
+    fsRenderAudit();
+  }
+
+  async function fsSubmit() {
+    const items = fsState.checklist.items.map(i => ({
+      item_key: i.item_key,
+      status: (fsState.answers[i.item_key] || {}).status,
+      note:   (fsState.answers[i.item_key] || {}).note || null,
+    }));
+    for (const it of items) {
+      if (it.status === 'fail' && !(it.note && it.note.trim())) {
+        toast('Add a note for every failed item', 'err');
+        return;
+      }
+      // Safety-critical items MUST have a photo when they fail.
+      if (it.status === 'fail' && FS_SAFETY_ITEM_KEYS.has(it.item_key) && !fsState.photos[it.item_key]) {
+        toast('Photo required for safety item: ' + it.item_key, 'err');
+        return;
+      }
+    }
+    let meta = null;
+    try { meta = await _assembleClientMeta(null); } catch(e) {}
+    const payload = {
+      asset_id: fsState.assetId, phase: fsState.phase,
+      items, client_meta: meta,
+    };
+    // Snapshot photos keyed by item_key BEFORE we clear fsState.
+    const failedOrdered = items.filter(it => it.status === 'fail').map(it => it.item_key);
+    const photosByKey = {};
+    for (const k of failedOrdered) {
+      if (fsState.photos[k]) photosByKey[k] = fsState.photos[k];
+    }
+
+    try {
+      const res = await api('POST', '/api/tech/5s/audit', payload);
+      const failed = (res.exception_ids || []).length;
+      // Map exception_ids → failed item_keys (same order, per database.py).
+      const excIds = res.exception_ids || [];
+      let queued = 0;
+      for (let i = 0; i < failedOrdered.length && i < excIds.length; i++) {
+        const key = failedOrdered[i];
+        const ph = photosByKey[key];
+        if (!ph) continue;
+        await _fsEnqueuePhoto({
+          exception_id: excIds[i],
+          audit_id: res.audit_id,
+          item_key: key,
+          dataUrl: ph.dataUrl,
+          mime: ph.mime,
+          client_meta: ph.meta,
+          queued_at: new Date().toISOString(),
+        });
+        queued++;
+      }
+      let msg = failed ? `Audit submitted (${failed} exception${failed>1?'s':''} opened)` : 'Audit submitted ✓';
+      if (queued) msg += ` · ${queued} photo${queued>1?'s':''} queued`;
+      toast(msg, 'ok');
+      // Try to flush right away (no-op until the endpoint exists).
+      fsFlushPhotoQueue();
+
+      // Pending sign-in / sign-out flows:
+      //   1. Try the corresponding API call.
+      //   2. If it succeeds → all required audits are in → redirect.
+      //   3. If it 409s "_required" → look up the NEXT pending asset
+      //      of this phase and start its audit directly. The user
+      //      shouldn't have to bounce back to the 5S home, find the
+      //      next active button, and tap it — they already committed
+      //      to the chain.
+      //   4. Fall back to fsShowHome() defensively if nothing is left
+      //      to do (state drift, race condition).
+      const pending = window.__pcPendingAction;
+      if (pending === 'signout' && fsState && fsState.phase === 'end_shift') {
+        try {
+          await api('POST', '/api/tech/me/sign-out');
+          toast('Signed out ✓', 'ok');
+          window.location.replace('/home');
+          return;
+        } catch (se) {
+          // Fetch the freshest cycle status before deciding next step.
+          let snapshot = null;
+          try { snapshot = await api('GET', '/api/tech/5s/today'); }
+          catch (_) {}
+          const next = _fsNextPendingAsset(snapshot, fsState.assetId,
+                                           'end_shift');
+          if (next) {
+            toast(`Next: ${next.label || next.asset_code}`, 'ok');
+            fsStart(next.asset_id, 'end_shift');
+            return;
+          }
+          // Nothing left to audit but sign-out still 409'd — unusual.
+          // Most likely 409 not_clocked_in (EOD cron already signed
+          // them out). Just bounce home — the landing will resolve.
+          toast('Audit saved — returning to home', 'ok');
+          window.location.replace('/home');
+          return;
+        }
+      }
+      if (pending === 'signin' && fsState && fsState.phase === 'start_shift') {
+        const body = {};
+        const reason = localStorage.getItem('pc_pending_dayoff_reason');
+        if (reason) body.dayoff_reason = reason;
+        try {
+          await api('POST', '/api/tech/me/sign-in', body);
+          localStorage.removeItem('pc_pending_dayoff_reason');
+          toast('Signed in ✓', 'ok');
+          window.location.replace('/tech?view=jobs');
+          return;
+        } catch (se) {
+          let snapshot = null;
+          try { snapshot = await api('GET', '/api/tech/5s/today'); }
+          catch (_) {}
+          const next = _fsNextPendingAsset(snapshot, fsState.assetId,
+                                           'start_shift');
+          if (next) {
+            toast(`Next: ${next.label || next.asset_code}`, 'ok');
+            fsStart(next.asset_id, 'start_shift');
+            return;
+          }
+          // Shouldn't normally happen — sign-in 409'd but no pending
+          // assets. Fall back to home so the tech sees full state.
+          fsShowHome();
+          return;
+        }
+      }
+      // No pending action — ad-hoc audit, just go back to 5S home.
+      fsShowHome();
+    } catch (e) {
+      // Audit POST failed — queue the audit AND its pending photos together.
+      const q = JSON.parse(localStorage.getItem(FS_QUEUE_KEY) || '[]');
+      const photoStash = [];
+      for (const k of failedOrdered) {
+        const ph = photosByKey[k];
+        if (!ph) continue;
+        photoStash.push({
+          item_key: k, dataUrl: ph.dataUrl, mime: ph.mime,
+          client_meta: ph.meta, queued_at: new Date().toISOString(),
+        });
+      }
+      q.push({ at: Date.now(), payload, pending_photos: photoStash });
+      localStorage.setItem(FS_QUEUE_KEY, JSON.stringify(q));
+      toast('Saved offline — will sync', 'ok');
+      fsShowHome();
+    }
+  }
+
+  // Add a pending photo to the queue. We store the blob in IndexedDB (so it
+  // survives reloads without bloating localStorage) and a small metadata
+  // record in localStorage so we can list/flush even if IDB is unavailable.
+  async function _fsEnqueuePhoto(rec) {
+    const q = JSON.parse(localStorage.getItem(FS_PHOTO_QUEUE_KEY) || '[]');
+    const qid = 'fsp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    // Convert dataUrl to a Blob for IDB.
+    let idbOk = false;
+    try {
+      const resp = await fetch(rec.dataUrl);
+      const blob = await resp.blob();
+      idbOk = await _fsIdbPut(qid, blob, rec.mime);
+    } catch (e) { idbOk = false; }
+    const entry = {
+      qid,
+      exception_id: rec.exception_id,
+      audit_id: rec.audit_id,
+      item_key: rec.item_key,
+      mime: rec.mime,
+      client_meta: rec.client_meta,
+      queued_at: rec.queued_at,
+      // Fallback path: if IndexedDB write failed, keep dataUrl inline. Cap
+      // to 3 inline payloads to avoid blowing the 5–10 MB localStorage quota.
+      inline_data_url: idbOk ? null : rec.dataUrl,
+    };
+    if (!idbOk) {
+      const inlineCount = q.filter(e => e.inline_data_url).length;
+      if (inlineCount >= 3) {
+        toast('Offline photo storage is full — connect to sync before adding more', 'err');
+        return false;
+      }
+    }
+    q.push(entry);
+    localStorage.setItem(FS_PHOTO_QUEUE_KEY, JSON.stringify(q));
+    return true;
+  }
+
+  async function fsFlushPhotoQueue() {
+    const q = JSON.parse(localStorage.getItem(FS_PHOTO_QUEUE_KEY) || '[]');
+    if (!q.length) return;
+    const keep = [];
+    let synced = 0;
+    for (const entry of q) {
+      try {
+        // Reconstruct the blob.
+        let blob = null;
+        if (entry.inline_data_url) {
+          const r = await fetch(entry.inline_data_url);
+          blob = await r.blob();
+        } else {
+          const rec = await _fsIdbGet(entry.qid);
+          blob = rec && rec.blob;
+        }
+        if (!blob) {
+          // Blob is gone — drop the entry rather than retry forever.
+          continue;
+        }
+        const fd = new FormData();
+        const ext = (entry.mime && entry.mime.split('/')[1]) || 'jpg';
+        fd.append('file', blob, `fs_${entry.exception_id}.${ext}`);
+        fd.append('audit_id', String(entry.audit_id));
+        fd.append('item_key', entry.item_key);
+        fd.append('client_meta', JSON.stringify(entry.client_meta || {}));
+        // 5S exception photo upload — POST /api/tech/5s/exceptions/{exception_id}/photo (shipped in 713f634)
+        await api('POST', `/api/tech/5s/exceptions/${entry.exception_id}/photo`, fd);
+        await _fsIdbDelete(entry.qid);
+        synced++;
+      } catch (e) {
+        keep.push(entry);
+      }
+    }
+    localStorage.setItem(FS_PHOTO_QUEUE_KEY, JSON.stringify(keep));
+    if (synced) {
+      toast(`Synced ${synced} 5S evidence photo${synced>1?'s':''}`, 'ok');
+      fsRefreshBadge();
+    }
+  }
+
+  function fsPendingPhotoCount() {
+    try { return (JSON.parse(localStorage.getItem(FS_PHOTO_QUEUE_KEY) || '[]')).length; }
+    catch (e) { return 0; }
+  }
+
+  async function fsFlushQueue() {
+    const q = JSON.parse(localStorage.getItem(FS_QUEUE_KEY) || '[]');
+    if (!q.length) { fsFlushPhotoQueue(); return; }
+    const keep = [];
+    for (const entry of q) {
+      try {
+        const res = await api('POST', '/api/tech/5s/audit', entry.payload);
+        // After the audit lands, queue its pending photos against the
+        // newly-created exception_ids (same order as failed items).
+        const pending = entry.pending_photos || [];
+        const excIds = res.exception_ids || [];
+        const failedKeys = (entry.payload.items || [])
+          .filter(it => it.status === 'fail').map(it => it.item_key);
+        for (let i = 0; i < failedKeys.length && i < excIds.length; i++) {
+          const ph = pending.find(p => p.item_key === failedKeys[i]);
+          if (!ph) continue;
+          await _fsEnqueuePhoto({
+            exception_id: excIds[i],
+            audit_id: res.audit_id,
+            item_key: failedKeys[i],
+            dataUrl: ph.dataUrl,
+            mime: ph.mime,
+            client_meta: ph.client_meta,
+            queued_at: ph.queued_at,
+          });
+        }
+      } catch (e) { keep.push(entry); }
+    }
+    localStorage.setItem(FS_QUEUE_KEY, JSON.stringify(keep));
+    if (keep.length < q.length) {
+      const synced = q.length - keep.length;
+      toast(`Synced ${synced} offline 5S audit${synced>1?'s':''}`, 'ok');
+      fsRefreshBadge();
+    }
+    // Always try to drain photo queue after audits flush.
+    fsFlushPhotoQueue();
+  }
+
+  window.addEventListener('online', () => { fsFlushQueue(); });
+
+  // ════════════════════════════════════════════════════════════════════════
+  //  #4 Field-app offline mode — job-write queue + replay
+  //
+  //  Mirrors the 5S offline pattern (localStorage queue + IndexedDB for photo
+  //  blobs + replay on `online`). Every queued write carries a stable
+  //  Idempotency-Key so a replay is safe even if the original request actually
+  //  reached the server before the connection dropped — the server returns its
+  //  cached response instead of mutating twice (see main.py _idem_begin).
+  //
+  //  Ordering matters: start → readings/parts/photos → signature → complete.
+  //  The queue is strict FIFO and we STOP replaying on the first network
+  //  failure, so a dependent write (e.g. complete, which the server rejects
+  //  without a signature) never runs ahead of its prerequisite.
+  // ════════════════════════════════════════════════════════════════════════
+  const JOB_QUEUE_KEY = 'pc.job.queue';
+
+  function _genUUID() {
+    try { if (crypto && crypto.randomUUID) return crypto.randomUUID(); } catch (_) {}
+    return 'idem-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10)
+                   + Math.random().toString(36).slice(2, 10);
+  }
+
+  function _jobQueueLoad() {
+    try { return JSON.parse(localStorage.getItem(JOB_QUEUE_KEY) || '[]'); }
+    catch (_) { return []; }
+  }
+  function _jobQueueSave(q) {
+    try { localStorage.setItem(JOB_QUEUE_KEY, JSON.stringify(q)); } catch (_) {}
+  }
+  function jobPendingCount() { return _jobQueueLoad().length; }
+
+  function _enqueueJobWrite(entry) {
+    const q = _jobQueueLoad();
+    q.push(entry);
+    _jobQueueSave(q);
+    updateOfflineBanner();
+  }
+
+  // Drop a queued write by its qid (used to cancel an offline part-add that the
+  // tech removes again before it ever syncs). Also clears any staged photo blob.
+  function _cancelQueuedWriteByQid(qid) {
+    const q = _jobQueueLoad();
+    const keep = q.filter(e => e.qid !== qid);
+    if (keep.length !== q.length) {
+      const dropped = q.find(e => e.qid === qid);
+      if (dropped && dropped.photoQid) { try { _fsIdbDelete(dropped.photoQid); } catch (_) {} }
+      _jobQueueSave(keep);
+      updateOfflineBanner();
+    }
+  }
+
+  // ── Per-visit read cache (so detail view works offline) ──
+  function _cacheVisit(id, job) {
+    try { localStorage.setItem('pc.job.cache.visit.' + id, JSON.stringify(job)); } catch (_) {}
+  }
+  function _cachedVisit(id) {
+    try { return JSON.parse(localStorage.getItem('pc.job.cache.visit.' + id) || 'null'); }
+    catch (_) { return null; }
+  }
+  // GET a fresh visit; on network failure fall back to the cached copy.
+  async function _refreshJob(id) {
+    try { const j = await api('GET', `/api/tech/jobs/${id}`); _cacheVisit(id, j); return j; }
+    catch (e) { const c = _cachedVisit(id); if (c) return c; throw e; }
+  }
+
+  // Low-level send for one queued entry. Distinguishes network failure (retry
+  // later) from an HTTP rejection (terminal). Rebuilds FormData from the staged
+  // IndexedDB blob for photo writes.
+  async function _jobRawSend(entry) {
+    const opts = { method: entry.method, headers: {
+      'Authorization': `Bearer ${token}`,
+      'Idempotency-Key': entry.idem_key,
+    }};
+    if (entry.isForm) {
+      const fd = new FormData();
+      for (const [k, v] of (entry.formFields || [])) fd.append(k, v);
+      if (entry.photoQid) {
+        const rec = await _fsIdbGet(entry.photoQid);
+        if (!rec || !rec.blob) return { ok: false, status: 0, drop: true, detail: 'photo blob missing' };
+        const ext = (entry.photoMime && entry.photoMime.split('/')[1]) || 'jpg';
+        fd.append('file', rec.blob, `job_${entry.visit_id}.${ext}`);
+      }
+      opts.body = fd;
+    } else if (entry.body != null) {
+      opts.headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify(entry.body);
+    }
+    let res;
+    try { res = await fetch(entry.url, opts); }
+    catch (e) { return { network: true }; }
+    if (res.status === 401) return { ok: false, status: 401, auth: true, detail: 'auth' };
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      return { ok: false, status: res.status, detail: d.detail || ('HTTP ' + res.status) };
+    }
+    const data = await res.json().catch(() => ({}));
+    return { ok: true, data };
+  }
+
+  // Unified write path: send live when online, queue when offline (or when the
+  // network drops mid-flight). Returns {queued:true,entry} or {ok:true,data}.
+  // Throws on a genuine server rejection while online.
+  async function submitJobWrite(spec) {
+    const qid = 'jw_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    const entry = {
+      qid, idem_key: _genUUID(), queued_at: new Date().toISOString(),
+      op: spec.op, scope: spec.scope, method: spec.method, url: spec.url,
+      visit_id: spec.visit_id,
+      body: spec.body != null ? spec.body : null,
+      isForm: !!spec.isForm,
+      formFields: spec.formFields || null,
+      photoQid: null, photoMime: spec.photoMime || null,
+    };
+    // Stash a photo blob in IndexedDB — survives reloads and keeps the
+    // localStorage queue small (it can't hold blobs anyway).
+    if (spec.photoBlob) {
+      const ok = await _fsIdbPut(qid, spec.photoBlob, spec.photoMime || 'image/jpeg');
+      if (!ok) throw new Error('Could not stage photo for offline upload');
+      entry.photoQid = qid;
+    }
+    if (!navigator.onLine) { _enqueueJobWrite(entry); return { queued: true, entry }; }
+    const r = await _jobRawSend(entry);
+    if (r.network) { _enqueueJobWrite(entry); return { queued: true, entry }; }
+    if (entry.photoQid) { try { await _fsIdbDelete(entry.photoQid); } catch (_) {} }
+    if (r.auth) { doLogout(); throw new Error('auth'); }
+    if (!r.ok) { throw new Error(r.detail || 'Request failed'); }
+    return { ok: true, data: r.data };
+  }
+
+  // Apply an optimistic local patch to currentJob so the field UI reflects a
+  // queued write immediately. Kept deliberately small — only the fields that
+  // renderDetail() reads to gate the workflow.
+  function _applyOptimistic(op, p) {
+    const j = currentJob;
+    if (!j) return;
+    const nowIso = new Date().toISOString();
+    if (op === 'start') {
+      j.status = 'in_progress';
+      if (!j.start_time) j.start_time = nowIso;
+    } else if (op === 'reading') {
+      j.readings = j.readings || [];
+      j.readings.push(Object.assign({ recorded_at: nowIso }, p));
+    } else if (op === 'signature') {
+      j.signature_captured = true;
+      if (p && p.signer_name) j.signer_name = p.signer_name;
+    } else if (op === 'checklist') {
+      j.checklist = (p && p.items) || j.checklist;
+    } else if (op === 'part_add') {
+      j.parts_used = j.parts_used || [];
+      j.parts_used.push({
+        id: 'tmp_' + p._tempQid, _tempQid: p._tempQid,
+        sku: p.sku, part_name: p.part_name, part_unit: p.part_unit, quantity: p.quantity,
+      });
+    } else if (op === 'part_remove') {
+      j.parts_used = (j.parts_used || []).filter(x => String(x.id) !== String(p.id));
+    } else if (op === 'photo') {
+      j.photos = j.photos || [];
+      j.photos.push({ id: p.id, category: p.category, url: p.url });
+    } else if (op === 'complete') {
+      j.status = 'completed';
+      j.submitted_at = nowIso; j.end_time = nowIso;
+      if (p) {
+        if (p.work_done != null)      j.work_done = p.work_done;
+        if (p.parts_replaced != null) j.parts_replaced = p.parts_replaced;
+        if (p.notes != null)          j.notes = p.notes;
+        if (p.next_pm_due != null)    j.next_pm_due = p.next_pm_due;
+      }
+    }
+    _cacheVisit(j.id, j);
+  }
+
+  // Replay the queue in FIFO order. Stops on the first network failure to keep
+  // dependent writes ordered; drops entries the server terminally rejects (4xx)
+  // or whose staged blob has vanished, so the queue can never wedge forever.
+  let _jobFlushing = false;
+  async function flushJobQueue() {
+    if (_jobFlushing) return;
+    _jobFlushing = true;
+    try {
+      let q = _jobQueueLoad();
+      let synced = 0;
+      while (q.length) {
+        const entry = q[0];
+        const r = await _jobRawSend(entry);
+        if (r.network) break;                 // still offline — preserve order
+        if (r.auth) break;                    // session gone — doLogout fires elsewhere
+        if (r.ok || r.drop || (r.status >= 400 && r.status < 500)) {
+          if (entry.photoQid) { try { await _fsIdbDelete(entry.photoQid); } catch (_) {} }
+          if (r.ok) synced++;
+          else { try { console.warn('queued job write dropped', entry.op, r.status, r.detail); } catch (_) {} }
+          q.shift();
+          _jobQueueSave(q);
+          continue;
+        }
+        break;                                // 5xx / status 0 — transient, retry later
+      }
+      updateOfflineBanner();
+      if (synced) {
+        toast(`Synced ${synced} field update${synced > 1 ? 's' : ''}`, 'ok');
+        if (currentJob && navigator.onLine) {
+          try { currentJob = await _refreshJob(currentJob.id); renderDetail(); } catch (_) {}
+        }
+        try { loadJobs(); } catch (_) {}
+      }
+    } finally {
+      _jobFlushing = false;
+    }
+  }
+
+  // Offline / pending-sync banner. Shows when offline, or when writes are
+  // still waiting to sync even though we're back online.
+  function updateOfflineBanner() {
+    const el = document.getElementById('offlineBanner');
+    const txt = document.getElementById('offlineBannerText');
+    if (!el || !txt) return;
+    const pending = jobPendingCount();
+    if (!navigator.onLine) {
+      txt.textContent = pending
+        ? `Offline — ${pending} change${pending > 1 ? 's' : ''} saved, will sync when you reconnect.`
+        : 'Offline — changes will sync when you reconnect.';
+      el.style.display = 'flex';
+    } else if (pending) {
+      txt.textContent = `Syncing ${pending} change${pending > 1 ? 's' : ''}…`;
+      el.style.display = 'flex';
+    } else {
+      el.style.display = 'none';
+    }
+  }
+
+  window.addEventListener('online',  () => { updateOfflineBanner(); flushJobQueue(); });
+  window.addEventListener('offline', () => { updateOfflineBanner(); });
+
+</script>
+
+<!-- ═════════════════════════════════════════════════════════════════════════
+     Tech-side KPI Notes + Goals add-ons (Phases 5–6)
+     ════════════════════════════════════════════════════════════════════════ -->
+<div id="techKpiModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;align-items:center;justify-content:center;">
+  <div style="background:var(--card);border-radius:8px;max-width:560px;width:92%;max-height:88vh;overflow:auto;padding:18px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+      <h3 id="techKpiTitle" style="margin:0;color:var(--ink);">Notice</h3>
+      <button onclick="techKpiClose()" class="btn btn-ghost" style="padding:4px 10px;">✕</button>
+    </div>
+    <div id="techKpiBody"></div>
+  </div>
+</div>
+<script>
+  function techKpiOpen(title, html){
+    document.getElementById('techKpiTitle').textContent = title;
+    document.getElementById('techKpiBody').innerHTML = html;
+    document.getElementById('techKpiModal').style.display = 'flex';
+  }
+  function techKpiClose(){ document.getElementById('techKpiModal').style.display = 'none'; }
+  function _th(s){ return (s||'').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+  async function techKpiApi(method, url, body){
+    const opts = { method, headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin' };
+    if (body) opts.body = JSON.stringify(body);
+    const r = await fetch(url, opts);
+    if (!r.ok) { let m=''; try{ m=(await r.json()).detail || ''; }catch(_){} throw new Error(m || ('HTTP '+r.status)); }
+    return r.json();
+  }
+
+  // Respond to a flag
+  window.techRespondToFlag = function(flagId){
+    techKpiOpen('Add Your Response',
+      `<p>Add a written response to the flag about your performance. This is recorded with the flag.</p>
+       <textarea id="tech_resp_body" rows="5" maxlength="2000" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;"></textarea>
+       <div style="text-align:right;margin-top:8px;"><button class="btn btn-primary" onclick="techSaveResponse(${flagId})">Submit</button></div>`);
+  };
+  window.techSaveResponse = async function(flagId){
+    const body = document.getElementById('tech_resp_body').value.trim();
+    if (!body) return;
+    try {
+      await techKpiApi('POST', '/api/tech/me/kpi/notes/tech-response', { flag_id: flagId, body });
+      techKpiClose(); alert('Response saved.');
+    } catch(e){ alert(e.message); }
+  };
+
+  // View notes about me
+  window.techViewNotes = async function(){
+    try {
+      const r = await techKpiApi('GET', '/api/tech/me/kpi/notes');
+      const items = [...(r.self_notes||[]), ...(r.team_notes||[])].map(n => {
+        const colour = n.note_kind === 'recognition' ? '#10b981'
+                     : n.note_kind === 'coaching' ? '#3b82f6'
+                     : n.note_kind === 'team_period' ? '#6366f1'
+                     : '#f59e0b';
+        return `<div style="border-left:3px solid ${colour};padding:8px 12px;margin-bottom:8px;background:var(--surface-2);">
+          <div style="font-size:11px;color:var(--muted);">${_th(n.note_kind)} · ${_th(n.created_at||'')}</div>
+          <div style="white-space:pre-wrap;margin-top:4px;">${_th(n.body||'')}</div>
+        </div>`;
+      }).join('') || '<div style="color:var(--muted-2);">No notes yet.</div>';
+      techKpiOpen('Notes about me', items);
+    } catch(e){ alert(e.message); }
+  };
+
+  // View goals
+  window.techViewGoals = async function(){
+    try {
+      const r = await techKpiApi('GET', '/api/tech/me/kpi/goals');
+      const items = (r.goals||[]).map(g => {
+        const items = (g.action_items||[]).map((it,i) =>
+          `<div><input type="checkbox" ${it.done?'checked':''} onchange="techToggleAction(${g.id}, ${i})"/> ${_th(it.text||'')}</div>`).join('');
+        return `<div style="border:1px solid var(--border);padding:10px;margin-bottom:8px;border-radius:6px;${g.goal_kind==='pip'?'border-color:var(--red);background:var(--err-bg);':''}">
+          <div style="font-weight:600;">${g.goal_kind === 'pip' ? 'PIP: ' : ''}${_th(g.title||'')}</div>
+          <div style="font-size:12px;color:var(--muted);">Status: ${_th(g.status)} · Target: ${_th(g.target_date||'')}</div>
+          <p style="white-space:pre-wrap;">${_th(g.description||'')}</p>
+          ${items}
+        </div>`;
+      }).join('') || '<div style="color:var(--muted-2);">No goals or PIPs.</div>';
+      techKpiOpen('My Goals & PIPs', items);
+    } catch(e){ alert(e.message); }
+  };
+  window.techToggleAction = async function(goalId, idx){
+    try { await techKpiApi('POST', `/api/tech/me/kpi/goals/${goalId}/action-items/${idx}/done`); }
+    catch(e){ alert(e.message); }
+  };
+</script>
+
+</body>
+</html>

@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Schedule a Consultation — PrimeCool Services</title>
+  <meta name="description" content="Request a Preventive Maintenance contract with PrimeCool Services. Tell us about your facility and we'll deliver a structured proposal — documented, priced, and scheduled.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@300;400;500;600;700&family=Barlow+Condensed:wght@500;600;700;900&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --navy:     #0B2545;
+      --teal:     #22A08A;
+      --teal-deep:#1A7A6A;
+      --slate:    #5A6472;
+      --frost:    #E8ECF0;
+      --white:    #ffffff;
+      --midnight: #111820;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Barlow', sans-serif;
+      background: var(--midnight);
+      color: var(--frost);
+      min-height: 100vh;
+      line-height: 1.6;
+    }
+    a { color: inherit; text-decoration: none; }
+
+    /* ── Top nav ── */
+    .topnav {
+      background: var(--navy);
+      padding: 1rem 2rem;
+      display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+    .wm-main {
+      font-family: 'Barlow Condensed', sans-serif;
+      font-weight: 700;
+      font-size: 1.3rem;
+      letter-spacing: 0.02em;
+      color: var(--frost);
+    }
+    .wm-main .cool { color: var(--teal); }
+    .back-link {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.72rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--teal);
+      border: 1px solid var(--teal);
+      padding: 0.55rem 1.1rem;
+      transition: background 0.2s, color 0.2s;
+    }
+    .back-link:hover { background: var(--teal); color: var(--navy); }
+
+    /* ── Main ── */
+    main {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 4rem 2rem 5rem;
+    }
+
+    .eyebrow {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.72rem;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--teal);
+      margin-bottom: 1rem;
+    }
+
+    .consult-wrap {
+      display: grid;
+      grid-template-columns: 1fr 1.5fr;
+      gap: 5rem;
+      align-items: start;
+      background: var(--navy);
+      padding: 3.5rem 3rem;
+      border-bottom: 2px solid var(--teal);
+    }
+
+    .consult-left h1 {
+      font-family: 'Barlow Condensed', sans-serif;
+      font-weight: 900;
+      font-size: clamp(2rem, 4vw, 2.75rem);
+      letter-spacing: -0.5px;
+      text-transform: uppercase;
+      color: var(--white);
+      margin-bottom: 0.85rem;
+      line-height: 1.05;
+    }
+
+    .consult-left p {
+      font-size: 0.92rem;
+      color: var(--slate);
+      line-height: 1.75;
+      margin-bottom: 2.25rem;
+    }
+
+    .consult-meta { list-style: none; }
+    .consult-meta li {
+      display: flex;
+      gap: 0.9rem;
+      padding: 0.7rem 0;
+      border-top: 1px solid rgba(255,255,255,0.06);
+      font-family: 'DM Mono', monospace;
+      font-size: 0.72rem;
+      color: var(--frost);
+      line-height: 1.5;
+    }
+    .consult-meta li:last-child { border-bottom: 1px solid rgba(255,255,255,0.06); }
+    .consult-meta .ml {
+      color: var(--teal);
+      flex-shrink: 0;
+      width: 80px;
+    }
+    .consult-meta a { color: var(--teal); }
+
+    /* ── Form ── */
+    .cform { display: flex; flex-direction: column; gap: 1.1rem; }
+    .frow { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    .fg { display: flex; flex-direction: column; gap: 0.35rem; }
+    .fg label {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.62rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--teal);
+    }
+    .fg input, .fg select, .fg textarea {
+      background: var(--midnight);
+      border: 1px solid rgba(255,255,255,0.09);
+      color: var(--white);
+      padding: 0.78rem 0.95rem;
+      font-family: 'Barlow', sans-serif;
+      font-size: 0.9rem;
+      outline: none;
+      transition: border-color 0.2s;
+      appearance: none;
+      -webkit-appearance: none;
+      width: 100%;
+    }
+    .fg input::placeholder, .fg textarea::placeholder { color: var(--slate); }
+    .fg input:focus, .fg select:focus, .fg textarea:focus { border-color: var(--teal); }
+    .fg select { cursor: pointer; background-image: none; }
+    .fg select option { background: var(--midnight); }
+    .fg textarea { resize: vertical; min-height: 110px; }
+
+    .btn-submit {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.78rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--navy);
+      background: var(--teal);
+      border: 1px solid var(--teal);
+      padding: 1rem 2.4rem;
+      cursor: pointer;
+      align-self: flex-start;
+      transition: background 0.2s, border-color 0.2s;
+      margin-top: 0.5rem;
+    }
+    .btn-submit:hover { background: var(--teal-deep); border-color: var(--teal-deep); }
+    .btn-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .form-ok {
+      display: none;
+      font-family: 'DM Mono', monospace;
+      font-size: 0.78rem;
+      letter-spacing: 0.08em;
+      color: var(--teal);
+      border: 1px solid rgba(34,160,138,0.35);
+      padding: 1rem 1.1rem;
+      line-height: 1.6;
+    }
+    .form-err {
+      display: none;
+      font-family: 'DM Mono', monospace;
+      font-size: 0.72rem;
+      letter-spacing: 0.08em;
+      color: #ff7a7a;
+      border: 1px solid rgba(255,122,122,0.35);
+      padding: 0.8rem 1rem;
+    }
+
+    /* ── Footer ── */
+    footer {
+      background: var(--navy);
+      padding: 2rem;
+      text-align: center;
+      font-family: 'DM Mono', monospace;
+      font-size: 0.7rem;
+      letter-spacing: 0.16em;
+      color: var(--slate);
+      text-transform: uppercase;
+    }
+
+    @media (max-width: 800px) {
+      main { padding: 2.5rem 1.25rem 3.5rem; }
+      .consult-wrap {
+        grid-template-columns: 1fr;
+        gap: 2.5rem;
+        padding: 2.25rem 1.5rem;
+      }
+      .frow { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+  <nav class="topnav">
+    <a href="/" class="wm-main">Prime<span class="cool">Cool</span></a>
+    <a href="/" class="back-link">← Back to Site</a>
+  </nav>
+
+  <main>
+    <div class="consult-wrap">
+
+      <div class="consult-left">
+        <div class="eyebrow">Schedule a Consultation</div>
+        <h1>Schedule a Consultation</h1>
+        <p>Tell us about your facility. We'll assess your equipment, define the maintenance scope, and deliver a structured PM contract proposal — documented, priced, and scheduled.</p>
+        <ul class="consult-meta">
+          <li><span class="ml">Phone</span> <a href="tel:+18763159940">+1 (876) 315-9940</a></li>
+          <li><span class="ml">WhatsApp</span> <a href="https://wa.me/18763159940" target="_blank" rel="noopener">+1 (876) 315-9940</a></li>
+          <li><span class="ml">Email</span> <a href="mailto:info@primecoolservices.com">info@primecoolservices.com</a></li>
+          <li><span class="ml">Hours</span> Mon–Fri · 8:00 AM – 5:00 PM</li>
+          <li><span class="ml">Area</span> Kingston &amp; St. Andrew, Jamaica</li>
+        </ul>
+      </div>
+
+      <form class="cform" id="consultForm" novalidate>
+        <div class="frow">
+          <div class="fg">
+            <label for="fname">First Name</label>
+            <input type="text" id="fname" name="fname" placeholder="First name" required>
+          </div>
+          <div class="fg">
+            <label for="lname">Last Name</label>
+            <input type="text" id="lname" name="lname" placeholder="Last name" required>
+          </div>
+        </div>
+        <div class="frow">
+          <div class="fg">
+            <label for="email">Email Address</label>
+            <input type="email" id="email" name="email" placeholder="you@company.com" required>
+          </div>
+          <div class="fg">
+            <label for="phone">Phone Number</label>
+            <input type="tel" id="phone" name="phone" placeholder="+1 (876) 000-0000">
+          </div>
+        </div>
+        <div class="fg">
+          <label for="company">Company / Property Name</label>
+          <input type="text" id="company" name="company" placeholder="Optional">
+        </div>
+        <div class="fg">
+          <label for="tier">Service Tier</label>
+          <select id="tier" name="tier" required>
+            <option value="" disabled selected>Select a tier</option>
+            <option value="residential">Residential — Home &amp; Property</option>
+            <option value="commercial">Commercial — SME &amp; Corporate</option>
+            <option value="industrial">Industrial — Process &amp; Facility</option>
+            <option value="unsure">Not sure — need an assessment</option>
+          </select>
+        </div>
+        <div class="fg">
+          <label for="msg">Describe Your Equipment / Facility</label>
+          <textarea id="msg" name="msg" placeholder="Number of units, equipment type, location, current maintenance schedule (if any)…"></textarea>
+        </div>
+        <button type="submit" class="btn-submit">Submit Consultation Request</button>
+        <div class="form-ok" id="formOk">
+          ✓ Request received — a PrimeCool technician will contact you within 1 business day.
+        </div>
+        <div class="form-err" id="formErr"></div>
+      </form>
+
+    </div>
+  </main>
+
+  <footer>© 2025 PrimeCool Services Ltd. · Kingston, Jamaica</footer>
+
+  <script>
+    document.getElementById('consultForm').addEventListener('submit', async function(e) {
+      e.preventDefault();
+      const fname = document.getElementById('fname').value.trim();
+      const email = document.getElementById('email').value.trim();
+      const tier  = document.getElementById('tier').value;
+      const err   = document.getElementById('formErr');
+      const ok    = document.getElementById('formOk');
+      err.style.display = 'none';
+      ok.style.display  = 'none';
+
+      if (!fname || !email || !tier) {
+        const missing = [];
+        if (!fname) missing.push('First Name');
+        if (!email) missing.push('Email Address');
+        if (!tier)  missing.push('Service Tier');
+        err.textContent = 'Please complete: ' + missing.join(', ');
+        err.style.display = 'block';
+        return;
+      }
+
+      const btn = this.querySelector('.btn-submit');
+      btn.disabled = true;
+      btn.textContent = 'Sending…';
+
+      try {
+        const res = await fetch('/api/consult', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            fname,
+            lname:   document.getElementById('lname').value.trim(),
+            email,
+            phone:   document.getElementById('phone').value.trim(),
+            company: document.getElementById('company').value.trim(),
+            tier,
+            msg:     document.getElementById('msg').value.trim(),
+          }),
+        });
+        if (!res.ok) throw new Error();
+        this.reset();
+        ok.style.display = 'block';
+        ok.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } catch {
+        err.textContent = 'Could not submit your request. Please try again or call us directly.';
+        err.style.display = 'block';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Submit Consultation Request';
+      }
+    });
+  </script>
+
+</body>
+</html>

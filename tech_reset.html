@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0B2545">
+  <title>Reset PIN — PrimeCool Tech</title>
+  <style>
+    :root {
+      --navy: #0B2545;
+      --teal: #22A08A;
+      --teal-deep: #1A7A6A;
+      --bg: #f0f4f8;
+      --text: #1a2533;
+      --muted: #5A6472;
+      --border: #dde3ea;
+      --red: #dc2626;
+      --green: #059669;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, system-ui, 'Segoe UI', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex; flex-direction: column;
+    }
+    header {
+      background: var(--navy);
+      padding: 14px 18px;
+      color: white;
+    }
+    .brand { font-size: 17px; font-weight: 700; }
+    .brand span { color: var(--teal); }
+    .tag {
+      background: rgba(34,160,138,0.25); color: var(--teal);
+      font-size: 11px; font-weight: 700;
+      padding: 3px 9px; border-radius: 14px;
+      margin-left: 8px; text-transform: uppercase; letter-spacing: 0.7px;
+    }
+    main {
+      flex: 1;
+      display: flex; align-items: center; justify-content: center;
+      padding: 24px;
+    }
+    .card {
+      background: white; border-radius: 16px;
+      box-shadow: 0 6px 30px rgba(11,37,69,0.12);
+      padding: 36px 28px; width: 100%; max-width: 380px;
+    }
+    h1 { color: var(--navy); font-size: 22px; margin-bottom: 6px; }
+    .sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; line-height: 1.5; }
+    label {
+      display: block; font-size: 11px; font-weight: 700;
+      letter-spacing: 0.7px; text-transform: uppercase;
+      color: var(--navy); margin-bottom: 6px;
+    }
+    input {
+      width: 100%; padding: 13px 14px;
+      border: 2px solid var(--border); border-radius: 10px;
+      font-size: 22px; color: var(--text);
+      letter-spacing: 12px; text-align: center;
+      font-family: 'Courier New', monospace;
+      outline: none; transition: border-color 0.15s;
+      margin-bottom: 16px;
+    }
+    input:focus { border-color: var(--teal); }
+    .btn {
+      width: 100%; padding: 14px;
+      background: var(--teal); color: white;
+      border: none; border-radius: 10px;
+      font-size: 15px; font-weight: 600;
+      cursor: pointer; transition: background 0.15s;
+    }
+    .btn:hover:not(:disabled) { background: var(--teal-deep); }
+    .btn:disabled { background: #b0bec5; cursor: not-allowed; }
+    .alert {
+      padding: 11px 14px; border-radius: 8px;
+      font-size: 13px; margin-bottom: 14px;
+      display: none; line-height: 1.5;
+    }
+    .alert.error   { background: #fff5f5; color: var(--red); border: 1px solid #fed7d7; }
+    .alert.success { background: #f0fdf4; color: var(--green); border: 1px solid #bbf7d0; }
+    .alert.show { display: block; }
+    .sign-in {
+      text-align: center;
+      margin-top: 18px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .sign-in a { color: var(--teal); text-decoration: none; font-weight: 600; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <span class="brand">Prime<span>Cool</span></span>
+    <span class="tag">Tech</span>
+  </header>
+
+  <main>
+    <div class="card">
+      <h1>Reset Your PIN</h1>
+      <p class="sub">Choose a new 4–8 digit PIN. You'll use this to sign in to the tech portal.</p>
+
+      <div class="alert error"   id="alertErr"></div>
+      <div class="alert success" id="alertOk">PIN updated. You can now sign in with your new PIN.</div>
+
+      <div id="form">
+        <label for="pin1">New PIN</label>
+        <input type="password" id="pin1" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="••••" autocomplete="off">
+
+        <label for="pin2">Confirm PIN</label>
+        <input type="password" id="pin2" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="••••" autocomplete="off">
+
+        <button class="btn" id="submitBtn" onclick="doReset()">Set New PIN</button>
+      </div>
+
+      <div class="sign-in"><a href="/tech">← Back to Sign In</a></div>
+    </div>
+  </main>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const token  = params.get('token');
+
+    if (!token) {
+      showErr('Missing reset token. Request a new reset link from the sign-in page.');
+      document.getElementById('form').style.display = 'none';
+    }
+
+    document.getElementById('pin2').addEventListener('keydown', e => {
+      if (e.key === 'Enter') doReset();
+    });
+
+    async function doReset() {
+      const pin1 = document.getElementById('pin1').value.trim();
+      const pin2 = document.getElementById('pin2').value.trim();
+      const btn  = document.getElementById('submitBtn');
+      hideAlerts();
+
+      if (!/^\d{4,8}$/.test(pin1)) { showErr('PIN must be 4–8 digits.'); return; }
+      if (pin1 !== pin2) { showErr('PINs do not match.'); return; }
+
+      btn.disabled = true; btn.textContent = 'Saving…';
+
+      try {
+        const res = await fetch('/api/tech/reset-pin', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ token, pin: pin1, confirm_pin: pin2 }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          showErr(data.detail || 'Could not reset PIN.');
+          btn.disabled = false; btn.textContent = 'Set New PIN';
+          return;
+        }
+        document.getElementById('form').style.display = 'none';
+        document.getElementById('alertOk').classList.add('show');
+        setTimeout(() => { window.location.href = '/tech'; }, 2500);
+      } catch {
+        showErr('Connection error. Please try again.');
+        btn.disabled = false; btn.textContent = 'Set New PIN';
+      }
+    }
+
+    function showErr(msg) {
+      const el = document.getElementById('alertErr');
+      el.textContent = msg;
+      el.classList.add('show');
+    }
+    function hideAlerts() {
+      document.querySelectorAll('.alert').forEach(a => a.classList.remove('show'));
+    }
+  </script>
+</body>
+</html>

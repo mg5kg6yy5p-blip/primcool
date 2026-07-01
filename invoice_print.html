@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Invoice — PrimeCool Services</title>
+  <!-- PrimeCool brand fonts (shared with all surfaces). -->
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800;900&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --navy: #0F2A4A;
+      --navy-2: #11335A;
+      --teal: #22A08A;
+      --ice:  #7DD3E8;
+      --lime: #22A08A;
+      --muted: #5A6472;
+      --border: #dde3ea;
+      --text: #1a2533;
+      --light: #f8fafc;
+      --font-display: 'Archivo', 'Segoe UI', system-ui, -apple-system, sans-serif;
+      --font-body:    'IBM Plex Sans', 'Segoe UI', system-ui, -apple-system, sans-serif;
+      --font-mono:    'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: var(--font-body);
+      color: var(--text);
+      background: #f0f4f8;
+      padding: 24px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      font-feature-settings: "tnum" 1, "kern" 1;
+    }
+    h1, h2, h3 { font-family: var(--font-display); letter-spacing: -0.01em; }
+    .mono, .amount, .qty, td.num, th.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+    .pc-snowflake { display:inline-block;width:18px;height:18px;background:var(--lime);border-radius:5px;flex-shrink:0;position:relative;vertical-align:middle; }
+    .pc-snowflake::before { content:"";position:absolute;inset:3px;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230F2A4A' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><line x1='12' y1='2' x2='12' y2='22'/><line x1='2' y1='12' x2='22' y2='12'/><line x1='4.93' y1='4.93' x2='19.07' y2='19.07'/><line x1='19.07' y1='4.93' x2='4.93' y2='19.07'/></svg>");background-size:contain;background-repeat:no-repeat; }
+    .actions {
+      max-width: 820px;
+      margin: 0 auto 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+    .actions a { color: var(--teal); text-decoration: none; font-weight: 600; font-size: 14px; }
+    .actions .right { display: flex; gap: 10px; }
+    .btn {
+      background: var(--navy); color: white; border: none;
+      padding: 9px 18px; border-radius: 8px;
+      font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    .btn-print { background: var(--teal); }
+    .btn:hover { opacity: 0.9; }
+
+    .invoice {
+      max-width: 820px; margin: 0 auto;
+      background: white;
+      padding: 48px 56px;
+      box-shadow: 0 4px 24px rgba(11,37,69,0.08);
+      border-radius: 4px;
+    }
+    .head {
+      display: flex; justify-content: space-between; align-items: flex-start;
+      padding-bottom: 24px;
+      border-bottom: 3px solid var(--teal);
+      margin-bottom: 32px;
+    }
+    .brand .name {
+      font-size: 24px; font-weight: 800; color: var(--navy); letter-spacing: -0.01em;
+      font-family: var(--font-display);
+      display: inline-flex; align-items: center; gap: 10px;
+    }
+    .brand .name > em { font-style: normal; color: var(--teal); }
+    .brand .name span { color: var(--teal); }
+    .brand .tagline { font-size: 12px; color: var(--muted); margin-top: 4px; }
+    .brand .address {
+      font-size: 11px; color: var(--muted); margin-top: 12px; line-height: 1.6;
+    }
+    .label-invoice {
+      text-align: right;
+      font-size: 32px; font-weight: 800; color: var(--navy);
+      letter-spacing: 1px; text-transform: uppercase;
+    }
+    .invoice-meta {
+      font-family: 'Courier New', monospace;
+      font-size: 13px; color: var(--navy);
+      margin-top: 4px;
+    }
+    .status-pill {
+      display: inline-block; margin-top: 8px;
+      font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
+      padding: 3px 12px; border-radius: 4px;
+    }
+    .status-draft     { background: #f3f4f6; color: var(--muted); }
+    .status-sent      { background: #fef3c7; color: #92400e; }
+    .status-paid      { background: #d1fae5; color: #065f46; }
+    .status-cancelled { background: #fee2e2; color: #991b1b; }
+
+    .parties {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 32px;
+      margin-bottom: 32px;
+    }
+    .party h3 {
+      font-size: 10px; font-weight: 700; letter-spacing: 1px;
+      text-transform: uppercase; color: var(--muted); margin-bottom: 8px;
+    }
+    .party .name { font-weight: 700; color: var(--navy); font-size: 16px; }
+    .party .lines { font-size: 13px; color: var(--text); margin-top: 4px; line-height: 1.7; }
+
+    .dates {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 24px;
+      margin-bottom: 24px;
+      padding: 16px;
+      background: var(--light); border-radius: 6px;
+    }
+    .dates .item .l {
+      font-size: 10px; font-weight: 700; letter-spacing: 0.8px;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .dates .item .v { font-size: 14px; color: var(--navy); font-weight: 600; margin-top: 2px; }
+
+    table.lines {
+      width: 100%; border-collapse: collapse;
+      margin-bottom: 24px;
+    }
+    table.lines th {
+      background: var(--navy); color: white;
+      padding: 10px 12px;
+      font-size: 11px; font-weight: 700; letter-spacing: 0.7px; text-transform: uppercase;
+      text-align: left;
+    }
+    table.lines th.num, table.lines td.num { text-align: right; white-space: nowrap; }
+    table.lines td {
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+    }
+    table.lines td .type-pill {
+      display: inline-block;
+      font-size: 10px; font-weight: 700; letter-spacing: 0.5px;
+      padding: 1px 6px; border-radius: 3px;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+    .type-labor { background: #dbeafe; color: #1e40af; }
+    .type-part  { background: #d1fae5; color: #065f46; }
+    .type-other { background: #f3f4f6; color: var(--muted); }
+
+    .totals {
+      margin-left: auto; width: 320px; font-size: 14px;
+    }
+    .totals .row {
+      display: flex; justify-content: space-between;
+      padding: 8px 0;
+      color: var(--text);
+    }
+    .totals .row.subtle { color: var(--muted); font-size: 13px; }
+    .totals .row.grand {
+      border-top: 2px solid var(--navy);
+      margin-top: 6px; padding-top: 12px;
+      font-size: 18px; font-weight: 800; color: var(--navy);
+    }
+    .totals .row.balance {
+      background: rgba(34,160,138,0.08);
+      padding: 10px 14px; margin: 8px -14px 0;
+      border-radius: 6px;
+      font-weight: 700;
+    }
+    .totals .row.balance.zero { background: #d1fae5; color: #065f46; }
+    .totals .row.balance.due  { background: #fef3c7; color: #92400e; }
+
+    .payments {
+      margin-top: 32px;
+      padding-top: 20px;
+      border-top: 1px dashed var(--border);
+    }
+    .payments h3 {
+      font-size: 11px; font-weight: 700; letter-spacing: 0.8px;
+      text-transform: uppercase; color: var(--muted); margin-bottom: 10px;
+    }
+    .payment-row {
+      display: grid; grid-template-columns: 110px 80px 1fr 1fr;
+      gap: 12px; padding: 6px 0;
+      font-size: 12px; color: var(--text);
+      border-bottom: 1px dotted var(--border);
+    }
+
+    .notes {
+      margin-top: 32px;
+      padding: 14px 16px;
+      background: var(--light); border-left: 3px solid var(--teal);
+      font-size: 13px; color: var(--text); line-height: 1.6;
+      white-space: pre-wrap;
+    }
+
+    .footer {
+      margin-top: 40px;
+      text-align: center;
+      font-size: 11px; color: var(--muted); letter-spacing: 0.4px;
+    }
+
+    .loading, .error { text-align: center; padding: 80px 20px; color: var(--muted); }
+
+    @media print {
+      body { background: white; padding: 0; }
+      .actions { display: none; }
+      .invoice { box-shadow: none; padding: 32px; max-width: 100%; }
+    }
+
+    @media (max-width: 640px) {
+      body { padding: 12px; }
+      .invoice { padding: 24px 20px; }
+      .head { flex-direction: column; gap: 16px; }
+      .label-invoice { text-align: left; }
+      .parties { grid-template-columns: 1fr; gap: 20px; }
+      .dates { grid-template-columns: 1fr; }
+      .totals { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="actions">
+  <a href="#" id="backLink">← Back</a>
+  <div class="right">
+    <button class="btn btn-print" onclick="window.print()">🖨 Print / Save PDF</button>
+  </div>
+</div>
+
+<div class="invoice" id="invoice">
+  <div class="loading">Loading invoice…</div>
+</div>
+
+<script>
+  const path = window.location.pathname;
+  const isAdmin = path.startsWith('/admin/');
+  const id = path.split('/').pop();
+  const tokenKey = isAdmin ? 'pc_admin_token' : 'pc_token';
+  const token = localStorage.getItem(tokenKey);
+
+  document.getElementById('backLink').href = isAdmin ? '/admin' : '/portal/dashboard';
+
+  if (!token) {
+    document.getElementById('invoice').innerHTML =
+      '<div class="error">Please sign in first. <a href="' + (isAdmin ? '/admin' : '/portal') + '">Go to sign in →</a></div>';
+  } else {
+    load();
+  }
+
+  async function load() {
+    const url = isAdmin ? `/api/admin/invoices/${id}` : `/api/portal/invoices/${id}`;
+    try {
+      const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
+      if (!res.ok) {
+        document.getElementById('invoice').innerHTML =
+          `<div class="error">Could not load invoice. ${res.status === 404 ? 'Not found.' : ''}</div>`;
+        return;
+      }
+      const inv = await res.json();
+      render(inv);
+    } catch {
+      document.getElementById('invoice').innerHTML = '<div class="error">Network error.</div>';
+    }
+  }
+
+  function esc(s) {
+    return (s == null ? '' : String(s)).replace(/[&<>"']/g, c =>
+      ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function fmtDate(d) {
+    if (!d) return '—';
+    return new Date(d + 'T00:00:00').toLocaleDateString('en-JM', { day: 'numeric', month: 'long', year: 'numeric' });
+  }
+  // paid_at is a full ISO datetime (e.g. 2026-05-22T23:11:46.888+00:00),
+  // not the YYYY-MM-DD shape fmtDate expects. Render it cleanly without
+  // misinterpreting it as a naive date.
+  function fmtPaidAt(iso) {
+    if (!iso) return '—';
+    try {
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return iso;
+      return d.toLocaleDateString('en-JM', { day: 'numeric', month: 'long', year: 'numeric' });
+    } catch (_) { return iso; }
+  }
+  function fmtMoney(n, currency) {
+    n = Number(n) || 0;
+    const sym = currency === 'JMD' ? 'J$' : (currency === 'USD' ? '$' : (currency === 'TTD' ? 'TT$' : ''));
+    return sym + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  function render(inv) {
+    const balance = (inv.total || 0) - (inv.amount_paid || 0);
+    const overdue = inv.status === 'sent' && new Date(inv.due_date) < new Date() && balance > 0;
+    const statusLabel = overdue ? 'overdue' : inv.status;
+    document.title = `Invoice ${inv.invoice_number} — PrimeCool Services`;
+
+    document.getElementById('invoice').innerHTML = `
+      <div class="head">
+        <div class="brand">
+          <div class="name"><span class="pc-snowflake" aria-hidden="true"></span>Prime<span>Cool</span> Services</div>
+          <div class="tagline">HVAC Preventive Maintenance · Service Contracts</div>
+          <div class="address">
+            Kingston · St. Andrew · Jamaica<br>
+            +1 (876) 315-9940 · info@primecoolservices.com
+          </div>
+        </div>
+        <div>
+          <div class="label-invoice">Invoice</div>
+          <div class="invoice-meta">${esc(inv.invoice_number)}</div>
+          <div class="status-pill status-${statusLabel}">${statusLabel}</div>
+        </div>
+      </div>
+
+      <div class="parties">
+        <div class="party">
+          <h3>Bill To</h3>
+          <div class="name">${esc(inv.customer_name)}</div>
+          <div class="lines">
+            ${inv.customer_company ? esc(inv.customer_company) + '<br>' : ''}
+            ${inv.customer_address ? esc(inv.customer_address) + '<br>' : ''}
+            ${inv.customer_phone   ? esc(inv.customer_phone)   + '<br>' : ''}
+            ${inv.customer_email   ? esc(inv.customer_email)   : ''}
+          </div>
+        </div>
+        <div class="party" style="text-align:right;">
+          <h3>Customer ID</h3>
+          <div class="name" style="font-family:'Courier New',monospace;">${esc(inv.customer_code)}</div>
+        </div>
+      </div>
+
+      <div class="dates">
+        <div class="item"><div class="l">Issue Date</div><div class="v">${fmtDate(inv.issue_date)}</div></div>
+        <div class="item"><div class="l">Due Date</div><div class="v">${fmtDate(inv.due_date)}</div></div>
+      </div>
+
+      <table class="lines">
+        <thead>
+          <tr>
+            <th>Description</th>
+            <th class="num">Qty</th>
+            <th class="num">Unit Price</th>
+            <th class="num">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${(inv.line_items || []).map(li => `
+            <tr>
+              <td>
+                <span class="type-pill type-${li.line_type}">${li.line_type}</span>
+                ${esc(li.description)}
+              </td>
+              <td class="num">${Number(li.quantity).toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 2})}</td>
+              <td class="num">${fmtMoney(li.unit_price, inv.currency)}</td>
+              <td class="num">${fmtMoney(li.line_total, inv.currency)}</td>
+            </tr>`).join('')}
+          ${(inv.line_items || []).length === 0
+            ? '<tr><td colspan="4" style="padding:24px;text-align:center;color:var(--muted);">No line items.</td></tr>'
+            : ''}
+        </tbody>
+      </table>
+
+      <div class="totals">
+        <div class="row subtle"><span>Subtotal</span><span>${fmtMoney(inv.subtotal, inv.currency)}</span></div>
+        ${inv.tax_amount > 0
+          ? `<div class="row subtle"><span>GCT (${(inv.tax_rate * 100).toFixed(2)}%)</span><span>${fmtMoney(inv.tax_amount, inv.currency)}</span></div>`
+          : ''}
+        <div class="row grand"><span>Total</span><span>${fmtMoney(inv.total, inv.currency)}</span></div>
+        ${inv.amount_paid > 0
+          ? `<div class="row subtle"><span>Amount Paid</span><span>−${fmtMoney(inv.amount_paid, inv.currency)}</span></div>`
+          : ''}
+        <div class="row balance ${balance <= 0.005 ? 'zero' : 'due'}">
+          <span>${balance <= 0.005 ? 'Paid in Full' : 'Balance Due'}</span>
+          <span>${fmtMoney(Math.max(0, balance), inv.currency)}</span>
+        </div>
+        ${balance <= 0.005 && inv.paid_at
+          ? `<div class="row subtle" style="font-size:12px;color:#059669;">
+               <span>Paid on</span>
+               <span>${fmtPaidAt(inv.paid_at)}</span>
+             </div>`
+          : ''}
+        ${(inv.amount_paid || 0) > (inv.total || 0) + 0.005
+          ? `<div class="row subtle" style="font-size:12px;color:#0369a1;">
+               <span>Overpayment credited to account</span>
+               <span>${fmtMoney((inv.amount_paid || 0) - (inv.total || 0), inv.currency)}</span>
+             </div>`
+          : ''}
+      </div>
+
+      ${(inv.payments || []).length > 0 ? `
+        <div class="payments">
+          <h3>Payments Received</h3>
+          ${inv.payments.map(p => `
+            <div class="payment-row">
+              <div>${fmtDate(p.payment_date)}</div>
+              <div>${esc(p.method || '—')}</div>
+              <div>${esc(p.reference || p.notes || '')}</div>
+              <div style="text-align:right;font-weight:600;">${fmtMoney(p.amount, inv.currency)}</div>
+            </div>`).join('')}
+        </div>` : ''}
+
+      ${inv.notes ? `<div class="notes">${esc(inv.notes)}</div>` : ''}
+
+      <div class="footer">
+        Thank you for your business · PrimeCool Services Ltd. · Registered in Jamaica
+      </div>
+    `;
+  }
+</script>
+<script>
+  (function() {
+    try {
+      if (typeof URLSearchParams === 'undefined') return;
+      var params = new URLSearchParams(window.location.search);
+      if (params.get('print') === '1') {
+        // Small delay so layout settles before print dialog
+        setTimeout(function(){ window.print(); }, 400);
+      }
+    } catch (e) { /* no-op on very old browsers */ }
+  })();
+</script>
+</body>
+</html>

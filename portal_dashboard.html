@@ -1,0 +1,2715 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>My Dashboard — PrimeCool Services</title>
+  <link rel="manifest" href="/manifest-portal.json">
+  <meta name="theme-color" content="#0B2545">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="PrimeCool">
+  <link rel="apple-touch-icon" href="/icons/customer-apple.png">
+  <!-- PrimeCool brand fonts (shared across surfaces). -->
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800;900&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --navy: #0F2A4A;
+      --ink: #0F2A4A; /* primary text color (was var(--navy)); a future dark theme remaps this */
+      --navy-2: #11335A;
+      --teal: #22A08A;
+      --ice:  #7DD3E8;
+      --lime: #22A08A;
+      --mist: #F2F6FA;
+      --light: #f0f4f8;
+      --white: #ffffff;
+      --text: #1a2533;
+      --muted: #5A6472;
+      --border: #dde3ea;
+      /* Semantic surface/status tokens — single source for light + dark themes.
+         The dark override below remaps these; component CSS must reference the tokens. */
+      --surface: #ffffff;
+      --surface-2: #f2f6fa;
+      --surface-3: #e8ecf0;
+      --border-strong: #c8d2dc;
+      --ok-bg: #d1fae5;   --ok-fg: #065f46;
+      --warn-bg: #fef3c7; --warn-fg: #92400e;
+      --err-bg: #fee2e2;  --err-fg: #991b1b;
+      --info-bg: #dbeafe; --info-fg: #1e40af;
+      --overlay: rgba(0,0,0,0.5);
+      --font-display: 'Archivo','Segoe UI',system-ui,-apple-system,sans-serif;
+      --font-body:    'IBM Plex Sans','Segoe UI',system-ui,-apple-system,sans-serif;
+      --font-mono:    'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace;
+      --shadow-sm: 0 1px 3px rgba(15,42,74,0.08), 0 8px 24px -16px rgba(15,42,74,0.25);
+      --gradient-cool: var(--navy);
+    }
+    /* ─── Dark theme ─── applied via html[data-pc-theme="dark"] (set in <head> by pc_shared, zero flash) */
+    html[data-pc-theme="dark"] {
+      --navy: #0e1b2e;
+      --navy-2: #16243b;
+      --ink: #e9eef5;
+      --text: #d3dbe6;
+      --muted: #9aa6b6;
+      --light: #0b1320;
+      --mist: #111c2c;
+      --white: #16212f;
+      --surface: #16212f;
+      --surface-2: #1d2a3a;
+      --surface-3: #243345;
+      --border: #2a3848;
+      --border-strong: #36465a;
+      --ok-bg: rgba(34,160,138,0.18);   --ok-fg: #5fe0c4;
+      --warn-bg: rgba(245,158,11,0.16); --warn-fg: #fbbf24;
+      --err-bg: rgba(229,62,62,0.18);   --err-fg: #fca5a5;
+      --info-bg: rgba(59,130,246,0.18); --info-fg: #93c5fd;
+      --overlay: rgba(0,0,0,0.65);
+      --shadow-sm: 0 1px 3px rgba(0,0,0,0.4), 0 8px 24px -16px rgba(0,0,0,0.6);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: var(--font-body);
+      background: var(--light);
+      min-height: 100vh;
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      font-feature-settings: "tnum" 1, "kern" 1;
+    }
+    h1, h2, h3, .pc-display { font-family: var(--font-display); letter-spacing: -0.01em; }
+    .pc-mono, code, kbd, samp { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+    .pc-snowflake { display:inline-block;width:18px;height:18px;background:var(--lime);border-radius:5px;flex-shrink:0;position:relative;vertical-align:middle; }
+    .pc-snowflake::before { content:"";position:absolute;inset:3px;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230F2A4A' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><line x1='12' y1='2' x2='12' y2='22'/><line x1='2' y1='12' x2='22' y2='12'/><line x1='4.93' y1='4.93' x2='19.07' y2='19.07'/><line x1='19.07' y1='4.93' x2='4.93' y2='19.07'/></svg>");background-size:contain;background-repeat:no-repeat; }
+    .pc-skeleton-line,.pc-skeleton-block{background:linear-gradient(90deg,var(--surface-2) 0%,var(--surface) 50%,var(--surface-2) 100%);background-size:200% 100%;border-radius:6px;animation:pcShimmer 1.4s ease-in-out infinite;}
+    .pc-skeleton-line{height:12px;margin:6px 0;} .pc-skeleton-block{height:38px;}
+    @keyframes pcShimmer{0%{background-position:100% 0;}100%{background-position:-100% 0;}}
+    .pc-empty{padding:32px 20px;text-align:center;color:var(--muted);font-size:13px;}
+    .pc-empty-glyph{font-size:28px;margin-bottom:8px;opacity:0.7;}
+    .pc-empty-title{font-family:var(--font-display);font-weight:700;color:var(--ink);font-size:15px;margin-bottom:4px;}
+    .pc-empty-sub{font-size:12px;color:var(--muted);max-width:360px;margin:0 auto;line-height:1.5;}
+    header {
+      background: var(--navy);
+      padding: 0 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 60px;
+      position: sticky; top: 0; z-index: 100;
+    }
+    .logo { color: white; font-size: 18px; font-weight: 700; text-decoration: none; }
+    .logo span { color: var(--teal); }
+    .header-right { display: flex; align-items: center; gap: 20px; }
+    .customer-name { color: rgba(255,255,255,0.75); font-size: 13px; }
+    .logout-btn {
+      background: rgba(255,255,255,0.1);
+      color: white;
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 6px;
+      padding: 6px 14px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .logout-btn:hover { background: rgba(255,255,255,0.2); }
+
+    .container { max-width: 960px; margin: 0 auto; padding: 32px 20px 60px; }
+
+    .page-title {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--ink);
+      margin-bottom: 4px;
+    }
+    .page-sub { color: var(--muted); font-size: 14px; margin-bottom: 28px; }
+
+    /* Summary grid */
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+    .summary-card {
+      background: var(--white);
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      padding: 20px 22px;
+    }
+    .summary-card .label {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--muted);
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .summary-card .label .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .dot-pm { background: #3b82f6; }
+    .dot-cm { background: #f59e0b; }
+    .summary-card .date-val {
+      font-size: 17px;
+      font-weight: 700;
+      color: var(--ink);
+      margin-bottom: 6px;
+    }
+    .summary-card .date-val.none { color: var(--muted); font-weight: 400; font-size: 14px; }
+    .summary-card .date-sub { font-size: 12px; color: var(--muted); }
+
+    /* Badge */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+    }
+    .badge-scheduled  { background: var(--warn-bg); color: var(--warn-fg); }
+    .badge-confirmed  { background: var(--ok-bg); color: var(--ok-fg); }
+    .badge-completed  { background: var(--info-bg); color: var(--info-fg); }
+
+    /* Section */
+    section { margin-bottom: 32px; }
+    .section-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--ink);
+      margin-bottom: 12px;
+      padding-bottom: 10px;
+      border-bottom: 2px solid var(--border);
+    }
+
+    /* Equipment list */
+    .equipment-list { display: flex; flex-direction: column; gap: 8px; }
+    .eq-card {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .eq-icon {
+      width: 38px; height: 38px;
+      background: rgba(34,160,138,0.1);
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+    .eq-icon svg { width: 20px; height: 20px; color: var(--teal); }
+    .eq-info { flex: 1; }
+    .eq-name { font-weight: 600; font-size: 14px; color: var(--ink); }
+    .eq-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+    /* Visit cards */
+    .visit-list { display: flex; flex-direction: column; gap: 10px; }
+    .visit-card {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .visit-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 18px;
+      cursor: pointer;
+      user-select: none;
+      gap: 12px;
+    }
+    .visit-header:hover { background: var(--surface); }
+    .visit-left { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
+    .visit-type-pill {
+      flex-shrink: 0;
+      width: 36px; height: 36px;
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+    }
+    .pill-pm { background: var(--info-bg); color: var(--info-fg); }
+    .pill-cm { background: var(--warn-bg); color: var(--warn-fg); }
+    .visit-info { min-width: 0; }
+    .visit-date { font-size: 14px; font-weight: 600; color: var(--ink); }
+    .visit-sub  { font-size: 12px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .visit-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+    .chevron {
+      color: var(--muted);
+      transition: transform 0.2s;
+      flex-shrink: 0;
+    }
+    .chevron.open { transform: rotate(180deg); }
+
+    .visit-body {
+      display: none;
+      padding: 0 18px 18px;
+      border-top: 1px solid var(--border);
+    }
+    .visit-body.open { display: block; }
+    .detail-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+      padding-top: 14px;
+    }
+    .detail-item .dl { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.7px; color: var(--muted); margin-bottom: 3px; }
+    .detail-item .dv { font-size: 13px; color: var(--text); }
+    .detail-item.full { grid-column: 1 / -1; }
+
+    .empty-state {
+      text-align: center;
+      padding: 36px 20px;
+      color: var(--muted);
+      background: var(--white);
+      border: 1px dashed var(--border);
+      border-radius: 12px;
+    }
+    .empty-state svg { width: 36px; height: 36px; color: var(--border-strong); margin-bottom: 10px; }
+    .empty-state p { font-size: 14px; }
+
+    /* Loading skeleton */
+    .skeleton { background: var(--surface-3); border-radius: 6px; animation: pulse 1.4s ease-in-out infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+
+    /* Photos */
+    .photo-block { margin-top: 14px; }
+    .photo-block-title {
+      font-size: 11px; font-weight: 700;
+      letter-spacing: 0.7px; text-transform: uppercase;
+      color: var(--muted); margin-bottom: 8px;
+    }
+    .photo-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+      gap: 8px;
+    }
+    .photo-tile {
+      position: relative;
+      aspect-ratio: 1;
+      border-radius: 8px;
+      overflow: hidden;
+      background: var(--surface-3);
+      cursor: zoom-in;
+    }
+    .photo-tile img {
+      width: 100%; height: 100%;
+      object-fit: cover;
+      display: block;
+      transition: transform 0.2s;
+    }
+    .photo-tile:hover img { transform: scale(1.05); }
+    .photo-tile .cat {
+      position: absolute; top: 5px; left: 5px;
+      background: rgba(0,0,0,0.65); color: white;
+      font-size: 9px; font-weight: 700;
+      padding: 2px 7px; border-radius: 4px;
+      letter-spacing: 0.5px; text-transform: uppercase;
+    }
+    .lightbox {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.92); z-index: 1000;
+      align-items: center; justify-content: center;
+      padding: 20px; cursor: zoom-out;
+    }
+    .lightbox.open { display: flex; }
+    .lightbox img { max-width: 100%; max-height: 100%; object-fit: contain; }
+    .lightbox-close {
+      position: absolute; top: 16px; right: 16px;
+      background: rgba(255,255,255,0.15); color: white;
+      border: none; width: 40px; height: 40px;
+      border-radius: 50%; font-size: 22px; cursor: pointer;
+    }
+
+    /* Reviews */
+    .review-cta {
+      background: linear-gradient(135deg, #0B2545 0%, #143264 100%);
+      color: white;
+      border-radius: 12px;
+      padding: 22px 24px;
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+      margin-bottom: 14px;
+    }
+    .review-cta h4 { font-size: 15px; margin-bottom: 4px; color: white; }
+    .review-cta p  { font-size: 13px; color: rgba(255,255,255,0.7); }
+    .review-cta button { flex-shrink: 0; }
+    .btn-leave {
+      background: var(--teal); color: white; border: none;
+      padding: 9px 16px; border-radius: 8px; font-size: 13px; font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-leave:hover { background: var(--ok-fg); }
+    .btn-leave-small {
+      background: rgba(34,160,138,0.12); color: var(--teal); border: none;
+      padding: 5px 12px; border-radius: 16px; font-size: 11px; font-weight: 700;
+      letter-spacing: 0.4px; text-transform: uppercase; cursor: pointer; margin-left: 8px;
+    }
+    .btn-leave-small:hover { background: rgba(34,160,138,0.22); }
+    .review-status {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 11px; font-weight: 700; letter-spacing: 0.4px;
+      text-transform: uppercase; padding: 4px 10px; border-radius: 16px; margin-left: 8px;
+    }
+    .review-status.pending  { background: var(--warn-bg); color: var(--warn-fg); }
+    .review-status.approved { background: var(--ok-bg); color: var(--ok-fg); }
+    .review-status.rejected { background: var(--err-bg); color: var(--err-fg); }
+
+    /* Modal */
+    .modal-overlay {
+      display: none; position: fixed; inset: 0;
+      background: var(--overlay); z-index: 500;
+      align-items: center; justify-content: center; padding: 20px;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal {
+      background: var(--surface); border-radius: 16px;
+      box-shadow: 0 8px 48px rgba(0,0,0,0.2);
+      width: 100%; max-width: 460px; max-height: 90vh; overflow-y: auto;
+    }
+    .modal-h { padding: 20px 24px 14px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+    .modal-h h3 { font-size: 16px; color: var(--ink); }
+    .modal-close { background: none; border: none; font-size: 24px; cursor: pointer; color: var(--muted); line-height: 1; padding: 0 4px; }
+    .modal-b { padding: 18px 24px; }
+    .modal-f { padding: 14px 24px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 10px; }
+
+    .star-input { display: flex; gap: 6px; margin: 10px 0 16px; }
+    .star-input button {
+      background: none; border: none; font-size: 32px; line-height: 1;
+      color: var(--surface-3); cursor: pointer; padding: 0; transition: color 0.15s, transform 0.1s;
+    }
+    .star-input button:hover { transform: scale(1.1); }
+    .star-input button.active { color: #f59e0b; }
+    .modal-label { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--ink); margin-bottom: 6px; }
+    .modal-input, .modal-textarea {
+      width: 100%; padding: 10px 13px; border: 2px solid var(--border); border-radius: 8px;
+      font-size: 14px; color: var(--text); outline: none; font-family: inherit;
+    }
+    .modal-input:focus, .modal-textarea:focus { border-color: var(--teal); }
+    .modal-textarea { min-height: 110px; resize: vertical; }
+    .modal-meta { background: var(--light); border-radius: 8px; padding: 10px 14px; font-size: 12px; color: var(--muted); margin-bottom: 14px; }
+    .modal-error { color: var(--err-fg); font-size: 13px; margin-top: 10px; display: none; }
+
+    .btn-ghost {
+      background: var(--light); color: var(--ink); border: 1px solid var(--border);
+      padding: 9px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    .btn-primary {
+      background: var(--teal); color: white; border: none;
+      padding: 9px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    .btn-primary:disabled { background: var(--muted); cursor: not-allowed; }
+
+    @media (max-width: 600px) {
+      .container { padding: 20px 12px 48px; }
+      header { padding: 0 16px; }
+      .card { padding: 20px 16px; }
+    }
+
+    /* ── My Account view ───────────────────────────────────────────── */
+    .view-tabs {
+      display: flex;
+      gap: 4px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 4px;
+      margin-bottom: 24px;
+      width: fit-content;
+    }
+    .view-tab {
+      background: transparent;
+      border: none;
+      padding: 8px 18px;
+      border-radius: 7px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--muted);
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+      font-family: inherit;
+    }
+    .view-tab:hover { color: var(--ink); }
+    .view-tab.active { background: var(--navy); color: white; }
+
+    /* Profile card */
+    .profile-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 22px 24px;
+    }
+    .profile-head {
+      display: flex; align-items: center; gap: 16px;
+      padding-bottom: 16px; margin-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
+    }
+    .profile-avatar {
+      width: 54px; height: 54px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #22A08A 0%, #0B2545 100%);
+      color: white; display: flex; align-items: center; justify-content: center;
+      font-weight: 700; font-size: 20px; flex-shrink: 0;
+    }
+    .profile-id { flex: 1; min-width: 0; }
+    .profile-name { font-size: 17px; font-weight: 700; color: var(--ink); }
+    .profile-code { font-family: 'Courier New', monospace; font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .badge-acct-res  { background: var(--info-bg); color: var(--info-fg); }
+    .badge-acct-com  { background: var(--ok-bg); color: var(--ok-fg); }
+    .badge-status-active { background: var(--ok-bg); color: var(--ok-fg); }
+    .badge-status-closed { background: var(--border); color: var(--ink); }
+
+    .profile-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+    }
+    .profile-field .pf-label {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.6px; color: var(--muted); margin-bottom: 4px;
+    }
+    .profile-field .pf-val {
+      font-size: 14px; color: var(--text); white-space: pre-line; word-break: break-word;
+    }
+    .profile-field .pf-val.muted { color: var(--muted); font-style: italic; }
+    .profile-note {
+      margin-top: 18px;
+      padding: 12px 14px;
+      background: var(--light);
+      border-left: 3px solid var(--teal);
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    /* Equipment table */
+    .data-table {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .data-table table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .data-table th {
+      text-align: left; padding: 12px 14px;
+      background: var(--light);
+      color: var(--muted);
+      font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px;
+      font-weight: 700;
+      border-bottom: 1px solid var(--border);
+    }
+    .data-table td { padding: 12px 14px; border-bottom: 1px solid var(--border); color: var(--text); vertical-align: top; }
+    .data-table tr:last-child td { border-bottom: none; }
+    .data-table tr.clickable { cursor: pointer; }
+    .data-table tr.clickable:hover { background: var(--surface); }
+    .data-table td.num { font-variant-numeric: tabular-nums; }
+
+    .filter-bar {
+      display: flex; gap: 10px; align-items: center;
+      margin-bottom: 12px; flex-wrap: wrap;
+    }
+    .filter-bar label {
+      font-size: 12px; font-weight: 600; color: var(--muted);
+    }
+    .filter-bar select {
+      padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border);
+      font-size: 13px; background: var(--surface); font-family: inherit; color: var(--text);
+    }
+    .pager {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 10px 14px; background: var(--light);
+      border-top: 1px solid var(--border); font-size: 12px; color: var(--muted);
+    }
+    .pager button {
+      background: var(--surface); border: 1px solid var(--border);
+      padding: 5px 12px; border-radius: 6px; font-size: 12px;
+      font-weight: 600; cursor: pointer; color: var(--ink);
+    }
+    .pager button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .unpaid-banner {
+      background: var(--err-bg);
+      border: 1px solid var(--err-bg);
+      border-left: 4px solid var(--err-fg);
+      border-radius: 10px;
+      padding: 14px 18px;
+      margin-bottom: 14px;
+      color: var(--err-fg);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .unpaid-banner strong { color: var(--err-fg); }
+    .badge-inv-unpaid    { background: var(--err-bg); color: var(--err-fg); }
+    .badge-inv-partial   { background: var(--warn-bg); color: var(--warn-fg); }
+    .badge-inv-paid      { background: var(--ok-bg); color: var(--ok-fg); }
+    .badge-inv-cancelled { background: var(--border); color: var(--muted); }
+
+    .inv-actions {
+      display: inline-flex; gap: 6px;
+    }
+    .inv-actions a, .inv-actions button {
+      background: var(--surface); border: 1px solid var(--border);
+      padding: 4px 10px; border-radius: 6px; font-size: 12px;
+      color: var(--ink); cursor: pointer; text-decoration: none; font-weight: 600;
+      font-family: inherit;
+    }
+    .inv-actions a:hover, .inv-actions button:hover { background: var(--light); }
+
+    /* Toast */
+    .toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: var(--navy); color: white;
+      padding: 12px 22px; border-radius: 8px;
+      font-size: 13px; z-index: 2000;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+      opacity: 0; pointer-events: none; transition: opacity 0.2s;
+    }
+    .toast.show { opacity: 1; }
+
+    .spinner {
+      width: 24px; height: 24px;
+      border: 3px solid var(--surface-3);
+      border-top-color: var(--teal);
+      border-radius: 50%;
+      animation: spin 0.9s linear infinite;
+      margin: 24px auto;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    @media (max-width: 600px) {
+      .data-table { overflow-x: auto; }
+      .data-table table { min-width: 560px; }
+    }
+
+    /* ═══ MAKEOVER — Workday-style shell on the customer dashboard ═══ */
+    body { background: var(--mist); padding-top: 3px; }
+    body::before {
+      content: ""; position: fixed; top: 0; left: 0; right: 0; height: 3px;
+      background: var(--navy);
+      z-index: 1000;
+    }
+    header {
+      background: var(--surface) !important;
+      color: var(--ink) !important;
+      box-shadow: 0 1px 0 var(--surface-2);
+    }
+    header .logo { color: var(--ink) !important; }
+    header .logo span:first-child { color: var(--ink) !important; }
+    header .logo span[style*="color:var(--ice)"] { color: var(--muted) !important; }
+    header .logo span[style*="color:var(--teal)"] { color: var(--teal) !important; }
+
+    /* ── Settings view ──────────────────────────────────────────── */
+    .set-intro{color:var(--muted);font-size:13.5px;margin:0 0 16px;max-width:640px;}
+    .set-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px 20px;margin-bottom:16px;}
+    .set-h{font-weight:700;color:var(--ink);font-size:13px;margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em;}
+    .set-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 0;border-top:1px solid var(--border);}
+    .set-card .set-h + .set-row{border-top:none;}
+    .set-meta{min-width:0;}
+    .set-label{font-weight:600;font-size:14px;color:var(--ink);}
+    .set-sub{font-size:12.5px;color:var(--muted);margin-top:2px;max-width:440px;}
+    .set-input{font-weight:600;font-size:13px;color:var(--ink);background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:8px 12px;min-width:190px;cursor:pointer;}
+    .set-input:focus{outline:2px solid var(--teal);outline-offset:1px;}
+    .set-status{font-size:12.5px;color:var(--teal);min-height:18px;padding:4px 2px;}
+    /* Toggle switch (reduce motion) */
+    .set-switch{position:relative;display:inline-block;width:46px;height:26px;flex:0 0 auto;}
+    .set-switch input{opacity:0;width:0;height:0;}
+    .set-slider{position:absolute;inset:0;background:var(--border);border-radius:999px;transition:background .15s;cursor:pointer;}
+    .set-slider::before{content:"";position:absolute;height:20px;width:20px;left:3px;top:3px;background:#fff;border-radius:50%;transition:transform .15s;box-shadow:0 1px 3px rgba(0,0,0,.2);}
+    .set-switch input:checked + .set-slider{background:var(--teal);}
+    .set-switch input:checked + .set-slider::before{transform:translateX(20px);}
+    .set-switch input:focus + .set-slider{outline:2px solid var(--teal);outline-offset:2px;}
+    /* Security & sign-in */
+    .set-btn{font:600 13px var(--font-body,inherit);color:#fff;background:var(--navy);border:1px solid var(--navy);border-radius:10px;padding:8px 16px;cursor:pointer;white-space:nowrap;}
+    .set-btn:hover{background:var(--navy-2,#1B4F82);}
+    .set-btn:disabled{opacity:.5;cursor:default;}
+    .set-btn--danger{background:var(--surface);color:var(--err-fg);border-color:#e6b4ad;}
+    .set-btn--danger:hover{background:var(--err-bg);}
+    .set-btn--ghost{background:var(--surface);color:var(--navy);border-color:var(--border);}
+    .set-btn--ghost:hover{background:var(--bg,var(--surface-2));}
+    .set-row--block{flex-direction:column;align-items:stretch;}
+    .set-row--block .set-btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;}
+    .sec-sessions{width:100%;display:flex;flex-direction:column;gap:8px;margin-top:10px;}
+    .sec-session-row{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg,var(--surface-2));}
+    .sec-session-row .ss-main{min-width:0;flex:1;}
+    .sec-session-dev{font-weight:600;font-size:13px;color:var(--ink);}
+    .sec-session-meta{font-size:12px;color:var(--muted);margin-top:2px;line-height:1.5;word-break:break-word;}
+    .sec-session-badge{font-weight:700;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;padding:3px 8px;border-radius:999px;flex:0 0 auto;}
+    .sec-session-badge.is-current{background:var(--teal);color:#fff;}
+    .sec-session-badge.is-revoked{background:var(--surface-2);color:var(--muted);}
+    @media (max-width:560px){
+      .set-row{flex-direction:column;align-items:stretch;}
+      .set-input{width:100%;}
+      .set-switch{align-self:flex-start;}
+    }
+
+    /* ── Compact density (Settings → Appearance) ────────────────── */
+    body[data-pc-density="compact"] .summary-card,
+    body[data-pc-density="compact"] .set-card{padding:14px 16px;}
+    body[data-pc-density="compact"] .data-table td{padding:8px 12px;}
+    body[data-pc-density="compact"] .data-table th{padding:8px 12px;}
+    body[data-pc-density="compact"] .set-row{padding:10px 0;}
+  </style>
+  <script src="/static/pc_shared.js?v=1781191429"></script>
+</head>
+<body>
+  <header>
+    <a href="/portal/dashboard" title="Home" class="logo pc-display" style="display:flex;align-items:center;gap:10px;text-decoration:none;color:inherit;">
+      <span class="pc-snowflake" aria-hidden="true"></span>
+      <span style="display:inline-flex;align-items:baseline;">Prime<span>Cool</span><span style="font-size:11px;font-weight:600;letter-spacing:0.18em;text-transform:uppercase;color:var(--ice);margin-left:8px;align-self:center;">Services</span></span>
+    </a>
+    <div class="header-right">
+      <span class="customer-name" id="headerName"></span>
+      <button class="logout-btn" onclick="openServiceRequest()" style="background:#22A08A;color:white;border-color:#22A08A;margin-right:8px;">+ Request Service</button>
+      <button class="logout-btn" onclick="openAccountSecurity()" style="margin-right:8px;">🔒 Account</button>
+      <!-- Inline mount for the shared notification bell (pc_shared.js). Keeping
+           it in-flow shifts the buttons left so the bell never floats over them. -->
+      <span data-pc-notif-bell style="display:inline-flex;align-items:center;margin-right:8px;"></span>
+      <button class="logout-btn" onclick="logout()">Sign out</button>
+    </div>
+  </header>
+
+  <div class="container">
+    <div class="page-title" id="pageTitle">Loading…</div>
+    <div class="page-sub" id="pageSub"></div>
+
+    <!-- View tab switcher -->
+    <div class="view-tabs" role="tablist" aria-label="Dashboard view">
+      <button type="button" class="view-tab active" id="tab-overview" role="tab" aria-selected="true" onclick="switchView('overview')">Overview</button>
+      <button type="button" class="view-tab" id="tab-account" role="tab" aria-selected="false" onclick="switchView('account')">My Account</button>
+      <button type="button" class="view-tab" id="tab-settings" role="tab" aria-selected="false" onclick="switchView('settings')">Settings</button>
+    </div>
+
+    <!-- ── Overview view (existing) ───────────────────────────── -->
+    <div id="view-overview">
+
+    <!-- Summary cards -->
+    <div class="summary-grid">
+      <div class="summary-card" id="cardNextPM">
+        <div class="label"><span class="dot dot-pm"></span>Next PM Visit</div>
+        <div class="date-val skeleton" style="width:120px;height:20px;"></div>
+        <div class="date-sub skeleton" style="width:80px;height:14px;margin-top:8px;"></div>
+      </div>
+      <div class="summary-card" id="cardNextCM">
+        <div class="label"><span class="dot dot-cm"></span>Next CM Visit</div>
+        <div class="date-val skeleton" style="width:120px;height:20px;"></div>
+        <div class="date-sub skeleton" style="width:80px;height:14px;margin-top:8px;"></div>
+      </div>
+      <div class="summary-card" id="cardLastPM">
+        <div class="label"><span class="dot dot-pm"></span>Last PM Completed</div>
+        <div class="date-val skeleton" style="width:120px;height:20px;"></div>
+        <div class="date-sub skeleton" style="width:80px;height:14px;margin-top:8px;"></div>
+      </div>
+      <div class="summary-card" id="cardLastCM">
+        <div class="label"><span class="dot dot-cm"></span>Last CM Completed</div>
+        <div class="date-val skeleton" style="width:120px;height:20px;"></div>
+        <div class="date-sub skeleton" style="width:80px;height:14px;margin-top:8px;"></div>
+      </div>
+    </div>
+
+    <!-- Equipment -->
+    <section id="equipmentSection" style="display:none;">
+      <div class="section-title">Your Equipment</div>
+      <div class="equipment-list" id="equipmentList"></div>
+    </section>
+
+    <!-- Upcoming visits -->
+    <section id="upcomingSection">
+      <div class="section-title">Upcoming &amp; Scheduled Visits</div>
+      <div class="visit-list" id="upcomingList">
+        <div class="skeleton" style="height:60px;border-radius:12px;"></div>
+        <div class="skeleton" style="height:60px;border-radius:12px;margin-top:8px;"></div>
+      </div>
+    </section>
+
+    <!-- History -->
+    <section id="historySection">
+      <div class="section-title">Service History</div>
+      <div class="visit-list" id="historyList">
+        <div class="skeleton" style="height:60px;border-radius:12px;"></div>
+      </div>
+    </section>
+
+    <!-- Estimates / Quotes — self-hides when none. Shown above invoices
+         because an estimate decision usually precedes an invoice. -->
+    <section id="estimatesSection" style="display:none;">
+      <div class="section-title">Estimates &amp; Quotes</div>
+      <div id="estimatesList" class="visit-list"></div>
+    </section>
+
+    <!-- Invoices -->
+    <section id="invoicesSection" style="display:none;">
+      <div class="section-title">Invoices</div>
+      <div id="invoicesSummary" style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px 22px;margin-bottom:14px;"></div>
+      <div id="invoicesList" class="visit-list"></div>
+    </section>
+
+    <!-- PM service contracts — only shown when the customer has any. -->
+    <section id="contractsSection" style="display:none;">
+      <div class="section-title">Service Contracts</div>
+      <div id="contractsList" class="visit-list"></div>
+    </section>
+
+    <!-- Annual company review CTA -->
+    <section id="annualReviewSection" style="display:none;">
+      <div class="section-title">Rate PrimeCool</div>
+      <div class="review-cta">
+        <div>
+          <h4>How are we doing?</h4>
+          <p>You've been a PrimeCool customer for over a year — we'd love your overall feedback.</p>
+        </div>
+        <button class="btn-leave" onclick="openReviewModal('company')">Leave Annual Review</button>
+      </div>
+    </section>
+    </div><!-- /view-overview -->
+
+    <!-- ── My Account view ───────────────────────────────────────── -->
+    <div id="view-account" style="display:none;">
+
+      <!-- Profile -->
+      <section>
+        <div class="section-title">Profile</div>
+        <div id="acctProfile">
+          <div class="spinner"></div>
+        </div>
+      </section>
+
+      <!-- Equipment -->
+      <section>
+        <div class="section-title">My Equipment</div>
+        <div id="acctEquipment">
+          <div class="spinner"></div>
+        </div>
+      </section>
+
+      <!-- Service history -->
+      <section>
+        <div class="section-title">My Service History</div>
+        <div class="filter-bar">
+          <label for="histFilter">Visit Type:</label>
+          <select id="histFilter" onchange="renderHistory()">
+            <option value="all">All</option>
+            <option value="PM">Preventive (PM)</option>
+            <option value="CM">Corrective (CM)</option>
+          </select>
+        </div>
+        <div id="acctHistory">
+          <div class="spinner"></div>
+        </div>
+      </section>
+
+      <!-- Invoices -->
+      <section>
+        <div class="section-title">My Invoices</div>
+        <div id="acctInvoices">
+          <div class="spinner"></div>
+        </div>
+      </section>
+
+    </div><!-- /view-account -->
+
+    <!-- ── Settings view ─────────────────────────────────────────── -->
+    <div id="view-settings" style="display:none;">
+      <p class="set-intro">Preferences are saved to your account, so they follow you on any device you sign in from.</p>
+
+      <section class="set-card">
+        <div class="set-h">Appearance</div>
+        <div class="set-row">
+          <div class="set-meta">
+            <div class="set-label">Theme</div>
+            <div class="set-sub">Light or dark. Dark is easier on the eyes in low light.</div>
+          </div>
+          <select class="set-input" id="set-theme" onchange="saveSetting('theme', this.value)">
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </div>
+        <div class="set-row">
+          <div class="set-meta">
+            <div class="set-label">Time format</div>
+            <div class="set-sub">How dates and times are shown across your portal.</div>
+          </div>
+          <select class="set-input" id="set-time_format" onchange="saveSetting('time_format', this.value)">
+            <option value="24h">24-hour (14:30)</option>
+            <option value="12h">12-hour (2:30 PM)</option>
+          </select>
+        </div>
+        <div class="set-row">
+          <div class="set-meta">
+            <div class="set-label">Date format</div>
+            <div class="set-sub">How dates are shown across your portal.</div>
+          </div>
+          <select class="set-input" id="set-date_format" onchange="saveSetting('date_format', this.value)">
+            <option value="dmy">04/Jun/2026</option>
+            <option value="iso">2026-06-04</option>
+            <option value="mdy">Jun/04/2026</option>
+          </select>
+        </div>
+        <div class="set-row">
+          <div class="set-meta">
+            <div class="set-label">Density</div>
+            <div class="set-sub">Compact tightens spacing to fit more on screen.</div>
+          </div>
+          <select class="set-input" id="set-density" onchange="saveSetting('density', this.value)">
+            <option value="comfortable">Comfortable</option>
+            <option value="compact">Compact</option>
+          </select>
+        </div>
+        <div class="set-row">
+          <div class="set-meta">
+            <div class="set-label">Text size</div>
+            <div class="set-sub">Larger scales up the whole portal for easier reading.</div>
+          </div>
+          <select class="set-input" id="set-font_scale" onchange="saveSetting('font_scale', this.value)">
+            <option value="normal">Normal</option>
+            <option value="large">Large</option>
+          </select>
+        </div>
+        <div class="set-row">
+          <div class="set-meta">
+            <div class="set-label">Reduce motion</div>
+            <div class="set-sub">Minimizes animations and transitions across the portal.</div>
+          </div>
+          <label class="set-switch">
+            <input type="checkbox" id="set-reduce_motion" onchange="saveSetting('reduce_motion', this.checked)">
+            <span class="set-slider"></span>
+          </label>
+        </div>
+      </section>
+
+      <section class="set-card">
+        <div class="set-h">General</div>
+        <div class="set-row">
+          <div class="set-meta">
+            <div class="set-label">Default landing screen</div>
+            <div class="set-sub">Which screen opens first when you sign in.</div>
+          </div>
+          <select class="set-input" id="set-default_landing" onchange="saveSetting('default_landing', this.value)">
+            <option value="auto">Overview (default)</option>
+            <option value="overview">Overview</option>
+            <option value="account">My Account</option>
+          </select>
+        </div>
+        <div class="set-row">
+          <div class="set-meta">
+            <div class="set-label">Language</div>
+            <div class="set-sub">More languages are coming. English is the only option today.</div>
+          </div>
+          <select class="set-input" id="set-language" onchange="saveSetting('language', this.value)">
+            <option value="en">English</option>
+          </select>
+        </div>
+      </section>
+
+      <section class="set-card">
+        <div class="set-h">Security &amp; sign-in</div>
+        <div class="set-row">
+          <div class="set-meta">
+            <div class="set-label">Password &amp; two-factor</div>
+            <div class="set-sub">Set or change your password and turn on two-factor authentication.</div>
+          </div>
+          <button class="set-btn" onclick="openAccountSecurity()">Manage</button>
+        </div>
+        <div class="set-row set-row--block">
+          <div class="set-meta">
+            <div class="set-label">Recent sign-ins</div>
+            <div class="set-sub">Devices that have signed in to your account recently.</div>
+          </div>
+          <div class="sec-sessions" id="sec-sessions"><div class="set-sub">Loading…</div></div>
+        </div>
+        <div class="set-row">
+          <div class="set-meta">
+            <div class="set-label">Sign out of all other devices</div>
+            <div class="set-sub">Ends every session except this one. Use this if you lost a device.</div>
+          </div>
+          <button class="set-btn set-btn--danger" id="sec-revoke-btn" onclick="revokeOtherSessions()">Sign out others</button>
+        </div>
+      </section>
+
+      <section class="set-card">
+        <div class="set-h">Privacy &amp; data</div>
+        <div class="set-row set-row--block">
+          <div class="set-meta">
+            <div class="set-label">Your data</div>
+            <div class="set-sub">Download a copy of the account, equipment and service-history data we hold for you, or ask us to delete your account.</div>
+          </div>
+          <div class="set-btns">
+            <button class="set-btn set-btn--ghost" onclick="downloadMyData()">⬇ Download my data</button>
+            <button class="set-btn set-btn--danger" onclick="requestDeletion()">Request deletion</button>
+          </div>
+        </div>
+      </section>
+
+      <div class="set-status" id="set-status" aria-live="polite"></div>
+    </div><!-- /view-settings -->
+
+  </div>
+
+  <!-- Toast -->
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <!-- Visit detail modal -->
+  <div class="modal-overlay" id="visitDetailModal">
+    <div class="modal" style="max-width:620px;">
+      <div class="modal-h">
+        <h3 id="visitDetailTitle">Service Visit</h3>
+        <button class="modal-close" onclick="closeVisitDetail()">×</button>
+      </div>
+      <div class="modal-b" id="visitDetailBody"></div>
+      <div class="modal-f">
+        <button class="btn-ghost" onclick="closeVisitDetail()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Estimate detail / decision modal -->
+  <div class="modal-overlay" id="estimateDetailModal">
+    <div class="modal" style="max-width:620px;">
+      <div class="modal-h">
+        <h3 id="estimateDetailTitle">Estimate</h3>
+        <button class="modal-close" onclick="closeEstimateDetail()">×</button>
+      </div>
+      <div class="modal-b" id="estimateDetailBody"></div>
+      <div class="modal-f" id="estimateDetailFooter">
+        <button class="btn-ghost" onclick="closeEstimateDetail()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Lightbox -->
+  <div class="lightbox" id="lightbox" onclick="closeLightbox()">
+    <button class="lightbox-close" onclick="closeLightbox()">×</button>
+    <img id="lightboxImg" src="" alt="">
+  </div>
+
+  <!-- Review modal -->
+  <div class="modal-overlay" id="reviewModal">
+    <div class="modal">
+      <div class="modal-h">
+        <h3 id="reviewModalTitle">Leave a Review</h3>
+        <button class="modal-close" onclick="closeReviewModal()">×</button>
+      </div>
+      <div class="modal-b">
+        <div class="modal-meta" id="reviewModalMeta"></div>
+
+        <label class="modal-label">Your Rating</label>
+        <div class="star-input" id="starInput">
+          <button type="button" data-v="1">★</button>
+          <button type="button" data-v="2">★</button>
+          <button type="button" data-v="3">★</button>
+          <button type="button" data-v="4">★</button>
+          <button type="button" data-v="5">★</button>
+        </div>
+
+        <label class="modal-label" for="reviewText">Your Review</label>
+        <textarea class="modal-textarea" id="reviewText" placeholder="Tell us about your experience…"></textarea>
+
+        <div style="margin-top:14px;">
+          <label class="modal-label" for="reviewRole">Your Role <span style="text-transform:none;font-weight:400;color:var(--muted);">(optional — shown publicly if approved)</span></label>
+          <input class="modal-input" id="reviewRole" placeholder="e.g. Operations Manager">
+        </div>
+
+        <div class="modal-error" id="reviewError"></div>
+        <p style="font-size:12px;color:var(--muted);margin-top:14px;line-height:1.5;">Reviews are visible to PrimeCool staff immediately and shown publicly only after approval.</p>
+      </div>
+      <div class="modal-f">
+        <button class="btn-ghost" onclick="closeReviewModal()">Cancel</button>
+        <button class="btn-primary" id="reviewSubmit" onclick="submitReview()">Submit Review</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Service Request modal ── -->
+  <div class="modal-overlay" id="svcReqModal">
+    <div class="modal">
+      <div class="modal-h">
+        <h3>Request Service</h3>
+        <button class="modal-close" onclick="closeSvcReq()">×</button>
+      </div>
+      <div class="modal-b">
+        <p style="font-size:13px;color:var(--muted);margin:0 0 14px;line-height:1.5;">Tell us what you need. A PrimeCool team member will review and follow up — this does not directly schedule a visit.</p>
+        <label class="modal-label">What kind of help do you need?</label>
+        <select id="sr-type" class="modal-input" style="margin-bottom:14px;">
+          <option value="maintenance">Routine maintenance / PM</option>
+          <option value="repair">Something isn't working (repair)</option>
+          <option value="quote">Request a quote</option>
+          <option value="question">General question</option>
+        </select>
+        <label class="modal-label">Equipment (optional)</label>
+        <select id="sr-equipment" class="modal-input" style="margin-bottom:14px;"><option value="">— Not specific to one unit —</option></select>
+        <label class="modal-label">Subject</label>
+        <input id="sr-subject" class="modal-input" placeholder="Brief description" maxlength="200" style="margin-bottom:14px;">
+        <label class="modal-label">Details</label>
+        <textarea id="sr-body" class="modal-textarea" placeholder="Symptoms, urgency, anything we should know…" maxlength="4000"></textarea>
+        <label class="modal-label" style="margin-top:14px;">Preferred date (optional)</label>
+        <input id="sr-date" class="modal-input" type="date">
+        <div class="modal-error" id="sr-error"></div>
+      </div>
+      <div class="modal-f">
+        <button class="btn-ghost" onclick="closeSvcReq()">Cancel</button>
+        <button class="btn-primary" id="sr-submit" onclick="submitSvcReq()">Submit Request</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Account Security modal ── -->
+  <div class="modal-overlay" id="acctModal">
+    <div class="modal" style="max-width:560px;">
+      <div class="modal-h">
+        <h3>Account Security</h3>
+        <button class="modal-close" onclick="closeAcct()">×</button>
+      </div>
+      <div class="modal-b">
+        <div id="acct-status" style="background:var(--light);padding:12px;border-radius:8px;margin-bottom:14px;font-size:13px;line-height:1.6;"></div>
+
+        <details style="margin-bottom:14px;">
+          <summary style="cursor:pointer;font-weight:600;color:var(--ink);padding:10px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;">Set a password (recommended for commercial accounts)</summary>
+          <div style="padding:14px;border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;">
+            <label class="modal-label">Current PIN or password</label>
+            <input id="pwd-current" class="modal-input" type="password" placeholder="••••••" style="margin-bottom:10px;">
+            <label class="modal-label">New password (≥12 chars, letters + digits)</label>
+            <input id="pwd-new" class="modal-input" type="password" placeholder="••••••••••••" style="margin-bottom:10px;">
+            <label class="modal-label">Confirm new password</label>
+            <input id="pwd-confirm" class="modal-input" type="password" style="margin-bottom:10px;">
+            <button class="btn-primary" onclick="submitPassword()" style="width:100%;">Set password</button>
+          </div>
+        </details>
+
+        <details style="margin-bottom:14px;">
+          <summary style="cursor:pointer;font-weight:600;color:var(--ink);padding:10px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;">Two-factor authentication (MFA)</summary>
+          <div style="padding:14px;border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;">
+            <p id="mfa-status-msg" style="font-size:13px;color:var(--muted);margin:0 0 10px;line-height:1.5;"></p>
+            <div id="mfa-setup-box" style="display:none;">
+              <p style="font-size:13px;line-height:1.5;">Scan this QR code in your authenticator app (Google Authenticator, Authy, 1Password), then enter the 6-digit code below to confirm:</p>
+              <div id="mfa-uri" style="font-family:monospace;font-size:11px;padding:8px;background:var(--light);border-radius:6px;word-break:break-all;margin:10px 0;"></div>
+              <label class="modal-label">6-digit code from app</label>
+              <input id="mfa-code" class="modal-input" type="text" inputmode="numeric" maxlength="6" placeholder="123456" style="margin-bottom:10px;">
+              <button class="btn-primary" onclick="confirmMfa()" style="width:100%;">Confirm &amp; enable MFA</button>
+              <div id="mfa-backup-codes" style="display:none;margin-top:14px;padding:12px;background:var(--warn-bg);border-radius:6px;font-size:12px;line-height:1.6;"></div>
+            </div>
+            <button id="mfa-start-btn" class="btn-primary" onclick="startMfa()" style="width:100%;">Enable MFA</button>
+          </div>
+        </details>
+
+        <details style="margin-bottom:14px;">
+          <summary style="cursor:pointer;font-weight:600;color:var(--ink);padding:10px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;">Privacy &amp; data</summary>
+          <div style="padding:14px;border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;">
+            <p style="font-size:13px;line-height:1.5;color:var(--muted);margin:0 0 10px;">Download a copy of all data we hold on your account, or request account deletion.</p>
+            <button class="btn-ghost" onclick="downloadMyData()" style="margin-right:8px;">⬇ Download my data</button>
+            <button class="btn-ghost" onclick="requestDeletion()" style="color:var(--err-fg);border-color:var(--err-fg);">Request deletion</button>
+          </div>
+        </details>
+
+        <div class="modal-error" id="acct-error"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Enrol mode: commercial customer was bounced here from /api/portal/login
+    // with requires_mfa_setup=true. They hold pc_mfa_enrol (a short-lived
+    // enrolment token) but no pc_token yet — confirming MFA upgrades them
+    // to a full session. Don't redirect in that case; show only the MFA
+    // setup panel.
+    const urlParams = new URLSearchParams(window.location.search);
+    const enrolMfaToken = localStorage.getItem('pc_mfa_enrol');
+    const isEnrolMode = !!enrolMfaToken && (urlParams.get('enrolMfa') === '1' || !localStorage.getItem('pc_token'));
+    let token = localStorage.getItem('pc_token') || (isEnrolMode ? enrolMfaToken : null);
+    if (!token) window.location.replace('/portal');
+
+    let dashboardData = null;
+    let reviewContext = null;
+    let reviewRating  = 0;
+
+    async function logout() {
+      try {
+        await fetch('/api/portal/logout', {
+          method: 'POST',
+          headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+        });
+      } catch {}
+      // Scrub all client-side trace of the prior identity before redirect.
+      localStorage.removeItem('pc_token');
+      localStorage.removeItem('pc_name');
+      localStorage.removeItem('pc_mfa_enrol');
+      try { sessionStorage.clear(); } catch {}
+      // window.location.replace() ensures the dashboard isn't reachable
+      // via the back button after sign-out (shared-device safety, spec S7).
+      window.location.replace('/portal');
+    }
+
+    function esc(s) {
+      return (s == null ? '' : String(s)).replace(/[&<>"']/g, c =>
+        ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+    function fmt(dateStr) {
+      if (!dateStr) return null;
+      return PC.fmtDate(dateStr);
+    }
+    function fmtTime12(t) {
+      if (!t) return '';
+      const [h, m] = t.split(':').map(Number);
+      if (isNaN(h)) return '';
+      const period = h >= 12 ? 'PM' : 'AM';
+      const h12 = h % 12 || 12;
+      return `${h12}:${String(m).padStart(2,'0')} ${period}`;
+    }
+    function fmtDateTime(d, t) {
+      if (!d) return null;
+      const date = fmt(d);
+      const time = fmtTime12(t);
+      return time ? `${date} · ${time}` : date;
+    }
+
+    function badge(status) {
+      const map = {
+        scheduled:   '<span class="badge badge-scheduled">Scheduled</span>',
+        confirmed:   '<span class="badge badge-confirmed">Confirmed</span>',
+        in_progress: '<span class="badge" style="background:rgba(34,160,138,0.15);color:var(--ok-fg);">In Progress</span>',
+        completed:   '<span class="badge badge-completed">Completed</span>',
+      };
+      return map[status] || `<span class="badge">${status}</span>`;
+    }
+
+    function renderSummaryCard(el, dateStr, statusStr, fallback) {
+      if (dateStr) {
+        el.innerHTML = `
+          <div class="label">${el.querySelector('.label').innerHTML}</div>
+          <div class="date-val">${fmt(dateStr)}</div>
+          <div class="date-sub">${statusStr || ''}</div>`;
+      } else {
+        el.innerHTML = `
+          <div class="label">${el.querySelector('.label').innerHTML}</div>
+          <div class="date-val none">${fallback}</div>`;
+      }
+    }
+
+    function visitCard(v, idx) {
+      const typeLabel = v.visit_type === 'PM' ? 'Preventive' : 'Corrective';
+      const dateDisplay = v.completed_date
+        ? fmt(v.completed_date)
+        : (v.scheduled_date ? fmtDateTime(v.scheduled_date, v.scheduled_time) : 'Date TBC');
+      const sub = [esc(v.equipment_name), v.technician ? `Technician: ${esc(v.technician)}` : null].filter(Boolean).join(' · ');
+
+      const review = (dashboardData?.reviews || []).find(r => r.visit_id === v.id);
+      let reviewBtn = '';
+      if (v.status === 'completed') {
+        if (review) {
+          reviewBtn = `<span class="review-status ${review.status}" title="Review ${review.status}">${review.status}</span>`;
+        } else {
+          reviewBtn = `<button class="btn-leave-small pc-stop-prop" onclick="event.stopPropagation();openReviewModal('visit',${v.id})">★ Rate Tech</button>`;
+        }
+      }
+
+      const _g = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+      const equipCell = (v.equipment_id && _g)
+        ? PC.gateLinkHtml('equipment', v.equipment_id, v.equipment_name || '—', {})
+        : esc(v.equipment_name || '');
+      const details = [
+        v.scheduled_date ? { l: 'Scheduled', v: fmtDateTime(v.scheduled_date, v.scheduled_time) } : null,
+        v.completed_date ? { l: 'Completed Date', v: fmt(v.completed_date) } : null,
+        v.technician     ? { l: 'Technician',     v: esc(v.technician) }     : null,
+        v.equipment_name ? { l: 'Equipment',       v: equipCell } : null,
+      ].filter(Boolean);
+
+      // Customer sees only the polished summary, never the raw work_done /
+      // parts_replaced / notes — those fields are stripped server-side.
+      const longDetails = [
+        v.work_done_summary ? { l: 'Work Performed', v: esc(v.work_done_summary), full: true } : null,
+      ].filter(Boolean);
+
+      const allDetails = [...details, ...longDetails];
+
+      return `
+        <div class="visit-card">
+          <div class="visit-header" onclick="toggleVisit(${idx})">
+            <div class="visit-left">
+              <div class="visit-type-pill pill-${v.visit_type.toLowerCase()}">${v.visit_type}</div>
+              <div class="visit-info">
+                <div class="visit-date">${typeLabel} Maintenance — ${dateDisplay}</div>
+                ${sub ? `<div class="visit-sub">${sub}</div>` : ''}
+              </div>
+            </div>
+            <div class="visit-right">
+              ${badge(v.status)}
+              ${reviewBtn}
+              <svg class="chevron" id="chev-${idx}" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
+          </div>
+          <div class="visit-body" id="vbody-${idx}">
+            ${allDetails.length ? `
+              <div class="detail-grid">
+                ${allDetails.map(d => `
+                  <div class="detail-item${d.full ? ' full' : ''}">
+                    <div class="dl">${d.l}</div>
+                    <div class="dv">${d.v}</div>
+                  </div>`).join('')}
+              </div>` : '<p style="padding-top:14px;font-size:13px;color:var(--muted);">No additional details recorded.</p>'}
+            ${photosHtml(v.photos || [])}
+          </div>
+        </div>`;
+    }
+
+    function photosHtml(photos) {
+      if (!photos || !photos.length) return '';
+      const before = photos.filter(p => p.category === 'before');
+      const after  = photos.filter(p => p.category === 'after');
+      const tile = p => `
+        <div class="photo-tile" onclick="event.stopPropagation();openLightbox('${p.url}')">
+          <span class="cat">${p.category}</span>
+          <img src="${p.url}" alt="${p.category} photo" loading="lazy">
+        </div>`;
+      let html = '<div class="photo-block">';
+      html += '<div class="photo-block-title">Site Photos</div>';
+      if (before.length) html += `<div style="font-size:11px;color:var(--muted);margin:6px 0 4px;">Before</div><div class="photo-grid">${before.map(tile).join('')}</div>`;
+      if (after.length)  html += `<div style="font-size:11px;color:var(--muted);margin:8px 0 4px;">After</div><div class="photo-grid">${after.map(tile).join('')}</div>`;
+      html += '</div>';
+      return html;
+    }
+
+    function openLightbox(src) {
+      document.getElementById('lightboxImg').src = src;
+      document.getElementById('lightbox').classList.add('open');
+    }
+    function closeLightbox() {
+      document.getElementById('lightbox').classList.remove('open');
+      document.getElementById('lightboxImg').src = '';
+    }
+
+    function toggleVisit(idx) {
+      const body = document.getElementById(`vbody-${idx}`);
+      const chev = document.getElementById(`chev-${idx}`);
+      body.classList.toggle('open');
+      chev.classList.toggle('open');
+    }
+
+    async function load() {
+      try {
+        const res = await fetch('/api/portal/me', {
+          headers: { 'Authorization': `Bearer ${token}` },
+        });
+        if (res.status === 401) { logout(); return; }
+        if (!res.ok) throw new Error();
+
+        dashboardData = await res.json();
+        const { customer, equipment, visits, reviews } = dashboardData;
+
+        // Header
+        document.getElementById('headerName').textContent = customer.name;
+        document.getElementById('pageTitle').textContent  = `Welcome, ${customer.name}`;
+        const parts = [customer.company, customer.address].filter(Boolean);
+        document.getElementById('pageSub').textContent = parts.join(' · ');
+
+        // Summary cards
+        const upcoming = visits.filter(v => v.status !== 'completed');
+        const completed = visits.filter(v => v.status === 'completed');
+
+        const nextPM = upcoming.find(v => v.visit_type === 'PM');
+        const nextCM = upcoming.find(v => v.visit_type === 'CM');
+        const lastPM = completed.find(v => v.visit_type === 'PM');
+        const lastCM = completed.find(v => v.visit_type === 'CM');
+
+        const cardNextPM = document.getElementById('cardNextPM');
+        cardNextPM.innerHTML = `
+          <div class="label"><span class="dot dot-pm"></span>Next PM Visit</div>
+          ${nextPM
+            ? `<div class="date-val">${fmt(nextPM.scheduled_date) || 'Date TBC'}</div>
+               <div class="date-sub">${fmtTime12(nextPM.scheduled_time) ? fmtTime12(nextPM.scheduled_time) + ' · ' : ''}${nextPM.status.charAt(0).toUpperCase() + nextPM.status.slice(1)}</div>`
+            : `<div class="date-val none">None scheduled</div>`}`;
+
+        const cardNextCM = document.getElementById('cardNextCM');
+        cardNextCM.innerHTML = `
+          <div class="label"><span class="dot dot-cm"></span>Next CM Visit</div>
+          ${nextCM
+            ? `<div class="date-val">${fmt(nextCM.scheduled_date) || 'Date TBC'}</div>
+               <div class="date-sub">${fmtTime12(nextCM.scheduled_time) ? fmtTime12(nextCM.scheduled_time) + ' · ' : ''}${nextCM.status.charAt(0).toUpperCase() + nextCM.status.slice(1)}</div>`
+            : `<div class="date-val none">None scheduled</div>`}`;
+
+        const cardLastPM = document.getElementById('cardLastPM');
+        cardLastPM.innerHTML = `
+          <div class="label"><span class="dot dot-pm"></span>Last PM Completed</div>
+          ${lastPM
+            ? `<div class="date-val">${fmt(lastPM.completed_date) || fmt(lastPM.scheduled_date) || '—'}</div>
+               <div class="date-sub">${lastPM.technician ? `By ${lastPM.technician}` : ''}</div>`
+            : `<div class="date-val none">No record yet</div>`}`;
+
+        const cardLastCM = document.getElementById('cardLastCM');
+        cardLastCM.innerHTML = `
+          <div class="label"><span class="dot dot-cm"></span>Last CM Completed</div>
+          ${lastCM
+            ? `<div class="date-val">${fmt(lastCM.completed_date) || fmt(lastCM.scheduled_date) || '—'}</div>
+               <div class="date-sub">${lastCM.technician ? `By ${lastCM.technician}` : ''}</div>`
+            : `<div class="date-val none">No record yet</div>`}`;
+
+        // Summary-tile hooks: each populated card opens its backing visit's
+        // detail modal (openVisitDetail resolves against dashboardData.visits).
+        // Gated through PC.gateRow so a customer without visit read access gets
+        // a static card. Cards with no backing visit stay inert. We reset the
+        // interactive attributes first so a re-render of the persistent card
+        // element doesn't leave a stale clickable state when the slot empties.
+        const _wireSummaryTile = (el, v) => {
+          if (!el) return;
+          el.classList.remove('pc-row-clickable');
+          el.removeAttribute('tabindex');
+          el.removeAttribute('role');
+          el.removeAttribute('aria-label');
+          if (!v || !v.id) return;
+          if (typeof PC !== 'undefined' && PC.gateRow) {
+            PC.gateRow(el, 'visit', v.id, {
+              onClick: function () { openVisitDetail(v.id); },
+              ariaLabel: 'Open visit on ' + (fmt(v.completed_date || v.scheduled_date) || ''),
+            });
+          } else {
+            el.classList.add('pc-row-clickable');
+            el.setAttribute('tabindex', '0');
+            el.setAttribute('role', 'button');
+            el.onclick = function () { openVisitDetail(v.id); };
+            el.onkeydown = function (e) {
+              if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openVisitDetail(v.id); }
+            };
+          }
+        };
+        _wireSummaryTile(cardNextPM, nextPM);
+        _wireSummaryTile(cardNextCM, nextCM);
+        _wireSummaryTile(cardLastPM, lastPM);
+        _wireSummaryTile(cardLastCM, lastCM);
+
+        // Equipment
+        if (equipment.length > 0) {
+          document.getElementById('equipmentSection').style.display = 'block';
+          document.getElementById('equipmentList').innerHTML = equipment.map(eq => `
+            <div class="eq-card" data-pc-row-equipment="${eq.id}">
+              <div class="eq-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 2a10 10 0 1 0 10 10H12V2z"/><path d="M12 2a10 10 0 0 1 10 10"/>
+                  <circle cx="12" cy="12" r="3"/>
+                </svg>
+              </div>
+              <div class="eq-info">
+                <div class="eq-name">${eq.name}</div>
+                <div class="eq-meta">${[eq.type, eq.model, eq.location].filter(Boolean).join(' · ') || 'No details recorded'}</div>
+              </div>
+            </div>`).join('');
+          // FIXME: portal has no equipment-detail modal yet — gate row only adds
+          // a clickable affordance once a detail screen ships. For now we just
+          // attach the access-bundle marker (no onClick) so the row reflects
+          // canRead state visually.
+          if (typeof PC !== 'undefined' && PC.gateRow) {
+            document.querySelectorAll('#equipmentList [data-pc-row-equipment]').forEach(function (card) {
+              const eid = Number(card.getAttribute('data-pc-row-equipment'));
+              PC.gateRow(card, 'equipment', eid, { ariaLabel: 'Equipment #' + eid });
+            });
+          }
+        }
+
+        // Upcoming visits
+        const upcomingEl = document.getElementById('upcomingList');
+        if (upcoming.length === 0) {
+          upcomingEl.innerHTML = `
+            <div class="empty-state">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
+              </svg>
+              <p>No upcoming visits scheduled.</p>
+            </div>`;
+        } else {
+          upcomingEl.innerHTML = upcoming.map((v, i) => visitCard(v, i)).join('');
+        }
+
+        // History
+        const historyEl = document.getElementById('historyList');
+        const offset = upcoming.length;
+        if (completed.length === 0) {
+          historyEl.innerHTML = `
+            <div class="empty-state">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+              </svg>
+              <p>No completed service visits on record yet.</p>
+            </div>`;
+        } else {
+          historyEl.innerHTML = completed.map((v, i) => visitCard(v, offset + i)).join('');
+        }
+
+        // Load customer invoices
+        loadCustomerInvoices().catch(() => {});
+
+        // Load customer estimates (section self-hides when none)
+        loadCustomerEstimates().catch(() => {});
+
+        // Load PM service contracts (section self-hides when none)
+        loadCustomerContracts().catch(() => {});
+
+        // Annual company review eligibility
+        const oneYearAgo = new Date();
+        oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+        const accountAge = customer.created_at ? new Date(customer.created_at) : null;
+        const thisYear   = new Date().getFullYear();
+        const hasCompanyReviewThisYear = reviews.some(r =>
+          r.review_type === 'company' && new Date(r.created_at).getFullYear() === thisYear
+        );
+        if (accountAge && accountAge < oneYearAgo && !hasCompanyReviewThisYear) {
+          document.getElementById('annualReviewSection').style.display = 'block';
+        }
+
+      } catch (e) {
+        if (typeof PC !== 'undefined' && PC.handleAccessDenied && e && e.body && PC.handleAccessDenied(e)) return;
+        document.getElementById('pageTitle').textContent = 'Error loading data';
+        document.getElementById('pageSub').textContent  = 'Please refresh the page or contact PrimeCool support.';
+      }
+      // ── Pattern A: once the access bundle resolves, re-paint the surfaces so
+      //    PC.gateRow / PC.gateLinkHtml gating reflects actual scope (e.g., the
+      //    customer-owned visit/equipment/invoice records).
+      if (typeof PC !== 'undefined' && PC.access) {
+        PC.access().then(function () {
+          try { if (typeof renderHistory === 'function' && document.getElementById('acctHistory')) renderHistory(); } catch(_) {}
+          try { if (typeof renderAcctEquipment === 'function' && document.getElementById('acctEquipment')) renderAcctEquipment(); } catch(_) {}
+          try { if (typeof renderAcctInvoices === 'function' && document.getElementById('acctInvoices')) renderAcctInvoices(); } catch(_) {}
+          try { if (typeof loadCustomerInvoices === 'function') loadCustomerInvoices().catch(()=>{}); } catch(_) {}
+        }).catch(function (e) { try { console.warn('access-bundle load failed:', e); } catch(_) {} });
+      }
+    }
+
+    // ── Review modal ─────────────────────────────────────────────────────────
+    function openReviewModal(type, visitId) {
+      reviewContext = { type, visitId };
+      reviewRating  = 0;
+      document.querySelectorAll('#starInput button').forEach(b => b.classList.remove('active'));
+      document.getElementById('reviewText').value  = '';
+      document.getElementById('reviewRole').value  = '';
+      document.getElementById('reviewError').style.display = 'none';
+      document.getElementById('reviewSubmit').disabled = false;
+      document.getElementById('reviewSubmit').textContent = 'Submit Review';
+
+      if (type === 'visit') {
+        const v = dashboardData.visits.find(x => x.id === visitId);
+        document.getElementById('reviewModalTitle').textContent = 'Rate Your Service Visit';
+        document.getElementById('reviewModalMeta').innerHTML = `
+          <strong>${v.visit_type === 'PM' ? 'Preventive' : 'Corrective'} Maintenance</strong>
+          · ${fmt(v.completed_date || v.scheduled_date) || 'Date unknown'}
+          ${v.technician ? `<br>Technician: <strong>${esc(v.technician)}</strong>` : ''}`;
+      } else {
+        document.getElementById('reviewModalTitle').textContent = 'Annual Company Review';
+        document.getElementById('reviewModalMeta').innerHTML = `Your overall experience with PrimeCool Services this year.`;
+      }
+      document.getElementById('reviewModal').classList.add('open');
+    }
+
+    function closeReviewModal() {
+      document.getElementById('reviewModal').classList.remove('open');
+      reviewContext = null;
+    }
+
+    document.querySelectorAll('#starInput button').forEach(btn => {
+      btn.addEventListener('click', () => {
+        reviewRating = parseInt(btn.dataset.v);
+        document.querySelectorAll('#starInput button').forEach(b => {
+          b.classList.toggle('active', parseInt(b.dataset.v) <= reviewRating);
+        });
+      });
+    });
+
+    document.getElementById('reviewModal').addEventListener('click', e => {
+      if (e.target.id === 'reviewModal') closeReviewModal();
+    });
+
+    async function submitReview() {
+      const err  = document.getElementById('reviewError');
+      const btn  = document.getElementById('reviewSubmit');
+      const text = document.getElementById('reviewText').value.trim();
+      const role = document.getElementById('reviewRole').value.trim();
+      err.style.display = 'none';
+
+      if (!reviewRating) { showReviewErr('Please choose a star rating.'); return; }
+      if (!text)         { showReviewErr('Please write a short review.'); return; }
+
+      btn.disabled    = true;
+      btn.textContent = 'Submitting…';
+
+      const body = {
+        review_type: reviewContext.type,
+        visit_id:    reviewContext.visitId || null,
+        rating:      reviewRating,
+        text, role,
+      };
+
+      try {
+        const res = await fetch('/api/portal/reviews', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body:    JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          showReviewErr(data.detail || 'Could not submit review.');
+          btn.disabled    = false;
+          btn.textContent = 'Submit Review';
+          return;
+        }
+        closeReviewModal();
+        await load();
+        alert('Thanks for your review! It will appear publicly once approved by PrimeCool.');
+      } catch {
+        showReviewErr('Connection error. Please try again.');
+        btn.disabled    = false;
+        btn.textContent = 'Submit Review';
+      }
+    }
+
+    function showReviewErr(msg) {
+      const err = document.getElementById('reviewError');
+      err.textContent = msg;
+      err.style.display = 'block';
+    }
+
+    // ── Invoices ─────────────────────────────────────────────────────────────
+    function fmtMoney(n, currency) {
+      n = Number(n) || 0;
+      const sym = currency === 'JMD' ? 'J$' : (currency === 'USD' ? '$' : (currency === 'TTD' ? 'TT$' : ''));
+      return sym + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    async function loadCustomerInvoices() {
+      const res = await fetch('/api/portal/invoices', {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      if (res.status === 403) {
+        try {
+          const body = await res.json();
+          if (typeof PC !== 'undefined' && PC.handleAccessDenied) PC.handleAccessDenied({ body });
+        } catch (_) {}
+        return;
+      }
+      if (!res.ok) return;
+      const all = await res.json();
+      // Filter out drafts — customers shouldn't see those
+      const visible = all.filter(i => i.status !== 'draft');
+      if (!visible.length) return;
+
+      document.getElementById('invoicesSection').style.display = 'block';
+
+      const outstanding = visible
+        .filter(i => i.status === 'sent')
+        .reduce((s, i) => s + ((i.total || 0) - (i.amount_paid || 0)), 0);
+      const overdueCount = visible.filter(i => {
+        if (i.status !== 'sent') return false;
+        const bal = (i.total || 0) - (i.amount_paid || 0);
+        if (bal <= 0.005) return false;
+        return new Date(i.due_date) < new Date(new Date().toDateString());
+      }).length;
+      const currency = visible[0]?.currency || 'JMD';
+
+      const summary = document.getElementById('invoicesSummary');
+      if (outstanding > 0) {
+        summary.innerHTML = `
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:14px;">
+            <div>
+              <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.7px;font-weight:700;margin-bottom:4px;">Outstanding Balance</div>
+              <div style="font-size:26px;font-weight:800;color:var(--warn-fg);">${fmtMoney(outstanding, currency)}</div>
+              ${overdueCount ? `<div style="font-size:12px;color:var(--err-fg);margin-top:4px;font-weight:600;">${overdueCount} overdue</div>` : ''}
+            </div>
+            <div style="font-size:12px;color:var(--muted);text-align:right;max-width:240px;line-height:1.5;">
+              Contact PrimeCool to arrange payment:<br>
+              <strong style="color:var(--ink);">+1 (876) 315-9940</strong>
+            </div>
+          </div>`;
+      } else {
+        summary.innerHTML = `
+          <div style="text-align:center;color:var(--ok-fg);">
+            <div style="font-size:14px;font-weight:600;">✓ All invoices paid — thank you!</div>
+          </div>`;
+      }
+
+      const list = document.getElementById('invoicesList');
+      const _gInv = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+      list.innerHTML = visible.map(i => {
+        const balance = (i.total || 0) - (i.amount_paid || 0);
+        const overdue = i.status === 'sent' && balance > 0.005 &&
+                        new Date(i.due_date) < new Date(new Date().toDateString());
+        const status = overdue ? 'overdue' : i.status;
+        const statusBg = {sent:'var(--warn-bg)',overdue:'var(--err-bg)',paid:'var(--ok-bg)',cancelled:'var(--border)'}[status] || 'var(--surface-2)';
+        const statusFg = {sent:'var(--warn-fg)',overdue:'var(--err-fg)',paid:'var(--ok-fg)',cancelled:'var(--muted)'}[status] || 'var(--ink)';
+        // Invoice → service-visit cross-reference. Only render the link when the
+        // referenced visit is actually present in this customer's loaded history
+        // (so openVisitDetail can resolve it) and access is permitted; otherwise
+        // omit silently rather than dangle a dead link.
+        const _visit = i.visit_id ? (dashboardData.visits || []).find(x => x.id === i.visit_id) : null;
+        const _visitLabel = _visit ? (ymd(_visit.completed_date || _visit.scheduled_date) || ('visit #' + i.visit_id)) : '';
+        const visitRef = (_visit && _gInv)
+          ? `<div class="visit-sub" style="margin-top:3px;">Service visit: ${PC.gateLinkHtml('visit', i.visit_id, _visitLabel, {onClick: 'function(){openVisitDetail(' + i.visit_id + ')}', title: 'View the service visit this invoice was raised from'})}</div>`
+          : '';
+        return `
+          <div class="visit-card" data-pc-row-invoice="${i.id}">
+            <div class="visit-header">
+              <div class="visit-left">
+                <div style="font-family:'Courier New',monospace;font-weight:700;color:var(--ink);background:var(--surface-2);padding:4px 10px;border-radius:6px;font-size:13px;">${i.invoice_number}</div>
+                <div class="visit-info">
+                  <div class="visit-date">${fmtMoney(i.total, i.currency)}</div>
+                  <div class="visit-sub">Issued ${fmt(i.issue_date)} · Due ${fmt(i.due_date)}${balance > 0.005 ? ` · Balance ${fmtMoney(balance, i.currency)}` : ''}</div>
+                  ${visitRef}
+                </div>
+              </div>
+              <div class="visit-right">
+                <span class="badge pc-stop-prop" style="background:${statusBg};color:${statusFg};">${status}</span>
+                ${(balance > 0.005 && i.status !== 'paid' && i.status !== 'cancelled')
+                  ? `<button class="btn-leave-small pc-stop-prop" onclick="event.stopPropagation();payInvoiceOnline(${i.id})" title="Pay this invoice online">Pay ${fmtMoney(balance, i.currency)} →</button>`
+                  : `<span style="color:var(--teal);font-size:13px;font-weight:600;">View →</span>`}
+              </div>
+            </div>
+          </div>`;
+      }).join('');
+      if (typeof PC !== 'undefined' && PC.gateRow) {
+        list.querySelectorAll('[data-pc-row-invoice]').forEach(function (card) {
+          const iid = Number(card.getAttribute('data-pc-row-invoice'));
+          PC.gateRow(card, 'invoice', iid, {
+            onClick: function () { window.open('/portal/invoice/' + iid, '_blank'); },
+            ariaLabel: 'Open invoice #' + iid,
+          });
+        });
+      } else {
+        list.querySelectorAll('[data-pc-row-invoice]').forEach(function (card) {
+          const iid = Number(card.getAttribute('data-pc-row-invoice'));
+          card.addEventListener('click', function () { window.open('/portal/invoice/' + iid, '_blank'); });
+        });
+      }
+
+      // Aggregate banner — make the unpaid-balance summary clickable so the
+      // customer can jump to the Invoices tab. PC.gateBadge overwrites the
+      // textContent, which would destroy the rich HTML banner we composed, so
+      // we hand-wire equivalent click/keyboard affordances and gate them via
+      // PC.canRead instead.
+      const banner = document.getElementById('invoicesSummary');
+      const unpaidCount = visible.filter(x => {
+        if (x.status === 'paid' || x.status === 'cancelled') return false;
+        return ((x.total || 0) - (x.amount_paid || 0)) > 0.005;
+      }).length;
+      const canReadInv = (typeof PC === 'undefined' || !PC.canRead) ? true : PC.canRead('invoice', null);
+      if (banner && unpaidCount && canReadInv) {
+        banner.classList.add('pc-badge-clickable');
+        banner.setAttribute('role', 'button');
+        banner.setAttribute('tabindex', '0');
+        const goInvoices = function (e) {
+          e && e.preventDefault && e.preventDefault();
+          try { if (typeof switchView === 'function') switchView('account'); } catch(_) {}
+          try { const t = document.querySelector('[data-tab="invoices"]'); if (t) t.click(); } catch(_) {}
+        };
+        banner.addEventListener('click', goInvoices);
+        banner.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter' || e.key === ' ') goInvoices(e);
+        });
+      }
+    }
+
+    // ── Estimates / Quotes ─────────────────────────────────────────────────
+    // Customers see sent/approved/declined/expired/converted estimates (the
+    // backend already excludes drafts and canceled ones). Sent estimates carry
+    // Approve / Decline actions; everything else is read-only.
+    let portalEstimates = [];
+    const _ESTSTATUS_STYLE = {
+      sent:     'background:var(--warn-bg);color:var(--warn-fg);',
+      approved: 'background:var(--ok-bg);color:var(--ok-fg);',
+      declined: 'background:var(--err-bg);color:var(--err-fg);',
+      expired:  'background:var(--surface-2);color:var(--muted);',
+      converted:'background:var(--surface-2);color:var(--ink);',
+    };
+
+    async function loadCustomerEstimates() {
+      const res = await fetch('/api/portal/estimates', {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      if (res.status === 403) {
+        try { const body = await res.json(); if (typeof PC !== 'undefined' && PC.handleAccessDenied) PC.handleAccessDenied({ body }); } catch (_) {}
+        return;
+      }
+      if (!res.ok) return;
+      portalEstimates = await res.json();
+      renderPortalEstimates();
+    }
+
+    function renderPortalEstimates() {
+      const list = portalEstimates || [];
+      if (!list.length) { document.getElementById('estimatesSection').style.display = 'none'; return; }
+      document.getElementById('estimatesSection').style.display = 'block';
+      const host = document.getElementById('estimatesList');
+      host.innerHTML = list.map(e => {
+        const stStyle = _ESTSTATUS_STYLE[e.status] || 'background:var(--surface-2);color:var(--ink);';
+        const needsDecision = e.status === 'sent';
+        const cta = needsDecision
+          ? '<span style="color:var(--teal);font-size:13px;font-weight:600;">Review &amp; respond →</span>'
+          : '<span style="color:var(--teal);font-size:13px;font-weight:600;">View →</span>';
+        return `
+          <div class="visit-card" data-est-id="${e.id}">
+            <div class="visit-header">
+              <div class="visit-left">
+                <div style="font-family:'Courier New',monospace;font-weight:700;color:var(--ink);background:var(--surface-2);padding:4px 10px;border-radius:6px;font-size:13px;">${e.estimate_number}</div>
+                <div class="visit-info">
+                  <div class="visit-date">${fmtMoney(e.total, e.currency)}</div>
+                  <div class="visit-sub">Issued ${fmt(e.issue_date)}${e.valid_until ? ' · Valid until ' + fmt(e.valid_until) : ''}</div>
+                </div>
+              </div>
+              <div class="visit-right">
+                <span class="badge" style="${stStyle}">${e.status}</span>
+                ${cta}
+              </div>
+            </div>
+          </div>`;
+      }).join('');
+      host.querySelectorAll('[data-est-id]').forEach(function (card) {
+        const eid = Number(card.getAttribute('data-est-id'));
+        card.style.cursor = 'pointer';
+        card.addEventListener('click', function () { openEstimateDetail(eid); });
+      });
+    }
+
+    async function openEstimateDetail(estimateId) {
+      const body = document.getElementById('estimateDetailBody');
+      const footer = document.getElementById('estimateDetailFooter');
+      document.getElementById('estimateDetailTitle').textContent = 'Estimate';
+      body.innerHTML = '<div class="spinner"></div>';
+      footer.innerHTML = '<button class="btn-ghost" onclick="closeEstimateDetail()">Close</button>';
+      document.getElementById('estimateDetailModal').classList.add('open');
+      let est;
+      try {
+        const res = await fetch(`/api/portal/estimates/${estimateId}`, { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!res.ok) { body.innerHTML = '<p style="color:var(--err-fg);">Could not load this estimate.</p>'; return; }
+        est = await res.json();
+      } catch (_) { body.innerHTML = '<p style="color:var(--err-fg);">Could not load this estimate.</p>'; return; }
+
+      document.getElementById('estimateDetailTitle').textContent = est.estimate_number || 'Estimate';
+      const lines = (est.line_items || []).map(li => `
+        <tr>
+          <td style="padding:8px 6px;border-bottom:1px solid var(--border);">${escEst(li.description || '')}</td>
+          <td style="padding:8px 6px;border-bottom:1px solid var(--border);text-align:right;font-variant-numeric:tabular-nums;">${Number(li.quantity)}</td>
+          <td style="padding:8px 6px;border-bottom:1px solid var(--border);text-align:right;font-variant-numeric:tabular-nums;">${fmtMoney(li.unit_price, est.currency)}</td>
+          <td style="padding:8px 6px;border-bottom:1px solid var(--border);text-align:right;font-variant-numeric:tabular-nums;font-weight:600;">${fmtMoney(li.line_total, est.currency)}</td>
+        </tr>`).join('');
+      const stStyle = _ESTSTATUS_STYLE[est.status] || 'background:var(--surface-2);color:var(--ink);';
+      body.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <span class="badge" style="${stStyle}">${est.status}</span>
+          <span style="font-size:12px;color:var(--muted);">Issued ${fmt(est.issue_date)}${est.valid_until ? ' · Valid until ' + fmt(est.valid_until) : ''}</span>
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+          <thead><tr style="text-align:left;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">
+            <th style="padding:6px;">Description</th><th style="padding:6px;text-align:right;">Qty</th><th style="padding:6px;text-align:right;">Unit</th><th style="padding:6px;text-align:right;">Total</th>
+          </tr></thead>
+          <tbody>${lines || '<tr><td colspan="4" style="padding:10px;color:var(--muted);">No line items.</td></tr>'}</tbody>
+        </table>
+        <div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--border);">
+          <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--muted);"><span>Subtotal</span><span>${fmtMoney(est.subtotal, est.currency)}</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--muted);margin-top:4px;"><span>GCT</span><span>${fmtMoney(est.tax_amount, est.currency)}</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:16px;font-weight:700;color:var(--ink);margin-top:8px;"><span>Total</span><span>${fmtMoney(est.total, est.currency)}</span></div>
+        </div>
+        ${est.notes ? `<div style="margin-top:14px;padding:12px;background:var(--surface);border-radius:8px;font-size:13px;color:var(--text);white-space:pre-wrap;">${escEst(est.notes)}</div>` : ''}
+        <div class="modal-error" id="estDecisionError" style="display:none;margin-top:10px;"></div>`;
+
+      if (est.status === 'sent') {
+        footer.innerHTML = `
+          <button class="btn-ghost" onclick="closeEstimateDetail()">Close</button>
+          <button class="btn-ghost" style="color:var(--err-fg);border-color:var(--err-fg);" onclick="declineEstimate(${est.id})">Decline</button>
+          <button class="btn-leave" onclick="approveEstimate(${est.id})">Approve</button>`;
+      } else {
+        footer.innerHTML = '<button class="btn-ghost" onclick="closeEstimateDetail()">Close</button>';
+      }
+    }
+
+    function closeEstimateDetail() { document.getElementById('estimateDetailModal').classList.remove('open'); }
+
+    function escEst(s) {
+      return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    async function approveEstimate(estimateId) {
+      if (!confirm('Approve this estimate? PrimeCool will be notified and may convert it into an invoice.')) return;
+      try {
+        const res = await fetch(`/api/portal/estimates/${estimateId}/approve`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        });
+        if (!res.ok) {
+          let msg = 'Could not approve this estimate.';
+          try { const b = await res.json(); msg = (b.detail && b.detail.detail) || b.detail || msg; } catch(_) {}
+          const el = document.getElementById('estDecisionError'); if (el) { el.textContent = msg; el.style.display = 'block'; }
+          return;
+        }
+        closeEstimateDetail();
+        await loadCustomerEstimates();
+      } catch (_) {
+        const el = document.getElementById('estDecisionError'); if (el) { el.textContent = 'Network error — please try again.'; el.style.display = 'block'; }
+      }
+    }
+
+    async function declineEstimate(estimateId) {
+      const reason = prompt('Optionally, let us know why you\'re declining (this helps us improve our quotes):', '');
+      if (reason === null) return; // user cancelled the prompt
+      try {
+        const res = await fetch(`/api/portal/estimates/${estimateId}/decline`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason: reason || '' }),
+        });
+        if (!res.ok) {
+          let msg = 'Could not decline this estimate.';
+          try { const b = await res.json(); msg = (b.detail && b.detail.detail) || b.detail || msg; } catch(_) {}
+          const el = document.getElementById('estDecisionError'); if (el) { el.textContent = msg; el.style.display = 'block'; }
+          return;
+        }
+        closeEstimateDetail();
+        await loadCustomerEstimates();
+      } catch (_) {
+        const el = document.getElementById('estDecisionError'); if (el) { el.textContent = 'Network error — please try again.'; el.style.display = 'block'; }
+      }
+    }
+
+    // ── PM service contracts (read-only) ──────────────────────────────────
+    // Surfaces the customer's own maintenance agreements with the upcoming
+    // auto-scheduled PM-visit dates. Curated server-side shape — no internal
+    // notes or generation bookkeeping. Section self-hides when the customer
+    // has no contracts so it never shows an empty shell.
+    const _PM_FREQ_LABEL_PORTAL = { monthly:'Monthly', quarterly:'Quarterly', semiannual:'Semi-annual', annual:'Annual' };
+    async function loadCustomerContracts() {
+      const res = await fetch('/api/portal/pm-contracts', {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      if (res.status === 403) {
+        try {
+          const body = await res.json();
+          if (typeof PC !== 'undefined' && PC.handleAccessDenied) PC.handleAccessDenied({ body });
+        } catch (_) {}
+        return;
+      }
+      if (!res.ok) return;
+      const data = await res.json();
+      const contracts = (data && data.contracts) || [];
+      if (!contracts.length) return;
+
+      document.getElementById('contractsSection').style.display = 'block';
+      const statusBg = { active:'var(--ok-bg)', paused:'var(--warn-bg)', expired:'var(--surface-2)', cancelled:'var(--border)' };
+      const statusFg = { active:'var(--ok-fg)', paused:'var(--warn-fg)', expired:'var(--muted)', cancelled:'var(--muted)' };
+      const list = document.getElementById('contractsList');
+      list.innerHTML = contracts.map(c => {
+        const freq = _PM_FREQ_LABEL_PORTAL[c.frequency] || c.frequency || '';
+        const next = (c.upcoming_visits || [])[0];
+        const moreCount = Math.max(0, (c.upcoming_visits || []).length - 1);
+        const nextLine = next
+          ? `Next visit ${fmt(next)}${moreCount ? ` · +${moreCount} more scheduled` : ''}`
+          : 'No upcoming visits scheduled';
+        const valLine = (c.contract_value && c.contract_value > 0)
+          ? ` · ${fmtMoney(c.contract_value, 'JMD')}` : '';
+        return `
+          <div class="visit-card">
+            <div class="visit-header">
+              <div class="visit-left">
+                <div style="font-family:'Courier New',monospace;font-weight:700;color:var(--ink);background:var(--surface-2);padding:4px 10px;border-radius:6px;font-size:13px;">${esc(c.contract_code || '')}</div>
+                <div class="visit-info">
+                  <div class="visit-date">${esc(c.title || (freq + ' maintenance'))}</div>
+                  <div class="visit-sub">${esc(freq)} · ${fmt(c.start_date)} – ${fmt(c.end_date)}${valLine}</div>
+                  <div class="visit-sub" style="margin-top:3px;">${esc(nextLine)}</div>
+                </div>
+              </div>
+              <div class="visit-right">
+                <span class="badge" style="background:${statusBg[c.status] || 'var(--surface-2)'};color:${statusFg[c.status] || 'var(--ink)'};text-transform:capitalize;">${esc(c.status || '')}</span>
+              </div>
+            </div>
+          </div>`;
+      }).join('');
+    }
+
+    // ── Service Request ──────────────────────────────────────────────────
+    function openServiceRequest() {
+      // Populate equipment select from loaded dashboard data
+      const sel = document.getElementById('sr-equipment');
+      sel.innerHTML = '<option value="">— Not specific to one unit —</option>' +
+        ((dashboardData && dashboardData.equipment) || []).map(e =>
+          `<option value="${e.id}">${esc(e.name || '')}${e.type ? ' (' + esc(e.type) + ')' : ''}</option>`
+        ).join('');
+      document.getElementById('sr-error').style.display = 'none';
+      ['sr-subject','sr-body','sr-date'].forEach(id => document.getElementById(id).value = '');
+      document.getElementById('sr-type').value = 'maintenance';
+      document.getElementById('svcReqModal').classList.add('open');
+    }
+    function closeSvcReq() { document.getElementById('svcReqModal').classList.remove('open'); }
+
+    async function submitSvcReq() {
+      const err = document.getElementById('sr-error');
+      err.style.display = 'none';
+      const body = {
+        request_type:   document.getElementById('sr-type').value,
+        subject:        document.getElementById('sr-subject').value.trim(),
+        body:           document.getElementById('sr-body').value.trim(),
+        equipment_id:   document.getElementById('sr-equipment').value
+                          ? parseInt(document.getElementById('sr-equipment').value) : null,
+        preferred_date: document.getElementById('sr-date').value || null,
+      };
+      if (!body.subject || !body.body) {
+        err.textContent = 'Subject and details are required.';
+        err.style.display = 'block'; return;
+      }
+      const btn = document.getElementById('sr-submit');
+      btn.disabled = true; btn.textContent = 'Sending…';
+      try {
+        const res = await fetch('/api/portal/requests', {
+          method:  'POST',
+          headers: { 'Content-Type':'application/json',
+                     ...(token ? {'Authorization': `Bearer ${token}`} : {}) },
+          credentials: 'include',
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const t = await res.json().catch(() => ({detail:res.statusText}));
+          throw new Error(t.detail || 'Failed to send');
+        }
+        closeSvcReq();
+        alert('Request sent. A PrimeCool team member will follow up shortly.');
+      } catch (e) {
+        err.textContent = e.message; err.style.display = 'block';
+      } finally {
+        btn.disabled = false; btn.textContent = 'Submit Request';
+      }
+    }
+
+    // ── Account Security ─────────────────────────────────────────────────
+    let mfaSecret = null;
+    function openAccountSecurity() {
+      const c = dashboardData && dashboardData.customer;
+      if (!c) return;
+      const lines = [];
+      lines.push(`<strong>${esc(c.name || '')}</strong> · ${esc(c.customer_code || '')}`);
+      lines.push(`Account type: <strong>${esc(c.customer_type || 'residential')}</strong>`);
+      lines.push(`Sign-in method: <strong>${c.auth_mode === 'password' ? 'Password' : 'PIN'}</strong>`);
+      lines.push(`Two-factor authentication: <strong>${c.mfa_enabled ? '✓ Enabled' : '✗ Not enabled'}</strong>`);
+      // MFA on the customer portal is optional (per operator policy
+      // 2026-05-25). Encourage commercial customers to opt in but
+      // don't tell them they "must" — the next sign-in won't force it.
+      if (c.customer_type === 'commercial' && !c.mfa_enabled) {
+        lines.push('<span style="color:var(--warn-fg);">Optional but recommended for commercial accounts — enable below.</span>');
+      }
+      document.getElementById('acct-status').innerHTML = lines.join('<br>');
+      document.getElementById('mfa-status-msg').textContent = c.mfa_enabled
+        ? 'MFA is enabled on this account.'
+        : 'MFA is not enabled. Adding a second factor makes it much harder for someone to access your account if your password leaks.';
+      document.getElementById('mfa-setup-box').style.display = 'none';
+      document.getElementById('mfa-start-btn').style.display = c.mfa_enabled ? 'none' : '';
+      document.getElementById('mfa-backup-codes').style.display = 'none';
+      document.getElementById('acct-error').style.display = 'none';
+      document.getElementById('acctModal').classList.add('open');
+    }
+    function closeAcct() { document.getElementById('acctModal').classList.remove('open'); }
+
+    async function apiPortal(method, url, body) {
+      // Fall back to the enrol token if the full session token isn't set yet
+      // (commercial customer mid-MFA-enrolment).
+      const authTok = token || localStorage.getItem('pc_mfa_enrol');
+      const res = await fetch(url, {
+        method,
+        headers: { 'Content-Type':'application/json',
+                   ...(authTok ? {'Authorization': `Bearer ${authTok}`} : {}) },
+        credentials: 'include',
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      if (!res.ok) {
+        const t = await res.json().catch(() => ({detail:res.statusText}));
+        throw new Error(t.detail || 'Request failed');
+      }
+      return res.json();
+    }
+
+    async function submitPassword() {
+      const cur  = document.getElementById('pwd-current').value;
+      const newp = document.getElementById('pwd-new').value;
+      const conf = document.getElementById('pwd-confirm').value;
+      if (!cur || !newp || !conf) { acctErr('All three fields are required.'); return; }
+      if (newp !== conf)            { acctErr('New password and confirmation do not match.'); return; }
+      try {
+        const isPw = dashboardData.customer.auth_mode === 'password';
+        await apiPortal('POST', '/api/portal/password', isPw
+          ? { current_password: cur, new_password: newp, confirm: conf }
+          : { current_pin: cur, new_password: newp, confirm: conf });
+        alert('Password set. Use this password to sign in from now on.');
+        closeAcct();
+      } catch (e) { acctErr(e.message); }
+    }
+
+    async function startMfa() {
+      try {
+        const res = await apiPortal('POST', '/api/portal/mfa/setup');
+        mfaSecret = res.secret;
+        document.getElementById('mfa-uri').textContent = res.provisioning_uri;
+        // The full account-modal version of the screen wraps these
+        // controls in a setup-box / start-btn; the enrol-mode page
+        // doesn't render either, so guard the lookups.
+        const box = document.getElementById('mfa-setup-box');
+        if (box) box.style.display = '';
+        const startBtn = document.getElementById('mfa-start-btn');
+        if (startBtn) startBtn.style.display = 'none';
+      } catch (e) { acctErr(e.message); }
+    }
+    async function confirmMfa() {
+      const code = document.getElementById('mfa-code').value.trim();
+      if (!code) { acctErr('Enter the 6-digit code.'); return; }
+      try {
+        const res = await apiPortal('POST', '/api/portal/mfa/confirm', { code });
+        const box = document.getElementById('mfa-backup-codes');
+        box.style.display = '';
+        box.innerHTML = '<strong>Save these backup codes</strong> — each works once if you lose your authenticator:<br>' +
+          (res.backup_codes || []).map(c => `<code style="font-size:14px;">${esc(c)}</code>`).join('<br>') +
+          '<br><br><button class="btn-primary" onclick="finishEnrol()" style="margin-top:8px;">I\'ve saved my codes — continue</button>';
+        document.getElementById('mfa-status-msg').textContent = 'MFA is enabled on this account.';
+        if (dashboardData && dashboardData.customer) dashboardData.customer.mfa_enabled = 1;
+        // Enrol flow: backend issued a full session token in res.token.
+        // Swap pc_mfa_enrol for pc_token so the next page-load is a normal session.
+        if (res.token) {
+          localStorage.setItem('pc_token', res.token);
+          localStorage.removeItem('pc_mfa_enrol');
+          if (res.name) localStorage.setItem('pc_name', res.name);
+          token = res.token;
+        }
+      } catch (e) { acctErr(e.message); }
+    }
+
+    function finishEnrol() {
+      // Drop the ?enrolMfa=1 query and reload as a normal authenticated session.
+      window.location.replace('/portal/dashboard');
+    }
+
+    async function downloadMyData() {
+      try {
+        const res = await fetch('/api/portal/me/export', {
+          headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+          credentials: 'include',
+        });
+        if (!res.ok) {
+          const t = await res.json().catch(() => ({detail:res.statusText}));
+          throw new Error(t.detail || 'Export failed');
+        }
+        const data = await res.json();
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `primecool-data-${new Date().toISOString().slice(0,10)}.json`;
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
+      } catch (e) { acctErr(e.message); }
+    }
+
+    async function requestDeletion() {
+      if (!confirm('Request account deletion? A PrimeCool team member will follow up. This is not immediate — financial records must be retained for the statutory period.')) return;
+      try {
+        await apiPortal('POST', '/api/portal/me/deletion-request');
+        alert('Deletion request submitted. Our team will follow up.');
+        closeAcct();
+      } catch (e) { acctErr(e.message); }
+    }
+
+    function acctErr(msg) {
+      const el = document.getElementById('acct-error');
+      const modalOpen = document.getElementById('acctModal').classList.contains('open');
+      if (el) { el.textContent = msg; el.style.display = 'block'; }
+      // When triggered from the Settings page (modal closed) the inline error
+      // banner isn't visible, so surface it as a toast too.
+      if (!modalOpen && window.PC && PC.toast) PC.toast(msg);
+    }
+
+    // ── My Account view ──────────────────────────────────────────────────
+    let acctInvoices = [];
+    let histPage = 0;
+    const HIST_PAGE_SIZE = 10;
+
+    // showToast delegated to PC.toast from /static/pc_shared.js.
+    const showToast = (msg) => window.PC.toast(msg);
+
+    // ── Online payment (#1b) ────────────────────────────────────────────────
+    // Kicks off an online payment for one outstanding invoice. The backend
+    // returns a tokenised checkout URL (a self-hosted stub page locally, or a
+    // real gateway's hosted-checkout page once a provider is configured). We
+    // open it in a new tab; when the customer returns we refresh balances once
+    // so a completed payment reflects without a manual reload.
+    let _payRefreshArmed = false;
+    async function payInvoiceOnline(invoiceId) {
+      try {
+        const res = await fetch(`/api/portal/invoices/${invoiceId}/pay`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        });
+        const d = await res.json().catch(() => ({}));
+        if (res.status === 403) {
+          if (typeof PC !== 'undefined' && PC.handleAccessDenied) PC.handleAccessDenied({ body: d });
+          return;
+        }
+        if (!res.ok) { showToast(d.detail || 'Could not start payment.'); return; }
+        window.open(d.checkout_url, '_blank', 'noopener');
+        showToast('Opening secure payment…');
+        if (!_payRefreshArmed) {
+          _payRefreshArmed = true;
+          const onFocus = () => {
+            window.removeEventListener('focus', onFocus);
+            _payRefreshArmed = false;
+            setTimeout(() => {
+              try { loadCustomerInvoices().catch(() => {}); } catch (_) {}
+              try { if (typeof renderAcctInvoices === 'function' && document.getElementById('acctInvoices')) renderAcctInvoices(); } catch (_) {}
+            }, 500);
+          };
+          window.addEventListener('focus', onFocus);
+        }
+      } catch (e) { showToast('Network error starting payment.'); }
+    }
+
+    function switchView(which) {
+      const views = ['overview', 'account', 'settings'];
+      if (views.indexOf(which) === -1) which = 'overview';
+      views.forEach(v => {
+        const view = document.getElementById('view-' + v);
+        const tab  = document.getElementById('tab-' + v);
+        const on   = v === which;
+        if (view) view.style.display = on ? '' : 'none';
+        if (tab) { tab.classList.toggle('active', on); tab.setAttribute('aria-selected', String(on)); }
+      });
+      try {
+        history.replaceState(null, '', '#' + which);
+      } catch {}
+      if (which === 'account')  renderMyAccount();
+      if (which === 'settings') loadSettingsPanel();
+    }
+
+    // ── Settings (per-customer preferences) ──────────────────────────────
+    function loadSettingsPanel() {
+      const s = (window.PC && PC._settings) || {};
+      const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+      set('set-theme',           s.theme || 'light');
+      set('set-time_format',     s.time_format || '24h');
+      set('set-date_format',     s.date_format || 'dmy');
+      set('set-density',         s.density || 'comfortable');
+      set('set-font_scale',      s.font_scale || 'normal');
+      set('set-default_landing', s.default_landing || 'auto');
+      set('set-language',        s.language || 'en');
+      const rm = document.getElementById('set-reduce_motion');
+      if (rm) rm.checked = !!s.reduce_motion;
+      loadSessions();
+    }
+
+    async function saveSetting(key, value) {
+      const status = document.getElementById('set-status');
+      if (status) { status.style.color = ''; status.textContent = 'Saving…'; }
+      try {
+        await PC.saveSettings('/api/portal/me/settings', { [key]: value });
+        if (status) { status.style.color = 'var(--teal)'; status.textContent = 'Saved.'; }
+        if (window.PC && PC.toast) PC.toast('Settings saved.');
+      } catch (e) {
+        if (status) { status.style.color = 'var(--err-fg)'; status.textContent = 'Could not save — please try again.'; }
+        if (window.PC && PC.toast) PC.toast('Could not save settings.');
+        loadSettingsPanel();
+      }
+    }
+    window.saveSetting = saveSetting;
+
+    // ── Settings → Security & sign-in : recent sign-ins ──────────────────
+    function _deviceLabel(ua) {
+      ua = ua || '';
+      let os = '';
+      if (/iPhone|iPad|iOS/i.test(ua)) os = 'iOS';
+      else if (/Android/i.test(ua)) os = 'Android';
+      else if (/Mac OS X|Macintosh/i.test(ua)) os = 'Mac';
+      else if (/Windows/i.test(ua)) os = 'Windows';
+      else if (/Linux/i.test(ua)) os = 'Linux';
+      let br = '';
+      if (/Edg\//i.test(ua)) br = 'Edge';
+      else if (/Chrome\//i.test(ua) && !/Edg\//i.test(ua)) br = 'Chrome';
+      else if (/Firefox\//i.test(ua)) br = 'Firefox';
+      else if (/Safari\//i.test(ua) && !/Chrome\//i.test(ua)) br = 'Safari';
+      const parts = [br, os].filter(Boolean);
+      return parts.length ? parts.join(' · ') : 'Unknown device';
+    }
+    function _renderSessions(payload) {
+      const host = document.getElementById('sec-sessions');
+      if (!host) return;
+      const rows = (payload && payload.sessions) || [];
+      if (!rows.length) { host.innerHTML = '<div class="set-sub">No recent sign-ins on record.</div>'; return; }
+      const fmt = (window.PC && PC.fmtDateTime) ? PC.fmtDateTime : (x => String(x || ''));
+      host.innerHTML = rows.map(r => {
+        let badge = '';
+        if (r.current)      badge = '<span class="sec-session-badge is-current">This device</span>';
+        else if (r.revoked) badge = '<span class="sec-session-badge is-revoked">Signed out</span>';
+        const when = r.created_at ? fmt(r.created_at) : '';
+        const seen = r.last_seen_at ? ' · last active ' + fmt(r.last_seen_at) : '';
+        const ip = r.ip_address ? ' · ' + esc(r.ip_address) : '';
+        return `<div class="sec-session-row">
+          <div class="ss-main">
+            <div class="sec-session-dev">${esc(_deviceLabel(r.user_agent))}</div>
+            <div class="sec-session-meta">${esc(when)}${esc(seen)}${ip}</div>
+          </div>${badge}
+        </div>`;
+      }).join('');
+      const btn = document.getElementById('sec-revoke-btn');
+      if (btn) btn.disabled = (payload.active_count || 0) <= 1;
+    }
+    async function loadSessions() {
+      const host = document.getElementById('sec-sessions');
+      if (host) host.innerHTML = '<div class="set-sub">Loading…</div>';
+      try {
+        const r = await fetch('/api/portal/me/sessions', {
+          headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+          credentials: 'include',
+        });
+        if (!r.ok) throw new Error('load failed');
+        _renderSessions(await r.json());
+      } catch (_) {
+        if (host) host.innerHTML = '<div class="set-sub">Could not load sign-in history.</div>';
+      }
+    }
+    async function revokeOtherSessions() {
+      if (!confirm('Sign out of all other devices? You will stay signed in here.')) return;
+      const btn = document.getElementById('sec-revoke-btn');
+      if (btn) { btn.disabled = true; btn.textContent = 'Working…'; }
+      try {
+        const r = await fetch('/api/portal/me/sessions/revoke-others', {
+          method: 'POST',
+          headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+          credentials: 'include',
+        });
+        if (!r.ok) throw new Error('revoke failed');
+        const j = await r.json();
+        _renderSessions(j);
+        if (window.PC && PC.toast) PC.toast((j.revoked || 0) + ' other session(s) signed out.');
+      } catch (_) {
+        if (window.PC && PC.toast) PC.toast('Could not sign out other devices.');
+      } finally {
+        if (btn) btn.textContent = 'Sign out others';
+      }
+    }
+    window.revokeOtherSessions = revokeOtherSessions;
+
+    function initials(name) {
+      return String(name || '?').split(/\s+/).filter(Boolean).slice(0, 2)
+        .map(s => s[0].toUpperCase()).join('') || '?';
+    }
+    function ymd(s) {
+      if (!s) return null;
+      return String(s).slice(0, 10);
+    }
+
+    function renderMyAccount() {
+      if (!dashboardData) return;
+      renderProfile();
+      renderAcctEquipment();
+      histPage = 0;
+      renderHistory();
+      renderAcctInvoices();
+    }
+
+    function renderProfile() {
+      const c = dashboardData.customer || {};
+      const isCom = (c.customer_type || '').toLowerCase() === 'commercial';
+      const acctBadge = isCom
+        ? `<span class="badge badge-acct-com">Commercial</span>`
+        : `<span class="badge badge-acct-res">Residential</span>`;
+      // `active` is the canonical flag on customers; treat absence as active.
+      const isActive = (c.active === undefined || c.active === null) ? true : !!c.active;
+      const statusBadge = isActive
+        ? `<span class="badge badge-status-active">Active</span>`
+        : `<span class="badge badge-status-closed">Closed</span>`;
+
+      const fields = [
+        { l: 'Email',           v: c.email },
+        { l: 'Phone',           v: c.phone },
+        { l: 'Mailing Address', v: c.address },
+        { l: 'Company',         v: c.company },
+        { l: 'Member Since',    v: ymd(c.created_at) },
+      ];
+
+      document.getElementById('acctProfile').innerHTML = `
+        <div class="profile-card">
+          <div class="profile-head">
+            <div class="profile-avatar">${esc(initials(c.name))}</div>
+            <div class="profile-id">
+              <div class="profile-name">${esc(c.name || '—')}</div>
+              <div class="profile-code">${esc(c.customer_code || '')}</div>
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;">
+              ${acctBadge}
+              ${statusBadge}
+            </div>
+          </div>
+          <div class="profile-grid">
+            ${fields.map(f => `
+              <div class="profile-field">
+                <div class="pf-label">${esc(f.l)}</div>
+                <div class="pf-val${f.v ? '' : ' muted'}">${f.v ? esc(f.v) : 'Not on file'}</div>
+              </div>`).join('')}
+          </div>
+          <div class="profile-note">
+            To update your contact information, please contact PrimeCool Support.
+          </div>
+        </div>`;
+    }
+
+    function lastServiceFor(equipmentId) {
+      const visits = (dashboardData.visits || [])
+        .filter(v => v.equipment_id === equipmentId && v.status === 'completed' && v.completed_date)
+        .sort((a, b) => (b.completed_date || '').localeCompare(a.completed_date || ''));
+      return visits[0] ? ymd(visits[0].completed_date) : null;
+    }
+
+    function renderAcctEquipment() {
+      const eqs = dashboardData.equipment || [];
+      const el = document.getElementById('acctEquipment');
+      if (!eqs.length) {
+        el.innerHTML = `
+          <div class="empty-state">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="6" width="18" height="14" rx="2"/><path d="M8 6V4h8v2"/></svg>
+            <p>No equipment registered. Once we set up service, your equipment will appear here.</p>
+          </div>`;
+        return;
+      }
+      const _g = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+      const rows = eqs.map(eq => {
+        const last = lastServiceFor(eq.id);
+        const nameCell = _g
+          ? PC.gateLinkHtml('equipment', eq.id, eq.name || '—', {})
+          : esc(eq.name || '—');
+        return `
+          <tr data-pc-row-equipment="${eq.id}">
+            <td>${nameCell}</td>
+            <td>${esc(eq.type || '—')}</td>
+            <td>${esc(eq.model || '—')}</td>
+            <td>${esc(eq.location || '—')}</td>
+            <td class="num">${last ? esc(last) : '<span style="color:var(--muted);">—</span>'}</td>
+          </tr>`;
+      }).join('');
+      el.innerHTML = `
+        <div class="data-table">
+          <table>
+            <thead>
+              <tr><th>Name</th><th>Type</th><th>Model</th><th>Location</th><th>Last Service</th></tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>`;
+      // FIXME: no equipment-detail modal in the customer portal yet — gateRow
+      // sets only access-marker attributes (no onClick) until that screen ships.
+      if (typeof PC !== 'undefined' && PC.gateRow) {
+        el.querySelectorAll('tr[data-pc-row-equipment]').forEach(function (tr) {
+          const eid = Number(tr.getAttribute('data-pc-row-equipment'));
+          PC.gateRow(tr, 'equipment', eid, { ariaLabel: 'Equipment #' + eid });
+        });
+      }
+    }
+
+    function renderHistory() {
+      const filter = document.getElementById('histFilter').value;
+      const all = (dashboardData.visits || []).slice();
+      all.sort((a, b) => {
+        const ad = a.completed_date || a.scheduled_date || '';
+        const bd = b.completed_date || b.scheduled_date || '';
+        return bd.localeCompare(ad);
+      });
+      const filtered = filter === 'all' ? all : all.filter(v => v.visit_type === filter);
+      const el = document.getElementById('acctHistory');
+      if (!filtered.length) {
+        el.innerHTML = `
+          <div class="empty-state">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            <p>No service history yet.</p>
+          </div>`;
+        return;
+      }
+      const totalPages = Math.max(1, Math.ceil(filtered.length / HIST_PAGE_SIZE));
+      if (histPage >= totalPages) histPage = totalPages - 1;
+      if (histPage < 0) histPage = 0;
+      const start = histPage * HIST_PAGE_SIZE;
+      const page  = filtered.slice(start, start + HIST_PAGE_SIZE);
+
+      const typeBadge = t => t === 'PM'
+        ? '<span class="badge" style="background:var(--ok-bg);color:var(--ok-fg);">PM</span>'
+        : '<span class="badge" style="background:var(--warn-bg);color:var(--warn-fg);">CM</span>';
+
+      const _g = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+      const rows = page.map(v => {
+        const date = ymd(v.completed_date || v.scheduled_date) || '—';
+        const scope = v.work_done_summary || v.scope || '';
+        const scopeShort = scope.length > 100 ? scope.slice(0, 100) + '…' : scope;
+        const equipCell = (v.equipment_id && _g)
+          ? PC.gateLinkHtml('equipment', v.equipment_id, v.equipment_name || '—', {})
+          : esc(v.equipment_name || '—');
+        return `
+          <tr data-pc-row-visit="${v.id}">
+            <td class="num">${esc(date)}</td>
+            <td>${typeBadge(v.visit_type)}</td>
+            <td>${equipCell}</td>
+            <td>${badge(v.status)}</td>
+            <td>${esc(scopeShort) || '<span style="color:var(--muted);">—</span>'}</td>
+          </tr>`;
+      }).join('');
+
+      el.innerHTML = `
+        <div class="data-table">
+          <table>
+            <thead>
+              <tr><th>Visit Date</th><th>Type</th><th>Equipment</th><th>Status</th><th>Scope</th></tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+          <div class="pager">
+            <span>Page ${histPage + 1} of ${totalPages} · ${filtered.length} visit${filtered.length === 1 ? '' : 's'}</span>
+            <span>
+              <button onclick="histPage--;renderHistory();" ${histPage === 0 ? 'disabled' : ''}>‹ Prev</button>
+              <button onclick="histPage++;renderHistory();" ${histPage >= totalPages - 1 ? 'disabled' : ''}>Next ›</button>
+            </span>
+          </div>
+        </div>`;
+      if (typeof PC !== 'undefined' && PC.gateRow) {
+        el.querySelectorAll('tr[data-pc-row-visit]').forEach(function (tr) {
+          const vid = Number(tr.getAttribute('data-pc-row-visit'));
+          PC.gateRow(tr, 'visit', vid, {
+            onClick: function () { openVisitDetail(vid); },
+            ariaLabel: 'Open visit #' + vid,
+          });
+        });
+      }
+    }
+
+    function openVisitDetail(visitId) {
+      const v = (dashboardData.visits || []).find(x => x.id === visitId);
+      if (!v) return;
+      const date = ymd(v.completed_date || v.scheduled_date) || '—';
+      const typeFull = v.visit_type === 'PM' ? 'Preventive Maintenance' : 'Corrective Maintenance';
+      document.getElementById('visitDetailTitle').textContent = `${typeFull} — ${date}`;
+
+      const _g = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+      const equipCell = (v.equipment_id && _g)
+        ? '__HTML__:' + PC.gateLinkHtml('equipment', v.equipment_id, v.equipment_name || '—', {})
+        : (v.equipment_name || '');
+      const rows = [
+        v.scheduled_date  ? ['Scheduled',   `${fmt(v.scheduled_date) || ''}${v.scheduled_time ? ' · ' + fmtTime12(v.scheduled_time) : ''}`] : null,
+        v.completed_date  ? ['Completed',   fmt(v.completed_date) || ''] : null,
+        v.equipment_name  ? ['Equipment',   equipCell] : null,
+        v.technician      ? ['Technician',  v.technician] : null,
+        ['Status', '__BADGE__:' + v.status],
+      ].filter(Boolean);
+
+      const scopeBlock = v.work_done_summary
+        ? `<div style="margin-top:14px;"><div class="pf-label">Work Performed</div><div class="pf-val" style="margin-top:4px;line-height:1.5;">${esc(v.work_done_summary)}</div></div>`
+        : '';
+
+      const photos = photosHtml(v.photos || []);
+
+      document.getElementById('visitDetailBody').innerHTML = `
+        <div class="profile-grid">
+          ${rows.map(([l, val]) => `
+            <div class="profile-field">
+              <div class="pf-label">${esc(l)}</div>
+              <div class="pf-val">${val.startsWith('__BADGE__:') ? badge(val.slice(10)) : (val.startsWith('__HTML__:') ? val.slice(9) : esc(val))}</div>
+            </div>`).join('')}
+        </div>
+        ${scopeBlock}
+        ${photos}
+      `;
+      document.getElementById('visitDetailModal').classList.add('open');
+    }
+    function closeVisitDetail() {
+      document.getElementById('visitDetailModal').classList.remove('open');
+    }
+    document.getElementById('visitDetailModal').addEventListener('click', e => {
+      if (e.target.id === 'visitDetailModal') closeVisitDetail();
+    });
+
+    async function renderAcctInvoices() {
+      const el = document.getElementById('acctInvoices');
+      el.innerHTML = '<div class="spinner"></div>';
+      try {
+        const res = await fetch('/api/portal/invoices', {
+          headers: { 'Authorization': `Bearer ${token}` },
+        });
+        if (res.status === 403) {
+          try {
+            const body = await res.json();
+            if (typeof PC !== 'undefined' && PC.handleAccessDenied) PC.handleAccessDenied({ body });
+          } catch (_) {}
+          el.innerHTML = `<div class="empty-state"><p>You do not have permission to view invoices.</p></div>`;
+          return;
+        }
+        if (!res.ok) throw new Error();
+        const all = await res.json();
+        acctInvoices = all.filter(i => i.status !== 'draft');
+      } catch {
+        el.innerHTML = `<div class="empty-state"><p>Could not load invoices. Please refresh.</p></div>`;
+        return;
+      }
+      if (!acctInvoices.length) {
+        el.innerHTML = `
+          <div class="empty-state">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="16" x2="12" y2="16"/></svg>
+            <p>No invoices yet.</p>
+          </div>`;
+        return;
+      }
+      // Sort reverse chronological by issue_date
+      acctInvoices.sort((a, b) => String(b.issue_date || '').localeCompare(String(a.issue_date || '')));
+
+      // Unpaid summary
+      const unpaid = acctInvoices.filter(i => {
+        if (i.status === 'paid' || i.status === 'cancelled') return false;
+        return ((i.total || 0) - (i.amount_paid || 0)) > 0.005;
+      });
+      const totalOutstanding = unpaid.reduce(
+        (s, i) => s + ((i.total || 0) - (i.amount_paid || 0)), 0);
+      const currency = acctInvoices[0]?.currency || 'JMD';
+
+      const banner = unpaid.length ? `
+        <div class="unpaid-banner">
+          You have an outstanding balance of <strong>${fmtMoney(totalOutstanding, currency)}</strong>
+          across <strong>${unpaid.length}</strong> invoice${unpaid.length === 1 ? '' : 's'}.
+        </div>` : '';
+
+      const statusMeta = (i) => {
+        const balance = (i.total || 0) - (i.amount_paid || 0);
+        if (i.status === 'paid')      return { cls: 'badge-inv-paid',      label: 'Paid' };
+        if (i.status === 'cancelled') return { cls: 'badge-inv-cancelled', label: 'Cancelled' };
+        if ((i.amount_paid || 0) > 0 && balance > 0.005) return { cls: 'badge-inv-partial', label: 'Partially Paid' };
+        return { cls: 'badge-inv-unpaid', label: 'Unpaid' };
+      };
+
+      const _g = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+      const rows = acctInvoices.map(i => {
+        const balance = (i.total || 0) - (i.amount_paid || 0);
+        const s = statusMeta(i);
+        const numCell = _g
+          ? PC.gateLinkHtml('invoice', i.id, i.invoice_number || '—', {
+              onClick: 'function(){ window.open("/portal/invoice/' + i.id + '", "_blank"); }',
+              href: '/portal/invoice/' + i.id,
+            })
+          : esc(i.invoice_number || '—');
+        // Visit cross-reference column. The invoice payload carries visit_id;
+        // we only link it when that visit is present in the customer's loaded
+        // history (openVisitDetail resolves against dashboardData.visits) and
+        // read access is permitted — otherwise show an em-dash.
+        const _visit = i.visit_id ? (dashboardData.visits || []).find(x => x.id === i.visit_id) : null;
+        const visitCell = (_visit && _g)
+          ? PC.gateLinkHtml('visit', i.visit_id, (ymd(_visit.completed_date || _visit.scheduled_date) || ('visit #' + i.visit_id)), {
+              onClick: 'function(){ openVisitDetail(' + i.visit_id + '); }',
+              title: 'View the service visit this invoice was raised from',
+            })
+          : '<span style="color:var(--muted);">—</span>';
+        return `
+          <tr data-pc-row-invoice="${i.id}">
+            <td><code style="font-family:'Courier New',monospace;font-weight:700;color:var(--ink);">${numCell}</code></td>
+            <td class="num">${esc(ymd(i.issue_date) || '—')}</td>
+            <td>${visitCell}</td>
+            <td class="num">${fmtMoney(i.total, i.currency)}</td>
+            <td class="num">${fmtMoney(i.amount_paid || 0, i.currency)}</td>
+            <td class="num"><strong>${fmtMoney(balance, i.currency)}</strong></td>
+            <td><span class="badge ${s.cls}">${s.label}</span></td>
+            <td>
+              <span class="inv-actions pc-stop-prop">
+                ${(balance > 0.005 && i.status !== 'paid' && i.status !== 'cancelled')
+                  ? `<button class="btn-leave-small" onclick="event.stopPropagation();payInvoiceOnline(${i.id})" title="Pay this invoice online">Pay online</button>`
+                  : ''}
+                <a href="/portal/invoice/${i.id}" target="_blank" rel="noopener">View</a>
+                <a href="/portal/invoice/${i.id}?print=1" target="_blank" rel="noopener" onclick="event.stopPropagation();showToast('Opening print view…')">Print</a>
+              </span>
+            </td>
+          </tr>`;
+      }).join('');
+
+      el.innerHTML = `
+        ${banner}
+        <div class="data-table" id="acctInvoicesTable">
+          <table>
+            <thead>
+              <tr>
+                <th>Invoice #</th>
+                <th>Issue Date</th>
+                <th>Visit</th>
+                <th>Total</th>
+                <th>Amount Paid</th>
+                <th>Outstanding</th>
+                <th>Status</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>`;
+      if (typeof PC !== 'undefined' && PC.gateRow) {
+        el.querySelectorAll('tr[data-pc-row-invoice]').forEach(function (tr) {
+          const iid = Number(tr.getAttribute('data-pc-row-invoice'));
+          PC.gateRow(tr, 'invoice', iid, {
+            onClick: function () { window.open('/portal/invoice/' + iid, '_blank'); },
+            ariaLabel: 'Open invoice #' + iid,
+          });
+        });
+      }
+    }
+
+    // Honor deep-link on load; otherwise fall back to the saved default
+    // landing screen (Settings → General). An explicit #hash always wins.
+    function applyInitialView() {
+      const hash = (window.location.hash || '').replace('#', '');
+      if (['account', 'overview', 'settings'].indexOf(hash) !== -1) {
+        switchView(hash);
+        return;
+      }
+      const land = (window.PC && PC.getSetting('default_landing')) || 'auto';
+      if (land && land !== 'auto') switchView(land);
+    }
+
+    // Wrap load() so settings are fetched + applied (density/time format) and
+    // the correct initial view is shown once data arrives.
+    const _origLoad = load;
+    load = async function() {
+      await _origLoad();
+      try { await PC.loadSettings('/api/portal/me/settings'); } catch (_) {}
+      try { loadSettingsPanel(); } catch (_) {}
+      applyInitialView();
+    };
+
+    if (isEnrolMode) {
+      // Commercial customer arrived from /api/portal/login with
+      // requires_mfa_setup=true. Don't try to load the dashboard
+      // (the enrol token can't read /api/portal/me). Show only an
+      // MFA setup screen. After confirmMfa stores pc_token, the
+      // "continue" button reloads as a normal session.
+      document.body.innerHTML = `
+        <div style="max-width:560px;margin:60px auto;padding:28px;background:var(--surface);border:1px solid var(--border);border-radius:12px;font-family:system-ui,-apple-system,sans-serif;">
+          <h1 style="margin:0 0 6px;font-size:22px;color:var(--ink);">Set up two-factor authentication</h1>
+          <p style="color:var(--muted);font-size:14px;margin:0 0 18px;line-height:1.5;">
+            Commercial accounts require an authenticator app before first sign-in.
+            Scan the code below with Google Authenticator, Authy, or 1Password,
+            then enter the 6-digit code to finish.
+          </p>
+          <div id="mfa-uri" style="font-family:monospace;font-size:11px;padding:10px;background:var(--surface-2);border-radius:6px;word-break:break-all;margin:0 0 14px;">Loading…</div>
+          <label style="display:block;font-size:13px;font-weight:600;color:var(--ink);margin-bottom:6px;">6-digit code from app</label>
+          <input id="mfa-code" type="text" inputmode="numeric" maxlength="6" placeholder="123456"
+                 style="width:100%;padding:10px;border:1px solid var(--border);border-radius:6px;font-size:16px;margin-bottom:10px;">
+          <button onclick="confirmMfa()"
+                  style="width:100%;padding:11px;background:var(--navy);color:#fff;border:none;border-radius:6px;font-weight:600;cursor:pointer;">
+            Confirm &amp; enable MFA
+          </button>
+          <div id="mfa-backup-codes" style="display:none;margin-top:14px;padding:12px;background:var(--warn-bg);border-radius:6px;font-size:12px;line-height:1.6;"></div>
+          <div id="acct-error" style="display:none;margin-top:12px;padding:10px;background:var(--err-bg);color:var(--err-fg);border-radius:6px;font-size:13px;"></div>
+          <div style="margin-top:18px;text-align:center;">
+            <a href="#" onclick="logout();return false;" style="color:var(--muted);font-size:13px;">Cancel and sign out</a>
+          </div>
+        </div>`;
+      startMfa();
+    } else {
+      load();
+    }
+
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+  </script>
+</body>
+</html>

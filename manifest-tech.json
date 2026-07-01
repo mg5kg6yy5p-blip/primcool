@@ -1,0 +1,17 @@
+{
+  "name": "PrimeCool Tech",
+  "short_name": "PrimeCool Tech",
+  "description": "Field technician portal — daily jobs, time tracking, work logs, and photos.",
+  "start_url": "/tech",
+  "scope": "/tech",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#22A08A",
+  "theme_color": "#0B2545",
+  "categories": ["business", "productivity"],
+  "icons": [
+    { "src": "/icons/tech-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/tech-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/tech-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Customer Portal — PrimeCool Services</title>
+  <link rel="manifest" href="/manifest-portal.json">
+  <meta name="theme-color" content="#0B2545">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="PrimeCool">
+  <link rel="apple-touch-icon" href="/icons/customer-apple.png">
+  <!-- PrimeCool brand fonts (shared across all surfaces). -->
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800;900&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --navy: #0F2A4A;
+      --navy-2: #11335A;
+      --teal: #22A08A;
+      --ice:  #7DD3E8;
+      --lime: #22A08A;
+      --mist: #F2F6FA;
+      --light: #f0f4f8;
+      --white: #ffffff;
+      --ink: #0F2A4A; /* primary heading/label text — remapped light in dark theme */
+      --text: #1a2533;
+      --muted: #5A6472;
+      --border: #dde3ea;
+      /* Semantic surface/status tokens — remapped by the dark override below. */
+      --surface: #ffffff;
+      --surface-2: #f5f8fb;
+      --surface-3: #eef2f7;
+      --teal-deep: #1b8f7a;
+      --disabled: #b0bec5;
+      --placeholder: #c0c8d2;
+      --ok-bg: #f0fdf4;   --ok-fg: #059669;  --ok-border: #bbf7d0;
+      --err-bg: #fff5f5;  --err-fg: #e53e3e; --err-border: #fed7d7;
+      --font-display: 'Archivo', 'Segoe UI', system-ui, -apple-system, sans-serif;
+      --font-body:    'IBM Plex Sans', 'Segoe UI', system-ui, -apple-system, sans-serif;
+      --font-mono:    'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace;
+      --shadow-sm: 0 1px 3px rgba(15,42,74,0.08), 0 8px 24px -16px rgba(15,42,74,0.25);
+      --shadow-md: 0 2px 4px rgba(15,42,74,0.08), 0 12px 28px -10px rgba(15,42,74,0.20);
+      --gradient-navy: linear-gradient(135deg, var(--navy-2), var(--navy));
+      --gradient-cool: var(--navy);
+    }
+    /* ─── Dark theme ─── applied via html[data-pc-theme="dark"] (set in <head> by pc_shared, zero flash) */
+    html[data-pc-theme="dark"] {
+      --navy: #0e1b2e;
+      --navy-2: #16243b;
+      --ink: #e9eef5;
+      --mist: #111c2c;
+      --light: #0b1320;
+      --white: #16212f;
+      --text: #d3dbe6;
+      --muted: #9aa6b6;
+      --border: #2a3848;
+      --surface: #16212f;
+      --surface-2: #1d2a3a;
+      --surface-3: #243345;
+      --teal-deep: #2bb89e;
+      --disabled: #3a4858;
+      --placeholder: #6b7888;
+      --ok-bg: rgba(34,160,138,0.16);  --ok-fg: #5fe0c4; --ok-border: rgba(34,160,138,0.4);
+      --err-bg: rgba(229,62,62,0.16);  --err-fg: #fca5a5; --err-border: rgba(229,62,62,0.4);
+      --shadow-sm: 0 1px 3px rgba(0,0,0,0.4), 0 8px 24px -16px rgba(0,0,0,0.6);
+      --shadow-md: 0 2px 4px rgba(0,0,0,0.4), 0 12px 28px -10px rgba(0,0,0,0.7);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: var(--font-body);
+      background: var(--light);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      font-feature-settings: "tnum" 1, "kern" 1;
+    }
+    h1, h2, h3, .pc-display { font-family: var(--font-display); letter-spacing: -0.01em; }
+    .pc-mono, code, kbd, samp { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+    .pc-snowflake { display:inline-block;width:18px;height:18px;background:var(--lime);border-radius:5px;flex-shrink:0;position:relative; }
+    .pc-snowflake::before { content:"";position:absolute;inset:3px;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230F2A4A' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><line x1='12' y1='2' x2='12' y2='22'/><line x1='2' y1='12' x2='22' y2='12'/><line x1='4.93' y1='4.93' x2='19.07' y2='19.07'/><line x1='19.07' y1='4.93' x2='4.93' y2='19.07'/></svg>");background-size:contain;background-repeat:no-repeat; }
+    /* Skeleton + empty state — shared brand utilities. */
+    .pc-skeleton-line,.pc-skeleton-block{background:linear-gradient(90deg,var(--surface-3) 0%,var(--surface-2) 50%,var(--surface-3) 100%);background-size:200% 100%;border-radius:6px;animation:pcShimmer 1.4s ease-in-out infinite;}
+    .pc-skeleton-line{height:12px;margin:6px 0;}
+    .pc-skeleton-block{height:38px;}
+    @keyframes pcShimmer{0%{background-position:100% 0;}100%{background-position:-100% 0;}}
+    .pc-empty{padding:32px 20px;text-align:center;color:var(--muted);font-size:13px;}
+    .pc-empty-glyph{font-size:28px;margin-bottom:8px;opacity:0.7;}
+    .pc-empty-title{font-family:var(--font-display);font-weight:700;color:var(--ink);font-size:15px;margin-bottom:4px;}
+    .pc-empty-sub{font-size:12px;color:var(--muted);max-width:360px;margin:0 auto;line-height:1.5;}
+    header {
+      background: var(--navy);
+      padding: 18px 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: 0 1px 0 rgba(0,0,0,0.08), 0 6px 14px rgba(15,42,74,0.18);
+    }
+    .logo { color: white; font-size: 18px; font-weight: 800; letter-spacing: -0.01em; text-decoration: none; font-family: var(--font-display); }
+    .logo span { color: var(--teal); }
+    @media (max-width: 480px) {
+      header { padding: 14px 18px; }
+      .logo > span:last-child > span:last-child { display: none; }
+    }
+    main {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 48px 16px;
+    }
+    .card {
+      background: var(--white);
+      border-radius: 16px;
+      box-shadow: 0 4px 32px rgba(11,37,69,0.12);
+      padding: 48px 44px;
+      width: 100%;
+      max-width: 420px;
+    }
+    .icon-wrap {
+      width: 56px; height: 56px;
+      background: rgba(34,160,138,0.1);
+      border-radius: 14px;
+      display: flex; align-items: center; justify-content: center;
+      margin-bottom: 24px;
+    }
+    .icon-wrap svg { width: 28px; height: 28px; color: var(--teal); }
+    h1 { font-size: 24px; color: var(--ink); margin-bottom: 8px; }
+    .subtitle { color: var(--muted); font-size: 14px; line-height: 1.6; margin-bottom: 32px; }
+    label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--ink);
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+    input {
+      width: 100%;
+      padding: 13px 16px;
+      border: 2px solid var(--border);
+      border-radius: 10px;
+      font-size: 18px;
+      background: var(--surface);
+      color: var(--text);
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      transition: border-color 0.15s;
+      outline: none;
+      font-family: 'Courier New', monospace;
+    }
+    input:focus { border-color: var(--teal); }
+    input::placeholder { letter-spacing: 1px; font-size: 15px; color: var(--placeholder); }
+    .btn {
+      width: 100%;
+      padding: 14px;
+      background: var(--teal);
+      color: white;
+      border: none;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 20px;
+      transition: background 0.15s, transform 0.1s;
+      letter-spacing: 0.3px;
+    }
+    .btn:hover:not(:disabled) { background: var(--teal-deep); }
+    .btn:active:not(:disabled) { transform: scale(0.99); }
+    .btn:disabled { background: var(--disabled); cursor: not-allowed; }
+    .error {
+      color: var(--err-fg);
+      font-size: 13px;
+      margin-top: 12px;
+      padding: 10px 14px;
+      background: var(--err-bg);
+      border-radius: 8px;
+      border: 1px solid var(--err-border);
+      display: none;
+    }
+    .help-text {
+      margin-top: 20px;
+      text-align: center;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .help-text a { color: var(--teal); text-decoration: none; }
+
+    .install-banner {
+      display: none;
+      background: rgba(34,160,138,0.08);
+      border: 1px solid rgba(34,160,138,0.25);
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-top: 18px;
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .install-banner.show { display: flex; }
+    .install-banner .txt {
+      font-size: 12px; color: var(--ink); line-height: 1.4;
+    }
+    .install-banner .txt strong { color: var(--teal); }
+    .install-banner button {
+      flex-shrink: 0;
+      background: var(--teal); color: white; border: none;
+      padding: 7px 14px; border-radius: 6px;
+      font-size: 12px; font-weight: 600; cursor: pointer;
+    }
+    .install-banner .dismiss {
+      background: none; color: var(--muted); padding: 4px 8px;
+    }
+    footer {
+      text-align: center;
+      padding: 20px;
+      color: var(--muted);
+      font-size: 12px;
+      border-top: 1px solid var(--border);
+      background: var(--white);
+    }
+  </style>
+</head>
+<!-- data-pc-no-bell: logged-out customer sign-in page — no notification bell. -->
+<body data-pc-no-bell>
+  <header>
+    <a href="/portal" title="Home" class="logo pc-display" style="display:flex;align-items:center;gap:10px;text-decoration:none;color:inherit;">
+      <span class="pc-snowflake" aria-hidden="true"></span>
+      <span style="display:inline-flex;align-items:baseline;gap:0;">Prime<span style="color:var(--teal);">Cool</span><span style="font-size:11px;font-weight:600;letter-spacing:0.18em;text-transform:uppercase;color:var(--ice);margin-left:8px;align-self:center;">Services</span></span>
+    </a>
+  </header>
+
+  <main>
+    <div class="card">
+      <div class="icon-wrap">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+          <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+        </svg>
+      </div>
+      <h1>Customer Portal</h1>
+      <p class="subtitle">Enter your customer code to view your maintenance schedule and service history.</p>
+
+      <label for="code">Customer ID</label>
+      <input type="text" id="code" placeholder="PC-0001" maxlength="20" autocomplete="off" spellcheck="false" style="margin-bottom:14px;">
+
+      <label for="pin">PIN <span id="pwToggle" style="float:right;font-weight:400;text-transform:none;font-size:11px;"><a href="#" onclick="event.preventDefault();usePassword()" style="color:var(--teal);">Use password instead →</a></span></label>
+      <input type="password" id="pin" inputmode="numeric" pattern="[0-9]*" maxlength="16" placeholder="••••" autocomplete="off" style="letter-spacing:12px;text-align:center;font-size:22px;">
+      <input type="password" id="password" placeholder="Password" autocomplete="current-password" style="display:none;font-size:16px;">
+
+      <div id="mfaRow" style="display:none;">
+        <label for="mfaCode" style="margin-top:14px;">Two-factor code</label>
+        <input type="text" id="mfaCode" inputmode="numeric" maxlength="16" placeholder="6-digit code or backup code" autocomplete="one-time-code" style="text-align:center;font-size:18px;">
+      </div>
+
+      <div id="setPinRow" style="display:none;">
+        <p class="subtitle" style="margin-top:6px;">For your security, please choose your own PIN to replace the temporary one.</p>
+        <label for="newPin" style="margin-top:8px;">New PIN <span style="font-weight:400;text-transform:none;font-size:11px;color:var(--muted,#5A6472);">(6–16 digits)</span></label>
+        <input type="password" id="newPin" inputmode="numeric" pattern="[0-9]*" maxlength="16" placeholder="••••••" autocomplete="off" style="letter-spacing:10px;text-align:center;font-size:20px;">
+        <label for="confirmPin" style="margin-top:10px;">Confirm PIN</label>
+        <input type="password" id="confirmPin" inputmode="numeric" pattern="[0-9]*" maxlength="16" placeholder="••••••" autocomplete="off" style="letter-spacing:10px;text-align:center;font-size:20px;">
+      </div>
+
+      <div class="error" id="error"></div>
+      <button class="btn" id="loginBtn" onclick="doLogin()">Sign In →</button>
+
+      <p style="text-align:center;margin-top:14px;font-size:13px;">
+        <a href="#" onclick="event.preventDefault();openForgot()" style="color:var(--teal);text-decoration:none;font-weight:600;">Forgot PIN?</a>
+      </p>
+
+      <p class="help-text">Don't have an account? <a href="/#contact">Contact us</a> to get set up.</p>
+
+      <div class="install-banner" id="installBanner">
+        <div class="txt">
+          <strong>📱 Install the PrimeCool app</strong><br>
+          Add this portal to your home screen for one-tap access.
+        </div>
+        <button id="installBtn" onclick="doInstall()">Install</button>
+        <button class="dismiss" onclick="dismissInstall()">×</button>
+      </div>
+
+      <div id="iosHint" style="display:none;font-size:12px;color:var(--muted);margin-top:14px;text-align:center;line-height:1.5;">
+        📱 To install: tap <strong>Share</strong> in Safari, then <strong>"Add to Home Screen"</strong>.
+      </div>
+    </div>
+  </main>
+
+  <!-- Forgot PIN modal -->
+  <div id="forgotModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:500;align-items:center;justify-content:center;padding:20px;">
+    <div style="background:var(--surface);border-radius:16px;width:100%;max-width:400px;padding:32px 28px;box-shadow:0 8px 40px rgba(0,0,0,0.2);">
+      <h2 style="color:var(--ink);font-size:21px;margin-bottom:8px;">Reset Your PIN</h2>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:22px;line-height:1.5;">Enter your customer ID and the email PrimeCool has on file. If they match, we'll send you a reset link.</p>
+
+      <div class="error" id="forgotErr"></div>
+      <div id="forgotOk" style="display:none;background:var(--ok-bg);color:var(--ok-fg);border:1px solid var(--ok-border);padding:12px 14px;border-radius:8px;font-size:13px;line-height:1.5;margin-bottom:14px;">
+        If a matching account exists, a reset link has been sent. Check your email (and spam folder).
+      </div>
+
+      <label>Customer ID</label>
+      <input type="text" id="forgotCode" placeholder="PC-0001" maxlength="20" autocomplete="off" style="margin-bottom:12px;">
+
+      <label>Email on File</label>
+      <input type="email" id="forgotEmail" placeholder="you@example.com" style="letter-spacing:0;text-transform:none;font-family:inherit;font-size:15px;margin-bottom:14px;" autocomplete="email">
+
+      <button class="btn" id="forgotBtn" onclick="submitForgot()">Send Reset Link</button>
+      <p style="text-align:center;margin-top:14px;font-size:13px;">
+        <a href="#" onclick="event.preventDefault();closeForgot()" style="color:var(--muted);text-decoration:none;">← Back to Sign In</a>
+      </p>
+      <p style="text-align:center;margin-top:12px;font-size:11px;color:var(--muted);line-height:1.5;">
+        No email on file? <a href="/#contact" style="color:var(--teal);">Contact PrimeCool</a> to reset.
+      </p>
+    </div>
+  </div>
+
+  <footer>© 2025 PrimeCool Services Ltd. · All rights reserved</footer>
+
+  <script>
+    if (localStorage.getItem('pc_token')) {
+      window.location.replace('/portal/dashboard');
+    }
+
+    // ── PWA install ──
+    let deferredPrompt = null;
+    window.addEventListener('beforeinstallprompt', e => {
+      e.preventDefault();
+      deferredPrompt = e;
+      if (!localStorage.getItem('pc_install_dismissed')) {
+        document.getElementById('installBanner').classList.add('show');
+      }
+    });
+    async function doInstall() {
+      if (!deferredPrompt) return;
+      deferredPrompt.prompt();
+      await deferredPrompt.userChoice;
+      deferredPrompt = null;
+      document.getElementById('installBanner').classList.remove('show');
+    }
+    function dismissInstall() {
+      localStorage.setItem('pc_install_dismissed', '1');
+      document.getElementById('installBanner').classList.remove('show');
+    }
+    // iOS Safari fallback (no beforeinstallprompt)
+    const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+    const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+    if (isIos && !isStandalone && !localStorage.getItem('pc_install_dismissed')) {
+      document.getElementById('iosHint').style.display = 'block';
+    }
+    // Service worker
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+
+    document.getElementById('code').addEventListener('keydown', e => {
+      if (e.key === 'Enter') document.getElementById('pin').focus();
+    });
+    let authMode = 'pin';      // 'pin' | 'password'
+    let pendingMfaToken = null; // set when server returns requires_mfa
+    let pendingEnrolToken = null; // set when server returns requires_mfa_setup
+    let setPinMode = false; // set when server returns must_set_pin (first-login PIN reset)
+
+    function usePassword() {
+      authMode = 'password';
+      document.getElementById('pin').style.display = 'none';
+      document.getElementById('password').style.display = '';
+      document.getElementById('password').focus();
+      document.getElementById('pwToggle').innerHTML =
+        '<a href="#" onclick="event.preventDefault();usePin()" style="color:var(--teal);">Use PIN instead →</a>';
+    }
+    function usePin() {
+      authMode = 'pin';
+      document.getElementById('pin').style.display = '';
+      document.getElementById('password').style.display = 'none';
+      document.getElementById('pwToggle').innerHTML =
+        '<a href="#" onclick="event.preventDefault();usePassword()" style="color:var(--teal);">Use password instead →</a>';
+    }
+
+    document.getElementById('pin').addEventListener('keydown', e => {
+      if (e.key === 'Enter') doLogin();
+    });
+    document.getElementById('password').addEventListener('keydown', e => {
+      if (e.key === 'Enter') doLogin();
+    });
+    document.getElementById('mfaCode').addEventListener('keydown', e => {
+      if (e.key === 'Enter') doLogin();
+    });
+
+    async function doLogin() {
+      const code = document.getElementById('code').value.trim();
+      const pin  = document.getElementById('pin').value.trim();
+      const password = document.getElementById('password').value;
+      const mfa  = document.getElementById('mfaCode').value.trim();
+      const btn  = document.getElementById('loginBtn');
+      const err  = document.getElementById('error');
+
+      if (!code) { showError('Please enter your customer ID.'); return; }
+      if (authMode === 'pin' && !pin && !pendingMfaToken) {
+        showError('Please enter your PIN.'); return;
+      }
+      if (authMode === 'password' && !password && !pendingMfaToken) {
+        showError('Please enter your password.'); return;
+      }
+
+      btn.disabled    = true;
+      btn.textContent = 'Signing in…';
+      err.style.display = 'none';
+
+      try {
+        // First-login forced PIN set: the session cookie is already set, so we
+        // post the chosen PIN to /api/portal/set-pin then enter the dashboard.
+        if (setPinMode) {
+          const np = document.getElementById('newPin').value.trim();
+          const cp = document.getElementById('confirmPin').value.trim();
+          if (!np || !cp) { showError('Enter and confirm your new PIN.'); btn.disabled=false; btn.textContent='Set PIN →'; return; }
+          if (np !== cp) { showError('PINs do not match.'); btn.disabled=false; btn.textContent='Set PIN →'; return; }
+          const res = await fetch('/api/portal/set-pin', {
+            method: 'POST',
+            headers: { 'Content-Type':'application/json' },
+            body: JSON.stringify({ pin: np, confirm_pin: cp }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) { showError(data.detail || 'Could not set PIN.'); btn.disabled=false; btn.textContent='Set PIN →'; return; }
+          window.location.replace('/portal/dashboard');
+          return;
+        }
+        // If we're in the middle of MFA challenge, use the /login/mfa step.
+        if (pendingMfaToken) {
+          if (!mfa) { showError('Enter your 6-digit code.'); btn.disabled=false; btn.textContent='Sign In →'; return; }
+          const res = await fetch('/api/portal/login/mfa', {
+            method: 'POST',
+            headers: { 'Content-Type':'application/json' },
+            body: JSON.stringify({ mfa_token: pendingMfaToken, mfa_code: mfa }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) { showError(data.detail || 'Invalid MFA code.'); btn.disabled=false; btn.textContent='Sign In →'; return; }
+          localStorage.setItem('pc_token', data.token);
+          localStorage.setItem('pc_name',  data.name);
+          if (data.must_set_pin) { enterSetPinMode(); return; }
+          window.location.replace('/portal/dashboard');
+          return;
+        }
+        // Commercial-enrol bounce: server tells us we must enrol MFA first.
+        if (pendingEnrolToken) {
+          showError('MFA enrolment is required. Sign in via the dashboard once an admin completes setup.');
+          btn.disabled=false; btn.textContent='Sign In →'; return;
+        }
+
+        const body = { code };
+        if (authMode === 'password') body.password = password; else body.pin = pin;
+
+        const res = await fetch('/api/portal/login', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+          showError(data.detail || 'Invalid customer ID or credentials.');
+          btn.disabled=false; btn.textContent='Sign In →'; return;
+        }
+
+        if (data.requires_mfa) {
+          pendingMfaToken = data.mfa_token;
+          document.getElementById('mfaRow').style.display = '';
+          document.getElementById('mfaCode').focus();
+          btn.disabled=false; btn.textContent='Verify →';
+          return;
+        }
+        if (data.requires_mfa_setup) {
+          pendingEnrolToken = data.mfa_enrol_token;
+          localStorage.setItem('pc_mfa_enrol', data.mfa_enrol_token);
+          localStorage.setItem('pc_name', data.name);
+          window.location.replace('/portal/dashboard?enrolMfa=1');
+          return;
+        }
+
+        localStorage.setItem('pc_token', data.token);
+        localStorage.setItem('pc_name',  data.name);
+        if (data.must_set_pin) { enterSetPinMode(); return; }
+        window.location.replace('/portal/dashboard');
+      } catch {
+        showError('Connection error. Please try again.');
+        btn.disabled=false; btn.textContent='Sign In →';
+      }
+    }
+
+    // Switch the login card into "choose your own PIN" mode after a first
+    // login where the server returned must_set_pin.
+    function enterSetPinMode() {
+      setPinMode = true;
+      ['code','pin','password','mfaRow'].forEach(id => {
+        const el = document.getElementById(id); if (el) el.style.display = 'none';
+      });
+      const lbl = document.querySelector('label[for="code"]'); if (lbl) lbl.style.display = 'none';
+      const pwLbl = document.querySelector('label[for="pin"]'); if (pwLbl) pwLbl.style.display = 'none';
+      document.getElementById('setPinRow').style.display = '';
+      const btn = document.getElementById('loginBtn');
+      btn.disabled = false; btn.textContent = 'Set PIN →';
+      document.getElementById('error').style.display = 'none';
+      document.getElementById('newPin').focus();
+    }
+
+    function showError(msg) {
+      const err = document.getElementById('error');
+      err.textContent  = msg;
+      err.style.display = 'block';
+    }
+
+    // ── Forgot PIN ──
+    function openForgot() {
+      document.getElementById('forgotModal').style.display = 'flex';
+      document.getElementById('forgotErr').style.display = 'none';
+      document.getElementById('forgotOk').style.display  = 'none';
+      document.getElementById('forgotCode').value  = document.getElementById('code').value || '';
+      document.getElementById('forgotEmail').value = '';
+    }
+    function closeForgot() {
+      document.getElementById('forgotModal').style.display = 'none';
+    }
+    async function submitForgot() {
+      const code  = document.getElementById('forgotCode').value.trim().toUpperCase();
+      const email = document.getElementById('forgotEmail').value.trim();
+      const err   = document.getElementById('forgotErr');
+      const ok    = document.getElementById('forgotOk');
+      const btn   = document.getElementById('forgotBtn');
+      err.style.display = 'none'; ok.style.display = 'none';
+
+      if (!code || !email) {
+        err.textContent = 'Enter your customer ID and email.';
+        err.style.display = 'block';
+        return;
+      }
+
+      btn.disabled = true; btn.textContent = 'Sending…';
+      try {
+        await fetch('/api/portal/forgot-pin', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ code, email }),
+        });
+        ok.style.display = 'block';
+      } catch {
+        err.textContent = 'Connection error. Try again.';
+        err.style.display = 'block';
+      } finally {
+        btn.disabled = false; btn.textContent = 'Send Reset Link';
+      }
+    }
+    document.getElementById('forgotModal').addEventListener('click', e => {
+      if (e.target.id === 'forgotModal') closeForgot();
+    });
+  </script>
+  <!-- PrimeCool shared utilities (brand toast pill, skeleton loaders). -->
+  <script src="/static/pc_shared.js?v=1781191429" defer></script>
+</body>
+</html>

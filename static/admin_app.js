@@ -1,0 +1,14762 @@
+  // ── State ──────────────────────────────────────────────────────────────────
+  let adminToken = localStorage.getItem('pc_admin_token') || null;
+  let allCustomers = [];
+  let allVisits    = [];
+  // Render cap for the All Visits table. The full list can run into the
+  // thousands of rows; rendering them all eagerly balloons the DOM to ~90k
+  // nodes, which made every keystroke anywhere in the app (e.g. the Documents
+  // upload Title field) trigger a full accessibility-tree rebuild and hang the
+  // tab ("Page Unresponsive"). We render at most VL_DEFAULT_CAP rows and expose
+  // "Show more / Show all" controls. The cap resets to the default on any
+  // filter/view change so a fresh filter never inherits a huge prior cap.
+  const VL_DEFAULT_CAP = 150;
+  let vlRowCap = VL_DEFAULT_CAP;
+
+  // ── Shared render cap for other large tables ───────────────────────────
+  // Same problem as the visits table above: a few admin tables (Invoices,
+  // Customers, Estimates, Documents) render their full backing array into the
+  // DOM. Once a table runs into the hundreds/thousands of rows the resulting
+  // node count makes typing anywhere in the app janky and can hang the tab.
+  // We cap each at PC_TABLE_CAP rows and expose "Show more / Show all". Each
+  // table keeps its own cap var so paging one doesn't affect the others; the
+  // cap resets to the default whenever the render runs without _keepCap (i.e.
+  // on a filter/data change), so a fresh filter never inherits a huge cap.
+  const PC_TABLE_CAP = 150;
+  let invRowCap  = PC_TABLE_CAP;
+  let custRowCap = PC_TABLE_CAP;
+  let estRowCap  = PC_TABLE_CAP;
+  let docRowCap  = PC_TABLE_CAP;
+  let docRenderRows = [];   // last full row set handed to renderDocuments (for Show more/all)
+
+  // Render a "Showing N of TOTAL" pager into pagerEl. moreFn/allFn are global
+  // function names (strings) invoked by the buttons. Hidden when all rows fit.
+  function pcRenderTablePager(pagerEl, total, shown, moreFn, allFn, noun) {
+    if (!pagerEl) return;
+    if (shown >= total) { pagerEl.style.display = 'none'; pagerEl.innerHTML = ''; return; }
+    const label = noun || 'rows';
+    pagerEl.style.display = 'flex';
+    pagerEl.innerHTML =
+      `<span>Showing <strong>${shown.toLocaleString()}</strong> of <strong>${total.toLocaleString()}</strong> ${label}</span>`
+      + `<button type="button" class="btn btn-ghost btn-sm" onclick="${moreFn}()">Show ${Math.min(PC_TABLE_CAP, total - shown)} more</button>`
+      + `<button type="button" class="btn btn-ghost btn-sm" onclick="${allFn}()">Show all ${total.toLocaleString()}</button>`;
+  }
+
+  let currentCustomer = null;
+  let currentVisitId  = null;
+  let visitCrewState  = [];   // [{id,name}] extra crew (excludes lead) for the edit modal
+  let visitFilter  = 'all';                 // legacy; kept for back-compat shim
+  // ── Visit-list (IW38-style) state ──────────────────────────────────────
+  let vlType       = 'all';                 // 'all' | 'PM' | 'CM'
+  let vlStatuses   = new Set();             // selected lifecycle statuses
+  let vlStatusMode = 'include';             // 'include' | 'exclude'
+  let vlSavedViewList = [];                 // [{id,name,payload,is_default}]
+  let vlUserStatusVocab = [];               // whitelist from the API
+  // Column (Layout) registry. key → {label, always}. `always` cols can't be
+  // hidden. Order here is the render order.
+  const VL_COLUMNS = [
+    { key:'customer',   label:'Customer',       always:true  },
+    { key:'type',       label:'Type',           always:false },
+    { key:'status',     label:'Status',         always:false },
+    { key:'priosla',    label:'Priority / SLA', always:false },
+    { key:'userstatus', label:'User Status',    always:false },
+    { key:'scheduled',  label:'Scheduled',      always:false },
+    { key:'completed',  label:'Completed',      always:false },
+    { key:'tech',       label:'Assigned Tech',  always:false },
+    { key:'equipment',  label:'Equipment',      always:false },
+    { key:'actions',    label:'Actions',        always:true  },
+  ];
+  let vlVisibleCols = VL_COLUMNS.map(c => c.key);   // default: all visible
+  let rcVisitId    = null;                  // visit being reversed
+  let allReviews   = [];
+  let reviewFilter = 'pending';
+  let allTechs     = [];
+  let resetPinTechId = null;
+  let editingTechId = null;
+  let resetPinCustomerId = null;
+  let currentAdmin = null;       // { id, role, name, ... }
+  let allAdmins    = [];
+  let resetAdminPwId = null;
+
+  const ADMIN_PERMS = {
+    super_admin: new Set(['admin:create','admin:update','admin:delete','admin:set_role','admin:set_active','admin:reset_password','admin:view_all','audit:view_all','tech:view','tech:create','tech:update','tech:delete','tech:reset_pin','tech:export','customer:view','customer:create','customer:update','customer:delete','customer:export','visit:view','visit:create','visit:update','visit:delete','visit:export','review:view','review:approve','review:reject','review:delete','visit:view_photos','visit:flag','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','inventory:delete','inventory:export','po:create','po:send','po:receive','po:close_out','po:approve_variance','count:create','count:approve','invoice:view','invoice:create','invoice:update','invoice:delete','invoice:record_payment','invoice:export','documents:upload','documents:view','documents:view_highly_sensitive','documents:delete','documents:delete_highly_sensitive','security:view_alerts','security:resolve_alerts','payroll:generate','payroll:view_all','payroll:approve','payroll:mark_paid','fs:audit_any','fs:exception_resolve','fs:exception_escalate_director','fs:asset_manage','fs:report_view','fs:audit_override','fs:coaching_manage','kpi:view_team','kpi:edit_thresholds','kpi:recompute','kpi:view_definitions','kpi:close_period','kpi:flag_view','kpi:flag_resolve','kpi:flag_override','kpi:note_write_coaching','kpi:note_write_recognition','kpi:note_write_team_period','kpi:note_write_score_annotation','kpi:note_view','kpi:goal_create','kpi:goal_close','kpi:goal_view','kpi:pip_create','kpi:pip_activate','kpi:def_create','kpi:def_archive','kpi:manual_value_set','tech:approve_overtime','tech:manage_schedule','tech:manage_certifications','tech:release_kpi_period','tech:grant_cv_edit','company:post_message','company:read_messages','warehouse:view_queue','warehouse:manage_assets']),
+    supervisor_admin: new Set(['admin:view_all','audit:view_all','tech:view','tech:update','tech:export','customer:view','customer:update','customer:export','visit:view','visit:update','visit:export','review:view','visit:view_photos','visit:flag','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:adjust','inventory:export','po:create','po:send','po:receive','po:close_out','po:approve_variance','count:create','count:approve','invoice:view','invoice:update','invoice:record_payment','invoice:export','documents:upload','documents:view','documents:view_highly_sensitive','documents:delete','security:view_alerts','fs:audit_any','fs:exception_resolve','fs:exception_escalate_director','fs:report_view','fs:coaching_manage','kpi:view_team','kpi:recompute','kpi:view_definitions','kpi:flag_view','kpi:flag_resolve','kpi:note_write_coaching','kpi:note_write_recognition','kpi:note_write_score_annotation','kpi:note_view','kpi:goal_create','kpi:goal_close','kpi:goal_view','kpi:manual_value_set','tech:approve_overtime','tech:manage_schedule','tech:manage_certifications','tech:release_kpi_period','company:read_messages','warehouse:view_queue','warehouse:manage_assets']),
+    system_admin: new Set(['tech:view','tech:update','tech:reset_pin','customer:view','customer:create','customer:update','visit:view','visit:create','visit:update','review:view','audit:view_self','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','invoice:view','invoice:create','invoice:update','invoice:record_payment','documents:upload','documents:view','fs:asset_manage','fs:report_view','kpi:view_team','kpi:view_definitions','kpi:flag_view','kpi:note_view','company:read_messages']),
+    hr_admin: new Set(['admin:create','admin:update','admin:set_role','admin:set_active','admin:reset_password','admin:view_all','tech:view','tech:create','tech:update','tech:reset_pin','tech:delete','audit:view_self','timesheet:view_all','invoice:view','documents:upload','documents:view','documents:view_highly_sensitive','payroll:generate','payroll:view_all','fs:report_view','kpi:view_team','kpi:view_definitions','kpi:flag_view','kpi:note_write_recognition','kpi:note_view','kpi:goal_view','kpi:pip_acknowledge','tech:approve_overtime','tech:manage_certifications','company:read_messages','warehouse:view_queue']),
+    ceo_assistant: new Set(['audit:view_self','inventory:view','invoice:view','documents:view','fs:report_view','company:read_messages','company:post_message']),
+    inventory_manager: new Set(['inventory:view','inventory:create','inventory:update','inventory:adjust','po:create','po:send','po:receive','count:create','audit:view_self','warehouse:view_queue','fs:report_view','company:read_messages']),
+    dispatcher: new Set(['tech:view','customer:view','visit:view','visit:create','visit:update','schedule:view','schedule:edit','tech:manage_schedule','tech:approve_overtime','audit:view_self','documents:view','kpi:view_team','kpi:flag_view','company:read_messages']),
+    warehouse_supervisor: new Set(['tech:view','warehouse:view_queue','warehouse:manage_assets','inventory:view','inventory:create','inventory:update','inventory:adjust','po:create','po:send','po:receive','po:close_out','count:create','count:approve','fs:asset_manage','fs:report_view','audit:view_self','documents:view','company:read_messages']),
+    // R6: 50+ scale future-proofing roles. Mirror server ADMIN_PERMS (main.py).
+    operations_manager: new Set(['admin:view_all','admin:update','admin:set_active','tech:view','tech:create','tech:update','tech:reset_pin','tech:export','tech:approve_overtime','tech:manage_schedule','tech:manage_certifications','tech:release_kpi_period','customer:view','customer:create','customer:update','customer:export','visit:view','visit:create','visit:update','visit:export','visit:view_photos','visit:flag','review:view','review:approve','review:reject','timesheet:view_all','schedule:view','schedule:edit','inventory:view','inventory:create','inventory:update','inventory:adjust','inventory:export','po:create','po:send','po:receive','po:close_out','po:approve_variance','count:create','count:approve','invoice:view','invoice:create','invoice:update','invoice:record_payment','invoice:export','payroll:view_all','security:view_alerts','audit:view_all','documents:upload','documents:view','documents:view_highly_sensitive','fs:audit_any','fs:exception_resolve','fs:exception_escalate_director','fs:asset_manage','fs:report_view','fs:coaching_manage','kpi:view_team','kpi:recompute','kpi:view_definitions','kpi:flag_view','kpi:flag_resolve','kpi:note_write_coaching','kpi:note_write_recognition','kpi:note_view','kpi:goal_create','kpi:goal_close','kpi:goal_view','company:post_message','company:read_messages','warehouse:view_queue','warehouse:manage_assets']),
+    accountant: new Set(['customer:view','visit:view','invoice:view','invoice:create','invoice:update','invoice:delete','invoice:record_payment','invoice:export','inventory:view','inventory:export','payroll:generate','payroll:view_all','documents:upload','documents:view','documents:view_highly_sensitive','audit:view_self','company:read_messages']),
+    account_manager: new Set(['customer:view','customer:create','customer:update','customer:export','visit:view','visit:export','invoice:view','documents:view','audit:view_self','company:read_messages']),
+    csr: new Set(['customer:view','customer:create','customer:update','visit:view','visit:create','schedule:view','documents:view','audit:view_self','company:read_messages']),
+    master_tech: new Set(['tech:view','tech:approve_overtime','tech:manage_schedule','tech:manage_certifications','tech:release_kpi_period','customer:view','visit:view','visit:create','visit:update','visit:view_photos','visit:flag','review:view','schedule:view','schedule:edit','timesheet:view_all','documents:view','audit:view_self','kpi:view_team','kpi:flag_view','kpi:note_write_coaching','kpi:note_write_recognition','kpi:note_view','kpi:goal_view','fs:audit_any','fs:report_view','company:read_messages']),
+    safety_officer: new Set(['tech:view','tech:manage_certifications','visit:view','visit:view_photos','visit:flag','documents:upload','documents:view','documents:view_highly_sensitive','fs:audit_any','fs:exception_resolve','fs:exception_escalate_director','fs:asset_manage','fs:report_view','fs:audit_override','fs:coaching_manage','audit:view_self','kpi:view_team','kpi:flag_view','company:read_messages','company:post_message']),
+    quality_manager: new Set(['customer:view','visit:view','visit:view_photos','visit:flag','review:view','review:approve','review:reject','review:delete','kpi:view_team','kpi:flag_view','kpi:flag_resolve','kpi:note_write_coaching','kpi:note_view','fs:report_view','documents:view','audit:view_self','company:read_messages']),
+    marketing: new Set(['customer:view','review:view','documents:view','company:post_message','company:read_messages','audit:view_self']),
+  };
+  // Derive estimate/quote permissions from the invoice permissions each role
+  // already holds — this MIRRORS the backend rule (main.py grants estimate:*
+  // off invoice:* at startup), so there is a single source of truth for who
+  // can touch estimates and we never drift from the server's enforcement.
+  Object.values(ADMIN_PERMS).forEach(function (set) {
+    if (set.has('invoice:view'))   set.add('estimate:view');
+    if (set.has('invoice:create')) { set.add('estimate:create'); set.add('estimate:update'); set.add('estimate:send'); set.add('estimate:convert'); }
+    if (set.has('invoice:delete')) set.add('estimate:delete');
+  });
+  // HR-1 employee master — MIRRORS the backend grants (main.py adds hr:view /
+  // hr:edit at startup): super_admin + hr_admin read & write, supervisor_admin
+  // read-only. Kept as an explicit block so this client mirror never drifts.
+  ADMIN_PERMS.super_admin.add('hr:view');       ADMIN_PERMS.super_admin.add('hr:edit');
+  ADMIN_PERMS.hr_admin.add('hr:view');          ADMIN_PERMS.hr_admin.add('hr:edit');
+  ADMIN_PERMS.supervisor_admin.add('hr:view');
+  function can(perm) {
+    return currentAdmin && ADMIN_PERMS[currentAdmin.role]?.has(perm);
+  }
+
+  // ── Auth ───────────────────────────────────────────────────────────────────
+  function init() {
+    if (adminToken) {
+      showApp();
+      return;
+    }
+    // No session — send the user to the unified PrimeCool staff
+    // portal at /staff. Legacy #loginScreen DOM stays as a defensive
+    // fallback if /staff is unreachable.
+    try { window.location.replace('/staff'); return; } catch (_) {}
+  }
+
+  let pendingMfaToken = null;
+  let pendingMfaName  = null;
+
+  async function doAdminLogin() {
+    const user = document.getElementById('adminUser').value.trim();
+    const pw   = document.getElementById('adminPw').value;
+    const err  = document.getElementById('loginError');
+    err.style.display = 'none';
+    if (!user || !pw) {
+      err.textContent = 'Enter your username and password.';
+      err.style.display = 'block';
+      return;
+    }
+    try {
+      const res = await fetch('/api/admin/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: user, password: pw }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        err.textContent = d.detail || 'Sign-in failed.';
+        err.style.display = 'block';
+        return;
+      }
+      const data = await res.json();
+
+      // Step-2 MFA required?
+      if (data.requires_mfa) {
+        pendingMfaToken = data.mfa_token;
+        pendingMfaName  = data.name;
+        document.getElementById('mfa-greeting').textContent = data.name || 'admin';
+        document.getElementById('mfaCode').value = '';
+        document.getElementById('mfaError').style.display = 'none';
+        document.getElementById('loginScreen').style.display = 'none';
+        document.getElementById('mfaScreen').style.display = 'flex';
+        setTimeout(() => document.getElementById('mfaCode').focus(), 50);
+        return;
+      }
+
+      // No MFA — straight in
+      adminToken = data.token;
+      localStorage.setItem('pc_admin_token', adminToken);
+      currentAdmin = { id: null, role: data.role, name: data.name, username: data.username, prid: data.prid };
+      showApp();
+    } catch {
+      err.textContent = 'Connection error.';
+      err.style.display = 'block';
+    }
+  }
+
+  async function submitMfa() {
+    const code = document.getElementById('mfaCode').value.trim();
+    const err  = document.getElementById('mfaError');
+    const btn  = document.getElementById('mfaSubmitBtn');
+    err.style.display = 'none';
+    if (!code) { err.textContent = 'Enter your code.'; err.style.display = 'block'; return; }
+    btn.disabled = true; btn.textContent = 'Verifying…';
+    try {
+      const res = await fetch('/api/admin/mfa/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mfa_token: pendingMfaToken, code }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        err.textContent = d.detail || 'Verification failed.';
+        err.style.display = 'block';
+        return;
+      }
+      const data = await res.json();
+      adminToken = data.token;
+      localStorage.setItem('pc_admin_token', adminToken);
+      currentAdmin = { id: null, role: data.role, name: data.name, username: data.username, prid: data.prid };
+      pendingMfaToken = null;
+      document.getElementById('mfaScreen').style.display = 'none';
+      document.getElementById('loginScreen').style.display = 'flex';
+      showApp();
+    } catch {
+      err.textContent = 'Connection error.';
+      err.style.display = 'block';
+    } finally {
+      btn.disabled = false; btn.textContent = 'Verify →';
+    }
+  }
+
+  function cancelMfa() {
+    pendingMfaToken = null;
+    document.getElementById('mfaScreen').style.display = 'none';
+    document.getElementById('loginScreen').style.display = 'flex';
+    document.getElementById('adminPw').value = '';
+  }
+
+  function toggleBackupCodeHint() {
+    const h = document.getElementById('backupHint');
+    h.style.display = h.style.display === 'none' ? 'block' : 'none';
+  }
+
+  document.getElementById('mfaCode').addEventListener('keydown', e => {
+    if (e.key === 'Enter') submitMfa();
+  });
+
+  async function adminLogout() {
+    try {
+      await fetch('/api/admin/logout', {
+        method: 'POST',
+        headers: adminToken ? { 'Authorization': `Bearer ${adminToken}` } : {},
+      });
+    } catch {}
+    localStorage.removeItem('pc_admin_token');
+    adminToken = null;
+    currentAdmin = null;
+    document.getElementById('app').style.display = 'none';
+    // All staff sign-in (admin + tech + warehouse) is unified at
+    // /staff. Redirect there instead of the legacy inline login
+    // form. The form below stays in the DOM as a defensive fallback
+    // for environments where /staff is unreachable.
+    try { window.location.replace('/staff'); return; } catch (_) {}
+    document.getElementById('loginScreen').style.display = 'flex';
+    document.getElementById('adminPw').value = '';
+  }
+
+  async function showApp() {
+    document.getElementById('loginScreen').style.display = 'none';
+    document.getElementById('app').style.display = 'block';
+    // Fetch full profile (incl. id) — token alone doesn't have it
+    try {
+      const me = await api('GET', '/api/admin/me');
+      currentAdmin = me;
+      applyRoleVisibility();
+      _initSidebarReorder();
+    } catch {}
+    loadHomeDashboard();          // Home is the default landing panel
+    loadCustomers();
+    loadAllVisits();
+    loadReviews();
+    loadTechs();
+    if (can('admin:view_all')) loadAdmins();
+    if (can('audit:view_all') || can('audit:view_self')) loadAudit();
+    if (can('timesheet:view_all')) { initTimesheetWeek(); loadTimesheets(); loadTimesheetQueue(); }
+    if (can('schedule:view')) { initScheduleWeek(); loadSchedule(); }
+    if (can('inventory:view')) loadInventory();
+    if (can('invoice:view')) loadInvoices();
+    if (can('documents:view')) loadDocuments();
+    if (can('payroll:view_all')) loadPayPeriods();
+    loadMyPayslips();
+    // Honor /admin#customer/{id} deep-link for super_admin
+    setTimeout(_maybeOpenCustomerFromHash, 60);
+    // Honor /admin#visit/{id} deep-link for super_admin
+    setTimeout(_maybeOpenVisitFromHash, 60);
+    // Honor /admin#technician/{id} deep-link for super_admin
+    setTimeout(_maybeOpenTechnicianFromHash, 60);
+    // Honor /admin#<panel> deep-link from the unified /home worklet
+    // tiles (e.g. #kpi, #fs, #warehouse, #myprofile). Fires after the
+    // role-visibility pass so we don't try to open a panel the viewer
+    // can't see. 80ms beats the other deep-link timers by enough.
+    setTimeout(_maybeOpenPanelFromHash, 80);
+    // ── Pattern A: re-render Tier A lists once the PC access-bundle resolves so
+    //    PC.gateRow / PC.gateLinkHtml gating reflects actual permissions.
+    if (typeof PC !== 'undefined' && PC.access) {
+      PC.access().then(function () {
+        try { if (typeof renderCustomerTable === 'function') renderCustomerTable(); } catch(_) {}
+        try { if (typeof renderVisitTable    === 'function') renderVisitTable();    } catch(_) {}
+        try { if (typeof renderInvoices      === 'function') renderInvoices();      } catch(_) {}
+        try { if (typeof loadArAging         === 'function') loadArAging();         } catch(_) {}
+        try { if (typeof renderTechs         === 'function') renderTechs();         } catch(_) {}
+        try { if (typeof kpiRenderScoreboard === 'function') kpiRenderScoreboard(); } catch(_) {}
+        try { if (typeof kpiRenderFlagQueue  === 'function') kpiRenderFlagQueue();  } catch(_) {}
+        try { if (typeof renderCdfVisits     === 'function' && cdfState && cdfState.customer) renderCdfVisits(); } catch(_) {}
+        try { if (typeof renderTdfJobs       === 'function' && tdfState && tdfState.tech) renderTdfJobs(); } catch(_) {}
+        try { if (typeof loadAudit           === 'function' && (can('audit:view_all') || can('audit:view_self'))) loadAudit(); } catch(_) {}
+        // Tier B re-render hooks — flip conservative placeholders to gated rows
+        // once /api/admin/me/access has resolved.
+        try { if (typeof renderInventory       === 'function' && Array.isArray(allParts) && allParts.length) renderInventory(); } catch(_) {}
+        try { if (typeof loadSchedule          === 'function' && can('schedule:view')) loadSchedule(); } catch(_) {}
+        try { if (typeof loadPayPeriods        === 'function' && can('payroll:view_all')) loadPayPeriods(); } catch(_) {}
+        try { if (typeof loadMyPayslips        === 'function') loadMyPayslips(); } catch(_) {}
+        try { if (typeof loadDocuments         === 'function' && can('documents:view')) loadDocuments(); } catch(_) {}
+        try { if (typeof renderReviews         === 'function' && Array.isArray(allReviews) && allReviews.length) renderReviews(); } catch(_) {}
+        try { if (typeof fsLoadCurrentTab      === 'function' && document.getElementById('panel-fs') && document.getElementById('panel-fs').classList.contains('active')) fsLoadCurrentTab(); } catch(_) {}
+        try { if (typeof loadDelegationsPanel  === 'function' && document.getElementById('panel-delegations') && document.getElementById('panel-delegations').classList.contains('active')) loadDelegationsPanel(); } catch(_) {}
+        try { if (typeof renderAdmins          === 'function' && Array.isArray(allAdmins) && allAdmins.length) renderAdmins(); } catch(_) {}
+      }).catch(function (e) { try { console.warn('access-bundle load failed:', e); } catch(_) {} });
+    }
+  }
+
+  function applyRoleVisibility() {
+    // Show admin/audit tabs based on role
+    if (can('admin:view_all')) document.getElementById('nav-admins').style.display = 'flex';
+    // Onboarding hub: HR partner + super_admin only. Mirrors the server gate
+    // in admin_create_tech / admin_create_user.
+    if (can('admin:create') || can('tech:create')) {
+      const onbNav = document.getElementById('nav-onboarding');
+      if (onbNav) onbNav.style.display = 'flex';
+      const techShortcut = document.getElementById('addTechShortcutBtn');
+      if (techShortcut) techShortcut.style.display = '';
+    }
+    if (can('audit:view_all') || can('audit:view_self')) document.getElementById('nav-audit').style.display = 'flex';
+    if (can('audit:view_all')) document.getElementById('auditVerifyBtn').style.display = '';
+    // Access-denied trail is super_admin-only (sensitive enumeration evidence).
+    if (currentAdmin && currentAdmin.role === 'super_admin') {
+      const dOpt = document.getElementById('auditModeDenied');
+      if (dOpt) dOpt.style.display = '';
+    }
+    // Backups — super_admin only (artifact decrypts to the whole DB).
+    if (currentAdmin && currentAdmin.role === 'super_admin') {
+      const nb = document.getElementById('nav-backups');
+      if (nb) nb.style.display = 'flex';
+    }
+    // HR-1: Employee master — hr:view gates the panel, hr:edit the write buttons.
+    if (can('hr:view')) {
+      const ne = document.getElementById('nav-employees');
+      if (ne) ne.style.display = 'flex';
+      if (can('hr:edit')) {
+        ['hrAddBtn', 'hrd-edit-btn', 'hrd-addid-btn'].forEach(function (id) {
+          const el = document.getElementById(id); if (el) el.style.display = '';
+        });
+      }
+    }
+    // Manage Time Off — PTO review/approve is a supervisor/HR function.
+    // Mirrors the server gate (_admin_can(role, 'hr:view')) on the
+    // /api/admin/pto-requests list + approve/deny endpoints.
+    if (can('hr:view')) { const _np = document.getElementById('nav-pto'); if (_np) _np.style.display = 'flex'; }
+    if (can('timesheet:view_all')) document.getElementById('nav-timesheets').style.display = 'flex';
+    if (can('schedule:view')) document.getElementById('nav-schedule').style.display = 'flex';
+    if (can('tech:view')) { const _nw = document.getElementById('nav-workforce'); if (_nw) _nw.style.display = 'flex'; }
+    if (can('entity:view')) { const _ne = document.getElementById('nav-entities'); if (_ne) _ne.style.display = 'flex'; }
+    if (can('inventory:view')) document.getElementById('nav-inventory').style.display = 'flex';
+    if (can('inventory:create')) document.getElementById('addPartBtn').style.display = '';
+    if (can('invoice:view')) document.getElementById('nav-invoices').style.display = 'flex';
+    if (can('invoice:create')) document.getElementById('addInvoiceBtn').style.display = '';
+    if (can('estimate:view')) document.getElementById('nav-estimates').style.display = 'flex';
+    if (can('estimate:create')) document.getElementById('addEstimateBtn').style.display = '';
+    if (can('documents:view')) document.getElementById('nav-documents').style.display = 'flex';
+    if (can('documents:upload')) document.getElementById('uploadDocBtn').style.display = '';
+    if (can('documents:view_highly_sensitive')) document.getElementById('docHighlySensitiveBtn').style.display = 'inline-block';
+    if (can('admin:create')) document.getElementById('addAdminBtn').style.display = '';
+    if (can('customer:export')) document.getElementById('exportCustomersBtn').style.display = '';
+    if (can('tech:export'))     document.getElementById('exportTechsBtn').style.display = '';
+    if (can('visit:export'))    document.getElementById('exportVisitsBtn').style.display = '';
+    if (can('invoice:export'))  document.getElementById('exportInvoicesBtn').style.display = '';
+    if (can('inventory:export')) document.getElementById('exportInventoryBtn').style.display = '';
+    if (can('payroll:view_all')) document.getElementById('nav-payroll').style.display = 'flex';
+    if (can('fs:report_view')) {
+      document.getElementById('nav-fs').style.display = 'flex';
+      // Eagerly refresh the 5S sidebar badge so the user sees the
+      // open-exceptions count without opening the panel first.
+      refreshFsBadge();
+    }
+    if (can('kpi:view_team') || can('kpi:view_definitions') || can('kpi:flag_view')) {
+      document.getElementById('nav-kpi').style.display = 'flex';
+      // Fire-and-forget refresh of the flag badge.
+      refreshKpiFlagBadge();
+    }
+    // Company Messages — super_admin and ceo_assistant can compose; anyone
+    // with company:post_message sees the nav and the composer form.
+    if (can('company:post_message')) {
+      const ncm = document.getElementById('nav-companymsg');
+      if (ncm) ncm.style.display = 'flex';
+    }
+    // Service Requests triage queue — anyone with visit:view can read the
+    // queue; triage actions additionally require visit:update (gated below).
+    if (can('visit:view')) {
+      const nsr = document.getElementById('nav-svcreq');
+      if (nsr) nsr.style.display = 'flex';
+      refreshSvcReqBadge();
+    }
+    // Warehouse — anyone with warehouse:view_queue can see the staff
+    // roster + checksheet archive. Editing per-asset checklists +
+    // creating staff requires warehouse:manage_assets / tech:create
+    // (the modal/buttons fail-safe-server-side; we just gate the nav
+    // visibility on read access).
+    if (can('warehouse:view_queue')) {
+      const nw = document.getElementById('nav-warehouse');
+      if (nw) nw.style.display = 'flex';
+    }
+    // Warehouse staff onboarding now lives solely in the Onboarding panel
+    // (super_admin + hr_admin); the Warehouse Ops roster is read-only here.
+    // Delegations — super_admin OR admin with delegation power.
+    if (currentAdmin && (currentAdmin.role === 'super_admin'
+        || currentAdmin.has_delegation_power === 1
+        || currentAdmin.has_delegation_power === true)) {
+      const nd = document.getElementById('nav-delegations');
+      if (nd) nd.style.display = 'flex';
+    }
+    // PM Contracts — the cross-customer contract list mirrors the
+    // _require_admin_or_power backend guard, so the nav shows for a
+    // super_admin OR an admin holding a blanket power delegation. (A
+    // record-scoped customer delegate still reaches a given customer's
+    // contracts via the per-contract endpoints, but the global list/
+    // generate surface is power-or-super, so we gate the nav to match
+    // and avoid a dead 403 button.)
+    if (currentAdmin && (currentAdmin.role === 'super_admin'
+        || currentAdmin.has_delegation_power === 1
+        || currentAdmin.has_delegation_power === true)) {
+      const nc = document.getElementById('nav-contracts');
+      if (nc) nc.style.display = 'flex';
+      // GCT remittance report — the /metrics + /gct-report endpoints are
+      // power-or-super (_require_admin_or_power), so gate the button to match.
+      const gb = document.getElementById('gctReportBtn');
+      if (gb) gb.style.display = '';
+    }
+    // Share icons — super_admin OR has_delegation_power.
+    if (currentAdmin && (currentAdmin.role === 'super_admin'
+        || currentAdmin.has_delegation_power === 1
+        || currentAdmin.has_delegation_power === true)) {
+      document.querySelectorAll('.pc-share-icon').forEach(el => el.style.display = '');
+    }
+    // Recipient banner / cascade re-grant banner — every admin.
+    refreshDelegationBanners();
+    if (!can('fs:asset_manage')) {
+      const at = document.getElementById('fsAssetsTabBtn');
+      if (at) at.style.display = 'none';
+    }
+    if (can('payroll:generate')) document.getElementById('newPayPeriodBtn').style.display = '';
+    if (can('po:create') || can('po:close_out') || can('count:create') || can('count:approve'))
+      document.getElementById('invProcurementBtn').style.display = '';
+    if (can('security:view_alerts')) refreshSecurityBanner();
+    // Show current admin name + role
+    const tag = document.querySelector('.admin-tag');
+    if (tag && currentAdmin) {
+      tag.textContent = currentAdmin.role.replace(/_/g,' ');
+      tag.title = `${currentAdmin.name} (${currentAdmin.prid || ''})`;
+    }
+  }
+
+  // ── Sidebar drag-to-reorder with per-admin localStorage persistence ───────
+  //
+  // Each admin can drag the sidebar nav items into their preferred order.
+  // The order is keyed by currentAdmin.id so two admins on the same browser
+  // do not overwrite each other. Hidden items (role-gated display:none) are
+  // included in the saved order — when their role flips visible, they appear
+  // in the right slot.
+  //
+  // Drag-and-drop is HTML5 native. No library, no dependency.
+  function _sidebarStorageKey() {
+    const id = (currentAdmin && currentAdmin.id) ? currentAdmin.id : 'anon';
+    return `pc.sidebar.order.v1.${id}`;
+  }
+
+  function _initSidebarReorder() {
+    const nav = document.querySelector('nav.sidebar');
+    if (!nav) return;
+    // Apply saved order BEFORE attaching handlers so the DOM is in the
+    // final shape the user expects to drag from.
+    _applySidebarOrder();
+    // Show the reset link once an order has been saved (any saved order
+    // means the user has customized; offer to undo).
+    const reset = document.getElementById('sidebarResetOrder');
+    if (reset) {
+      const has = !!localStorage.getItem(_sidebarStorageKey());
+      reset.style.display = has ? 'block' : 'none';
+    }
+    // Attach drag handlers to every .nav-item once.
+    nav.querySelectorAll('.nav-item').forEach(_attachDragHandlers);
+  }
+
+  function _attachDragHandlers(el) {
+    if (el.dataset.pcDragWired === '1') return;
+    el.dataset.pcDragWired = '1';
+    el.setAttribute('draggable', 'true');
+    el.addEventListener('dragstart', (e) => {
+      el.classList.add('pc-dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      // Some browsers require data to be set or drag is cancelled.
+      try { e.dataTransfer.setData('text/plain', el.id); } catch(_) {}
+    });
+    el.addEventListener('dragend', () => {
+      el.classList.remove('pc-dragging');
+      document.querySelectorAll('.pc-drag-over-top, .pc-drag-over-bottom')
+        .forEach(x => x.classList.remove('pc-drag-over-top', 'pc-drag-over-bottom'));
+    });
+    el.addEventListener('dragover', (e) => {
+      e.preventDefault();   // allow drop
+      e.dataTransfer.dropEffect = 'move';
+      const rect = el.getBoundingClientRect();
+      const before = (e.clientY - rect.top) < rect.height / 2;
+      el.classList.toggle('pc-drag-over-top', before);
+      el.classList.toggle('pc-drag-over-bottom', !before);
+    });
+    el.addEventListener('dragleave', () => {
+      el.classList.remove('pc-drag-over-top', 'pc-drag-over-bottom');
+    });
+    el.addEventListener('drop', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const draggedId = e.dataTransfer.getData('text/plain');
+      const dragged = draggedId && document.getElementById(draggedId);
+      if (!dragged || dragged === el) return;
+      const rect = el.getBoundingClientRect();
+      const before = (e.clientY - rect.top) < rect.height / 2;
+      const nav = el.parentNode;
+      if (before) nav.insertBefore(dragged, el);
+      else        nav.insertBefore(dragged, el.nextSibling);
+      el.classList.remove('pc-drag-over-top', 'pc-drag-over-bottom');
+      _saveSidebarOrder();
+      const reset = document.getElementById('sidebarResetOrder');
+      if (reset) reset.style.display = 'block';
+    });
+  }
+
+  function _saveSidebarOrder() {
+    const nav = document.querySelector('nav.sidebar');
+    if (!nav) return;
+    const ids = Array.from(nav.querySelectorAll('.nav-item'))
+      .map(el => el.id).filter(Boolean);
+    try { localStorage.setItem(_sidebarStorageKey(), JSON.stringify(ids)); }
+    catch (_) { /* localStorage may be unavailable in private mode */ }
+  }
+
+  function _applySidebarOrder() {
+    const nav = document.querySelector('nav.sidebar');
+    if (!nav) return;
+    let saved;
+    try { saved = JSON.parse(localStorage.getItem(_sidebarStorageKey()) || 'null'); }
+    catch (_) { saved = null; }
+    if (!Array.isArray(saved) || !saved.length) return;
+    // Reorder per saved list. Items not in `saved` (newly-added since the
+    // user last customized) keep their default position by being appended
+    // at the end after the saved order is applied.
+    const present = new Map();
+    nav.querySelectorAll('.nav-item').forEach(el => present.set(el.id, el));
+    // Pull saved-order items to the top in order.
+    saved.forEach(id => {
+      const el = present.get(id);
+      if (el) {
+        nav.insertBefore(el, document.getElementById('sidebarResetOrder') || null);
+        present.delete(id);
+      }
+    });
+    // present now contains items that weren't in the saved list — they
+    // stay where they currently are (already after the moved ones).
+  }
+
+  function resetSidebarOrder() {
+    try { localStorage.removeItem(_sidebarStorageKey()); } catch (_) {}
+    // Hard reload so the original DOM order (the HTML source order) is
+    // restored without trying to invert a custom permutation in JS.
+    location.reload();
+  }
+
+  // ── Account security / MFA ────────────────────────────────────────────────
+  async function openSecurityModal() {
+    document.getElementById('modal-security').classList.add('open');
+    await loadSecurityModal();
+  }
+
+  async function loadSecurityModal() {
+    const wrap = document.getElementById('securityBody');
+    wrap.innerHTML = 'Loading…';
+    try {
+      const [s, sessions] = await Promise.all([
+        api('GET', '/api/admin/mfa/status'),
+        api('GET', '/api/admin/sessions').catch(() => []),
+      ]);
+      const me = currentAdmin || {};
+
+      const sessionsHtml = renderActiveSessions(sessions);
+
+      if (s.enabled) {
+        const codes = s.backup_codes || {};
+        wrap.innerHTML = `
+          <div style="display:flex;align-items:center;gap:12px;padding:14px;background:var(--teal-bg);border-left:4px solid var(--teal-deep);border-radius:8px;margin-bottom:18px;">
+            <div style="font-size:24px;">✓</div>
+            <div>
+              <div style="font-weight:700;color:var(--teal-deep);">Two-Factor Authentication is ON</div>
+              <div style="font-size:12px;color:var(--teal-deep);">Your account is protected by an authenticator app.</div>
+            </div>
+          </div>
+          <div style="background:var(--light);padding:14px;border-radius:8px;margin-bottom:14px;">
+            <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:6px;">Backup Codes</div>
+            <div style="font-size:13px;color:var(--text);">
+              <strong>${codes.unused}</strong> of ${codes.total} unused
+              ${codes.unused <= 2 ? '<span style="color:var(--danger);margin-left:8px;">⚠️ Low — regenerate soon</span>' : ''}
+            </div>
+            <button class="btn btn-edit btn-sm" onclick="regenerateBackupCodes()" style="margin-top:10px;">Regenerate Codes</button>
+          </div>
+          <div style="border-top:1px solid var(--border);padding-top:14px;">
+            <button class="btn btn-danger" onclick="disableMfa()">Disable Two-Factor Auth</button>
+            <p style="font-size:12px;color:var(--muted);margin-top:8px;line-height:1.5;">
+              Disabling MFA reduces your account security. You'll need to enter your password + current MFA code to disable.
+            </p>
+          </div>
+          ${sessionsHtml}`;
+      } else {
+        wrap.innerHTML = `
+          <div style="display:flex;align-items:center;gap:12px;padding:14px;background:var(--teal-bg);border-left:4px solid var(--teal);border-radius:8px;margin-bottom:18px;">
+            <div style="font-size:24px;">⚠️</div>
+            <div>
+              <div style="font-weight:700;color:var(--teal-deep);">Two-Factor Authentication is OFF</div>
+              <div style="font-size:12px;color:var(--teal-deep);">Your account is protected only by your password. Strongly recommended for ${me.role || 'admin'} accounts.</div>
+            </div>
+          </div>
+          <p style="font-size:13px;line-height:1.6;color:var(--text);margin-bottom:14px;">
+            With MFA enabled, signing in requires both your password and a 6-digit code from an authenticator app
+            (Google Authenticator, Authy, 1Password, etc.). Even if your password is stolen, your account stays secure.
+          </p>
+          <button class="btn btn-primary" onclick="startMfaEnrollment()" style="width:100%;">Set Up Two-Factor Authentication →</button>
+          ${sessionsHtml}`;
+      }
+    } catch(e) {
+      wrap.innerHTML = `<div style="color:var(--danger);">Error: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  let _enrollData = null;
+
+  function renderActiveSessions(sessions) {
+    if (!sessions || !sessions.length) return '';
+    const fmtUA = (ua) => {
+      if (!ua) return 'Unknown device';
+      // Tiny UA fingerprint — not perfect but good enough for "is this me?"
+      const m = ua.match(/(Chrome|Safari|Firefox|Edge|curl)\/?[\d.]*/i);
+      const os = /Mac OS|Macintosh/.test(ua) ? 'Mac'
+               : /Windows/.test(ua) ? 'Windows'
+               : /Android/.test(ua) ? 'Android'
+               : /iPhone|iPad|iOS/.test(ua) ? 'iOS'
+               : /Linux/.test(ua) ? 'Linux' : '';
+      return [m ? m[0] : ua.slice(0, 30), os].filter(Boolean).join(' · ');
+    };
+    const fmtAgo = (iso) => {
+      if (!iso) return '';
+      const ms = Date.now() - new Date(iso).getTime();
+      const m = Math.floor(ms / 60000);
+      if (m < 1) return 'just now';
+      if (m < 60) return `${m}m ago`;
+      const h = Math.floor(m / 60);
+      if (h < 24) return `${h}h ago`;
+      return `${Math.floor(h / 24)}d ago`;
+    };
+    return `
+      <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:18px;">
+        <h4 style="font-size:13px;color:var(--ink);margin-bottom:10px;">Active Sessions <span style="color:var(--muted);font-weight:400;font-size:12px;">(${sessions.length})</span></h4>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px;">
+          ${sessions.map(s => `
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 12px;background:var(--light);border-radius:8px;font-size:12px;${s.is_current ? 'border:1px solid var(--teal);' : ''}">
+              <div>
+                <strong style="color:var(--ink);">${escHtml(fmtUA(s.user_agent))}</strong>${s.is_current ? ' <span style="color:var(--teal);font-size:11px;">— this device</span>' : ''}
+                <br><span style="color:var(--muted);font-size:11px;">${escHtml(s.ip_address || 'unknown IP')} · started ${escHtml(fmtAgo(s.created_at))} · last seen ${escHtml(fmtAgo(s.last_seen_at))}</span>
+              </div>
+              ${s.is_current ? '' : `<button class="btn btn-ghost btn-sm" onclick="revokeSession('${s.jti}')">Sign out</button>`}
+            </div>`).join('')}
+        </div>
+        <button class="btn btn-danger" onclick="logoutEverywhere()" style="width:100%;">🔌 Sign out everywhere (including this device)</button>
+      </div>`;
+  }
+
+  async function revokeSession(jti) {
+    if (!confirm('Sign out this session?')) return;
+    try {
+      await api('DELETE', `/api/admin/sessions/${jti}`);
+      await loadSecurityModal();
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  async function logoutEverywhere() {
+    if (!confirm('Sign out from ALL devices (including this one)? You\'ll need to sign in again.')) return;
+    try {
+      await api('POST', '/api/admin/logout-everywhere');
+    } catch {}
+    localStorage.removeItem('pc_admin_token');
+    window.location.reload();
+  }
+
+  async function startMfaEnrollment() {
+    document.getElementById('modal-security').classList.remove('open');
+    document.getElementById('modal-mfaEnroll').classList.add('open');
+    const wrap = document.getElementById('mfaEnrollBody');
+    wrap.innerHTML = 'Setting up…';
+    try {
+      _enrollData = await api('POST', '/api/admin/mfa/setup');
+      wrap.innerHTML = `
+        <ol style="padding-left:20px;font-size:14px;line-height:1.7;color:var(--text);margin-bottom:18px;">
+          <li>Open an authenticator app (Google Authenticator, Authy, 1Password, etc.)</li>
+          <li>Scan the QR code below or enter the setup key manually</li>
+          <li>Enter the 6-digit code shown in your app to confirm</li>
+        </ol>
+        <div style="text-align:center;background:white;padding:16px;border:1px solid var(--border);border-radius:8px;margin-bottom:14px;">
+          <img src="${_enrollData.qr_data_uri}" alt="MFA QR code" style="max-width:220px;width:100%;display:block;margin:0 auto;">
+          <div style="margin-top:12px;font-size:11px;color:var(--muted);">Setup key (manual entry):</div>
+          <code style="display:inline-block;margin-top:4px;padding:6px 10px;background:var(--light);border-radius:6px;font-size:12px;letter-spacing:2px;word-break:break-all;">${_enrollData.secret}</code>
+        </div>
+        <div class="field">
+          <label>Code from your app</label>
+          <input id="mfa-confirm-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456" style="text-align:center;font-size:22px;letter-spacing:6px;font-family:'Courier New',monospace;padding:11px;border:2px solid var(--border);border-radius:8px;width:100%;outline:none;">
+        </div>
+        <div class="form-error" id="err-mfaEnroll"></div>
+        <div style="display:flex;gap:10px;margin-top:14px;">
+          <button class="btn btn-ghost" style="flex:1;" onclick="closeModal('mfaEnroll');loadSecurityModal();document.getElementById('modal-security').classList.add('open');">Cancel</button>
+          <button class="btn btn-primary" style="flex:1;" onclick="activateMfa()">Enable MFA</button>
+        </div>`;
+      setTimeout(() => document.getElementById('mfa-confirm-code')?.focus(), 50);
+    } catch(e) {
+      wrap.innerHTML = `<div style="color:var(--danger);">Error: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  async function activateMfa() {
+    const code = document.getElementById('mfa-confirm-code').value.trim();
+    const err = document.getElementById('err-mfaEnroll');
+    err.style.display = 'none';
+    if (!/^\d{6}$/.test(code)) { showErr('err-mfaEnroll', 'Enter the 6-digit code from your app.'); return; }
+    try {
+      const res = await api('POST', '/api/admin/mfa/activate', { code });
+      closeModal('mfaEnroll');
+      showBackupCodes(res.backup_codes);
+    } catch(e) { showErr('err-mfaEnroll', e.message); }
+  }
+
+  function showBackupCodes(codes) {
+    document.getElementById('backupCodesList').innerHTML =
+      codes.map(c => `<div>${c}</div>`).join('');
+    document.getElementById('modal-mfaBackup').classList.add('open');
+  }
+
+  async function copyBackupCodes() {
+    const codes = [...document.getElementById('backupCodesList').children].map(d => d.textContent).join('\n');
+    try {
+      await navigator.clipboard.writeText(codes);
+      alert('Backup codes copied to clipboard.');
+    } catch { alert('Copy failed — please save them manually.'); }
+  }
+
+  function printBackupCodes() {
+    const codes = [...document.getElementById('backupCodesList').children].map(d => d.textContent).join('\n');
+    const w = window.open('', '_blank');
+    w.document.write(`<pre style="font-size:18px;letter-spacing:2px;padding:40px;">PrimeCool Admin — MFA Backup Codes\n\n${codes}\n\nUse each code once. Save in a secure place.</pre>`);
+    w.print();
+  }
+
+  async function regenerateBackupCodes() {
+    const code = prompt('Enter your current 6-digit MFA code (or a backup code) to confirm:');
+    if (!code) return;
+    try {
+      const res = await api('POST', '/api/admin/mfa/regenerate-backup-codes', { mfa_token: '', code });
+      document.getElementById('modal-security').classList.remove('open');
+      showBackupCodes(res.backup_codes);
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  async function disableMfa() {
+    const pw = prompt('Confirm by entering your password:');
+    if (!pw) return;
+    const code = prompt('Enter a current 6-digit MFA code (or a backup code):');
+    if (!code) return;
+    try {
+      await api('POST', '/api/admin/mfa/disable', { password: pw, code });
+      await loadSecurityModal();
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  // ── Forgot admin password ──
+  function openAdminForgot() {
+    document.getElementById('adminForgotModal').style.display = 'flex';
+    document.getElementById('adminForgotErr').style.display = 'none';
+    document.getElementById('adminForgotOk').style.display = 'none';
+    document.getElementById('adminForgotEmail').value = '';
+  }
+  function closeAdminForgot() {
+    document.getElementById('adminForgotModal').style.display = 'none';
+  }
+  async function submitAdminForgot() {
+    const email = document.getElementById('adminForgotEmail').value.trim();
+    const err = document.getElementById('adminForgotErr');
+    const ok  = document.getElementById('adminForgotOk');
+    const btn = document.getElementById('adminForgotBtn');
+    err.style.display = 'none'; ok.style.display = 'none';
+    if (!email) { err.textContent = 'Enter your admin email.'; err.style.display = 'block'; return; }
+    btn.disabled = true; btn.textContent = 'Sending…';
+    try {
+      await fetch('/api/admin/forgot-password', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+      ok.style.display = 'block';
+    } catch {
+      err.textContent = 'Connection error.';
+      err.style.display = 'block';
+    } finally {
+      btn.disabled = false; btn.textContent = 'Send Reset Link';
+    }
+  }
+  document.getElementById('adminForgotModal').addEventListener('click', e => {
+    if (e.target.id === 'adminForgotModal') closeAdminForgot();
+  });
+
+  // ── API helper ─────────────────────────────────────────────────────────────
+  async function api(method, url, body, extraHeaders) {
+    const opts = {
+      method,
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${adminToken}` },
+    };
+    // Optional per-call headers (e.g. X-Change-Reason for the audit "why").
+    // Skipped if blank so we never send an empty header.
+    if (extraHeaders) {
+      for (const k in extraHeaders) {
+        const v = extraHeaders[k];
+        if (v !== undefined && v !== null && String(v).trim() !== '') {
+          opts.headers[k] = String(v);
+        }
+      }
+    }
+    if (body) opts.body = JSON.stringify(body);
+    const res = await fetch(url, opts);
+    if (res.status === 401) { adminLogout(); throw new Error('Unauthorized'); }
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(_apiErrorMessage(data, res.status));
+    }
+    return res.json();
+  }
+
+  // BUG FIX (R1): FastAPI returns ValidationError responses with
+  // detail as an ARRAY of objects: [{loc, msg, type}, ...]. The
+  // previous code did `new Error(data.detail || 'Request failed')`
+  // which coerced the array via toString → "[object Object],[object Object]"
+  // — what the auditor saw on the threshold-edit screen.
+  function _apiErrorMessage(data, status) {
+    if (!data) return 'HTTP ' + status;
+    const d = data.detail;
+    if (typeof d === 'string' && d.trim()) return d;
+    if (Array.isArray(d)) {
+      // Pydantic validation error shape: [{loc:[…], msg:"...", type:"..."}, …]
+      const lines = d.map(e => {
+        if (e && typeof e === 'object') {
+          const loc = Array.isArray(e.loc) ? e.loc.slice(-2).join('.') : '';
+          return (loc ? loc + ': ' : '') + (e.msg || JSON.stringify(e));
+        }
+        return String(e);
+      });
+      return lines.join('; ');
+    }
+    if (d && typeof d === 'object') {
+      // CMMS install-conflict 409s use {scope, message}; also tolerate the
+      // common {msg}/{error} object shapes before falling back to raw JSON.
+      return d.msg || d.error || d.message || JSON.stringify(d);
+    }
+    return 'HTTP ' + status;
+  }
+  window._apiErrorMessage = _apiErrorMessage;
+
+  // ── Navigation ─────────────────────────────────────────────────────────────
+  // ── Mobile nav drawer ──────────────────────────────────────────────────
+  function openNav() {
+    document.getElementById('adminSidebar')?.classList.add('open');
+    document.getElementById('navBackdrop')?.classList.add('open');
+    document.getElementById('menuToggle')?.setAttribute('aria-expanded', 'true');
+  }
+  function closeNav() {
+    document.getElementById('adminSidebar')?.classList.remove('open');
+    document.getElementById('navBackdrop')?.classList.remove('open');
+    document.getElementById('menuToggle')?.setAttribute('aria-expanded', 'false');
+  }
+  function toggleNav() {
+    const open = document.getElementById('adminSidebar')?.classList.contains('open');
+    open ? closeNav() : openNav();
+  }
+  // Escape closes the drawer; ignored on desktop where the sidebar
+  // doesn't have .open in the first place.
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeNav();
+  });
+
+  // ── Breadcrumb state ───────────────────────────────────────────────────
+  // Each entry: { label, onClick (optional) }. showPanel resets to a
+  // two-step crumb ("Admin > <Panel>") and detail openers (customer,
+  // visit, etc.) push a third step.
+  const _PANEL_TITLES = {
+    home: 'Home',
+    customers: 'Customers', visits: 'All Visits', techs: 'Technicians',
+    employees: 'Employees',
+    invoices: 'Invoices',   documents: 'Documents', inventory: 'Warehouse',
+    warehouse: 'Warehouse Ops', schedule: 'Schedule', workforce: 'Workforce',
+    entities: 'Entities & P&L',
+    timesheets: 'Timesheets',
+    payroll: 'Payroll', mypay: 'My Payslips', admins: 'Admins',
+    onboarding: 'Onboarding',
+    audit: 'Audit Log', reviews: 'Reviews', fs: '5S',
+    delegations: 'Delegations', kpi: 'Performance KPI',
+    companymsg: 'Company Messages', myprofile: 'Account & security',
+    contracts: 'PM Contracts', backups: 'Database Backups',
+    estimates: 'Estimates & Quotes', svcreq: 'Service Requests',
+    pto: 'Manage Time Off',
+  };
+  function _setCrumbs(items) {
+    const wrap = document.getElementById('pcCrumbs');
+    if (!wrap) return;
+    wrap.innerHTML = items.map((it, i) => {
+      const isLast = i === items.length - 1;
+      const label = escHtml(it.label || '');
+      if (isLast) return `<span class="cur">${label}</span>`;
+      const onclick = it.onClick ? ` onclick="${it.onClick}"` : '';
+      return `<a${onclick}>${label}</a><span class="sep">›</span>`;
+    }).join(' ');
+  }
+  // ── Density toggle ─────────────────────────────────────────────────────
+  // Persisted in localStorage so the operator's choice survives reloads.
+  // Two modes: 'comfortable' (default) and 'compact' (tighter padding).
+  function pcApplyDensity(mode) {
+    document.body.dataset.pcDensity = mode === 'compact' ? 'compact' : 'comfortable';
+    const btn = document.getElementById('pcDensityBtn');
+    if (btn) btn.title = (mode === 'compact'
+      ? 'Currently compact — click for comfortable'
+      : 'Currently comfortable — click for compact');
+  }
+  function pcToggleDensity() {
+    const cur = (document.body.dataset.pcDensity || 'comfortable');
+    const next = cur === 'compact' ? 'comfortable' : 'compact';
+    try { localStorage.setItem('pc_density', next); } catch (_) {}
+    pcApplyDensity(next);
+    if (window.PC && PC.toast) PC.toast('Density: ' + next, 'success');
+  }
+  window.pcToggleDensity = pcToggleDensity;
+  // Apply persisted choice at boot.
+  try { pcApplyDensity(localStorage.getItem('pc_density') || 'comfortable'); } catch (_) {}
+
+  // ── Cmd/Ctrl-K command palette ─────────────────────────────────────────
+  // Indexes from in-memory state — no extra server roundtrip. Picks
+  // sidebar destinations PLUS whichever lists have already been loaded
+  // (customers / techs / invoices / parts). Keyboard-first: arrows to
+  // navigate, Enter to open, Escape to dismiss.
+  let _cmdkActiveIdx = 0;
+  let _cmdkResults   = [];
+  function _cmdkIndex() {
+    const items = [];
+    // A category is indexed ONLY when its sidebar section is visible to this
+    // user (same offsetParent gate used for sections below). The underlying
+    // arrays are already scoped server-side per role, so the palette surfaces
+    // exactly what the signed-in user is allowed to reach — no more, no less.
+    const _navVisible = (id) => {
+      const el = document.getElementById('nav-' + id);
+      // The sidebar itself is retired (display:none), so offsetParent is null
+      // for every nav item. Permission gating lives on the item's own inline
+      // display: applyRoleVisibility() leaves denied items at display:none and
+      // promotes allowed ones to display:flex. That's the real signal.
+      return !!(el && el.style.display !== 'none');
+    };
+    // Build a single lowercased haystack from any number of fields.
+    const _txt = (...parts) => parts.filter(v => v !== null && v !== undefined && v !== '')
+                                    .join(' ').toLowerCase();
+    // Sidebar destinations.
+    Object.entries(_PANEL_TITLES).forEach(([k, v]) => {
+      const navEl = document.getElementById('nav-' + k);
+      if (navEl && navEl.style.display !== 'none') {
+        items.push({ kind:'section', icon:'🧭', label: v, hint: 'Go to ' + v,
+                     search: _txt(v, 'section', k),
+                     onOpen: () => showPanel(k) });
+      }
+    });
+    // Customers — name, company, code, phone, email, address.
+    if (_navVisible('customers')) {
+      try { (allCustomers || []).forEach(c => items.push({
+        kind:'customer', icon:'👥', label: c.name || '(no name)',
+        hint: [c.company, c.customer_code].filter(Boolean).join(' · '),
+        search: _txt(c.name, c.company, c.customer_code, c.phone, c.email, c.address),
+        onOpen: () => { showPanel('customers'); routeCustomerDetail(c.id); },
+      })); } catch(_){}
+    }
+    // Technicians — name, code, role, phone.
+    if (_navVisible('techs')) {
+      try { (allTechs || []).forEach(t => items.push({
+        kind:'tech', icon:'🛠', label: t.name || '(no name)',
+        hint: (t.tech_code || '') + (t.role ? ' · ' + t.role.replace(/_/g,' ') : ''),
+        search: _txt(t.name, t.tech_code, t.role && t.role.replace(/_/g,' '), t.phone),
+        onOpen: () => { showPanel('techs'); if (typeof tdfOpenById === 'function') tdfOpenById(t.id); },
+      })); } catch(_){}
+    }
+    // Invoices — number, customer, code, status, total.
+    if (_navVisible('invoices')) {
+      try { (allInvoices || []).forEach(i => items.push({
+        kind:'invoice', icon:'🧾',
+        label: '#' + (i.invoice_number || i.id) + ' — ' + (i.customer_name || ''),
+        hint: 'Invoice · ' + (i.status || ''),
+        search: _txt(i.invoice_number, i.id, i.customer_name, i.customer_code, i.status, i.total),
+        onOpen: () => { showPanel('invoices'); if (typeof openInvoice === 'function') openInvoice(i.id); },
+      })); } catch(_){}
+    }
+    // Parts — sku, name, category.
+    if (_navVisible('inventory')) {
+      try { (allParts || []).forEach(p => items.push({
+        kind:'part', icon:'📦',
+        label: (p.sku || '') + ' — ' + (p.name || ''),
+        hint: 'Part · qty ' + (p.quantity ?? 0),
+        search: _txt(p.sku, p.name, p.category),
+        onOpen: () => showPanel('inventory'),
+      })); } catch(_){}
+    }
+    // Visits / jobs — customer, code, type, status, dates, equipment, tech.
+    if (_navVisible('visits')) {
+      // NOTE: the full visit-detail view (routeVisitDetail) is a genuinely
+      // super_admin-only feature — the function itself hard-gates and rejects
+      // other roles (see routeVisitDetail). So this is a real permission gate,
+      // not a convenience gate: non-super users land on the Visits panel, which
+      // is the most they can do with a visit anyway. Do NOT widen this without
+      // also changing routeVisitDetail's own access policy.
+      const _isSuper = (currentAdmin && currentAdmin.role === 'super_admin');
+      try { (allVisits || []).forEach(v => {
+        const _tech = (allTechs || []).find(t => t.id === v.assigned_tech_id);
+        items.push({
+          kind:'visit', icon:'📅',
+          label: (v.customer_name || '(no customer)') + (v.visit_type ? ' — ' + v.visit_type : ''),
+          hint: [v.status && v.status.replace('_',' '), v.scheduled_date || v.completed_date].filter(Boolean).join(' · '),
+          search: _txt(v.customer_name, v.customer_code, v.visit_type, v.status,
+                       v.scheduled_date, v.completed_date, v.equipment_name, _tech && _tech.name),
+          onOpen: () => { showPanel('visits'); if (_isSuper && typeof routeVisitDetail === 'function') routeVisitDetail(v.id); },
+        });
+      }); } catch(_){}
+    }
+    // Documents — title, filename, description, type.
+    if (_navVisible('documents')) {
+      const _docLabel = (typeof DOC_TYPE_LABELS !== 'undefined') ? DOC_TYPE_LABELS : {};
+      try { (allDocuments || []).forEach(d => items.push({
+        kind:'document', icon:'📄',
+        label: d.title || d.filename || '(untitled)',
+        hint: [_docLabel[d.document_type] || d.document_type, d.filename].filter(Boolean).join(' · '),
+        search: _txt(d.title, d.filename, d.description, d.document_type, d.linked_to_name),
+        onOpen: () => showPanel('documents'),
+      })); } catch(_){}
+    }
+    return items;
+  }
+  function pcCmdkOpen() {
+    const overlay = document.getElementById('pcCmdkOverlay');
+    const input   = document.getElementById('pcCmdkInput');
+    overlay.classList.add('open');
+    input.value = '';
+    _cmdkActiveIdx = 0;
+    _cmdkRender('');
+    setTimeout(() => input.focus(), 30);
+  }
+  function pcCmdkClose() {
+    document.getElementById('pcCmdkOverlay')?.classList.remove('open');
+  }
+  function _cmdkRender(q) {
+    const list = document.getElementById('pcCmdkList');
+    const idx = _cmdkIndex();
+    const needle = (q || '').toLowerCase().trim();
+    _cmdkResults = needle
+      ? idx.filter(it => (it.search || (it.label + ' ' + (it.hint||''))).toLowerCase().includes(needle))
+      : idx.filter(it => it.kind === 'section');   // sections only on empty query
+    _cmdkResults = _cmdkResults.slice(0, 40);
+    if (_cmdkActiveIdx >= _cmdkResults.length) _cmdkActiveIdx = 0;
+    if (!_cmdkResults.length) {
+      list.innerHTML = `<div style="padding:24px;text-align:center;color:var(--muted);font-size:13px;">No matches for "${escHtml(q)}".</div>`;
+      return;
+    }
+    list.innerHTML = _cmdkResults.map((it, i) => `
+      <div class="pc-cmdk-item${i === _cmdkActiveIdx ? ' active' : ''}" data-i="${i}">
+        <span style="font-size:18px;">${it.icon}</span>
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escHtml(it.label)}</div>
+          ${it.hint ? `<div style="font-size:11px;color:var(--muted);">${escHtml(it.hint)}</div>` : ''}
+        </div>
+        <span class="type-tag">${it.kind}</span>
+      </div>`).join('');
+    list.querySelectorAll('.pc-cmdk-item').forEach(el => {
+      el.addEventListener('mouseenter', () => {
+        _cmdkActiveIdx = Number(el.dataset.i);
+        list.querySelectorAll('.pc-cmdk-item').forEach((x,i)=>x.classList.toggle('active', i===_cmdkActiveIdx));
+      });
+      el.addEventListener('click', () => _cmdkExec());
+    });
+  }
+  function _cmdkExec() {
+    const hit = _cmdkResults[_cmdkActiveIdx];
+    if (!hit) return;
+    pcCmdkClose();
+    try { hit.onOpen(); } catch(e) { console.warn(e); }
+  }
+  document.addEventListener('keydown', (e) => {
+    // Global hotkey: Cmd-K (Mac) / Ctrl-K (everyone else).
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+      e.preventDefault();
+      pcCmdkOpen();
+      return;
+    }
+    const overlay = document.getElementById('pcCmdkOverlay');
+    if (!overlay || !overlay.classList.contains('open')) return;
+    if (e.key === 'Escape')      { pcCmdkClose(); }
+    else if (e.key === 'ArrowDown') { e.preventDefault(); _cmdkActiveIdx = Math.min(_cmdkActiveIdx + 1, _cmdkResults.length - 1); _cmdkRender(document.getElementById('pcCmdkInput').value); }
+    else if (e.key === 'ArrowUp')   { e.preventDefault(); _cmdkActiveIdx = Math.max(_cmdkActiveIdx - 1, 0); _cmdkRender(document.getElementById('pcCmdkInput').value); }
+    else if (e.key === 'Enter')     { e.preventDefault(); _cmdkExec(); }
+  });
+  document.addEventListener('input', (e) => {
+    if (e.target && e.target.id === 'pcCmdkInput') {
+      _cmdkActiveIdx = 0;
+      _cmdkRender(e.target.value);
+    }
+  });
+  window.pcCmdkOpen = pcCmdkOpen;
+  window.pcCmdkClose = pcCmdkClose;
+
+  function pcPushCrumb(label) {
+    // Append a third step on top of the current panel crumbs.
+    const wrap = document.getElementById('pcCrumbs');
+    if (!wrap) return;
+    // Re-derive current panel from .active
+    const active = document.querySelector('.panel.active')?.id?.replace('panel-','');
+    const panelLabel = _PANEL_TITLES[active] || 'Admin';
+    _setCrumbs([
+      { label: 'Admin', onClick: "showPanel('customers')" },
+      { label: panelLabel, onClick: "showPanel('" + active + "')" },
+      { label: label },
+    ]);
+  }
+  window.pcPushCrumb = pcPushCrumb;
+
+  // ── Hash → panel router ─────────────────────────────────────────────
+  // Top-level panels can be deep-linked via /admin#<panel>, e.g.
+  // /admin#kpi opens Performance KPI. Lets the unified /home worklet
+  // tiles route a click straight to the correct admin panel instead
+  // of dumping every tile on the Customers list.
+  // Compound deep-links (#customer/123, #visit/456, #invoice/7/edit)
+  // are handled by their dedicated routers — we only catch the bare
+  // panel name here so we don't fight them.
+  const _PANEL_NAMES_FOR_HASH = new Set([
+    'home',
+    'customers','visits','techs','invoices','documents','inventory',
+    'schedule','timesheets','payroll','mypay','admins','audit','reviews',
+    'fs','delegations','kpi','companymsg','warehouse','myprofile','onboarding',
+    'svcreq','pto','estimates','contracts','backups',
+  ]);
+  function _maybeOpenPanelFromHash() {
+    let h = (location.hash || '').replace(/^#/, '').trim();
+    if (!h || h.indexOf('/') !== -1) return;            // compound route → leave alone
+    if (!_PANEL_NAMES_FOR_HASH.has(h))   return;        // unknown panel name
+    // Resolve legacy aliases (e.g. #warehouse → inventory).
+    h = (_PANEL_ALIASES && _PANEL_ALIASES[h]) || h;
+    const nav = document.getElementById('nav-' + h);
+    // Permission gate: denied nav items keep inline display:none (set by
+    // applyRoleVisibility); allowed ones are display:flex. The sidebar is
+    // retired so offsetParent is always null — check inline display instead.
+    if (!nav || nav.style.display === 'none') return;   // user lacks the perm to see it
+    try { showPanel(h); } catch (_) {}
+  }
+  window.addEventListener('hashchange', _maybeOpenPanelFromHash);
+
+  // Legacy panel aliases — preserves deep-links from older docs / bookmarks
+  // after we consolidated panels (e.g. Warehouse Ops merged into Inventory).
+  const _PANEL_ALIASES = { 'warehouse': 'inventory' };
+
+  // ════════════════════════════════════════════════════════════════════════
+  //  HR-1 — unified Employee master (CMMS + ERP + HR all-in-one)
+  //  Overlays employee_profiles (+ statutory IDs) onto a technician or
+  //  admin_user. Jamaica-aware: 14 parishes, TRN/NIS/… national IDs.
+  //  Sensitive fields are encrypted at rest server-side; this panel only
+  //  ever sees the decrypted values for users who hold hr:view / hr:edit.
+  // ════════════════════════════════════════════════════════════════════════
+  let hrState = { filter: '', q: '', employees: [], current: null,
+                  reference: null, editingId: null, _searchTimer: null };
+
+  const HR_LABELS = {
+    legal_first_name: 'First name', legal_middle_name: 'Middle name',
+    legal_last_name: 'Last name', preferred_name: 'Preferred name',
+    date_of_birth: 'Date of birth', gender: 'Gender',
+    marital_status: 'Marital status', parish: 'Parish', city_town: 'City / town',
+    address_line1: 'Address line 1', address_line2: 'Address line 2',
+    personal_phone: 'Personal phone', personal_email: 'Personal email',
+    emergency_contact_name: 'Emergency contact', emergency_contact_phone: 'Emergency phone',
+    emergency_contact_relationship: 'Relationship', notes: 'Notes',
+  };
+  const HR_ID_LABELS = {
+    TRN: 'TRN', NIS: 'NIS', DRIVERS_LICENSE: "Driver's Licence",
+    PASSPORT: 'Passport', VOTER_ID: 'Voter ID', NHT: 'NHT',
+  };
+
+  async function hrEnsureReference() {
+    if (hrState.reference) return hrState.reference;
+    try {
+      hrState.reference = await api('GET', '/api/admin/hr/reference');
+    } catch (e) {
+      hrState.reference = { parishes: [], id_types: [] };
+    }
+    return hrState.reference;
+  }
+
+  async function hrLoadEmployees() {
+    const tbody = document.getElementById('hrEmpTableBody');
+    if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="empty">Loading…</td></tr>';
+    await hrEnsureReference();
+    const params = [];
+    if (hrState.filter) params.push('subject_type=' + encodeURIComponent(hrState.filter));
+    if (hrState.q)      params.push('q=' + encodeURIComponent(hrState.q));
+    const qs = params.length ? ('?' + params.join('&')) : '';
+    try {
+      const data = await api('GET', '/api/admin/hr/employees' + qs);
+      hrState.employees = data.employees || [];
+      hrRenderTable();
+    } catch (e) {
+      if (tbody) tbody.innerHTML = `<tr><td colspan="6" class="empty">${escHtml(e.message || 'Failed to load.')}</td></tr>`;
+    }
+  }
+
+  function hrRenderTable() {
+    const tbody = document.getElementById('hrEmpTableBody');
+    if (!tbody) return;
+    if (!hrState.employees.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty">No employee records yet. Click “+ New Employee” to create one.</td></tr>';
+      return;
+    }
+    const canEdit = can('hr:edit');
+    tbody.innerHTML = hrState.employees.map(e => {
+      const nm = [e.legal_first_name, e.legal_last_name].filter(Boolean).join(' ')
+                 || e.subject_name || '—';
+      const typeBadge = e.subject_type === 'tech'
+        ? '<span class="badge" style="background:var(--steel-bg);color:var(--steel);">Field</span>'
+        : '<span class="badge" style="background:var(--surface-2);color:var(--muted);">Office</span>';
+      const idCount = (e.id_types && e.id_types.length) ? e.id_types.join(', ') : '—';
+      return `
+      <tr style="cursor:pointer;" onclick="hrOpenDetail(${e.id})">
+        <td><strong>${escHtml(nm)}</strong>${e.preferred_name ? `<br><span style="font-size:11px;color:var(--muted);">“${escHtml(e.preferred_name)}”</span>` : ''}</td>
+        <td><span class="code-pill">${escHtml(e.subject_code || '—')}</span></td>
+        <td>${typeBadge}</td>
+        <td>${escHtml(e.parish) || '—'}</td>
+        <td style="font-size:12px;color:var(--muted);">${escHtml(idCount)}</td>
+        <td style="white-space:nowrap;" onclick="event.stopPropagation();">
+          <button class="btn btn-ghost btn-sm" onclick="hrOpenDetail(${e.id})">View →</button>
+          ${canEdit ? `<button class="btn btn-edit btn-sm" onclick="hrOpenEdit(${e.id})" style="margin-left:6px;">Edit</button>` : ''}
+        </td>
+      </tr>`;
+    }).join('');
+  }
+
+  function hrSetFilter(type, btn) {
+    hrState.filter = type;
+    document.querySelectorAll('#hrEmpList .filter-btn').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    hrLoadEmployees();
+  }
+
+  function hrDebouncedSearch() {
+    const el = document.getElementById('hrSearch');
+    clearTimeout(hrState._searchTimer);
+    hrState._searchTimer = setTimeout(() => {
+      hrState.q = (el && el.value || '').trim();
+      hrLoadEmployees();
+    }, 280);
+  }
+
+  function hrShowList() {
+    document.getElementById('hrEmpDetail').style.display = 'none';
+    document.getElementById('hrEmpList').style.display = '';
+    hrState.current = null;
+  }
+
+  async function hrOpenDetail(id) {
+    try {
+      const data = await api('GET', '/api/admin/hr/employees/' + id);
+      hrState.current = data.employee;
+      hrRenderDetail(data.employee);
+      document.getElementById('hrEmpList').style.display = 'none';
+      document.getElementById('hrEmpDetail').style.display = '';
+    } catch (e) {
+      toast(e.message || 'Failed to open record.', 'error');
+    }
+  }
+
+  function hrRenderDetail(emp) {
+    const nm = [emp.legal_first_name, emp.legal_last_name].filter(Boolean).join(' ')
+               || emp.subject_name || '—';
+    document.getElementById('hrd-name').textContent = nm;
+    const typeWord = emp.subject_type === 'tech' ? 'Field (Technician)' : 'Office (Admin)';
+    document.getElementById('hrd-meta').textContent =
+      `${typeWord} · ${emp.subject_code || '—'} · linked to ${emp.subject_name || '—'}`;
+
+    // Edit / Add-ID buttons are display:none by default; applyRoleVisibility
+    // reveals them for hr:edit. Re-assert here in case detail opened first.
+    if (can('hr:edit')) {
+      const eb = document.getElementById('hrd-edit-btn');   if (eb) eb.style.display = '';
+      const ab = document.getElementById('hrd-addid-btn');  if (ab) ab.style.display = '';
+    }
+
+    const fields = [
+      'preferred_name', 'date_of_birth', 'gender', 'marital_status',
+      'parish', 'city_town', 'address_line1', 'address_line2',
+      'personal_phone', 'personal_email',
+      'emergency_contact_name', 'emergency_contact_phone', 'emergency_contact_relationship',
+      'notes',
+    ];
+    const grid = document.getElementById('hrd-grid');
+    const cells = fields.filter(f => emp[f]).map(f => `
+      <div>
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">${escHtml(HR_LABELS[f] || f)}</div>
+        <div style="color:var(--ink);margin-top:2px;">${escHtml(String(emp[f]))}</div>
+      </div>`);
+    grid.innerHTML = cells.length ? cells.join('')
+      : '<div style="color:var(--muted);font-size:13px;">No personal details captured yet. Use Edit to add them.</div>';
+
+    // Statutory IDs
+    const idWrap = document.getElementById('hrd-ids');
+    const ids = emp.national_ids || [];
+    if (!ids.length) {
+      idWrap.innerHTML = '<div style="color:var(--muted);font-size:13px;">No statutory IDs on file.</div>';
+    } else {
+      const canEdit = can('hr:edit');
+      idWrap.innerHTML = `<div style="display:flex;flex-direction:column;gap:8px;">${ids.map(i => `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;border:1px solid var(--border);border-radius:8px;padding:8px 12px;">
+          <div>
+            <span class="badge" style="background:var(--steel-bg);color:var(--steel);">${escHtml(HR_ID_LABELS[i.id_type] || i.id_type)}</span>
+            <span style="font-family:'Courier New',monospace;color:var(--ink);margin-left:8px;">${escHtml(i.id_number)}</span>
+            ${(i.issued_date || i.expiry_date) ? `<span style="font-size:11px;color:var(--muted);margin-left:8px;">${i.issued_date ? 'issued ' + escHtml(i.issued_date) : ''}${i.expiry_date ? (i.issued_date ? ' · ' : '') + 'expires ' + escHtml(i.expiry_date) : ''}</span>` : ''}
+          </div>
+          ${canEdit ? `<button class="btn btn-danger btn-sm" onclick="hrRemoveId('${escHtml(i.id_type)}')">Remove</button>` : ''}
+        </div>`).join('')}</div>`;
+    }
+  }
+
+  // ── Create / Edit ──────────────────────────────────────────────────────────
+  function hrFillSelect(sel, options, placeholder) {
+    if (!sel) return;
+    const opts = (placeholder ? `<option value="">${placeholder}</option>` : '')
+      + options.map(o => `<option value="${escHtml(o)}">${escHtml(HR_ID_LABELS[o] || o)}</option>`).join('');
+    sel.innerHTML = opts;
+  }
+
+  async function hrPopulateSubjects() {
+    const type = document.getElementById('hr-subject-type').value;
+    const sel = document.getElementById('hr-subject-id');
+    sel.innerHTML = '<option value="">Loading…</option>';
+    try {
+      if (type === 'tech') {
+        if (!allTechs.length) allTechs = await api('GET', '/api/admin/techs');
+        sel.innerHTML = '<option value="">— select —</option>' +
+          allTechs.filter(t => t.active).map(t =>
+            `<option value="${t.id}">${escHtml(t.name)} (${escHtml(t.tech_code)})</option>`).join('');
+      } else {
+        if (!allAdmins.length) allAdmins = await api('GET', '/api/admin/users');
+        sel.innerHTML = '<option value="">— select —</option>' +
+          allAdmins.filter(a => a.active).map(a =>
+            `<option value="${a.id}">${escHtml(a.name || a.username)} (${escHtml(a.username)})</option>`).join('');
+      }
+    } catch (e) {
+      sel.innerHTML = '<option value="">Failed to load</option>';
+    }
+  }
+
+  async function hrOpenCreate() {
+    await hrEnsureReference();
+    hrState.editingId = null;
+    document.getElementById('hr-create-title').textContent = 'New Employee';
+    document.getElementById('hr-create-submit').textContent = 'Save';
+    document.getElementById('hr-who-section').style.display = '';
+    hrFillSelect(document.getElementById('hr-parish'),
+                 (hrState.reference.parishes || []), '—');
+    // reset every field
+    ['hr-first','hr-last','hr-middle','hr-preferred','hr-dob','hr-city',
+     'hr-addr1','hr-addr2','hr-phone','hr-email','hr-ec-name','hr-ec-phone',
+     'hr-ec-rel'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+    ['hr-gender','hr-marital','hr-parish'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+    document.getElementById('hr-subject-type').value = 'tech';
+    await hrPopulateSubjects();
+    document.getElementById('modal-hrCreate').classList.add('open');
+  }
+
+  async function hrOpenEdit(id) {
+    // From the row Edit button we may not have loaded the full record yet.
+    const targetId = id || (hrState.current && hrState.current.id);
+    if (!targetId) return;
+    let emp = hrState.current;
+    if (!emp || emp.id !== targetId) {
+      try { emp = (await api('GET', '/api/admin/hr/employees/' + targetId)).employee; }
+      catch (e) { toast(e.message || 'Failed to load.', 'error'); return; }
+      hrState.current = emp;
+    }
+    await hrEnsureReference();
+    hrState.editingId = targetId;
+    document.getElementById('hr-create-title').textContent = 'Edit Employee';
+    document.getElementById('hr-create-submit').textContent = 'Save changes';
+    document.getElementById('hr-who-section').style.display = 'none';   // subject is immutable
+    hrFillSelect(document.getElementById('hr-parish'),
+                 (hrState.reference.parishes || []), '—');
+    const setv = (id2, v) => { const el = document.getElementById(id2); if (el) el.value = v || ''; };
+    setv('hr-first', emp.legal_first_name);   setv('hr-last', emp.legal_last_name);
+    setv('hr-middle', emp.legal_middle_name); setv('hr-preferred', emp.preferred_name);
+    setv('hr-dob', emp.date_of_birth);        setv('hr-gender', emp.gender);
+    setv('hr-marital', emp.marital_status);   setv('hr-parish', emp.parish);
+    setv('hr-city', emp.city_town);           setv('hr-addr1', emp.address_line1);
+    setv('hr-addr2', emp.address_line2);       setv('hr-phone', emp.personal_phone);
+    setv('hr-email', emp.personal_email);     setv('hr-ec-name', emp.emergency_contact_name);
+    setv('hr-ec-phone', emp.emergency_contact_phone);
+    setv('hr-ec-rel', emp.emergency_contact_relationship);
+    document.getElementById('modal-hrCreate').classList.add('open');
+  }
+
+  function hrCollectProfile() {
+    const val = id => { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
+    return {
+      legal_first_name: val('hr-first'), legal_last_name: val('hr-last'),
+      legal_middle_name: val('hr-middle'), preferred_name: val('hr-preferred'),
+      date_of_birth: val('hr-dob'), gender: val('hr-gender'),
+      marital_status: val('hr-marital'), parish: val('hr-parish'),
+      city_town: val('hr-city'), address_line1: val('hr-addr1'),
+      address_line2: val('hr-addr2'), personal_phone: val('hr-phone'),
+      personal_email: val('hr-email'), emergency_contact_name: val('hr-ec-name'),
+      emergency_contact_phone: val('hr-ec-phone'),
+      emergency_contact_relationship: val('hr-ec-rel'),
+    };
+  }
+
+  async function hrSubmitProfile() {
+    const btn = document.getElementById('hr-create-submit');
+    const payload = hrCollectProfile();
+    // Drop empties so we never overwrite with blank on patch / clutter create.
+    Object.keys(payload).forEach(k => { if (!payload[k]) delete payload[k]; });
+    try {
+      btn.disabled = true;
+      if (hrState.editingId) {
+        await api('PATCH', '/api/admin/hr/employees/' + hrState.editingId, payload);
+        toast('Employee updated.', 'success');
+        closeModal('hrCreate');
+        await hrOpenDetail(hrState.editingId);
+      } else {
+        const type = document.getElementById('hr-subject-type').value;
+        const subjId = document.getElementById('hr-subject-id').value;
+        if (!subjId) { toast('Pick the staff member this record belongs to.', 'error'); btn.disabled = false; return; }
+        if (!payload.legal_first_name || !payload.legal_last_name) {
+          toast('First and last name are required.', 'error'); btn.disabled = false; return;
+        }
+        payload.subject_type = type;
+        payload.subject_id = Number(subjId);
+        const res = await api('POST', '/api/admin/hr/employees', payload);
+        toast('Employee created.', 'success');
+        closeModal('hrCreate');
+        await hrLoadEmployees();
+        if (res.employee) hrOpenDetail(res.employee.id);
+      }
+    } catch (e) {
+      toast(e.message || 'Save failed.', 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // ── Statutory IDs ──────────────────────────────────────────────────────────
+  async function hrOpenAddId() {
+    if (!hrState.current) return;
+    await hrEnsureReference();
+    hrFillSelect(document.getElementById('hr-id-type'),
+                 (hrState.reference.id_types || []), '—');
+    ['hr-id-number','hr-id-issued','hr-id-expiry'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.value = '';
+    });
+    document.getElementById('modal-hrAddId').classList.add('open');
+  }
+
+  async function hrSubmitId() {
+    if (!hrState.current) return;
+    const idType = document.getElementById('hr-id-type').value;
+    const idNum  = document.getElementById('hr-id-number').value.trim();
+    if (!idType || !idNum) { toast('ID type and number are required.', 'error'); return; }
+    const payload = {
+      id_type: idType, id_number: idNum,
+      issued_date: document.getElementById('hr-id-issued').value || null,
+      expiry_date: document.getElementById('hr-id-expiry').value || null,
+    };
+    try {
+      await api('POST', `/api/admin/hr/employees/${hrState.current.id}/ids`, payload);
+      toast('Statutory ID saved.', 'success');
+      closeModal('hrAddId');
+      await hrOpenDetail(hrState.current.id);
+    } catch (e) {
+      toast(e.message || 'Could not save ID.', 'error');
+    }
+  }
+
+  async function hrRemoveId(idType) {
+    if (!hrState.current) return;
+    if (!confirm(`Remove the ${HR_ID_LABELS[idType] || idType} record from this employee?`)) return;
+    try {
+      await api('DELETE', `/api/admin/hr/employees/${hrState.current.id}/ids/${encodeURIComponent(idType)}`);
+      toast('Statutory ID removed.', 'success');
+      await hrOpenDetail(hrState.current.id);
+    } catch (e) {
+      toast(e.message || 'Could not remove ID.', 'error');
+    }
+  }
+
+  // ── Home dashboard (Pulse-style daily overview) ──────────────────────────
+  // Renders an SVG arc gauge of "jobs completed / scheduled today", a strip of
+  // "created today" KPI tiles, quick-create shortcuts, and two lists (today's
+  // jobs + recent customers). Sections the server omits (because the admin
+  // lacks the read permission) simply don't render — no client perm logic
+  // needed beyond the quick-create buttons, which we gate to avoid dead modals.
+  const _HOME_KPI_LABELS = {
+    new_jobs: 'New Jobs', new_invoices: 'New Invoices',
+    new_estimates: 'New Estimates', new_customers: 'New Customers',
+  };
+  function _homeGaugeSvg(done, total) {
+    const cx = 100, cy = 100, r = 80, C = 2 * Math.PI * r;
+    const frac = total > 0 ? Math.max(0, Math.min(1, done / total)) : 0;
+    const green = (frac * C).toFixed(1);
+    const rest = (C - frac * C).toFixed(1);
+    // Track ring + value arc (rotated so it starts at 12 o'clock), big count
+    // in the middle over a "/ total" denominator. The value arc is omitted at
+    // 0% so the rounded line-cap doesn't leave a stray dot on an empty gauge.
+    const valueArc = frac > 0 ? `
+      <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--teal-solid)" stroke-width="16"
+              stroke-linecap="round" stroke-dasharray="${green} ${rest}"
+              transform="rotate(-90 ${cx} ${cy})"
+              style="transition:stroke-dasharray .6s ease;"/>` : '';
+    return `
+      <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--border)" stroke-width="16"/>${valueArc}
+      <text class="g-num" x="100" y="98" text-anchor="middle">${done}</text>
+      <text class="g-den" x="100" y="120" text-anchor="middle">of ${total} today</text>`;
+  }
+  function _homeStatusPill(status) {
+    const s = (status || '').toLowerCase();
+    if (s === 'completed' || s === 'closed') return ['done', s === 'closed' ? 'Closed' : 'Completed'];
+    if (s === 'in_progress') return ['prog', 'In Progress'];
+    if (s === 'scheduled' || s === 'created') return ['pend', s === 'created' ? 'Created' : 'Scheduled'];
+    if (s === 'cancelled' || s === 'canceled') return ['misc', 'Cancelled'];
+    return ['misc', status || '—'];
+  }
+  async function loadHomeDashboard() {
+    // Greeting with the signed-in admin's first name when we have it.
+    const greetEl = document.getElementById('homeGreeting');
+    if (greetEl && currentAdmin) {
+      const nm = (currentAdmin.name || currentAdmin.full_name || '').trim().split(/\s+/)[0];
+      const hr = new Date().getHours();
+      const part = hr < 12 ? 'Good morning' : hr < 18 ? 'Good afternoon' : 'Good evening';
+      greetEl.textContent = nm ? `${part}, ${nm}` : 'Home';
+    }
+    // Quick-create buttons: hide the ones this role can't actually use.
+    const qe = document.getElementById('hqEstimate'); if (qe) qe.style.display = can('estimate:create') ? '' : 'none';
+    const qi = document.getElementById('hqInvoice');  if (qi) qi.style.display = can('invoice:create')  ? '' : 'none';
+    const qv = document.getElementById('hqVisit');    if (qv) qv.style.display = can('visit:create')    ? '' : 'none';
+
+    let d;
+    try {
+      d = await api('GET', '/api/admin/dashboard/overview');
+    } catch (e) {
+      const jb = document.getElementById('homeJobsBody');
+      if (jb) jb.innerHTML = `<div class="home-empty">Couldn't load dashboard: ${escHtml(e.message || String(e))}</div>`;
+      return;
+    }
+
+    // Arc gauge — only if the server returned the jobs section (visit:view).
+    const gauge = document.getElementById('homeGauge');
+    const gcard = gauge ? gauge.closest('.home-gauge-card') : null;
+    if (d.jobs) {
+      if (gauge) gauge.innerHTML = _homeGaugeSvg(d.jobs.completed | 0, d.jobs.total | 0);
+      if (gcard) gcard.style.display = '';
+    } else if (gcard) {
+      gcard.style.display = 'none';
+    }
+
+    // KPI tiles — one per key the server chose to include.
+    const kEl = document.getElementById('homeKpis');
+    if (kEl) {
+      const order = ['new_jobs', 'new_invoices', 'new_estimates', 'new_customers'];
+      const kpis = d.kpis || {};
+      kEl.innerHTML = order.filter(k => k in kpis).map(k =>
+        `<div class="home-kpi"><div class="k-val">${kpis[k] | 0}</div>
+           <div class="k-lab">${_HOME_KPI_LABELS[k]}</div></div>`).join('')
+        || '<div class="home-empty">No metrics available.</div>';
+    }
+
+    // Today's jobs list.
+    const jb = document.getElementById('homeJobsBody');
+    const jcard = document.getElementById('homeJobsCard');
+    if (jb) {
+      if (!d.todays_jobs) {                       // section withheld (no visit:view)
+        if (jcard) jcard.style.display = 'none';
+      } else if (d.todays_jobs.length === 0) {
+        if (jcard) jcard.style.display = '';
+        jb.innerHTML = '<div class="home-empty">No jobs scheduled today.</div>';
+      } else {
+        if (jcard) jcard.style.display = '';
+        jb.innerHTML = d.todays_jobs.map(j => {
+          const [cls, lab] = _homeStatusPill(j.status);
+          const time = j.scheduled_time ? escHtml(j.scheduled_time) : '—';
+          const type = j.visit_type ? escHtml(j.visit_type) : 'Visit';
+          const tech = j.technician ? ' · ' + escHtml(j.technician) : '';
+          const who = j.customer_name ? escHtml(j.customer_name) : 'Unassigned customer';
+          return `<div class="home-row" onclick="pcGoVisit(${j.id})" style="cursor:pointer;">
+            <div><div class="hr-main">${who}</div>
+              <div class="hr-sub">${time} · ${type}${tech}</div></div>
+            <span class="home-pill ${cls}">${lab}</span></div>`;
+        }).join('');
+      }
+    }
+
+    // Recent customers list.
+    const cb = document.getElementById('homeCustomersBody');
+    if (cb) {
+      const list = d.recent_customers || [];
+      if (list.length === 0) {
+        cb.innerHTML = '<div class="home-empty">No customers yet.</div>';
+      } else {
+        cb.innerHTML = list.map(c => {
+          const sub = c.company ? escHtml(c.company)
+                    : (c.phone ? escHtml(c.phone) : '—');
+          const added = c.created_at ? escHtml(String(c.created_at).slice(0, 10)) : '';
+          return `<div class="home-row" onclick="pcGoCustomer(${c.id})" style="cursor:pointer;">
+            <div><div class="hr-main">${escHtml(c.name || '—')}</div>
+              <div class="hr-sub">${sub}</div></div>
+            <span class="hr-sub">${added}</span></div>`;
+        }).join('');
+      }
+    }
+  }
+  window.loadHomeDashboard = loadHomeDashboard;
+
+  function showPanel(name) {
+    // Any panel switch on mobile also closes the drawer.
+    closeNav();
+    name = _PANEL_ALIASES[name] || name;
+    const panelEl = document.getElementById(`panel-${name}`);
+    if (!panelEl) {
+      console.warn('[showPanel] no panel for "' + name + '" — falling back to customers');
+      name = 'customers';
+    }
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    const target = document.getElementById(`panel-${name}`);
+    if (target) target.classList.add('active');
+    const navEl = document.getElementById(`nav-${name}`);
+    if (navEl) navEl.classList.add('active');
+    _setCrumbs([
+      { label: 'Admin', onClick: "showPanel('customers')" },
+      { label: _PANEL_TITLES[name] || name },
+    ]);
+    // Each panel-specific loader gets a defensive try/catch so a thrown
+    // exception inside one of them never blocks the rest of showPanel
+    // (the user reported blank panel content; the cause was a loader
+    // throwing AFTER the panel-element was made active but BEFORE its
+    // body content rendered).
+    function _safeLoad(fnName, fn) {
+      try { fn(); }
+      catch (e) {
+        console.error('[showPanel] ' + fnName + ' threw:', e);
+        // Surface the error in the panel body so the user knows
+        // something broke instead of staring at a blank page.
+        try {
+          const slot = document.querySelector('#panel-' + name + ' [id$="Body"]')
+                    || document.querySelector('#panel-' + name + ' [id$="TableBody"]')
+                    || document.querySelector('#panel-' + name);
+          if (slot) {
+            slot.innerHTML = '<div style="padding:18px;background:var(--err-bg);color:var(--err-fg);border-radius:8px;font-size:13px;border:1px solid var(--err-border);">'
+              + 'Loader <code>' + fnName + '()</code> failed: <strong>' + (e.message || e) + '</strong>'
+              + '<br><small style="color:var(--err-fg);">Open DevTools console for the stack trace.</small>'
+              + '</div>';
+          }
+        } catch(_) {}
+      }
+    }
+    if (name === 'home') { _safeLoad('loadHomeDashboard', loadHomeDashboard); }
+    if (name === 'fs') { _safeLoad('fsLoadCurrentTab', fsLoadCurrentTab); }
+    if (name === 'kpi') {
+      _safeLoad('kpiInitPanel', async () => {
+        await kpiInitPanel(); kpiLoadCurrentSubtab();
+      });
+    }
+    if (name === 'pto') { _safeLoad('loadPtoQueue', loadPtoQueue); }
+    if (name === 'delegations') { _safeLoad('loadDelegationsPanel', loadDelegationsPanel); }
+    if (name === 'contracts') { _safeLoad('loadPmContracts', loadPmContracts); }
+    if (name === 'workforce') { _safeLoad('wfLoad', wfLoad); }
+    if (name === 'entities') { _safeLoad('entLoad', entLoad); }
+    if (name === 'employees') { _safeLoad('hrLoadEmployees', hrLoadEmployees); }
+    if (name === 'companymsg') { _safeLoad('cmLoad', cmLoad); }
+    if (name === 'svcreq') { _safeLoad('svcReqLoad', svcReqLoad); }
+    if (name === 'warehouse') { _safeLoad('whInit', whInit); }
+    if (name === 'myprofile') { _safeLoad('loadMpProfile', loadMpProfile); }
+    if (name === 'inventory') { _safeLoad('loadInventoryStaffCard', loadInventoryStaffCard); }
+    if (name === 'backups') { _safeLoad('loadBackups', loadBackups); }
+    if (name === 'estimates') { _safeLoad('loadEstimates', loadEstimates); }
+    // Auto-hide the global security-alert banner when the user is already
+    // looking at the Audit Log (where the alerts live). Reappears as soon
+    // as they navigate to any other panel and the alert is still open.
+    const _alertBanner = document.getElementById('securityAlertBanner');
+    if (_alertBanner) {
+      _alertBanner.dataset.hideOnAudit = '1';
+      _alertBanner.style.display = (name === 'audit') ? 'none'
+        : (_alertBanner.dataset.hasAlert === '1' ? '' : 'none');
+    }
+    // Keep the URL hash in sync with the active panel so a browser REFRESH
+    // restores the panel the user is actually on — instead of snapping back
+    // to a stale deep-link (e.g. a leftover #schedule from a /home dashboard
+    // tile). Without this, sidebar clicks switched the panel but never
+    // updated the hash, so refresh always reopened whatever the hash last
+    // held. We use history.replaceState (not `location.hash =`) so we neither
+    // add a Back-button entry on every click nor fire a redundant hashchange.
+    // Compound deep-links (#customer/123, #visit/4, #invoice/7/edit, …) are
+    // owned by their own routers — preserve them when they belong to THIS
+    // panel; otherwise overwrite with the bare panel name.
+    try {
+      const _panelOwnsHash = { customers:'customer/', visits:'visit/', techs:'technician/', invoices:'invoice/' };
+      const _curHash = (location.hash || '').replace(/^#/, '');
+      const _ownsPrefix = _panelOwnsHash[name];
+      const _keepCompound = _curHash.indexOf('/') !== -1 && _ownsPrefix && _curHash.indexOf(_ownsPrefix) === 0;
+      if (!_keepCompound && _curHash !== name) {
+        history.replaceState(null, '', location.pathname + location.search + '#' + name);
+      }
+    } catch (_) { /* history API unavailable — non-fatal */ }
+  }
+
+  // ── Database Backups (super_admin) ───────────────────────────────────────
+  function _bkBytes(n) {
+    if (n == null) return '—';
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+    if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
+    return (n / 1073741824).toFixed(2) + ' GB';
+  }
+  async function loadBackups() {
+    const tbody = document.getElementById('backupTableBody');
+    const health = document.getElementById('backupHealth');
+    try {
+      const data = await api('GET', '/api/admin/backups');
+      const cfg = data.config || {};
+      const list = data.backups || [];
+      // Health card: age of newest backup + encryption / retention summary.
+      let ageTxt = 'No backups yet', ageColor = 'var(--danger-solid)';
+      if (list.length) {
+        const newest = new Date(list[0].created_at);
+        const hrs = (Date.now() - newest.getTime()) / 3600000;
+        if (hrs < 1)        { ageTxt = 'Last backup: under an hour ago'; ageColor = 'var(--teal-deep)'; }
+        else if (hrs < 36)  { ageTxt = `Last backup: ${Math.round(hrs)}h ago`; ageColor = 'var(--teal-deep)'; }
+        else                { ageTxt = `Last backup: ${Math.round(hrs/24)}d ago`; ageColor = 'var(--danger-solid)'; }
+      }
+      const encTxt = cfg.encryption_available
+        ? '<span style="color:var(--teal-deep);">🔒 Encryption ON</span>'
+        : '<span style="color:var(--danger-solid);">⚠ Encryption OFF (no key) — backups are plaintext</span>';
+      const offTxt = cfg.offsite_configured
+        ? 'Off-box push: configured' : 'Off-box push: not configured (local only)';
+      health.innerHTML =
+        `<div style="display:flex;gap:18px;flex-wrap:wrap;align-items:center;padding:12px 16px;background:var(--light);border:1px solid var(--border);border-radius:10px;font-size:13px;">`
+        + `<strong style="color:${ageColor};">${ageTxt}</strong>`
+        + `<span>${encTxt}</span>`
+        + `<span style="color:var(--muted);">Daily • keep ${cfg.retain_min}+ / ${cfg.retain_days}d</span>`
+        + `<span style="color:var(--muted);">${offTxt}</span>`
+        + `</div>`;
+      if (!list.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="empty">No backups yet. Click “Back up now”.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = list.map(b => {
+        const when = (b.created_at || '').replace('T', ' ').slice(0, 19) + ' UTC';
+        const enc = b.encrypted
+          ? '<span style="color:var(--teal-deep);">🔒 Yes</span>'
+          : '<span style="color:var(--danger-solid);">No</span>';
+        const nm = escHtml(b.name);
+        return `<tr>
+          <td>${when}</td>
+          <td>${_bkBytes(b.artifact_bytes)}</td>
+          <td>${enc}</td>
+          <td>${escHtml(b.reason || '—')}</td>
+          <td style="text-align:right;white-space:nowrap;">
+            <button class="btn btn-ghost btn-sm" onclick="verifyBackup('${nm}')">Verify</button>
+            <button class="btn btn-ghost btn-sm" onclick="downloadBackup('${nm}')">Download</button>
+          </td>
+        </tr>`;
+      }).join('');
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="5" class="empty">Error: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+  async function backupNow() {
+    const btn = document.getElementById('backupNowBtn');
+    btn.disabled = true; const orig = btn.textContent; btn.textContent = 'Backing up…';
+    try {
+      const meta = await api('POST', '/api/admin/backups');
+      await loadBackups();
+      alert(`Backup created: ${meta.name}\n${_bkBytes(meta.artifact_bytes)}, encrypted=${meta.encrypted}`);
+    } catch (e) {
+      alert('Backup failed: ' + e.message);
+    } finally {
+      btn.disabled = false; btn.textContent = orig;
+    }
+  }
+  async function verifyBackup(name) {
+    try {
+      const r = await api('POST', `/api/admin/backups/${encodeURIComponent(name)}/verify`);
+      const rows = Object.entries(r.tables || {}).map(([k, v]) => `${k}: ${v}`).join(', ');
+      alert((r.ok ? '✓ Restorable' : '✗ INTEGRITY FAILED')
+        + `\nintegrity_check: ${r.integrity}\n${rows}`);
+    } catch (e) {
+      alert('Verify failed: ' + e.message);
+    }
+  }
+  async function downloadBackup(name) {
+    try { await _doBackupDownload(name); }
+    catch (e) { alert('Error: ' + e.message); }
+  }
+  async function _doBackupDownload(name) {
+    const url = `/api/admin/backups/${encodeURIComponent(name)}/download`;
+    const res = await fetch(url, { headers: { 'Authorization': `Bearer ${adminToken}` } });
+    if (res.status === 401 && res.headers.get('X-Require-MFA-Reauth') === 'true') {
+      const code = await _promptMfaReauth();
+      if (!code) return;
+      const ok = await fetch('/api/admin/mfa/reauth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${adminToken}` },
+        body: JSON.stringify({ code }),
+      });
+      if (!ok.ok) { const d = await ok.json().catch(() => ({})); throw new Error(d.detail || 'MFA verification failed'); }
+      return _doBackupDownload(name);
+    }
+    if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.detail || `HTTP ${res.status}`); }
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  }
+
+  // ── Customers ──────────────────────────────────────────────────────────────
+  async function loadCustomers() {
+    try {
+      allCustomers = await api('GET', '/api/admin/customers');
+      renderCustomerTable();
+    } catch {}
+  }
+
+  function renderCustomerTable(_keepCap) {
+    if (!_keepCap) custRowCap = PC_TABLE_CAP;
+    const tbody = document.getElementById('customerTableBody');
+    const custPager = document.getElementById('custPager');
+    if (!allCustomers.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">No customers yet. Add your first one.</td></tr>';
+      if (custPager) custPager.style.display = 'none';
+      return;
+    }
+    const custTotal = allCustomers.length;
+    const custShown = Math.min(custRowCap, custTotal);
+    const custPageRows = allCustomers.slice(0, custShown);
+    tbody.innerHTML = custPageRows.map(c => {
+      const isActive = c.active !== 0 && c.active !== false;
+      const ctype = c.customer_type || 'residential';
+      const safeName = esc(c.name);
+      const nameLink = (typeof PC !== 'undefined' && PC.gateLinkHtml)
+        ? PC.gateLinkHtml('customer', c.id, c.name || '', {onClick: 'function(){ routeCustomerDetail(' + c.id + '); }'})
+        : `<strong>${safeName}</strong>`;
+      return `
+      <tr data-pc-row-customer="${c.id}" style="${isActive ? '' : 'opacity:0.55;'}">
+        <td><span class="code-pill">${c.customer_code}</span>${c.has_pin ? '' : '<br><span class="badge pc-stop-prop" style="background:var(--err-bg);color:var(--err-fg);margin-top:4px;display:inline-block;">No PIN</span>'}${!isActive ? '<br><span class="badge pc-stop-prop" style="background:var(--surface-2);color:var(--muted);margin-top:4px;display:inline-block;">Closed</span>' : ''}</td>
+        <td><strong>${nameLink}</strong>${ctype === 'commercial' ? ' <span class="badge pc-stop-prop" style="background:var(--steel-bg);color:var(--steel);font-size:10px;">Commercial</span>' : ''}</td>
+        <td>${c.company ? esc(c.company) : '—'}</td>
+        <td>${c.phone ? esc(c.phone) : '—'}</td>
+        <td style="white-space:nowrap;" onclick="event.stopPropagation();">
+          <button class="btn btn-edit btn-sm pc-stop-prop" onclick="event.stopPropagation();routeCustomerDetail(${c.id})">View →</button>
+          <button class="btn btn-edit btn-sm pc-stop-prop" onclick="event.stopPropagation();openResetCustomerPin(${c.id},'${safeName}')" style="margin-left:6px;">${c.has_pin ? 'Reset PIN' : 'Set PIN'}</button>
+          ${can('customer:delete') ? (
+            isActive
+              ? `<button class="btn btn-ghost btn-sm pc-stop-prop" onclick="event.stopPropagation();openOffboard('customer',${c.id},'${safeName}')" style="margin-left:6px;color:var(--err-fg);border-color:var(--err-border);" title="Close this customer account (requires reason + confirmation)">🚪 Close…</button>`
+              : `<button class="btn btn-ghost btn-sm pc-stop-prop" onclick="event.stopPropagation();reinstateAccount('customer',${c.id})" style="margin-left:6px;">Reopen</button>`
+          ) : ''}
+        </td>
+      </tr>`;
+    }).join('');
+    // PC.gateRow decoration — clickable row + keyboard a11y for entities the user can read.
+    if (typeof PC !== 'undefined' && PC.gateRow) {
+      tbody.querySelectorAll('tr[data-pc-row-customer]').forEach(function (tr) {
+        const cid = Number(tr.getAttribute('data-pc-row-customer'));
+        PC.gateRow(tr, 'customer', cid, {
+          onClick: function () { routeCustomerDetail(cid); },
+          ariaLabel: 'View customer ' + cid,
+        });
+      });
+    }
+    pcRenderTablePager(custPager, custTotal, custShown, 'custShowMore', 'custShowAll', 'customers');
+  }
+  function custShowMore() { custRowCap += PC_TABLE_CAP; renderCustomerTable(true); }
+  function custShowAll()  { custRowCap = Infinity;      renderCustomerTable(true); }
+
+  function openCustomerDetail(id) {
+    currentCustomer = allCustomers.find(c => c.id === id);
+    if (!currentCustomer) return;
+    try { pcPushCrumb(currentCustomer.name); } catch(_){}
+    document.getElementById('detailName').textContent = currentCustomer.name;
+    document.getElementById('detailMeta').textContent = [
+      currentCustomer.customer_code,
+      currentCustomer.company,
+      currentCustomer.phone,
+      currentCustomer.email,
+      currentCustomer.address,
+    ].filter(Boolean).join(' · ');
+    document.getElementById('customerList').style.display   = 'none';
+    document.getElementById('customerDetail').style.display = 'block';
+    loadCustomerEquipment();
+    loadCustomerVisits();
+  }
+
+  function showCustomerList() {
+    currentCustomer = null;
+    cdfState = { customer: null, equipment: [], visits: [], page: 1, total: 0, limit: 10 };
+    document.getElementById('customerList').style.display       = 'block';
+    document.getElementById('customerDetail').style.display     = 'none';
+    const full = document.getElementById('customerDetailFull');
+    if (full) full.style.display = 'none';
+    // Clean up hash routing
+    if (location.hash.indexOf('#customer/') === 0) {
+      history.replaceState(null, '', location.pathname + location.search);
+    }
+  }
+
+  // ── super_admin Customer Detail View ─────────────────────────────────────
+  // State for the full editable detail view. Pagination is server-side
+  // (10 per page); type / date filters are client-side on the already-loaded page.
+  let cdfState = { customer: null, equipment: [], visits: [], page: 1, total: 0, limit: 10 };
+
+  function routeCustomerDetail(id) {
+    // Full detail view for ALL roles. The richer chrome (breadcrumbs,
+    // paginated + filtered service history, equipment register) is a pure
+    // convenience and exposes no extra data on its own — the customer record
+    // is fetched from the same server-scoped endpoint either way. The few
+    // genuinely privileged bits are gated individually:
+    //   • Edit Profile button   → can('customer:update')   (renderCdfProfile)
+    //   • Internal Notes field   → can('customer:update')   (renderCdfProfile)
+    //   • Equipment-detail modal → super_admin only         (graceful: plain text)
+    //   • Visit-detail modal     → super_admin only         (graceful: read-only preview)
+    // so view-only roles gain the nicer UX without seeing anything new.
+    openCustomerDetailFull(id);
+  }
+
+  async function openCustomerDetailFull(id) {
+    document.getElementById('customerList').style.display       = 'none';
+    document.getElementById('customerDetail').style.display     = 'none';
+    document.getElementById('customerDetailFull').style.display = 'block';
+    cdfState = { customer: null, equipment: [], visits: [], page: 1, total: 0, limit: 10 };
+    history.replaceState(null, '', location.pathname + location.search + '#customer/' + id);
+    try {
+      const cust = await api('GET', `/api/admin/customers/${id}`);
+      cdfState.customer = cust;
+      renderCdfProfile();
+      loadCdfEquipment();
+      loadCdfFunctionalLocations();
+      loadCdfVisits();
+    } catch(e) {
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) {
+        showCustomerList();
+        return;
+      }
+      toast('Unable to load customer: ' + e.message, 'error');
+      showCustomerList();
+    }
+  }
+
+  function renderCdfProfile() {
+    const c = cdfState.customer; if (!c) return;
+    document.getElementById('cdf-name').textContent = c.name || '—';
+    document.getElementById('cdf-breadcrumb-name').textContent = c.name || '—';
+    const meta = [];
+    meta.push(`<span class="code-pill">${escHtml(c.customer_code)}</span>`);
+    const ctype = c.customer_type || 'residential';
+    meta.push(ctype === 'commercial'
+      ? '<span class="badge" style="background:var(--teal-bg);color:var(--teal-deep);">Commercial</span>'
+      : '<span class="badge" style="background:var(--steel-bg);color:var(--steel);">Residential</span>');
+    const active = (c.active !== 0 && c.active !== false);
+    meta.push(active
+      ? '<span class="badge" style="background:var(--teal-bg);color:var(--teal-deep);">Active</span>'
+      : '<span class="badge" style="background:var(--surface-2);color:var(--muted);">Closed</span>');
+    document.getElementById('cdf-meta').innerHTML = meta.join(' ');
+
+    const fld = (label, val, multi) => `
+      <div>
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);font-weight:600;margin-bottom:3px;">${label}</div>
+        <div style="color:var(--text);${multi?'white-space:pre-wrap;':''}">${escHtml(val) || '—'}</div>
+      </div>`;
+    // Internal Notes is free-text staff/management content; only roles that can
+    // edit the customer see it, so opening the full view to view-only roles
+    // doesn't expand the data they already had in the legacy view.
+    const _canEdit = (typeof can === 'function') && can('customer:update');
+    const _fields = [
+      fld('Phone', c.phone || ''),
+      fld('Email', c.email || ''),
+      fld('Company', c.company || ''),
+      fld('Mailing Address', c.address || '', true),
+    ];
+    if (_canEdit) _fields.push(fld('Internal Notes', c.notes || '', true));
+    document.getElementById('cdf-profile-grid').innerHTML = _fields.join('');
+    // Edit Profile is a privileged mutation — hide the button for roles that
+    // can only read customers (the server also enforces this server-side).
+    const _editBtn = document.getElementById('cdf-edit-btn');
+    if (_editBtn) _editBtn.style.display = _canEdit ? '' : 'none';
+  }
+
+  async function loadCdfEquipment() {
+    if (!cdfState.customer) return;
+    const tbody = document.getElementById('cdf-equip-body');
+    try {
+      const eq = await api('GET', `/api/admin/customers/${cdfState.customer.id}/equipment`);
+      cdfState.equipment = eq || [];
+      if (!cdfState.equipment.length) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty">No equipment registered for this customer.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = cdfState.equipment.map(e => {
+        const notes = (e.notes || '');
+        const short = notes.length > 100 ? notes.slice(0,100) + '…' : notes;
+        // The equipment-detail modal is super_admin-only, so only render a
+        // clickable link for super; everyone else sees a plain (non-dead) name.
+        const _eqSuper = (currentAdmin && currentAdmin.role === 'super_admin');
+        const nameCell = (_eqSuper && typeof PC !== 'undefined' && PC.gateLinkHtml)
+          ? PC.gateLinkHtml('equipment', e.id, e.name || '', {onClick: 'function(){ openEquipmentDetail(' + e.id + '); }'})
+          : `<strong>${escHtml(e.name)}</strong>`;
+        return `<tr>
+          <td>${nameCell}</td>
+          <td>${escHtml(e.type) || '—'}</td>
+          <td>${escHtml(e.model) || '—'}</td>
+          <td>${escHtml(e.serial_number) || '—'}</td>
+          <td>${escHtml(e.location) || '—'}</td>
+          <td>${e.last_pm_visit ? fmtDate(e.last_pm_visit) : '—'}</td>
+          <td>${e.last_cm_visit ? fmtDate(e.last_cm_visit) : '—'}</td>
+          <td title="${escHtml(notes)}">${escHtml(short) || '—'}</td>
+        </tr>`;
+      }).join('');
+    } catch(e) {
+      tbody.innerHTML = `<tr><td colspan="8" class="empty">Unable to load equipment: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  // ── CMMS Gap #1: Functional Locations panel (customer detail) ──
+  async function loadCdfFunctionalLocations() {
+    if (!cdfState.customer) return;
+    const tbody = document.getElementById('cdf-fl-body');
+    if (!tbody) return;
+    try {
+      const fls = await api('GET',
+        `/api/admin/customers/${cdfState.customer.id}/functional-locations`);
+      cdfState.functionalLocations = fls || [];
+      if (!cdfState.functionalLocations.length) {
+        tbody.innerHTML = '<tr><td colspan="4" class="empty">No functional locations yet. Add one to start tracking installs.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = cdfState.functionalLocations.map(f => {
+        const occ = f.active_equipment_id
+          ? `<strong>${escHtml(f.active_equipment_name || ('#' + f.active_equipment_id))}</strong>`
+          : '<span style="color:var(--muted);">— empty —</span>';
+        return `<tr>
+          <td>${escHtml(f.name)}</td>
+          <td>${escHtml(f.code) || '—'}</td>
+          <td>${escHtml(f.fl_class) || 'slot'}</td>
+          <td>${occ}</td>
+        </tr>`;
+      }).join('');
+    } catch(e) {
+      tbody.innerHTML = `<tr><td colspan="4" class="empty">Unable to load locations: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  function openAddFL() {
+    if (!cdfState.customer) { toast('Open a customer first.', 'error'); return; }
+    document.getElementById('fl-name').value = '';
+    document.getElementById('fl-code').value = '';
+    document.getElementById('fl-notes').value = '';
+    document.getElementById('fl-class').value = 'slot';
+    const errEl = document.getElementById('err-addFL');
+    if (errEl) errEl.textContent = '';
+    // Populate the parent dropdown from the already-loaded FL list.
+    const parentSel = document.getElementById('fl-parent');
+    const existing = cdfState.functionalLocations || [];
+    parentSel.innerHTML = '<option value="">— none (top level) —</option>'
+      + existing.map(f => `<option value="${f.id}">${escHtml(f.name)}</option>`).join('');
+    document.getElementById('modal-addFL').classList.add('open');
+  }
+
+  async function submitAddFL() {
+    if (!cdfState.customer) return;
+    const errEl = document.getElementById('err-addFL');
+    errEl.textContent = '';
+    const name = document.getElementById('fl-name').value.trim();
+    if (!name) { errEl.textContent = 'Name is required.'; return; }
+    const body = {
+      customer_id: cdfState.customer.id,
+      name,
+      fl_class: document.getElementById('fl-class').value || 'slot',
+      code: document.getElementById('fl-code').value.trim() || null,
+      notes: document.getElementById('fl-notes').value.trim() || null,
+    };
+    const parent = document.getElementById('fl-parent').value;
+    if (parent) body.parent_fl_id = parseInt(parent, 10);
+    try {
+      await api('POST', '/api/admin/functional-locations', body);
+      closeModal('addFL');
+      toast('Functional location added.', 'success');
+      loadCdfFunctionalLocations();
+    } catch(e) {
+      errEl.textContent = e.message || 'Could not add location.';
+    }
+  }
+
+  function openEquipmentDetail(equipmentId) {
+    if (!currentAdmin || currentAdmin.role !== 'super_admin') return;
+    const eq = (cdfState.equipment || []).find(x => x.id === equipmentId);
+    if (!eq) { toast('Equipment not found in this customer view.', 'error'); return; }
+    const body = document.getElementById('eqd-body');
+    const title = document.getElementById('eqd-title');
+    title.textContent = 'Equipment — ' + (eq.name || '#' + eq.id);
+
+    // Count visits in the currently loaded visits page that reference this equipment.
+    // FIXME(equipment-detail): visits list is paginated server-side, so this
+    // count reflects only the current page. A dedicated equipment-detail
+    // endpoint or aggregate count is future work; spec asked us to STOP
+    // before adding endpoints and surface a FIXME.
+    const loadedVisits = cdfState.visits || [];
+    const loadedCount = loadedVisits.filter(v => v.equipment_id === equipmentId).length;
+
+    body.innerHTML = '';
+    const rows = [
+      ['Name',          eq.name || '—'],
+      ['Type',          eq.type || '—'],
+      ['Model',         eq.model || '—'],
+    ];
+    // CMMS Phase 6 nameplate / specification — only surface populated fields so
+    // assets without a full nameplate stay tidy.
+    if (eq.manufacturer)      rows.push(['Manufacturer',  eq.manufacturer]);
+    if (eq.specification)     rows.push(['Specification', eq.specification]);
+    if (eq.capacity_btu)      rows.push(['Capacity',      eq.capacity_btu + ' BTU/h']);
+    if (eq.refrigerant_type)  rows.push(['Refrigerant',   eq.refrigerant_type]);
+    if (eq.voltage || eq.phase) {
+      const elec = [eq.voltage ? (eq.voltage + 'V') : null,
+                    eq.phase ? (eq.phase + '-phase') : null].filter(Boolean).join(' · ');
+      rows.push(['Electrical', elec]);
+    }
+    if (eq.commissioned_date) rows.push(['Commissioned', String(eq.commissioned_date).slice(0,10)]);
+    rows.push(
+      ['Serial Number', eq.serial_number || '—'],
+      ['Location',      eq.location || '—'],
+      ['Status',        eqdStatusLabel(eq.status)],
+      ['Warranty',      eqdWarrantyLabel(eq)],
+      ['Notes',         eq.notes || '—'],
+      ['Created',       PC.fmtDateTime(eq.created_at) || '—'],
+      ['Last PM',       eq.last_pm_visit ? String(eq.last_pm_visit).slice(0,10) : '—'],
+      ['Last CM',       eq.last_cm_visit ? String(eq.last_cm_visit).slice(0,10) : '—'],
+    );
+    rows.forEach(([k, v]) => {
+      const label = document.createElement('div');
+      label.style.cssText = 'color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:0.4px;font-weight:600;';
+      label.textContent = k;
+      const val = document.createElement('div');
+      val.style.cssText = 'color:var(--text);white-space:pre-wrap;';
+      val.textContent = v;
+      body.appendChild(label);
+      body.appendChild(val);
+    });
+
+    // Customer link
+    const cKey = document.createElement('div');
+    cKey.style.cssText = 'color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:0.4px;font-weight:600;';
+    cKey.textContent = 'Customer';
+    const cVal = document.createElement('div');
+    const c = cdfState.customer;
+    if (c) {
+      const a = document.createElement('a');
+      a.href = '#';
+      a.style.cssText = 'color:var(--ink);font-weight:600;text-decoration:underline;cursor:pointer;';
+      a.textContent = c.name || ('#' + c.id);
+      a.onclick = function(ev){ ev.preventDefault(); closeModal('equipmentDetail'); };
+      cVal.appendChild(a);
+    } else {
+      cVal.textContent = '—';
+    }
+    body.appendChild(cKey);
+    body.appendChild(cVal);
+
+    // Service history count
+    const sKey = document.createElement('div');
+    sKey.style.cssText = 'color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:0.4px;font-weight:600;';
+    sKey.textContent = 'Service History';
+    const sVal = document.createElement('div');
+    sVal.style.cssText = 'color:var(--text);';
+    sVal.textContent = loadedCount + ' visit' + (loadedCount === 1 ? '' : 's') + ' (loaded page)';
+    body.appendChild(sKey);
+    body.appendChild(sVal);
+
+    document.getElementById('modal-equipmentDetail').classList.add('open');
+    // CMMS Gap #1: render the install/remove controls + timeline (async).
+    eqdRenderLifecycle(eq);
+    eqdLoadTimeline(eq.id);
+    // CMMS Phase 6: load the asset's bill of materials (spares list).
+    eqdLoadBom(eq.id, eq.customer_id);
+    // CMMS #2: load meters + usage/condition PM triggers.
+    eqdLoadMeters(eq.id);
+  }
+
+  // ── CMMS #2: equipment meters + usage/condition PM triggers ─────────────
+  async function eqdLoadMeters(equipmentId) {
+    const host = document.getElementById('eqd-meters');
+    if (!host) return;
+    host.innerHTML = '<div style="color:var(--muted);font-size:12px;">Loading meters…</div>';
+    try {
+      const data = await api('GET', `/api/admin/equipment/${equipmentId}/meters`);
+      eqdRenderMeters(equipmentId, data);
+    } catch (e) {
+      host.innerHTML = '<div style="color:var(--muted);font-size:12px;">Unable to load meters.</div>';
+    }
+  }
+
+  function _eqdTriggerLabel(t) {
+    if (t.mode === 'usage') {
+      return `every ${t.interval_value} ${escHtml(t.meter_name)} (last @ ${t.last_triggered_value ?? 0})`;
+    }
+    return `${escHtml(t.meter_name)} ${escHtml(t.comparator || '>=')} ${t.threshold_value}${t.armed ? '' : ' (fired — awaiting reset)'}`;
+  }
+
+  function eqdRenderMeters(equipmentId, data) {
+    const host = document.getElementById('eqd-meters');
+    if (!host) return;
+    const canEdit = can('customer:update');
+    const readings = (data && data.readings) || [];
+    const triggers = (data && data.triggers) || [];
+    const trigRows = triggers.length
+      ? triggers.map(t => `<tr>
+          <td style="padding:3px 8px 3px 0;"><span class="badge badge-${t.mode === 'condition' ? 'cm' : 'pm'}">${t.mode}</span></td>
+          <td style="padding:3px 8px;">${_eqdTriggerLabel(t)}</td>
+          <td style="padding:3px 8px;">${t.active ? '<span style="color:var(--teal-deep,#1a7f43);">active</span>' : '<span style="color:var(--muted);">off</span>'}</td>
+          <td style="padding:3px 0 3px 8px;text-align:right;">${canEdit ? `<button class="btn btn-ghost btn-sm" onclick="eqdToggleTrigger(${equipmentId},${t.id},${t.active ? 'false' : 'true'})">${t.active ? 'Disable' : 'Enable'}</button>` : ''}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="4" style="color:var(--muted);padding:4px 0;">No PM triggers on this asset.</td></tr>';
+    const readRows = readings.length
+      ? readings.slice(0, 8).map(r => `<tr>
+          <td style="padding:3px 8px 3px 0;">${escHtml(String(r.reading_at || '').slice(0,16).replace('T',' '))}</td>
+          <td style="padding:3px 8px;">${escHtml(r.meter_name)}</td>
+          <td style="padding:3px 0 3px 8px;text-align:right;">${r.reading_value}${r.unit ? ' ' + escHtml(r.unit) : ''}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="3" style="color:var(--muted);padding:4px 0;">No readings logged.</td></tr>';
+
+    host.innerHTML = `
+      <h4 style="margin:0 0 8px;color:var(--ink);font-size:13px;text-transform:uppercase;letter-spacing:0.4px;">Meters &amp; Predictive PM</h4>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px;">
+        <thead><tr style="color:var(--muted);font-size:11px;text-transform:uppercase;">
+          <th style="text-align:left;">Type</th><th style="text-align:left;">Rule</th><th style="text-align:left;">State</th><th></th></tr></thead>
+        <tbody>${trigRows}</tbody>
+      </table>
+      ${canEdit ? `<div style="margin-bottom:10px;display:flex;gap:6px;flex-wrap:wrap;">
+        <button class="btn btn-ghost btn-sm" onclick="eqdShowTriggerForm(${equipmentId})">+ Add PM trigger</button>
+        <button class="btn btn-ghost btn-sm" onclick="eqdShowReadingForm(${equipmentId})">+ Log reading</button>
+      </div>
+      <div id="eqd-meter-forms-${equipmentId}"></div>` : ''}
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead><tr style="color:var(--muted);font-size:11px;text-transform:uppercase;">
+          <th style="text-align:left;">When</th><th style="text-align:left;">Meter</th><th style="text-align:right;">Reading</th></tr></thead>
+        <tbody>${readRows}</tbody>
+      </table>`;
+  }
+
+  function eqdShowReadingForm(equipmentId) {
+    const host = document.getElementById('eqd-meter-forms-' + equipmentId);
+    if (!host) return;
+    host.innerHTML = `<div style="background:var(--bg,#f7f9fb);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:10px;">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;">
+        <label style="font-size:11px;color:var(--muted);">Meter<br><input id="eqd-rd-name" type="text" placeholder="run_hours"></label>
+        <label style="font-size:11px;color:var(--muted);">Value<br><input id="eqd-rd-val" type="number" step="any"></label>
+        <label style="font-size:11px;color:var(--muted);">Unit<br><input id="eqd-rd-unit" type="text" placeholder="h" style="width:70px;"></label>
+        <button class="btn btn-primary btn-sm" onclick="eqdSubmitReading(${equipmentId})">Save</button>
+        <button class="btn btn-ghost btn-sm" onclick="document.getElementById('eqd-meter-forms-${equipmentId}').innerHTML=''">Cancel</button>
+      </div></div>`;
+  }
+
+  async function eqdSubmitReading(equipmentId) {
+    const name = document.getElementById('eqd-rd-name').value.trim();
+    const val = parseFloat(document.getElementById('eqd-rd-val').value);
+    if (!name) { toast('Enter a meter name', 'error'); return; }
+    if (isNaN(val)) { toast('Enter a numeric reading', 'error'); return; }
+    try {
+      const res = await api('POST', `/api/admin/equipment/${equipmentId}/meters`,
+        { meter_name: name, reading_value: val,
+          unit: document.getElementById('eqd-rd-unit').value.trim() || null });
+      if (res.generated_visits && res.generated_visits.length) {
+        toast(`Reading logged — ${res.generated_visits.length} predictive PM work order(s) raised`, 'success');
+      } else {
+        toast('Reading logged', 'success');
+      }
+      eqdLoadMeters(equipmentId);
+    } catch (e) {
+      toast('Unable to save reading: ' + e.message, 'error');
+    }
+  }
+
+  function eqdShowTriggerForm(equipmentId) {
+    const host = document.getElementById('eqd-meter-forms-' + equipmentId);
+    if (!host) return;
+    host.innerHTML = `<div style="background:var(--bg,#f7f9fb);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:10px;">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;">
+        <label style="font-size:11px;color:var(--muted);">Mode<br>
+          <select id="eqd-tg-mode" onchange="eqdTriggerModeChange(${equipmentId})">
+            <option value="usage">Usage (every N units)</option>
+            <option value="condition">Condition (crosses limit)</option>
+          </select></label>
+        <label style="font-size:11px;color:var(--muted);">Meter<br><input id="eqd-tg-name" type="text" placeholder="run_hours"></label>
+        <span id="eqd-tg-usage-fields">
+          <label style="font-size:11px;color:var(--muted);">Every<br><input id="eqd-tg-interval" type="number" step="any" style="width:90px;"></label>
+        </span>
+        <span id="eqd-tg-cond-fields" style="display:none;">
+          <label style="font-size:11px;color:var(--muted);">When<br>
+            <select id="eqd-tg-cmp"><option value=">=">&ge;</option><option value="<=">&le;</option><option value=">">&gt;</option><option value="<">&lt;</option></select></label>
+          <label style="font-size:11px;color:var(--muted);">Limit<br><input id="eqd-tg-threshold" type="number" step="any" style="width:90px;"></label>
+        </span>
+        <button class="btn btn-primary btn-sm" onclick="eqdSubmitTrigger(${equipmentId})">Save</button>
+        <button class="btn btn-ghost btn-sm" onclick="document.getElementById('eqd-meter-forms-${equipmentId}').innerHTML=''">Cancel</button>
+      </div></div>`;
+  }
+
+  function eqdTriggerModeChange(equipmentId) {
+    const mode = document.getElementById('eqd-tg-mode').value;
+    document.getElementById('eqd-tg-usage-fields').style.display = mode === 'usage' ? '' : 'none';
+    document.getElementById('eqd-tg-cond-fields').style.display = mode === 'condition' ? '' : 'none';
+  }
+
+  async function eqdSubmitTrigger(equipmentId) {
+    const mode = document.getElementById('eqd-tg-mode').value;
+    const name = document.getElementById('eqd-tg-name').value.trim();
+    if (!name) { toast('Enter a meter name', 'error'); return; }
+    const body = { meter_name: name, mode: mode };
+    if (mode === 'usage') {
+      const iv = parseFloat(document.getElementById('eqd-tg-interval').value);
+      if (isNaN(iv) || iv <= 0) { toast('Enter a positive interval', 'error'); return; }
+      body.interval_value = iv;
+    } else {
+      body.comparator = document.getElementById('eqd-tg-cmp').value;
+      const th = parseFloat(document.getElementById('eqd-tg-threshold').value);
+      if (isNaN(th)) { toast('Enter a threshold value', 'error'); return; }
+      body.threshold_value = th;
+    }
+    try {
+      await api('POST', `/api/admin/equipment/${equipmentId}/meter-triggers`, body);
+      toast('PM trigger created', 'success');
+      eqdLoadMeters(equipmentId);
+    } catch (e) {
+      toast('Unable to create trigger: ' + e.message, 'error');
+    }
+  }
+
+  async function eqdToggleTrigger(equipmentId, triggerId, active) {
+    try {
+      await api('POST', `/api/admin/meter-triggers/${triggerId}/toggle?active=${active}`);
+      eqdLoadMeters(equipmentId);
+    } catch (e) {
+      toast('Unable to toggle trigger: ' + e.message, 'error');
+    }
+  }
+
+  // ── CMMS Gap #1: equipment lifecycle (status / install / timeline) ──
+  const EQD_STATUS_LABELS = {
+    installed:  'Installed',
+    in_storage: 'In storage',
+    in_repair:  'In repair',
+    scrapped:   'Scrapped',
+  };
+  function eqdStatusLabel(s) { return EQD_STATUS_LABELS[s] || (s || '—'); }
+  function eqdWarrantyLabel(eq) {
+    if (!eq || !eq.warranty_months) return '—';
+    // The expiry is computed server-side on demand; here we show the term and,
+    // when present, the computed expiry the history/detail endpoints return.
+    const exp = eq.warranty_expiry ? (' · expires ' + String(eq.warranty_expiry).slice(0,10)) : '';
+    return eq.warranty_months + ' months' + exp;
+  }
+
+  // Keep the equipment we're currently viewing so the install/remove dialogs
+  // know which unit + customer to act on.
+  let eqdCurrent = null;
+
+  async function eqdRenderLifecycle(eq) {
+    eqdCurrent = eq;
+    const box = document.getElementById('eqd-lifecycle');
+    if (!box) return;
+    const canEdit = currentAdmin && (typeof _admin_can === 'undefined' ? true : true);
+    // The endpoints are perm-gated server-side (customer:update); we render the
+    // buttons for any admin who can open this modal and let the server enforce.
+    const installed = (eq.status === 'installed');
+    let loc = '—';
+    try {
+      const hist = await api('GET', `/api/admin/equipment/${eq.id}/history`);
+      const active = (hist || []).find(h => !h.removed_at);
+      if (active) {
+        loc = (active.fl_name || ('FL #' + active.functional_location_id))
+              + (active.fl_code ? ' (' + active.fl_code + ')' : '');
+      }
+    } catch (_) {}
+    box.innerHTML = `
+      <div style="border-top:1px solid var(--border);padding-top:12px;">
+        <div style="font-weight:700;font-size:13px;margin-bottom:8px;">Location &amp; lifecycle</div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <span style="font-size:12px;color:var(--muted);">Currently installed at:</span>
+          <strong style="font-size:13px;">${escHtml(loc)}</strong>
+          ${installed
+            ? `<button class="btn btn-ghost btn-sm" id="eqd-remove-btn">Remove from location</button>`
+            : `<button class="btn btn-primary btn-sm" id="eqd-install-btn">Install into location</button>`}
+        </div>
+      </div>`;
+    const ib = document.getElementById('eqd-install-btn');
+    if (ib) ib.onclick = () => eqdOpenInstall(eq);
+    const rb = document.getElementById('eqd-remove-btn');
+    if (rb) rb.onclick = () => eqdOpenRemove(eq);
+  }
+
+  async function eqdLoadTimeline(equipmentId) {
+    const box = document.getElementById('eqd-timeline');
+    if (!box) return;
+    box.innerHTML = '<div style="font-size:12px;color:var(--muted);">Loading timeline…</div>';
+    try {
+      const hist = await api('GET', `/api/admin/equipment/${equipmentId}/history`);
+      if (!hist || !hist.length) {
+        box.innerHTML = `<div style="border-top:1px solid var(--border);padding-top:12px;">
+          <div style="font-weight:700;font-size:13px;margin-bottom:6px;">Install history</div>
+          <div style="font-size:12px;color:var(--muted);">No install history yet.</div></div>`;
+        return;
+      }
+      const rowsHtml = hist.map(h => {
+        const where = escHtml(h.fl_name || ('FL #' + h.functional_location_id))
+                      + (h.fl_code ? ' <span style="color:var(--muted);">(' + escHtml(h.fl_code) + ')</span>' : '');
+        const inAt = h.installed_at ? String(h.installed_at).slice(0,10) : '—';
+        const outAt = h.removed_at ? String(h.removed_at).slice(0,10)
+                      : '<span style="color:#2e7d32;font-weight:600;">current</span>';
+        const note = h.remove_note || h.install_note || '';
+        return `<tr>
+          <td style="padding:4px 8px;">${where}</td>
+          <td style="padding:4px 8px;">${inAt}</td>
+          <td style="padding:4px 8px;">${outAt}</td>
+          <td style="padding:4px 8px;color:var(--muted);">${escHtml(note)}</td>
+        </tr>`;
+      }).join('');
+      box.innerHTML = `<div style="border-top:1px solid var(--border);padding-top:12px;">
+        <div style="font-weight:700;font-size:13px;margin-bottom:6px;">Install history</div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+          <thead><tr style="text-align:left;color:var(--muted);">
+            <th style="padding:4px 8px;font-weight:600;">Location</th>
+            <th style="padding:4px 8px;font-weight:600;">Installed</th>
+            <th style="padding:4px 8px;font-weight:600;">Removed</th>
+            <th style="padding:4px 8px;font-weight:600;">Note</th>
+          </tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table></div>`;
+    } catch (e) {
+      box.innerHTML = `<div style="font-size:12px;color:var(--muted);">Unable to load timeline: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  // ── CMMS Phase 6: asset bill of materials (spares list) ──────────────
+  // The BOM is the list of parts an asset is built from / routinely consumes,
+  // so a tech opening a work order can pick the right spares. Add/remove are
+  // perm-gated server-side (customer:update); we mirror that gate in the UI.
+  let _eqdBomCtx = null;
+
+  async function eqdLoadBom(equipmentId, customerId) {
+    _eqdBomCtx = { id: equipmentId, customer_id: customerId };
+    const box = document.getElementById('eqd-bom');
+    if (!box) return;
+    box.innerHTML = '<div style="border-top:1px solid var(--border);padding-top:12px;font-size:12px;color:var(--muted);">Loading bill of materials…</div>';
+    try {
+      const r = await api('GET', `/api/admin/equipment/${equipmentId}/bom`);
+      eqdRenderBom(r.items || []);
+    } catch (e) {
+      box.innerHTML = `<div style="border-top:1px solid var(--border);padding-top:12px;font-size:12px;color:var(--muted);">Unable to load BOM: ${escHtml(e.message || '')}</div>`;
+    }
+  }
+
+  function eqdRenderBom(items) {
+    const box = document.getElementById('eqd-bom');
+    if (!box) return;
+    const canEdit = (typeof can === 'function') && can('customer:update');
+    const totalCost = (items || []).reduce((s, i) => s + (i.line_cost || 0), 0);
+    const rowsHtml = (items && items.length)
+      ? items.map(i => `<tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:4px 8px;"><code style="color:var(--muted);">${escHtml(i.sku||'')}</code></td>
+            <td style="padding:4px 8px;">${escHtml(i.name||'')}${i.part_active ? '' : ' <span style="color:var(--muted);font-size:11px;">(inactive)</span>'}</td>
+            <td style="padding:4px 8px;text-align:right;">${i.quantity}</td>
+            <td style="padding:4px 8px;color:var(--muted);">${escHtml(i.position||'')}</td>
+            <td style="padding:4px 8px;text-align:right;">${(typeof fmtJMD==='function') ? fmtJMD(i.line_cost||0) : ('$'+(i.line_cost||0))}</td>
+            ${canEdit ? `<td style="padding:4px 8px;text-align:right;"><button class="btn btn-ghost btn-sm" style="color:var(--danger);" title="Remove from BOM" onclick="eqdRemoveBomPart(${i.part_id})">×</button></td>` : ''}
+          </tr>`).join('')
+      : `<tr><td colspan="${canEdit ? 6 : 5}" style="padding:6px 8px;color:var(--muted);">No parts on this asset's bill of materials yet.</td></tr>`;
+    box.innerHTML = `
+      <div style="border-top:1px solid var(--border);padding-top:12px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin:0 0 8px;">
+          <div style="font-weight:700;font-size:13px;">Bill of materials (${(items||[]).length})</div>
+          ${canEdit ? `<button class="btn btn-ghost btn-sm" onclick="eqdOpenAddBomPart()">+ Add part</button>` : ''}
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+          <thead><tr style="text-align:left;color:var(--muted);">
+            <th style="padding:4px 8px;font-weight:600;">SKU</th>
+            <th style="padding:4px 8px;font-weight:600;">Part</th>
+            <th style="padding:4px 8px;font-weight:600;text-align:right;">Qty</th>
+            <th style="padding:4px 8px;font-weight:600;">Position</th>
+            <th style="padding:4px 8px;font-weight:600;text-align:right;">Line cost</th>
+            ${canEdit ? '<th style="padding:4px 8px;"></th>' : ''}
+          </tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+        ${(items && items.length) ? `<div style="text-align:right;font-size:12px;color:var(--muted);margin-top:6px;">Total: <strong style="color:var(--text);">${(typeof fmtJMD==='function') ? fmtJMD(totalCost) : ('$'+totalCost)}</strong></div>` : ''}
+        <div id="eqdBomAdd"></div>
+      </div>`;
+  }
+
+  async function eqdOpenAddBomPart() {
+    if (!_eqdBomCtx) return;
+    const slot = document.getElementById('eqdBomAdd');
+    if (!slot) return;
+    slot.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:6px 0;">Loading parts…</div>';
+    try {
+      const parts = await api('GET', '/api/admin/parts');
+      const opts = (parts || []).map(p =>
+        `<option value="${p.id}">${escHtml((p.sku||'') + ' · ' + (p.name||''))}</option>`).join('');
+      if (!opts) {
+        slot.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:6px 0;">No parts in inventory yet. Create one in the Inventory tab first.</div>';
+        return;
+      }
+      slot.innerHTML = `
+        <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
+          <select id="eqdBomPartSelect" class="input" style="flex:2;min-width:180px;">${opts}</select>
+          <input id="eqdBomQty" class="input" type="number" min="0.01" step="0.01" value="1" style="width:80px;" title="Quantity per asset">
+          <input id="eqdBomPos" class="input" type="text" placeholder="Position (optional)" style="flex:1;min-width:120px;">
+          <button class="btn btn-primary btn-sm" onclick="eqdAddBomPart()">Add</button>
+          <button class="btn btn-ghost btn-sm" onclick="document.getElementById('eqdBomAdd').innerHTML='';">Cancel</button>
+        </div>`;
+    } catch (e) {
+      slot.innerHTML = `<div style="color:var(--danger);font-size:12px;padding:6px 0;">Could not load parts: ${escHtml(e.message||'')}</div>`;
+    }
+  }
+
+  async function eqdAddBomPart() {
+    if (!_eqdBomCtx) return;
+    const sel = document.getElementById('eqdBomPartSelect');
+    const qty = document.getElementById('eqdBomQty');
+    const pos = document.getElementById('eqdBomPos');
+    if (!sel || !sel.value) return;
+    try {
+      const r = await api('POST', `/api/admin/equipment/${_eqdBomCtx.id}/bom`, {
+        part_id: parseInt(sel.value, 10),
+        quantity: parseFloat(qty && qty.value ? qty.value : '1') || 1,
+        position: (pos && pos.value.trim()) ? pos.value.trim() : null,
+      });
+      toast('Part added to BOM', 'success');
+      eqdRenderBom(r.items || []);
+    } catch (e) {
+      toast(e.message || 'Could not add part', 'error');
+    }
+  }
+
+  async function eqdRemoveBomPart(partId) {
+    if (!_eqdBomCtx) return;
+    if (!confirm('Remove this part from the asset BOM?')) return;
+    try {
+      const r = await api('DELETE', `/api/admin/equipment/${_eqdBomCtx.id}/bom/${partId}`);
+      toast('Part removed', 'success');
+      eqdRenderBom(r.items || []);
+    } catch (e) {
+      toast(e.message || 'Could not remove part', 'error');
+    }
+  }
+
+  async function eqdOpenInstall(eq) {
+    const sel = document.getElementById('ieq-fl');
+    const err = document.getElementById('ieq-error');
+    err.style.display = 'none';
+    document.getElementById('ieq-note').value = '';
+    sel.innerHTML = '<option value="">Loading locations…</option>';
+    document.getElementById('ieq-subtitle').textContent =
+      'Choose a location to install "' + (eq.name || ('#' + eq.id)) + '" into.';
+    document.getElementById('modal-installEquip').classList.add('open');
+    // The customer is whatever this equipment belongs to.
+    const custId = eq.customer_id || (cdfState.customer && cdfState.customer.id);
+    try {
+      const fls = await api('GET', `/api/admin/customers/${custId}/functional-locations`);
+      const free = (fls || []).filter(f => !f.active_equipment_id);
+      if (!free.length) {
+        sel.innerHTML = '<option value="">No free locations — create or free one first</option>';
+      } else {
+        sel.innerHTML = free.map(f =>
+          `<option value="${f.id}">${escHtml(f.name)}${f.code ? ' (' + escHtml(f.code) + ')' : ''}</option>`
+        ).join('');
+      }
+    } catch (e) {
+      sel.innerHTML = '';
+      err.textContent = 'Unable to load locations: ' + e.message;
+      err.style.display = 'block';
+    }
+    document.getElementById('ieq-confirm').onclick = () => eqdDoInstall(eq);
+  }
+
+  async function eqdDoInstall(eq) {
+    const sel = document.getElementById('ieq-fl');
+    const err = document.getElementById('ieq-error');
+    const flId = parseInt(sel.value, 10);
+    if (!flId) { err.textContent = 'Pick a location first.'; err.style.display = 'block'; return; }
+    try {
+      await api('POST', `/api/admin/equipment/${eq.id}/install`, {
+        functional_location_id: flId,
+        install_note: document.getElementById('ieq-note').value || null,
+      });
+      closeModal('installEquip');
+      toast('Equipment installed.', 'success');
+      await eqdRefresh(eq.id);
+    } catch (e) {
+      // The server returns 409 with {detail:{scope,message}} on an invariant
+      // violation; _apiErrorMessage unwraps detail.message so e.message is the
+      // friendly text ("That location already has equipment installed.").
+      err.textContent = e.message || 'Install failed.';
+      err.style.display = 'block';
+    }
+  }
+
+  function eqdOpenRemove(eq) {
+    const err = document.getElementById('rmi-error');
+    err.style.display = 'none';
+    document.getElementById('rmi-note').value = '';
+    document.getElementById('rmi-status').value = 'in_storage';
+    document.getElementById('rmi-subtitle').textContent =
+      'Pull "' + (eq.name || ('#' + eq.id)) + '" from its current slot.';
+    document.getElementById('modal-removeInstall').classList.add('open');
+    document.getElementById('rmi-confirm').onclick = () => eqdDoRemove(eq);
+  }
+
+  async function eqdDoRemove(eq) {
+    const err = document.getElementById('rmi-error');
+    try {
+      await api('POST', `/api/admin/equipment/${eq.id}/remove-install`, {
+        new_status: document.getElementById('rmi-status').value,
+        remove_note: document.getElementById('rmi-note').value || null,
+      });
+      closeModal('removeInstall');
+      toast('Equipment removed from location.', 'success');
+      await eqdRefresh(eq.id);
+    } catch (e) {
+      err.textContent = e.message || 'Remove failed.';
+      err.style.display = 'block';
+    }
+  }
+
+  // Re-fetch the single equipment row (so status/location update) and re-render
+  // the modal sections + the customer equipment table behind it.
+  async function eqdRefresh(equipmentId) {
+    const custId = (eqdCurrent && eqdCurrent.customer_id)
+                   || (cdfState.customer && cdfState.customer.id);
+    try {
+      if (custId) {
+        const eqList = await api('GET', `/api/admin/customers/${custId}/equipment`);
+        cdfState.equipment = eqList || [];
+        const fresh = cdfState.equipment.find(x => x.id === equipmentId);
+        if (fresh) {
+          eqdCurrent = fresh;
+          // Update the status/warranty cells without rebuilding the whole grid.
+          openEquipmentDetail(equipmentId);
+        }
+        if (typeof loadCdfEquipment === 'function') loadCdfEquipment();
+      } else {
+        eqdRenderLifecycle(eqdCurrent);
+        eqdLoadTimeline(equipmentId);
+      }
+    } catch (_) {
+      eqdLoadTimeline(equipmentId);
+    }
+  }
+
+  async function openEquipmentDetailFromVisit(customerId, equipmentId) {
+    if (!currentAdmin || currentAdmin.role !== 'super_admin') return;
+    try {
+      // Ensure equipment list is loaded for the customer
+      if (!cdfState.equipment || !cdfState.equipment.length ||
+          (cdfState.customer && cdfState.customer.id !== customerId)) {
+        const eq = await api('GET', `/api/admin/customers/${customerId}/equipment`);
+        cdfState.equipment = eq || [];
+        if (!cdfState.customer || cdfState.customer.id !== customerId) {
+          cdfState.customer = { id: customerId };
+        }
+      }
+      openEquipmentDetail(equipmentId);
+    } catch (e) {
+      toast('Unable to load equipment: ' + e.message, 'error');
+    }
+  }
+
+  // ── §1/§2 helpers: row keyboard activation + ref-field nav ──
+  function pcRowKey(e, fn) {
+    if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+      e.preventDefault();
+      try { fn(); } catch(_) {}
+    }
+  }
+  function pcGoCustomer(id) { if (id) location.hash = 'customer/' + id; }
+  function pcGoVisit(id)    { if (id) location.hash = 'visit/' + id; }
+  function pcGoTech(id)     { if (id) location.hash = 'technician/' + id; }
+  function pcGoInvoice(id)  { if (id) location.hash = 'invoice/' + id + '/edit'; }
+  async function pcOpenEquipment(customerId, equipmentId) {
+    if (!customerId || !equipmentId) return;
+    try { await openEquipmentDetailFromVisit(customerId, equipmentId); } catch(_) {}
+  }
+
+  async function loadCdfVisits() {
+    if (!cdfState.customer) return;
+    const tbody = document.getElementById('cdf-visits-body');
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">Loading…</td></tr>';
+    try {
+      const res = await api('GET',
+        `/api/admin/customers/${cdfState.customer.id}/visits?page=${cdfState.page}&limit=${cdfState.limit}`);
+      cdfState.visits = res.rows || [];
+      cdfState.total  = res.total || 0;
+      renderCdfVisits();
+    } catch(e) {
+      tbody.innerHTML = `<tr><td colspan="7" class="empty">Unable to load service history: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  function renderCdfVisits() {
+    const tbody = document.getElementById('cdf-visits-body');
+    const typeF = document.getElementById('cdf-filter-type').value;
+    const fromF = document.getElementById('cdf-filter-from').value;
+    const toF   = document.getElementById('cdf-filter-to').value;
+    let rows = cdfState.visits.slice();
+    if (typeF) rows = rows.filter(v => (v.visit_type||'').toUpperCase() === typeF);
+    if (fromF) rows = rows.filter(v => (v.scheduled_date||v.completed_date||v.created_at||'') >= fromF);
+    if (toF)   rows = rows.filter(v => (v.scheduled_date||v.completed_date||v.created_at||'') <= toF);
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="7" class="empty">No service history for this customer.</td></tr>';
+    } else {
+      const _gate = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+      tbody.innerHTML = rows.map(v => {
+        const vt = (v.visit_type||'').toUpperCase();
+        const typeBadge = vt === 'PM'
+          ? '<span class="badge" style="background:var(--teal-bg);color:var(--teal-deep);">PM</span>'
+          : '<span class="badge" style="background:var(--steel-bg);color:var(--steel);">CM</span>';
+        const status = (v.status||'').toLowerCase();
+        const statusLabel = status.replace('_',' ');
+        const statusBg = status === 'completed' ? 'var(--teal-bg)'
+                       : status === 'in_progress' ? 'var(--steel-bg)'
+                       : 'var(--surface-2)';
+        const statusFg = status === 'completed' ? 'var(--teal-deep)'
+                       : status === 'in_progress' ? 'var(--steel)'
+                       : 'var(--text)';
+        const scope = v.scope_of_work || v.work_done_summary || v.work_done || '';
+        const shortScope = scope.length > 100 ? scope.slice(0,100)+'…' : scope;
+        const when = fmtDateTime(v.scheduled_date, v.scheduled_time) || fmtDate(v.completed_date) || fmtDate(v.created_at) || '—';
+        // Equipment-detail modal is super_admin-only — link only for super,
+        // otherwise show a plain name so non-super users get no dead link.
+        const _vSuper = (currentAdmin && currentAdmin.role === 'super_admin');
+        const equipCell = (v.equipment_id && _vSuper && _gate)
+          ? PC.gateLinkHtml('equipment', v.equipment_id, v.equipment_name || '—', {onClick: 'function(){ pcOpenEquipment(' + (v.customer_id||cdfState.customer.id) + ',' + v.equipment_id + '); }'})
+          : (escHtml(v.equipment_name) || '—');
+        const techCell = (v.assigned_tech_id && _gate)
+          ? PC.gateLinkHtml('technician', v.assigned_tech_id, v.tech_name || '—', {})
+          : (escHtml(v.tech_name) || '—');
+        return `<tr data-pc-row-visit="${v.id}">
+          <td>${when}</td>
+          <td>${typeBadge}</td>
+          <td>${equipCell}</td>
+          <td>${techCell}</td>
+          <td><span class="badge" style="background:${statusBg};color:${statusFg};">${escHtml(statusLabel)}</span></td>
+          <td title="${escHtml(scope)}">${escHtml(shortScope) || '—'}</td>
+          <td><button class="btn btn-ghost btn-sm pc-stop-prop" onclick="event.stopPropagation();cdfViewVisit(${v.id})">View →</button></td>
+        </tr>`;
+      }).join('');
+      if (typeof PC !== 'undefined' && PC.gateRow) {
+        tbody.querySelectorAll('tr[data-pc-row-visit]').forEach(function (tr) {
+          const vid = Number(tr.getAttribute('data-pc-row-visit'));
+          PC.gateRow(tr, 'visit', vid, {
+            // super_admin gets the full visit-detail modal; every other role
+            // gets the read-only preview (cdfViewVisit) — no error toast.
+            onClick: function () {
+              const _su = (currentAdmin && currentAdmin.role === 'super_admin');
+              if (_su && typeof routeVisitDetail === 'function') routeVisitDetail(vid);
+              else cdfViewVisit(vid);
+            },
+            ariaLabel: 'View visit #' + vid,
+          });
+        });
+      }
+    }
+    const start = cdfState.total ? ((cdfState.page-1)*cdfState.limit)+1 : 0;
+    const end   = Math.min(cdfState.page*cdfState.limit, cdfState.total);
+    document.getElementById('cdf-visits-range').textContent =
+      cdfState.total ? `Showing ${start}–${end} of ${cdfState.total} visits` : 'Showing 0 visits';
+    document.getElementById('cdf-prev').disabled = cdfState.page <= 1;
+    document.getElementById('cdf-next').disabled = end >= cdfState.total;
+  }
+
+  function cdfVisitsPage(delta) {
+    const next = cdfState.page + delta;
+    if (next < 1) return;
+    if ((next-1)*cdfState.limit >= cdfState.total) return;
+    cdfState.page = next;
+    loadCdfVisits();
+  }
+
+  function cdfViewVisit(id) {
+    // TODO: full visit detail drilldown later. Read-only preview for now.
+    const v = cdfState.visits.find(x => x.id === id);
+    if (!v) return;
+    const lines = [
+      `Visit #${v.id} — ${v.visit_type}`,
+      `Status: ${v.status}`,
+      `Scheduled: ${fmtDateTime(v.scheduled_date, v.scheduled_time) || '—'}`,
+      `Completed: ${fmtDate(v.completed_date) || '—'}`,
+      `Equipment: ${v.equipment_name || '—'}`,
+      `Technician: ${v.tech_name || '—'}`,
+      '',
+      'Scope:',
+      v.scope_of_work || v.work_done_summary || v.work_done || '(no scope recorded)',
+    ];
+    alert(lines.join('\n'));
+  }
+
+  // ── Edit Profile flow ─────────────────────────────────────────────────────
+  function openEditCustomerProfile() {
+    const c = cdfState.customer; if (!c) return;
+    document.getElementById('ecp-code').value          = c.customer_code || '';
+    document.getElementById('ecp-name').value          = c.name || '';
+    document.getElementById('ecp-company').value       = c.company || '';
+    document.getElementById('ecp-phone').value         = c.phone || '';
+    document.getElementById('ecp-email').value         = c.email || '';
+    document.getElementById('ecp-address').value       = c.address || '';
+    document.getElementById('ecp-notes').value         = c.notes || '';
+    document.getElementById('ecp-customer-type').value = c.customer_type || 'residential';
+    document.getElementById('ecp-account-status').value = (c.active === 0 || c.active === false) ? 'closed' : 'active';
+    document.getElementById('ecp-status-reason').value = '';
+    ['name','phone','email','address','notes'].forEach(f => {
+      const el = document.getElementById('ecp-err-' + f);
+      if (el) el.style.display = 'none';
+    });
+    document.getElementById('err-editCustomerProfile').style.display = 'none';
+    document.getElementById('modal-editCustomerProfile').classList.add('open');
+  }
+
+  function _ecpShowFieldErr(field, msg) {
+    const el = document.getElementById('ecp-err-' + field);
+    if (el) { el.textContent = msg; el.style.display = 'block'; }
+  }
+
+  async function submitEditCustomerProfile() {
+    if (!cdfState.customer) return;
+    ['name','phone','email','address','notes'].forEach(f => {
+      const el = document.getElementById('ecp-err-' + f);
+      if (el) el.style.display = 'none';
+    });
+    const c = cdfState.customer;
+    const body = {
+      name:           document.getElementById('ecp-name').value.trim(),
+      company:        document.getElementById('ecp-company').value.trim(),
+      phone:          document.getElementById('ecp-phone').value.trim(),
+      email:          document.getElementById('ecp-email').value.trim(),
+      address:        document.getElementById('ecp-address').value,
+      notes:          document.getElementById('ecp-notes').value,
+      customer_type:  document.getElementById('ecp-customer-type').value,
+      account_status: document.getElementById('ecp-account-status').value,
+    };
+
+    // Client-side validation
+    let bad = false;
+    if (body.name.length < 2 || body.name.length > 100) {
+      _ecpShowFieldErr('name', 'Full name must be 2–100 characters'); bad = true;
+    }
+    if (body.phone && !/^[\d\+\-\(\) ]+$/.test(body.phone)) {
+      _ecpShowFieldErr('phone', 'Phone may contain digits, +, -, (), and spaces only'); bad = true;
+    }
+    if (body.email && (body.email.indexOf('@') < 1 || body.email.split('@')[1].indexOf('.') < 1)) {
+      _ecpShowFieldErr('email', 'Enter a valid email address'); bad = true;
+    }
+    if (body.address && body.address.length > 500) {
+      _ecpShowFieldErr('address', 'Address must be at most 500 characters'); bad = true;
+    }
+    if (body.notes && body.notes.length > 2000) {
+      _ecpShowFieldErr('notes', 'Notes must be at most 2000 characters'); bad = true;
+    }
+    if (body.company && body.company.length > 100) {
+      const err = document.getElementById('err-editCustomerProfile');
+      err.textContent = 'Company must be at most 100 characters'; err.style.display='block'; bad = true;
+    }
+    if (bad) return;
+
+    // Confirmation dialogs for special-case transitions
+    if ((c.customer_type || 'residential') === 'residential' && body.customer_type === 'commercial') {
+      if (!confirm('Changing to Commercial will require this customer to set up MFA on next portal login. Continue?')) return;
+    }
+    const wasActive = (c.active !== 0 && c.active !== false);
+    if (wasActive && body.account_status === 'closed') {
+      if (!confirm('Closing this account will prevent login but will NOT delete equipment or visit history. Continue?')) return;
+      const reason = prompt('Optional: reason for closing this account (recorded in the audit log only):', '');
+      if (reason !== null) body.status_change_reason = reason;
+    }
+
+    const btn = document.getElementById('ecp-save-btn');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const res = await fetch(`/api/admin/customers/${c.id}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + adminToken,
+        },
+        body: JSON.stringify(body),
+      });
+      if (res.status === 400) {
+        const d = await res.json().catch(() => ({}));
+        const detail = d.detail;
+        if (Array.isArray(detail)) {
+          detail.forEach(e => _ecpShowFieldErr(e.field, e.message));
+        } else {
+          const err = document.getElementById('err-editCustomerProfile');
+          err.textContent = (typeof detail === 'string') ? detail : 'Validation failed';
+          err.style.display = 'block';
+        }
+        return;
+      }
+      if (res.status === 403) {
+        toast('Insufficient permission — super_admin only', 'error'); return;
+      }
+      if (res.status === 409) {
+        toast('This customer was updated by another admin. Refresh to see latest changes.', 'error'); return;
+      }
+      if (!res.ok) {
+        toast('Unable to save. Please try again or contact support.', 'error'); return;
+      }
+      const data = await res.json();
+      cdfState.customer = data.customer || cdfState.customer;
+      toast('Customer profile updated successfully', 'success');
+      closeModal('editCustomerProfile');
+      renderCdfProfile();
+      // Refresh list cache so changes are visible when going back
+      loadCustomers();
+    } catch(e) {
+      toast('Unable to save. Please try again or contact support.', 'error');
+    } finally {
+      btn.disabled = false; btn.textContent = 'Save';
+    }
+  }
+
+  // Hash-routing — when admin lands on /admin#customer/123 directly,
+  // open the detail view as soon as auth + role are settled.
+  function _maybeOpenCustomerFromHash() {
+    const m = (location.hash || '').match(/^#customer\/(\d+)$/);
+    if (!m) return;
+    // Any signed-in admin can deep-link / refresh into the full customer view
+    // now that it's shared. The fetch inside openCustomerDetailFull is
+    // server-scoped, so a role without access fails gracefully back to the list.
+    if (!currentAdmin) return;
+    showPanel('customers');
+    openCustomerDetailFull(parseInt(m[1], 10));
+  }
+  window.addEventListener('hashchange', _maybeOpenCustomerFromHash);
+
+  // ── super_admin Visit Detail View ────────────────────────────────────────
+  // State for the visit-detail modal. Mirrors the Customer Detail View
+  // pattern: hard role gate, hash deep-link, audited reads, surgical
+  // invoice-payment edit.
+  let vdfState = { visit: null, photos: [], lightboxIndex: 0,
+                   payment: { status: null, method: null, date: null, notes: null } };
+
+  function _vdfFmtJ(n) {
+    if (n === null || n === undefined || n === '') return '—';
+    const v = Math.round(Number(n) || 0);
+    return 'J$' + v.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  }
+
+  function routeVisitDetail(visit_id) {
+    if (!currentAdmin || currentAdmin.role !== 'super_admin') {
+      toast('Visit detail view is restricted to super_admin', 'error');
+      return;
+    }
+    openVisitDetailFull(visit_id);
+  }
+
+  async function openVisitDetailFull(visit_id) {
+    vdfState = { visit: null, photos: [], lightboxIndex: 0,
+                 payment: { status: null, method: null, date: null, notes: null } };
+    history.replaceState(null, '', location.pathname + location.search + '#visit/' + visit_id);
+    document.getElementById('modal-visitDetailFull').classList.add('open');
+    document.getElementById('vdf-meta-grid').innerHTML = '<div style="grid-column:1/-1;color:var(--muted);">Loading…</div>';
+    document.getElementById('vdf-scope').textContent = '';
+    document.getElementById('vdf-notes').textContent = '';
+    document.getElementById('vdf-readings-body').innerHTML = '<tr><td colspan="4" class="empty">Loading…</td></tr>';
+    document.getElementById('vdf-parts-body').innerHTML   = '<tr><td colspan="6" class="empty">Loading…</td></tr>';
+    document.getElementById('vdf-parts-foot').innerHTML   = '';
+    document.getElementById('vdf-invoice').innerHTML      = '<div style="color:var(--muted);font-size:13px;">Loading…</div>';
+    document.getElementById('vdf-callbacks').innerHTML    = 'Loading…';
+    document.getElementById('vdf-photos').innerHTML       = '<div style="grid-column:1/-1;color:var(--muted);">Loading…</div>';
+    try {
+      const v = await api('GET', `/api/admin/visits/${visit_id}`);
+      vdfState.visit = v;
+      renderVdfMetadata();
+      renderVdfLifecycle();
+      renderVdfBilling();
+      renderVdfScope();
+      renderVdfReadings();
+      renderVdfParts();
+      renderVdfLabor();
+      renderVdfInvoice();
+      renderVdfCallbacks();
+      loadVdfCoherence(visit_id);
+      loadVdfPhotos();
+    } catch (e) {
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) {
+        closeVisitDetailFull();
+        return;
+      }
+      if ((e.message || '').indexOf('403') >= 0) {
+        toast('Insufficient permission — super_admin only', 'error');
+      } else {
+        toast('Unable to load visit: ' + e.message, 'error');
+      }
+      closeVisitDetailFull();
+    }
+  }
+
+  function closeVisitDetailFull() {
+    document.getElementById('modal-visitDetailFull').classList.remove('open');
+    if (location.hash.indexOf('#visit/') === 0) {
+      history.replaceState(null, '', location.pathname + location.search);
+    }
+  }
+
+  // CMMS #7 — one authoritative dependent view: settled cost + PM schedule chain.
+  async function loadVdfCoherence(visit_id) {
+    const el = document.getElementById('vdf-coherence-body');
+    if (!el) return;
+    el.innerHTML = 'Loading…';
+    try {
+      const c = await api('GET', `/api/admin/visits/${visit_id}/coherence`);
+      const jc = c.job_costing || {};
+      const money = n => '$' + (Number(n || 0)).toFixed(2);
+      let html =
+        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px 16px;margin-bottom:10px;">' +
+          '<div><div style="color:var(--muted);font-size:11px;">Labour</div><div>' + money(jc.labor_cost) +
+            ' <span style="color:var(--muted);font-size:11px;">(' + (jc.labor_hours || 0) + 'h)</span></div></div>' +
+          '<div><div style="color:var(--muted);font-size:11px;">Parts</div><div>' + money(jc.parts_cost) + '</div></div>' +
+          '<div><div style="color:var(--muted);font-size:11px;">Total cost</div><div style="font-weight:700;">' + money(jc.total_cost) + '</div></div>' +
+          '<div><div style="color:var(--muted);font-size:11px;">Billable</div><div>' + money(jc.billable_amount) + '</div></div>' +
+        '</div>';
+      if (c.pm_contract) {
+        const pc = c.pm_contract;
+        html += '<div style="font-size:11px;color:var(--muted);margin:8px 0 4px;">PM schedule — contract ' +
+                escHtml(pc.contract_code || ('#' + pc.id)) +
+                (pc.frequency ? ' · ' + escHtml(pc.frequency) : '') + '</div>';
+        const sibs = c.pm_siblings || [];
+        if (sibs.length) {
+          html += '<div style="display:flex;flex-direction:column;gap:2px;">';
+          sibs.forEach(s => {
+            const isSelf = s.id === c.visit_id;
+            const dot = s.status === 'completed' ? '✅' : (s.status === 'cancelled' ? '✖' : '○');
+            html += '<div style="font-size:12px;' + (isSelf ? 'font-weight:700;' : 'color:var(--muted);') + '">' +
+                    dot + ' ' + escHtml(s.scheduled_date || '—') + ' · ' + escHtml(s.status || '') +
+                    (isSelf ? ' · this WO' : '') + '</div>';
+          });
+          html += '</div>';
+        }
+      } else {
+        html += '<div style="font-size:12px;color:var(--muted);">Not part of a PM contract schedule.</div>';
+      }
+      el.innerHTML = html;
+    } catch (e) {
+      el.innerHTML = '<span style="color:var(--muted);">Coherence view unavailable.</span>';
+    }
+  }
+
+  function renderVdfMetadata() {
+    const v = vdfState.visit; if (!v) return;
+    const vt = (v.visit_type || '').toUpperCase();
+    const typeBadge = vt === 'PM'
+      ? '<span class="badge" style="background:var(--teal-bg);color:var(--teal-deep);">PM</span>'
+      : '<span class="badge" style="background:var(--steel-bg);color:var(--steel);">CM</span>';
+    const status = (v.status || '').toLowerCase();
+    const statusMap = {
+      scheduled:    ['var(--surface-2)', 'var(--text)', 'Scheduled'],
+      confirmed:    ['var(--steel-bg)', 'var(--steel)', 'Confirmed'],
+      in_progress:  ['var(--steel-bg)', 'var(--steel)', 'In Progress'],
+      completed:    ['var(--teal-bg)', 'var(--teal-deep)', 'Completed'],
+    };
+    const [bg, fg, lbl] = statusMap[status] || ['var(--surface-2)', 'var(--text)', status || '—'];
+    const statusBadge = `<span class="badge" style="background:${bg};color:${fg};">${escHtml(lbl)}</span>`;
+    const ctype = v.customer_type || 'residential';
+    const ctypeBadge = ctype === 'commercial'
+      ? '<span class="badge" style="background:var(--teal-bg);color:var(--teal-deep);">Commercial</span>'
+      : '<span class="badge" style="background:var(--steel-bg);color:var(--steel);">Residential</span>';
+
+    document.getElementById('vdf-visit-id-badge').textContent = '#' + v.id;
+    document.getElementById('vdf-type-badge').innerHTML = typeBadge;
+    document.getElementById('vdf-status-badge').innerHTML = statusBadge;
+    document.getElementById('vdf-breadcrumb-customer').textContent = v.customer_name || '—';
+    document.getElementById('vdf-breadcrumb-id').textContent = '#' + v.id;
+
+    const _gate = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    const customerCell = _gate
+      ? PC.gateLinkHtml('customer', v.customer_id, v.customer_name || '—', {onClick: 'function(){ vdfOpenCustomer(' + v.customer_id + '); }'})
+      : (escHtml(v.customer_name) || '—');
+    document.getElementById('vdf-customer-name').innerHTML = customerCell;
+
+    const sched = fmtDateTime(v.scheduled_date, v.scheduled_time) || '—';
+    const dur = (v.duration_hours === null || v.duration_hours === undefined) ? '—' : (v.duration_hours + ' h');
+    const fld = (label, val) => `
+      <div>
+        <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);font-weight:600;margin-bottom:2px;">${label}</div>
+        <div style="color:var(--text);">${val || '—'}</div>
+      </div>`;
+    const techCellLink = (v.assigned_tech_id && _gate)
+      ? PC.gateLinkHtml('technician', v.assigned_tech_id, v.tech_name || '—', {})
+      : escHtml(v.tech_name || '—');
+    const invoiceCellLink = (v.invoice_id && _gate)
+      ? PC.gateLinkHtml('invoice', v.invoice_id, v.invoice_number || ('#' + v.invoice_id), {onClick: 'function(){ pcGoInvoice(' + v.invoice_id + '); }'})
+      : (v.invoice_number ? escHtml(v.invoice_number) : '—');
+    document.getElementById('vdf-meta-grid').innerHTML = [
+      fld('Customer',         customerCell),
+      fld('Customer Type',    ctypeBadge),
+      fld('Equipment',
+        (v.equipment_id && _gate)
+          ? PC.gateLinkHtml('equipment', v.equipment_id, v.equipment_name || '—', {onClick: 'function(){ openEquipmentDetailFromVisit(' + v.customer_id + ',' + v.equipment_id + '); }'})
+          : escHtml(v.equipment_name)),
+      fld('Visit Type',       typeBadge),
+      fld('Status',           statusBadge),
+      fld('Scheduled',        escHtml(sched)),
+      fld('Actual Start',     PC.fmtDateTime(v.start_time) || '—'),
+      fld('Actual End',       PC.fmtDateTime(v.end_time) || '—'),
+      fld('Duration',         escHtml(dur)),
+      fld('Assigned Technician', techCellLink),
+      fld('Related Invoice',  invoiceCellLink),
+    ].join('');
+  }
+
+  // CMMS Gap #3 — the legal next-states for each status, mirroring the
+  // server's _VISIT_LIFECYCLE. Buttons surface only legal moves; the server
+  // remains the source of truth and rejects anything illegal with a 409.
+  const VDF_LIFECYCLE = {
+    created:     ['scheduled', 'cancelled'],
+    scheduled:   ['in_progress', 'cancelled'],
+    in_progress: ['completed'],
+    completed:   ['closed'],
+    closed:      [],
+    cancelled:   [],
+  };
+  const VDF_STATE_LABELS = {
+    scheduled: 'Schedule', in_progress: 'Start', completed: 'Complete',
+    closed: 'Close', cancelled: 'Cancel',
+  };
+
+  function _vdfNormStatus(s) {
+    s = (s || '').trim();
+    if (s === 'tech_complete' || s === 'complete') return 'completed';
+    if (s === 'canceled') return 'cancelled';
+    if (s === 'confirmed') return 'completed';
+    return s;
+  }
+
+  function renderVdfLifecycle() {
+    const v = vdfState.visit;
+    const host = document.getElementById('vdf-lifecycle-actions');
+    const errEl = document.getElementById('vdf-lifecycle-error');
+    if (!host) return;
+    if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+    const cur = _vdfNormStatus(v && v.status);
+    const nexts = VDF_LIFECYCLE[cur] || [];
+    const editable = can('visit:update');
+    let html = `<span style="font-size:12px;color:var(--muted);">Current: <strong style="color:var(--text);">${escHtml(cur || '—')}</strong></span>`;
+    if (!editable) {
+      html += `<span style="font-size:12px;color:var(--muted);margin-left:8px;">(read-only)</span>`;
+    } else if (!nexts.length) {
+      html += `<span style="font-size:12px;color:var(--muted);margin-left:8px;">Terminal state — no further transitions.</span>`;
+    } else {
+      nexts.forEach(ns => {
+        const danger = (ns === 'cancelled');
+        const cls = danger ? 'btn btn-ghost btn-sm' : 'btn btn-primary btn-sm';
+        html += ` <button class="${cls}" onclick="vdfTransition('${ns}')">${escHtml(VDF_STATE_LABELS[ns] || ns)}</button>`;
+      });
+    }
+    host.innerHTML = html;
+  }
+
+  async function vdfTransition(target) {
+    const v = vdfState.visit;
+    if (!v) return;
+    let reason = '';
+    if (target === 'cancelled') {
+      reason = prompt('Reason for cancelling this visit?') || '';
+      if (reason === null) return;
+    }
+    const errEl = document.getElementById('vdf-lifecycle-error');
+    try {
+      const res = await api('POST', `/api/admin/visits/${v.id}/transition`,
+                { status: target, reason: reason });
+      // CMMS #7 — surface the completion cascade so the coherence effect is
+      // visible: the next contract PM was auto-scheduled and the cost settled.
+      const casc = res && res.cascade;
+      if (casc) {
+        const n = (casc.next_pm_created || []).length;
+        if (n > 0) {
+          toast(`Completed — next PM auto-scheduled (${n} visit${n > 1 ? 's' : ''})`, 'success');
+        }
+        if (casc.job_costing) {
+          const jc = casc.job_costing;
+          toast(`Cost settled: labour $${(jc.labor_cost||0).toFixed(2)} + parts $${(jc.parts_cost||0).toFixed(2)} = $${(jc.total_cost||0).toFixed(2)}`, 'info');
+        }
+      }
+      await openVisitDetailFull(v.id);
+      try { if (typeof renderVisitTable === 'function') renderVisitTable(); } catch(_) {}
+    } catch (e) {
+      if (errEl) {
+        errEl.textContent = (e && e.message) ? e.message : 'Transition failed.';
+        errEl.style.display = 'block';
+      }
+    }
+  }
+
+  // ── Billing (CMMS Gap #2) ────────────────────────────────────────────────
+  const VDF_BILLING_LABELS = {
+    warranty: 'Warranty', contract: 'PM Contract', billable: 'Billable',
+    goodwill: 'Goodwill',
+  };
+  const VDF_BILLING_COLORS = {
+    warranty: '#2980b9', contract: '#27ae60', billable: 'var(--text)',
+    goodwill: '#8e44ad',
+  };
+
+  async function renderVdfBilling() {
+    const v = vdfState.visit;
+    const card = document.getElementById('vdf-billing-card');
+    const sumEl = document.getElementById('vdf-billing-summary');
+    const actEl = document.getElementById('vdf-billing-actions');
+    const errEl = document.getElementById('vdf-billing-error');
+    if (!card || !v) return;
+    if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+    // Billing only makes sense once there's confirmed work (completed/closed).
+    const st = _vdfNormStatus(v.status);
+    if (st !== 'completed' && st !== 'closed') {
+      sumEl.innerHTML = '<span style="color:var(--muted);">Billing class resolves once the visit is completed.</span>';
+      actEl.innerHTML = '';
+      return;
+    }
+    sumEl.innerHTML = '<span style="color:var(--muted);">Resolving…</span>';
+    actEl.innerHTML = '';
+    let r;
+    try {
+      r = await api('GET', `/api/admin/visits/${v.id}/billing-class`);
+    } catch (e) {
+      sumEl.innerHTML = `<span style="color:var(--muted);">${escHtml((e&&e.message)||'Could not resolve billing class.')}</span>`;
+      return;
+    }
+    vdfState.billing = r;
+    const bc = r.billing_class || 'billable';
+    const col = VDF_BILLING_COLORS[bc] || 'var(--text)';
+    const ovr = r.overridden ? ' <span style="font-size:11px;color:var(--muted);">(manual override)</span>' : '';
+    let html = `<div>Class: <strong style="color:${col};">${escHtml(VDF_BILLING_LABELS[bc] || bc)}</strong>${ovr}</div>`;
+    if (r.reason) html += `<div style="font-size:12px;color:var(--muted);margin-top:3px;">${escHtml(r.reason)}</div>`;
+    if (r.entitlement && r.entitlement.included) {
+      const e = r.entitlement;
+      html += `<div style="font-size:11px;color:var(--muted);margin-top:3px;">Contract entitlement: ${e.used}/${e.included} used this contract-year (${escHtml(e.window_start||'')} → ${escHtml(e.window_end||'')}).</div>`;
+    }
+    sumEl.innerHTML = html;
+
+    let acts = '';
+    if (can('visit:update')) {
+      acts += `<span style="font-size:12px;color:var(--muted);">Override:</span>`;
+      ['billable','warranty','contract','goodwill'].forEach(c => {
+        if (c === bc && r.overridden) return; // already this override
+        acts += ` <button class="btn btn-ghost btn-sm" onclick="vdfSetBillingClass('${c}')">${escHtml(VDF_BILLING_LABELS[c])}</button>`;
+      });
+    }
+    if (can('invoice:create')) {
+      acts += ` <button class="btn btn-primary btn-sm" style="margin-left:auto;" onclick="vdfGenerateDraftInvoice()">Generate Draft Invoice</button>`;
+    }
+    actEl.innerHTML = acts;
+  }
+
+  async function vdfSetBillingClass(cls) {
+    const v = vdfState.visit;
+    if (!v) return;
+    let reason = '';
+    if (cls === 'goodwill') {
+      reason = prompt('Reason for writing this visit off as goodwill?') || '';
+      if (reason === '') return; // require a reason for goodwill
+    } else {
+      reason = prompt(`Reason for overriding billing class to "${VDF_BILLING_LABELS[cls]}"? (optional)`) || '';
+    }
+    const errEl = document.getElementById('vdf-billing-error');
+    try {
+      await api('POST', `/api/admin/visits/${v.id}/billing-class`,
+                { billing_class: cls, reason: reason });
+      toast(`Billing class set to ${VDF_BILLING_LABELS[cls]}.`);
+      await renderVdfBilling();
+    } catch (e) {
+      if (errEl) {
+        errEl.textContent = (e && e.message) ? e.message : 'Could not set billing class.';
+        errEl.style.display = 'block';
+      }
+    }
+  }
+
+  async function vdfGenerateDraftInvoice() {
+    const v = vdfState.visit;
+    if (!v) return;
+    const gctStr = prompt('Optional GCT rate as a percentage (e.g. 15 for 15%). Leave blank for none.', '');
+    if (gctStr === null) return;
+    let taxRate = 0;
+    if (gctStr.trim() !== '') {
+      const n = parseFloat(gctStr);
+      if (isNaN(n) || n < 0) { toast('Invalid GCT rate.'); return; }
+      taxRate = n / 100.0;
+    }
+    const errEl = document.getElementById('vdf-billing-error');
+    try {
+      const res = await api('POST', `/api/admin/visits/${v.id}/draft-invoice`,
+                            { tax_rate: taxRate });
+      const cls = VDF_BILLING_LABELS[res.billing_class] || res.billing_class;
+      toast(`Draft invoice ${res.invoice_number || ''} created (${cls}, total ${fmtMoney ? fmtMoney(res.total) : res.total}).`);
+      try { renderVdfInvoice(); } catch(_) {}
+      try { if (typeof renderVdfBilling === 'function') renderVdfBilling(); } catch(_) {}
+    } catch (e) {
+      if (errEl) {
+        errEl.textContent = (e && e.message) ? e.message : 'Could not generate draft invoice.';
+        errEl.style.display = 'block';
+      }
+    }
+  }
+
+  function renderVdfScope() {
+    const v = vdfState.visit;
+    const scope = (v && (v.scope_of_work || '')) || '';
+    const notes = (v && (v.notes || v.work_done || '')) || '';
+    document.getElementById('vdf-scope').textContent = scope || 'No scope of work documented.';
+    document.getElementById('vdf-scope').style.color = scope ? 'var(--text)' : 'var(--muted)';
+    document.getElementById('vdf-notes').textContent = notes || 'No complaint or notes recorded.';
+    document.getElementById('vdf-notes').style.color = notes ? 'var(--text)' : 'var(--muted)';
+  }
+
+  function renderVdfReadings() {
+    const v = vdfState.visit;
+    const tbody = document.getElementById('vdf-readings-body');
+    const rs = (v && v.readings) || [];
+    if (!rs.length) {
+      tbody.innerHTML = '<tr><td colspan="4" class="empty">No readings recorded for this visit.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rs.map(r => `
+      <tr>
+        <td>${escHtml(r.reading)}</td>
+        <td>${escHtml(String(r.value))}</td>
+        <td>${escHtml(r.unit || '')}</td>
+        <td>${escHtml(r.notes || '')}</td>
+      </tr>`).join('');
+  }
+
+  function renderVdfParts() {
+    const v = vdfState.visit;
+    const tbody = document.getElementById('vdf-parts-body');
+    const tfoot = document.getElementById('vdf-parts-foot');
+    const ps = (v && v.parts_used) || [];
+    if (!ps.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty">No parts used on this visit.</td></tr>';
+      tfoot.innerHTML = '';
+      return;
+    }
+    tbody.innerHTML = ps.map(p => `
+      <tr>
+        <td>${escHtml(p.sku || '')}</td>
+        <td>${escHtml(p.part_name || '')}</td>
+        <td>${escHtml(String(p.quantity))}</td>
+        <td>${_vdfFmtJ(p.unit_price)}</td>
+        <td><strong>${_vdfFmtJ(p.line_total)}</strong></td>
+        <td>${escHtml(p.notes || '')}</td>
+      </tr>`).join('');
+    tfoot.innerHTML = `<tr><td colspan="4" style="text-align:right;font-weight:600;">Total Parts Cost:</td><td colspan="2"><strong>${_vdfFmtJ(v.parts_total)}</strong></td></tr>`;
+  }
+
+  // ── CMMS #3 — labor & job costing in the visit-detail view ────────────────
+  function renderVdfLabor() {
+    const v = vdfState.visit;
+    const tbody = document.getElementById('vdf-labor-body');
+    const tfoot = document.getElementById('vdf-labor-foot');
+    if (!tbody) return;
+    const entries = (v && v.labor_entries) || [];
+    const jc = (v && v.job_costing) || {};
+    const canEdit = can('visit:update');
+    const addBtn = document.getElementById('vdf-labor-add-btn');
+    if (addBtn) addBtn.style.display = canEdit ? '' : 'none';
+    if (!entries.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="empty">No labor booked against this work order.</td></tr>';
+    } else {
+      tbody.innerHTML = entries.map(e => `
+        <tr>
+          <td>${escHtml(e.work_date || '—')}</td>
+          <td>${escHtml(e.tech_name || '—')}${e.tech_code ? ' <span class="code-pill">' + escHtml(e.tech_code) + '</span>' : ''}</td>
+          <td style="text-align:right;">${Number(e.hours || 0).toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+          <td>${e.billable ? '<span style="color:var(--teal-deep,#1a7f43);">Billable</span>' : '<span style="color:var(--muted);">Non-billable</span>'}</td>
+          <td style="text-align:right;">${_vdfFmtJ(e.cost_rate)}</td>
+          <td style="text-align:right;">${e.bill_rate != null ? _vdfFmtJ(e.bill_rate) : '—'}</td>
+          <td>${escHtml(e.notes || '')}</td>
+          <td>${canEdit ? `<button class="btn btn-danger btn-sm" onclick="vdfDeleteLabor(${e.id})">Remove</button>` : ''}</td>
+        </tr>`).join('');
+    }
+    if (tfoot) {
+      tfoot.innerHTML = `<tr>
+        <td colspan="2" style="text-align:right;font-weight:600;">Totals:</td>
+        <td style="text-align:right;font-weight:600;">${Number(jc.labor_hours || 0).toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+        <td style="font-size:11px;color:var(--muted);">${Number(jc.billable_hours || 0)} bill / ${Number(jc.nonbillable_hours || 0)} non</td>
+        <td colspan="2" style="text-align:right;font-weight:600;">Labor cost: ${_vdfFmtJ(jc.labor_cost)}</td>
+        <td colspan="2" style="font-size:11px;color:var(--muted);">Billable amt: ${_vdfFmtJ(jc.billable_amount)} · Total job: ${_vdfFmtJ(jc.total_cost)}</td>
+      </tr>`;
+    }
+  }
+
+  function vdfToggleLaborForm() {
+    const f = document.getElementById('vdf-labor-form');
+    if (!f) return;
+    const showing = f.style.display !== 'none';
+    f.style.display = showing ? 'none' : 'block';
+    if (!showing) {
+      // populate tech dropdown + default date
+      const sel = document.getElementById('vdf-labor-tech');
+      if (sel) {
+        sel.innerHTML = '<option value="">— select —</option>' +
+          (allTechs || []).filter(t => t.active)
+            .map(t => `<option value="${t.id}">${escHtml(t.name)} (${escHtml(t.tech_code)})</option>`).join('');
+        const v = vdfState.visit;
+        if (v && v.assigned_tech_id) sel.value = String(v.assigned_tech_id);
+      }
+      const d = document.getElementById('vdf-labor-date');
+      if (d && !d.value) d.value = new Date().toISOString().slice(0, 10);
+      const h = document.getElementById('vdf-labor-hours');
+      if (h) { h.value = ''; h.focus(); }
+    }
+  }
+
+  async function vdfSubmitLabor() {
+    const v = vdfState.visit; if (!v) return;
+    const hours = parseFloat(document.getElementById('vdf-labor-hours').value);
+    if (isNaN(hours) || hours < 0) { toast('Enter a valid number of hours', 'error'); return; }
+    const techVal = document.getElementById('vdf-labor-tech').value;
+    const costVal = document.getElementById('vdf-labor-cost').value;
+    const billVal = document.getElementById('vdf-labor-bill').value;
+    const body = {
+      hours: hours,
+      tech_id: techVal ? Number(techVal) : null,
+      work_date: document.getElementById('vdf-labor-date').value || null,
+      billable: document.getElementById('vdf-labor-billable').checked,
+      cost_rate: costVal !== '' ? Number(costVal) : null,
+      bill_rate: billVal !== '' ? Number(billVal) : null,
+    };
+    try {
+      const res = await api('POST', `/api/admin/visits/${v.id}/labor`, body);
+      vdfState.visit.labor_entries = res.entries;
+      vdfState.visit.job_costing = res.job_costing;
+      renderVdfLabor();
+      vdfToggleLaborForm();
+      toast('Labor booked', 'success');
+    } catch (e) {
+      toast('Unable to save labor: ' + e.message, 'error');
+    }
+  }
+
+  async function vdfDeleteLabor(entryId) {
+    const v = vdfState.visit; if (!v) return;
+    if (!confirm('Remove this labor entry?')) return;
+    try {
+      const res = await api('DELETE', `/api/admin/visits/${v.id}/labor/${entryId}`);
+      vdfState.visit.labor_entries = res.entries;
+      vdfState.visit.job_costing = res.job_costing;
+      renderVdfLabor();
+      toast('Labor entry removed', 'success');
+    } catch (e) {
+      toast('Unable to remove: ' + e.message, 'error');
+    }
+  }
+
+  function renderVdfInvoice() {
+    const v = vdfState.visit;
+    const host = document.getElementById('vdf-invoice');
+    const inv = v && v.invoice;
+    if (!inv) {
+      host.innerHTML = `<div style="color:var(--muted);font-size:13px;">
+        No invoice generated yet. <button class="btn btn-ghost btn-sm" disabled title="Future feature">+ Generate Invoice</button>
+      </div>`;
+      return;
+    }
+    vdfState.payment = {
+      status: inv.payment_status,
+      method: inv.last_payment_method || '',
+      date:   inv.last_payment_date   || '',
+      notes:  inv.notes               || '',
+    };
+    const ro = (lbl, val) => `<div><div style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);font-weight:600;margin-bottom:2px;">${lbl}</div><div>${val}</div></div>`;
+    host.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px 18px;font-size:13px;margin-bottom:12px;">
+        ${ro('Invoice #', escHtml(inv.invoice_number))}
+        ${ro('Invoice Date', escHtml(inv.issue_date || '—'))}
+        ${ro('Labor', _vdfFmtJ(inv.labor_total))}
+        ${ro('Parts', _vdfFmtJ(inv.parts_total))}
+        ${ro('Other Charges', _vdfFmtJ(inv.other_total))}
+        ${ro('Subtotal', _vdfFmtJ(inv.subtotal))}
+        ${ro('GCT (' + ((Number(inv.tax_rate||0)*100).toFixed(0)) + '%)', _vdfFmtJ(inv.tax_amount))}
+        ${ro('Total Due', '<strong>' + _vdfFmtJ(inv.total) + '</strong>')}
+        ${ro('Amount Paid', _vdfFmtJ(inv.amount_paid))}
+        ${ro('Outstanding', '<strong>' + _vdfFmtJ(inv.outstanding) + '</strong>')}
+      </div>
+      <div style="border-top:1px solid var(--border);padding-top:12px;margin-top:6px;">
+        <div style="font-weight:600;color:var(--ink);margin-bottom:8px;font-size:13px;">Payment</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;font-size:12px;">
+          <label>Payment Status <span style="color:var(--danger);">*</span>
+            <select id="vdf-pay-status" onchange="vdfPaymentStatusChanged()" aria-label="Payment status" style="display:block;width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;margin-top:3px;">
+              <option value="unpaid">Unpaid</option>
+              <option value="partially_paid">Partially Paid</option>
+              <option value="fully_paid">Fully Paid</option>
+            </select>
+          </label>
+          <label>Payment Method
+            <select id="vdf-pay-method" aria-label="Payment method" style="display:block;width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;margin-top:3px;">
+              <option value="">—</option>
+              <option value="cash">Cash</option>
+              <option value="bank_transfer">Bank Transfer</option>
+              <option value="check">Check</option>
+              <option value="card">Card</option>
+              <option value="other">Other</option>
+            </select>
+          </label>
+          <label>Payment Date
+            <input type="date" id="vdf-pay-date" aria-label="Payment date" style="display:block;width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;margin-top:3px;">
+          </label>
+        </div>
+        <label style="display:block;margin-top:10px;font-size:12px;">Notes
+          <textarea id="vdf-pay-notes" maxlength="1000" rows="2" aria-label="Payment notes" style="display:block;width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;margin-top:3px;"></textarea>
+        </label>
+        <div class="form-error" id="vdf-pay-err" style="display:none;color:var(--danger);font-size:12px;margin-top:6px;"></div>
+        <div style="display:flex;justify-content:flex-end;margin-top:10px;">
+          <button class="btn btn-primary btn-sm" id="vdf-pay-save" onclick="submitVdfPayment()" disabled>Save Payment</button>
+        </div>
+      </div>
+    `;
+    document.getElementById('vdf-pay-status').value = vdfState.payment.status || 'unpaid';
+    document.getElementById('vdf-pay-method').value = vdfState.payment.method || '';
+    document.getElementById('vdf-pay-date').value   = PC.fmtDate(vdfState.payment.date);
+    document.getElementById('vdf-pay-notes').value  = vdfState.payment.notes || '';
+    ['vdf-pay-status','vdf-pay-method','vdf-pay-date','vdf-pay-notes'].forEach(id => {
+      const el = document.getElementById(id);
+      el.addEventListener('input',  vdfPaymentDirtyCheck);
+      el.addEventListener('change', vdfPaymentDirtyCheck);
+    });
+    vdfPaymentStatusChanged();
+  }
+
+  function vdfPaymentStatusChanged() {
+    const s = document.getElementById('vdf-pay-status').value;
+    const methodEl = document.getElementById('vdf-pay-method');
+    const dateEl   = document.getElementById('vdf-pay-date');
+    const notesEl  = document.getElementById('vdf-pay-notes');
+    if (s === 'unpaid') {
+      methodEl.value = ''; dateEl.value = ''; notesEl.value = '';
+      methodEl.disabled = true;
+    } else {
+      methodEl.disabled = false;
+      if (s === 'fully_paid' && !dateEl.value) {
+        const today = new Date().toISOString().slice(0,10);
+        dateEl.value = today;
+      }
+    }
+    vdfPaymentDirtyCheck();
+  }
+
+  function vdfPaymentDirtyCheck() {
+    const base = vdfState.payment;
+    const cur = {
+      status: document.getElementById('vdf-pay-status').value,
+      method: document.getElementById('vdf-pay-method').value,
+      date:   document.getElementById('vdf-pay-date').value,
+      notes:  document.getElementById('vdf-pay-notes').value,
+    };
+    const dirty = (cur.status !== (base.status || 'unpaid'))
+              || (cur.method !== (base.method || ''))
+              || ((cur.date || '') !== (PC.fmtDate(base.date)))
+              || ((cur.notes || '') !== (base.notes || ''));
+    document.getElementById('vdf-pay-save').disabled = !dirty;
+  }
+
+  async function submitVdfPayment() {
+    if (!vdfState.visit) return;
+    const errBox = document.getElementById('vdf-pay-err');
+    errBox.style.display = 'none';
+    const body = {
+      status:         document.getElementById('vdf-pay-status').value,
+      payment_method: document.getElementById('vdf-pay-method').value || null,
+      payment_date:   document.getElementById('vdf-pay-date').value || null,
+      notes:          document.getElementById('vdf-pay-notes').value,
+    };
+    if (body.status === 'unpaid') {
+      body.payment_method = null; body.payment_date = null;
+    } else if (!body.payment_method) {
+      errBox.textContent = 'Payment method is required when status is paid/partially paid';
+      errBox.style.display = 'block'; return;
+    }
+    const btn = document.getElementById('vdf-pay-save');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const res = await fetch(`/api/admin/visits/${vdfState.visit.id}/invoice-payment`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + adminToken },
+        body: JSON.stringify(body),
+      });
+      if (res.status === 400) {
+        const d = await res.json().catch(() => ({}));
+        const detail = d.detail;
+        if (Array.isArray(detail)) {
+          errBox.textContent = detail.map(x => x.message || x).join('; ');
+        } else {
+          errBox.textContent = (typeof detail === 'string') ? detail : 'Validation failed';
+        }
+        errBox.style.display = 'block'; return;
+      }
+      if (res.status === 403) { toast('Insufficient permission — super_admin only', 'error'); return; }
+      if (res.status === 404) { toast('No invoice for this visit (was it deleted?).', 'error'); return; }
+      if (res.status === 409) { toast('This invoice was updated by another admin. Refresh to see latest changes.', 'error'); return; }
+      if (!res.ok) { toast('Unable to save payment status. Please try again.', 'error'); return; }
+      toast('Payment status updated', 'success');
+      // Refresh the modal data
+      await openVisitDetailFull(vdfState.visit.id);
+    } catch (e) {
+      toast('Unable to save payment status. Please try again.', 'error');
+    } finally {
+      btn.disabled = false; btn.textContent = 'Save Payment';
+    }
+  }
+
+  async function loadVdfPhotos() {
+    const host = document.getElementById('vdf-photos');
+    if (!vdfState.visit) return;
+    try {
+      const ps = await api('GET', `/api/admin/visits/${vdfState.visit.id}/photos`);
+      vdfState.photos = ps || [];
+      if (!vdfState.photos.length) {
+        host.innerHTML = '<div style="grid-column:1/-1;color:var(--muted);font-size:13px;">No photos attached to this visit.</div>';
+        return;
+      }
+      host.innerHTML = vdfState.photos.map((p, i) => `
+        <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--card);cursor:pointer;" onclick="vdfLightboxOpen(${i})">
+          <img src="${escHtml(p.url || '')}" alt="${escHtml(p.label)}" style="display:block;width:100%;height:110px;object-fit:cover;background:var(--surface-2);">
+          <div style="padding:6px 8px;">
+            <div style="font-weight:600;color:var(--text);font-size:11px;">${escHtml(p.label)}</div>
+            <div style="color:var(--muted);font-size:10px;">${escHtml(PC.fmtDateTime(p.timestamp))}</div>
+            <div style="color:var(--muted);font-size:10px;">${escHtml(p.uploader_name)}</div>
+          </div>
+        </div>
+      `).join('');
+    } catch (e) {
+      host.innerHTML = `<div style="grid-column:1/-1;color:var(--danger);font-size:12px;">Unable to load photos: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  function renderVdfCallbacks() {
+    const host = document.getElementById('vdf-callbacks');
+    host.innerHTML = '';
+    const cb = (vdfState.visit && vdfState.visit.callback) || null;
+    // The callback_of_visit_id column shipped in commit 713f634. Backend
+    // get_visit_full_detail() should populate either:
+    //   { is_callback_of: {id, completed_date, tech_name, ...},
+    //     generated_callbacks: [ {id, completed_date, tech_name, reason}, ...] }
+    // or the legacy placeholder shape { is_callback, callback_of, callbacks }.
+    // FIXME(callback-schema): get_visit_full_detail() in database.py still
+    // returns the legacy placeholder shape — call get_visit_callback_chain()
+    // and merge to expose is_callback_of / generated_callbacks here.
+    const parent = cb && (cb.is_callback_of || cb.callback_of);
+    const children = (cb && (cb.generated_callbacks || cb.callbacks)) || [];
+
+    if (!parent && (!children || !children.length)) {
+      host.textContent = 'No callbacks associated with this visit.';
+      return;
+    }
+
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'display:flex;flex-direction:column;gap:10px;font-size:13px;';
+
+    if (parent) {
+      const pid = parent.id || parent.visit_id;
+      const pdate = (parent.completed_date || parent.scheduled_date || '');
+      const ptech = parent.tech_name || parent.technician || '—';
+      const row = document.createElement('div');
+      row.style.cssText = 'padding:10px 12px;background:var(--teal-bg);border:1px solid var(--teal);border-radius:6px;color:var(--teal-deep);';
+      // textContent for user-controlled fragments
+      const label = document.createElement('div');
+      label.style.cssText = 'font-weight:600;margin-bottom:4px;';
+      label.textContent = 'This is a callback visit.';
+      row.appendChild(label);
+      const body = document.createElement('div');
+      body.appendChild(document.createTextNode('Originating visit: '));
+      const a = document.createElement('a');
+      a.href = '#visit/' + encodeURIComponent(pid);
+      a.textContent = '#' + pid;
+      a.style.cssText = 'color:var(--ink);font-weight:600;text-decoration:underline;';
+      a.onclick = function(ev){ ev.preventDefault(); openVisitDetailFull(pid); };
+      body.appendChild(a);
+      body.appendChild(document.createTextNode('. Original completed on ' + (pdate || '—') + ' by ' + ptech + '.'));
+      row.appendChild(body);
+      wrap.appendChild(row);
+    }
+
+    if (children && children.length) {
+      const title = document.createElement('div');
+      title.style.cssText = 'font-weight:600;color:var(--ink);font-size:13px;';
+      title.textContent = 'Callbacks generated by this visit (' + children.length + ')';
+      wrap.appendChild(title);
+
+      const table = document.createElement('table');
+      table.style.cssText = 'width:100%;font-size:12px;border-collapse:collapse;';
+      const thead = document.createElement('thead');
+      thead.innerHTML = '<tr style="background:var(--surface-2);"><th style="text-align:left;padding:6px;">Callback Visit</th><th style="text-align:left;padding:6px;">Date</th><th style="text-align:left;padding:6px;">Tech</th><th style="text-align:left;padding:6px;">Reason</th></tr>';
+      table.appendChild(thead);
+      const tbody = document.createElement('tbody');
+      children.forEach(function(c){
+        const tr = document.createElement('tr');
+        tr.style.cssText = 'border-top:1px solid var(--border);';
+        const cid = c.id || c.visit_id;
+        const tdId = document.createElement('td'); tdId.style.cssText = 'padding:6px;';
+        const link = document.createElement('a');
+        link.href = '#visit/' + encodeURIComponent(cid);
+        link.textContent = '#' + cid;
+        link.style.cssText = 'color:var(--ink);font-weight:600;text-decoration:underline;';
+        link.onclick = function(ev){ ev.preventDefault(); openVisitDetailFull(cid); };
+        tdId.appendChild(link);
+        const tdDate = document.createElement('td'); tdDate.style.cssText = 'padding:6px;';
+        tdDate.textContent = (c.completed_date || c.scheduled_date || '—');
+        const tdTech = document.createElement('td'); tdTech.style.cssText = 'padding:6px;';
+        tdTech.textContent = (c.tech_name || c.technician || '—');
+        const tdReason = document.createElement('td'); tdReason.style.cssText = 'padding:6px;';
+        tdReason.textContent = (c.reason || c.scope_of_work || '—');
+        tr.appendChild(tdId); tr.appendChild(tdDate); tr.appendChild(tdTech); tr.appendChild(tdReason);
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      wrap.appendChild(table);
+    }
+
+    host.appendChild(wrap);
+  }
+
+  function vdfOpenCustomer(customer_id) {
+    if (!currentAdmin || currentAdmin.role !== 'super_admin') return;
+    closeVisitDetailFull();
+    showPanel('customers');
+    openCustomerDetailFull(customer_id);
+  }
+
+  // ── Lightbox ──
+  function vdfLightboxOpen(i) {
+    vdfState.lightboxIndex = i;
+    _vdfLightboxRender();
+    document.getElementById('vdf-lightbox').style.display = 'flex';
+  }
+  function vdfLightboxClose() {
+    document.getElementById('vdf-lightbox').style.display = 'none';
+  }
+  function vdfLightboxNav(delta) {
+    if (!vdfState.photos.length) return;
+    let n = vdfState.lightboxIndex + delta;
+    if (n < 0) n = vdfState.photos.length - 1;
+    if (n >= vdfState.photos.length) n = 0;
+    vdfState.lightboxIndex = n;
+    _vdfLightboxRender();
+  }
+  function _vdfLightboxRender() {
+    const p = vdfState.photos[vdfState.lightboxIndex];
+    if (!p) return;
+    document.getElementById('vdf-lightbox-img').src = p.url || '';
+    document.getElementById('vdf-lightbox-caption').textContent =
+      (p.label || '') + ' — ' + (p.uploader_name || '') + ' — ' + (PC.fmtDateTime(p.timestamp));
+    // Reset the metadata panel each time the visible photo changes.
+    const meta = document.getElementById('vdf-lightbox-meta');
+    if (meta) { meta.style.display = 'none'; meta.textContent = ''; }
+    const delBtn = document.getElementById('vdf-photo-del-btn');
+    if (delBtn) delBtn.style.display = can('visit:view_photos') ? '' : 'none';
+  }
+  async function vdfPhotoMeta() {
+    const p = vdfState.photos[vdfState.lightboxIndex];
+    const pid = p && (p.photo_id != null ? p.photo_id : p.id);
+    if (pid == null) { toast('No photo id available.', 'error'); return; }
+    const meta = document.getElementById('vdf-lightbox-meta');
+    meta.style.display = 'block';
+    meta.textContent = 'Loading chain-of-custody…';
+    try {
+      const m = await api('GET', `/api/admin/photos/${pid}/meta`);
+      const lines = [];
+      const add = (k, v) => { if (v !== null && v !== undefined && v !== '') lines.push(k + ': ' + v); };
+      add('Photo id', m.id);
+      add('Category', m.category);
+      add('File', m.filename);
+      add('— Server stamps —', ' ');
+      add('Uploaded at', PC.fmtDateTime(m.uploaded_at));
+      add('Server IP', m.server_ip);
+      add('Server UA', m.server_ua);
+      add('— Client claims —', ' ');
+      add('Client captured at', PC.fmtDateTime(m.client_captured_at));
+      add('Geo (claimed)', (m.geo_lat != null && m.geo_lng != null)
+            ? `${m.geo_lat}, ${m.geo_lng}` + (m.geo_accuracy_m != null ? ` (±${m.geo_accuracy_m}m)` : '') : null);
+      add('Geo captured at', PC.fmtDateTime(m.geo_captured_at));
+      add('Device', [m.device_platform, m.device_model].filter(Boolean).join(' / '));
+      add('Screen', m.device_screen);
+      add('Camera', [m.camera_facing, (m.camera_width && m.camera_height) ? `${m.camera_width}×${m.camera_height}` : ''].filter(Boolean).join(' '));
+      add('Network', m.network_type);
+      add('App version', m.app_version);
+      meta.textContent = lines.length ? lines.join('\n') : 'No metadata recorded for this photo.';
+    } catch (e) {
+      meta.textContent = 'Unable to load metadata: ' + e.message;
+    }
+  }
+  async function vdfPhotoDelete() {
+    const p = vdfState.photos[vdfState.lightboxIndex];
+    const pid = p && (p.photo_id != null ? p.photo_id : p.id);
+    if (pid == null) { toast('No photo id available.', 'error'); return; }
+    if (!confirm(`Delete this photo (${p.label || 'untitled'})? This permanently removes the file and cannot be undone.`)) return;
+    try {
+      await api('DELETE', `/api/admin/photos/${pid}`);
+      toast('Photo deleted.', 'success');
+      vdfLightboxClose();
+      await loadVdfPhotos();
+    } catch (e) {
+      toast('Delete failed: ' + e.message, 'error');
+    }
+  }
+
+  function _maybeOpenVisitFromHash() {
+    const m = (location.hash || '').match(/^#visit\/(\d+)$/);
+    if (!m) return;
+    if (!currentAdmin || currentAdmin.role !== 'super_admin') return;
+    openVisitDetailFull(parseInt(m[1], 10));
+  }
+  window.addEventListener('hashchange', _maybeOpenVisitFromHash);
+
+  // ── super_admin Technician Detail View ──────────────────────────────────
+  // Mirrors the customer & visit detail patterns: hard role gate, hash
+  // deep-link, audited reads on every section load, surgical edits via the
+  // four edit-surface modals (info / KPI thresholds / 5S overrides / reviews).
+  let tdfState = { tech: null, jobs: [], page: 1, total: 0, limit: 20,
+                   kpi: null, fs: null, reviews: [],
+                   editingReviewId: null, activeKpiKey: null,
+                   activeExceptionId: null };
+
+  const TDF_ROLE_LABEL = { apprentice: 'Apprentice',
+                           tech: 'Technician',
+                           senior_tech: 'Senior Technician',
+                           lead_tech: 'Journeyman',
+                           install_tech: 'Installation Technician',
+                           commercial_tech: 'Commercial Technician' };
+  const TDF_REVIEW_TYPE_LABEL = {
+    coaching:          { label: 'Coaching',          bg: 'var(--steel-bg)', fg: 'var(--steel)' },
+    written_warning:   { label: 'Written Warning',   bg: 'var(--err-bg)', fg: 'var(--err-fg)' },
+    positive_feedback: { label: 'Positive Feedback', bg: 'var(--teal-bg)', fg: 'var(--teal-deep)' },
+    other:             { label: 'Other',             bg: 'var(--surface-2)', fg: 'var(--text)' },
+  };
+  const TDF_REVIEW_STATUS_LABEL = {
+    open:     { label: 'Open',     bg: 'var(--teal-bg)', fg: 'var(--teal-deep)' },
+    resolved: { label: 'Resolved', bg: 'var(--teal-bg)', fg: 'var(--teal-deep)' },
+    archived: { label: 'Archived', bg: 'var(--surface-2)', fg: 'var(--muted)' },
+  };
+  const TDF_KPI_KEYS = [
+    { key: 'pm_completion',         label: 'PM Visit Completion' },
+    { key: 'callback_rate',         label: 'Callback / Rework Rate' },
+    { key: 'first_time_fix',        label: 'First-Time Fix' },
+    { key: 'revenue_per_tech',      label: 'Revenue per Tech' },
+    { key: 'utilization',           label: 'Utilization' },
+    { key: 'documentation_quality', label: 'Documentation Quality' },
+    { key: 'sla_adherence',         label: 'SLA Adherence' },
+    { key: 'safety_loto',           label: 'Safety / LOTO' },
+  ];
+
+  function routeTechnicianDetail(id) {
+    if (!currentAdmin || currentAdmin.role !== 'super_admin') {
+      toast('Technician detail view is restricted to super_admin', 'error');
+      return;
+    }
+    openTechnicianDetailFull(id);
+  }
+
+  function showTechList() {
+    document.getElementById('technicianDetailFull').style.display = 'none';
+    document.getElementById('techList').style.display = '';
+    if (location.hash.startsWith('#technician/')) {
+      history.replaceState(null, '', location.pathname + location.search);
+    }
+  }
+
+  async function openTechnicianDetailFull(id) {
+    document.getElementById('techList').style.display = 'none';
+    document.getElementById('technicianDetailFull').style.display = 'block';
+    tdfState = { tech: null, jobs: [], page: 1, total: 0, limit: 20,
+                 kpi: null, fs: null, reviews: [],
+                 editingReviewId: null, activeKpiKey: null,
+                 activeExceptionId: null };
+    history.replaceState(null, '', location.pathname + location.search + '#technician/' + id);
+    try {
+      const t = await api('GET', `/api/admin/technicians/${id}`);
+      tdfState.tech = t;
+      renderTdfHeader();
+      loadTdfKpi();
+      loadTdf5s();
+      loadTdfJobs(1);
+      loadTdfReviews();
+      loadTdfCertifications();
+      loadTdfPayroll();
+      loadTdfSchedule();
+      loadTdfCvRequests();
+      loadTdfSkills();
+    } catch (e) {
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) {
+        showTechList();
+        return;
+      }
+      toast('Unable to load technician: ' + e.message, 'error');
+      showTechList();
+    }
+  }
+
+  function _tdfBadge(text, bg, fg) {
+    return `<span class="badge" style="background:${bg};color:${fg};">${escHtml(text)}</span>`;
+  }
+
+  // ── Dispatch skills & capacity (CMMS #5) ────────────────────────────────────
+  const _PROF_LABEL = { trainee: 'Trainee', qualified: 'Qualified', expert: 'Expert' };
+  async function loadTdfSkills() {
+    const t = tdfState.tech; if (!t) return;
+    const body = document.getElementById('tdf-skills-body');
+    const canEdit = can('tech:update');
+    // Capacity editor + add-skill form visibility
+    const capWrap = document.getElementById('tdf-cap-wrap');
+    const addWrap = document.getElementById('tdf-skill-add');
+    if (capWrap) capWrap.style.display = canEdit ? 'flex' : 'none';
+    if (addWrap) addWrap.style.display = canEdit ? 'flex' : 'none';
+    const capInput = document.getElementById('tdf-cap-input');
+    if (capInput && t.daily_capacity_hours != null) capInput.value = t.daily_capacity_hours;
+    try {
+      const res = await api('GET', `/api/admin/technicians/${t.id}/skills`);
+      tdfRenderSkills(res.skills || []);
+    } catch (e) {
+      body.innerHTML = `<span style="color:var(--err-fg);">Unable to load skills: ${escHtml(e.message || String(e))}</span>`;
+    }
+  }
+  function tdfRenderSkills(skills) {
+    const body = document.getElementById('tdf-skills-body');
+    const canEdit = can('tech:update');
+    const cap = (tdfState.tech && tdfState.tech.daily_capacity_hours != null)
+      ? tdfState.tech.daily_capacity_hours : 8;
+    let html = `<div style="margin-bottom:10px;">Daily capacity: <strong>${cap}h</strong></div>`;
+    if (!skills.length) {
+      html += '<div style="color:var(--muted);">No dispatchable skills recorded.</div>';
+    } else {
+      html += '<div style="display:flex;flex-wrap:wrap;gap:8px;">' + skills.map(s => {
+        const rm = canEdit
+          ? `<button onclick="tdfRemoveSkill('${escHtml(s.skill).replace(/'/g, "\\'")}')" title="Remove" style="border:none;background:none;color:var(--muted);cursor:pointer;font-weight:700;margin-left:6px;">×</button>`
+          : '';
+        return `<span style="background:var(--surface-2);border:1px solid var(--border);border-radius:14px;padding:4px 10px;font-size:12px;">
+          ${escHtml(s.skill)} <span style="color:var(--muted);">· ${escHtml(_PROF_LABEL[s.proficiency] || s.proficiency)}</span>${rm}</span>`;
+      }).join('') + '</div>';
+    }
+    body.innerHTML = html;
+  }
+  async function tdfAddSkill() {
+    const t = tdfState.tech; if (!t) return;
+    const name = (document.getElementById('tdf-skill-name').value || '').trim();
+    const prof = document.getElementById('tdf-skill-prof').value;
+    if (!name) { toast('Enter a skill name', 'error'); return; }
+    try {
+      const res = await api('POST', `/api/admin/technicians/${t.id}/skills`,
+                            { skill: name, proficiency: prof });
+      document.getElementById('tdf-skill-name').value = '';
+      tdfRenderSkills(res.skills || []);
+      toast('Skill added', 'success');
+    } catch (e) { toast('Add failed: ' + (e.message || e), 'error'); }
+  }
+  async function tdfRemoveSkill(skill) {
+    const t = tdfState.tech; if (!t) return;
+    try {
+      const res = await api('DELETE',
+        `/api/admin/technicians/${t.id}/skills/${encodeURIComponent(skill)}`);
+      tdfRenderSkills(res.skills || []);
+      toast('Skill removed', 'success');
+    } catch (e) { toast('Remove failed: ' + (e.message || e), 'error'); }
+  }
+  async function tdfSaveCapacity() {
+    const t = tdfState.tech; if (!t) return;
+    const v = parseFloat(document.getElementById('tdf-cap-input').value);
+    if (isNaN(v) || v < 0) { toast('Capacity must be ≥ 0', 'error'); return; }
+    try {
+      await api('POST', `/api/admin/technicians/${t.id}/capacity`,
+                { daily_capacity_hours: v });
+      t.daily_capacity_hours = v;
+      tdfRenderSkills([]);            // refresh capacity line
+      loadTdfSkills();               // reload chips
+      toast('Capacity updated', 'success');
+    } catch (e) { toast('Save failed: ' + (e.message || e), 'error'); }
+  }
+
+  function renderTdfHeader() {
+    const t = tdfState.tech; if (!t) return;
+    document.getElementById('tdf-name').textContent = t.name || '—';
+    document.getElementById('tdf-breadcrumb-name').textContent = t.name || '—';
+
+    const role = t.role || 'tech';
+    const roleBadgeBg = role === 'lead_tech' ? 'var(--steel-bg)'
+                      : role === 'apprentice' ? 'var(--steel-bg)'
+                      : 'var(--teal-bg)';
+    const roleBadgeFg = role === 'lead_tech' ? 'var(--steel)'
+                      : role === 'apprentice' ? 'var(--steel)'
+                      : 'var(--teal-deep)';
+    const empStatus = (t.active === 0 || t.active === false)
+                       ? { label: 'Terminated', bg: 'var(--surface-2)', fg: 'var(--muted)' }
+                       : { label: 'Active',     bg: 'var(--teal-bg)', fg: 'var(--teal-deep)' };
+    const meta = [];
+    if (t.prid) meta.push(`<span class="code-pill" style="background:var(--navy);color:#fff;">${escHtml(t.prid)}</span>`);
+    if (t.tech_code) meta.push(`<span class="code-pill">${escHtml(t.tech_code)}</span>`);
+    meta.push(_tdfBadge(TDF_ROLE_LABEL[role] || 'Technician', roleBadgeBg, roleBadgeFg));
+    meta.push(_tdfBadge(empStatus.label, empStatus.bg, empStatus.fg));
+    document.getElementById('tdf-meta').innerHTML = meta.join(' ');
+
+    const fld = (label, val) => `
+      <div>
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);font-weight:600;margin-bottom:3px;">${label}</div>
+        <div style="color:var(--text);">${escHtml(val) || '—'}</div>
+      </div>`;
+    document.getElementById('tdf-profile-grid').innerHTML = [
+      fld('Phone', t.phone || ''),
+      fld('Email', t.email || ''),
+      fld('Hourly Rate', t.hourly_rate ? `${fmtJMD(t.hourly_rate)}/hr` : '—'),
+      fld('Hire Date', t.hire_date || ''),
+    ].join('');
+
+    // Offboard button hidden if already inactive
+    const offBtn = document.getElementById('tdf-offboard-btn');
+    if (offBtn) offBtn.style.display = (t.active === 0 || t.active === false) ? 'none' : '';
+
+    // Promote-from-within — only for active field techs, and only for admins
+    // who can mint a new admin account (same bar as onboarding one).
+    const promoBtn = document.getElementById('tdf-promote-btn');
+    if (promoBtn) {
+      const isActive = !(t.active === 0 || t.active === false);
+      promoBtn.style.display = (isActive && can('admin:create')) ? '' : 'none';
+    }
+
+    // Technician action buttons — gated by perm (DATA-scoped, not feature-gated)
+    const isActiveTech = !(t.active === 0 || t.active === false);
+    const _toggle = (id, show) => { const b = document.getElementById(id); if (b) b.style.display = show ? '' : 'none'; };
+    _toggle('tdf-reset-mfa-btn',   isActiveTech && can('tech:reset_pin'));
+    _toggle('tdf-approve-ot-btn',  isActiveTech && can('tech:approve_overtime'));
+    _toggle('tdf-release-kpi-btn', can('tech:release_kpi_period'));
+    _toggle('tdf-onboard-review-btn', _onbCanEdit());
+  }
+
+  // ── KPI section ───────────────────────────────────────────────────────────
+  async function loadTdfKpi() {
+    if (!tdfState.tech) return;
+    try {
+      const kpi = await api('GET', `/api/admin/technicians/${tdfState.tech.id}/kpi`);
+      tdfState.kpi = kpi;
+      renderTdfKpi();
+    } catch (e) {
+      document.getElementById('tdf-kpi-note').textContent =
+        'Unable to load KPI status: ' + e.message;
+    }
+  }
+
+  function renderTdfKpi() {
+    const k = tdfState.kpi || {};
+    const note = document.getElementById('tdf-kpi-note');
+    if (k.available === false) {
+      note.textContent = k.message ||
+        'KPI tracking not yet active — scores will populate once the KPI module is deployed.';
+      note.style.color = 'var(--muted)';
+    } else {
+      note.textContent = '';
+    }
+    const grid = document.getElementById('tdf-kpi-grid');
+    grid.innerHTML = TDF_KPI_KEYS.map(k2 => `
+      <div style="border:1px solid var(--border);border-radius:8px;padding:12px;background:var(--surface-2);">
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);font-weight:700;margin-bottom:6px;">${escHtml(k2.label)}</div>
+        <div style="font-size:18px;color:var(--border);font-weight:700;margin-bottom:8px;" aria-label="Score pending">—</div>
+        <button class="btn btn-ghost btn-sm" onclick="openKpiOverride('${k2.key}','${escHtml(k2.label)}')" aria-label="Edit thresholds for ${escHtml(k2.label)}">Edit Thresholds</button>
+      </div>`).join('');
+  }
+
+  function openKpiOverride(key, label) {
+    tdfState.activeKpiKey = key;
+    document.getElementById('ko-key-label').textContent = label;
+    ['ko-green','ko-amber','ko-red','ko-reason','ko-from','ko-until'].forEach(id =>
+      document.getElementById(id).value = '');
+    document.getElementById('ko-err-reason').style.display = 'none';
+    document.getElementById('err-kpiOverride').style.display = 'none';
+    document.getElementById('modal-kpiOverride').classList.add('open');
+  }
+
+  async function submitKpiOverride() {
+    const reason = document.getElementById('ko-reason').value.trim();
+    if (!reason) {
+      const el = document.getElementById('ko-err-reason');
+      el.textContent = 'Reason is required'; el.style.display = 'block';
+      return;
+    }
+    const body = {
+      kpi_key:         tdfState.activeKpiKey,
+      green_threshold: parseFloat(document.getElementById('ko-green').value) || null,
+      amber_threshold: parseFloat(document.getElementById('ko-amber').value) || null,
+      red_threshold:   parseFloat(document.getElementById('ko-red').value)   || null,
+      reason:          reason,
+      effective_from:  document.getElementById('ko-from').value || null,
+      effective_until: document.getElementById('ko-until').value || null,
+    };
+    const btn = document.getElementById('ko-save-btn');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      await api('POST', `/api/admin/technicians/${tdfState.tech.id}/kpi-threshold`, body);
+      toast('KPI threshold override saved', 'success');
+      closeModal('kpiOverride');
+      loadTdfKpi();
+    } catch (e) {
+      const err = document.getElementById('err-kpiOverride');
+      err.textContent = e.message || 'Unable to save';
+      err.style.display = 'block';
+    } finally {
+      btn.disabled = false; btn.textContent = 'Save Override';
+    }
+  }
+
+  // ── 5S section ────────────────────────────────────────────────────────────
+  async function loadTdf5s() {
+    if (!tdfState.tech) return;
+    try {
+      const fs = await api('GET', `/api/admin/technicians/${tdfState.tech.id}/5s`);
+      tdfState.fs = fs;
+      renderTdf5s();
+    } catch (e) {
+      document.getElementById('tdf-5s-summary').innerHTML =
+        '<span style="color:var(--muted);">Unable to load 5S data: ' + escHtml(e.message) + '</span>';
+    }
+  }
+
+  function renderTdf5s() {
+    const fs = tdfState.fs || {};
+    const score = fs.score || {};
+    const band  = score.band || 'red';
+    const bandColor = band === 'green' ? { bg: 'var(--teal-bg)', fg: 'var(--teal-deep)' }
+                    : band === 'amber' ? { bg: 'var(--steel-bg)', fg: 'var(--steel)' }
+                    :                    { bg: 'var(--err-bg)', fg: 'var(--err-fg)' };
+    const safetyTag = score.safety_red
+      ? ' <span class="badge" style="background:var(--err-bg);color:var(--err-fg);" title="Open safety/LOTO exception">⚠ SAFETY</span>'
+      : '';
+    document.getElementById('tdf-5s-summary').innerHTML = `
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+        <span class="badge" style="background:${bandColor.bg};color:${bandColor.fg};font-size:14px;padding:6px 14px;">
+          ${escHtml((band||'').toUpperCase())} — ${Number(score.score_pct||0).toFixed(1)}%
+        </span>
+        <span style="font-size:12px;color:var(--muted);">${score.pass_audits||0} / ${score.total_audits||0} audits passed (${score.window_days||30}-day window)</span>
+        ${safetyTag}
+      </div>`;
+
+    const trendEl = document.getElementById('tdf-5s-trend');
+    const trend = score.trend || [];
+    if (!trend.length) {
+      trendEl.innerHTML = '<span style="font-size:11px;color:var(--muted);">No trend data yet.</span>';
+    } else {
+      trendEl.innerHTML = trend.map(t => {
+        const pct = Math.max(2, Math.min(100, Number(t.pct || 0)));
+        const c = t.pct >= 90 ? 'var(--teal)' : t.pct >= 75 ? 'var(--teal)' : 'var(--red)';
+        return `<div title="Week of ${escHtml(t.week_start)} — ${t.pct}% (${t.audits} audits)" style="display:flex;flex-direction:column;align-items:center;gap:4px;">
+          <div style="width:32px;height:${pct*0.5}px;background:${c};border-radius:4px;"></div>
+          <div style="font-size:10px;color:var(--muted);">${escHtml(t.week_start.slice(5))}</div>
+        </div>`;
+      }).join('');
+    }
+
+    const audits = fs.audits || [];
+    const aBody = document.getElementById('tdf-5s-audits-body');
+    if (!audits.length) {
+      aBody.innerHTML = '<tr><td colspan="4" class="empty">No 5S audits in window.</td></tr>';
+    } else {
+      aBody.innerHTML = audits.slice(0, 20).map(a => `
+        <tr>
+          <td>${escHtml(PC.fmtDateTime(a.audit_ts))}</td>
+          <td>${escHtml(a.auditor_kind || '')} #${a.auditor_id}</td>
+          <td>${escHtml(a.phase || '')}</td>
+          <td>${a.overall_pass ? '<span class="badge" style="background:var(--teal-bg);color:var(--teal-deep);">PASS</span>' : '<span class="badge" style="background:var(--err-bg);color:var(--err-fg);">FAIL</span>'}</td>
+        </tr>`).join('');
+    }
+
+    const excs = fs.exceptions || [];
+    const overriddenIds = new Set((fs.overrides || []).map(o => o.exception_id));
+    const eBody = document.getElementById('tdf-5s-exc-body');
+    if (!excs.length) {
+      eBody.innerHTML = '<tr><td colspan="6" class="empty">No exceptions recorded.</td></tr>';
+    } else {
+      eBody.innerHTML = excs.map(e => {
+        const sev = e.severity === 'safety_loto'
+          ? '<span class="badge" style="background:var(--err-bg);color:var(--err-fg);">⚠ Safety</span>'
+          : '<span class="badge" style="background:var(--surface-2);color:var(--text);">Normal</span>';
+        const stColors = e.status === 'open' ? { bg: 'var(--teal-bg)', fg: 'var(--teal-deep)' }
+                       : e.status === 'resolved' ? { bg: 'var(--teal-bg)', fg: 'var(--teal-deep)' }
+                       : { bg: 'var(--steel-bg)', fg: 'var(--steel)' };
+        const desc = e.description || '';
+        const shortDesc = desc.length > 80 ? desc.slice(0,80)+'…' : desc;
+        const overridden = overriddenIds.has(e.id)
+          ? '<span class="badge" style="background:var(--steel-bg);color:var(--steel);margin-left:4px;">Overridden</span>'
+          : '';
+        const overrideBtn = overriddenIds.has(e.id)
+          ? ''
+          : `<button class="btn btn-ghost btn-sm" onclick="open5sOverride(${e.id})">Override Flag</button>`;
+        return `<tr>
+          <td>${escHtml(PC.fmtDateTime(e.opened_at))}</td>
+          <td>${sev}</td>
+          <td>${escHtml(e.category||'')}</td>
+          <td><span class="badge" style="background:${stColors.bg};color:${stColors.fg};">${escHtml(e.status)}</span>${overridden}</td>
+          <td title="${escHtml(desc)}">${escHtml(shortDesc) || '—'}</td>
+          <td>${overrideBtn}</td>
+        </tr>`;
+      }).join('');
+    }
+  }
+
+  function open5sOverride(exceptionId) {
+    tdfState.activeExceptionId = exceptionId;
+    document.getElementById('fso-exc-id').textContent = exceptionId;
+    document.getElementById('fso-reason').value = '';
+    document.getElementById('fso-err-reason').style.display = 'none';
+    document.getElementById('err-5sOverride').style.display = 'none';
+    document.getElementById('modal-5sOverride').classList.add('open');
+  }
+
+  async function submit5sOverride() {
+    const reason = document.getElementById('fso-reason').value.trim();
+    if (!reason) {
+      const el = document.getElementById('fso-err-reason');
+      el.textContent = 'Reason is required'; el.style.display = 'block';
+      return;
+    }
+    const btn = document.getElementById('fso-save-btn');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      await api('POST', `/api/admin/technicians/${tdfState.tech.id}/5s-override`, {
+        exception_id: tdfState.activeExceptionId,
+        reason: reason,
+      });
+      toast('5S exception override saved', 'success');
+      closeModal('5sOverride');
+      loadTdf5s();
+    } catch (e) {
+      const err = document.getElementById('err-5sOverride');
+      err.textContent = e.message || 'Unable to save'; err.style.display = 'block';
+    } finally {
+      btn.disabled = false; btn.textContent = 'Save Override';
+    }
+  }
+
+  // ── Jobs section ─────────────────────────────────────────────────────────
+  async function loadTdfJobs(page) {
+    if (!tdfState.tech) return;
+    if (page) tdfState.page = page;
+    const tbody = document.getElementById('tdf-jobs-body');
+    tbody.innerHTML = '<tr><td colspan="10" class="empty">Loading…</td></tr>';
+    const params = new URLSearchParams({
+      page:  String(tdfState.page),
+      limit: String(tdfState.limit),
+    });
+    const vt = document.getElementById('tdf-job-type').value;
+    const st = document.getElementById('tdf-job-status').value;
+    const df = document.getElementById('tdf-job-from').value;
+    const dt = document.getElementById('tdf-job-to').value;
+    if (vt) params.set('visit_type', vt);
+    if (st) params.set('status', st);
+    if (df) params.set('date_from', df);
+    if (dt) params.set('date_to', dt);
+    const cbEl = document.getElementById('tdf-job-cb');
+    if (cbEl && cbEl.checked) params.set('callbacks_only', 'true');
+    try {
+      const res = await api('GET', `/api/admin/technicians/${tdfState.tech.id}/jobs?` + params.toString());
+      tdfState.jobs  = res.rows  || [];
+      tdfState.total = res.total || 0;
+      renderTdfJobs();
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="10" class="empty">Unable to load: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  function tdfJobsPage(delta) {
+    const next = tdfState.page + delta;
+    if (next < 1) return;
+    if ((next-1)*tdfState.limit >= tdfState.total) return;
+    tdfState.page = next;
+    loadTdfJobs();
+  }
+
+  function renderTdfJobs() {
+    const tbody = document.getElementById('tdf-jobs-body');
+    if (!tdfState.jobs.length) {
+      tbody.innerHTML = '<tr><td colspan="10" class="empty">No jobs completed yet.</td></tr>';
+    } else {
+      tbody.innerHTML = tdfState.jobs.map(v => {
+        const vt = (v.visit_type||'').toUpperCase();
+        const typeBadge = vt === 'PM'
+          ? _tdfBadge('PM', 'var(--teal-bg)', 'var(--teal-deep)')
+          : _tdfBadge('CM', 'var(--steel-bg)', 'var(--steel)');
+        const status = (v.status||'').toLowerCase();
+        const statusBg = status === 'completed' ? 'var(--teal-bg)'
+                       : status === 'in_progress' ? 'var(--steel-bg)'
+                       : status === 'cancelled' ? 'var(--surface-2)' : 'var(--teal-bg)';
+        const statusFg = status === 'completed' ? 'var(--teal-deep)'
+                       : status === 'in_progress' ? 'var(--steel)'
+                       : status === 'cancelled' ? 'var(--muted)' : 'var(--teal-deep)';
+        const when = fmtDate(v.completed_date) || fmtDateTime(v.scheduled_date, v.scheduled_time) || fmtDate(v.created_at) || '—';
+        const dur  = v.duration_min != null ? `${v.duration_min} min` : '—';
+        const parts = (v.parts_cost != null) ? `J$${Math.round(v.parts_cost).toLocaleString()}` : '—';
+        const rev  = (v.revenue != null) ? `J$${Math.round(v.revenue).toLocaleString()}` : '—';
+        const _gate = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+        const custLink = v.customer_id
+          ? (_gate
+              ? PC.gateLinkHtml('customer', v.customer_id, v.customer_name || v.customer_code || '—', {onClick: 'function(){ routeCustomerDetail(' + v.customer_id + '); }'})
+              : `<strong>${escHtml(v.customer_name||v.customer_code||'—')}</strong>`)
+          : '—';
+        const visitLink = _gate
+          ? PC.gateLinkHtml('visit', v.id, '#' + v.id, {onClick: 'function(){ routeVisitDetail(' + v.id + '); }'})
+          : `#${v.id}`;
+        const equipCell = (v.equipment_id && _gate)
+          ? PC.gateLinkHtml('equipment', v.equipment_id, v.equipment_name || '—', {onClick: 'function(){ pcOpenEquipment(' + (v.customer_id||0) + ',' + v.equipment_id + '); }'})
+          : (escHtml(v.equipment_name) || '—');
+        return `<tr data-pc-row-visit="${v.id}">
+          <td>${when}</td>
+          <td>${visitLink}</td>
+          <td>${custLink}</td>
+          <td>${equipCell}</td>
+          <td>${typeBadge}</td>
+          <td><span class="badge" style="background:${statusBg};color:${statusFg};">${escHtml((status||'').replace('_',' '))}</span></td>
+          <td title="Callback linkage column not yet present">—</td>
+          <td>${dur}</td>
+          <td>${parts}</td>
+          <td>${rev}</td>
+        </tr>`;
+      }).join('');
+      if (typeof PC !== 'undefined' && PC.gateRow) {
+        tbody.querySelectorAll('tr[data-pc-row-visit]').forEach(function (tr) {
+          const vid = Number(tr.getAttribute('data-pc-row-visit'));
+          PC.gateRow(tr, 'visit', vid, {
+            onClick: function () { if (typeof routeVisitDetail==='function') routeVisitDetail(vid); },
+            ariaLabel: 'View visit #' + vid,
+          });
+        });
+      }
+    }
+    const start = tdfState.total ? ((tdfState.page-1)*tdfState.limit)+1 : 0;
+    const end   = Math.min(tdfState.page*tdfState.limit, tdfState.total);
+    document.getElementById('tdf-jobs-range').textContent =
+      tdfState.total ? `Showing ${start}–${end} of ${tdfState.total} jobs` : 'Showing 0 jobs';
+    document.getElementById('tdf-jobs-prev').disabled = tdfState.page <= 1;
+    document.getElementById('tdf-jobs-next').disabled = end >= tdfState.total;
+  }
+
+  // ── Reviews section ──────────────────────────────────────────────────────
+  async function loadTdfReviews() {
+    if (!tdfState.tech) return;
+    try {
+      const rows = await api('GET', `/api/admin/technicians/${tdfState.tech.id}/reviews?limit=100`);
+      tdfState.reviews = rows || [];
+      renderTdfReviews();
+    } catch (e) {
+      document.getElementById('tdf-reviews-list').innerHTML =
+        `<div class="empty" style="padding:14px;color:var(--danger);">Unable to load reviews: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  function renderTdfReviews() {
+    const wrap = document.getElementById('tdf-reviews-list');
+    if (!tdfState.reviews.length) {
+      wrap.innerHTML = '<div class="empty" style="padding:14px;">No reviews logged yet.</div>';
+      return;
+    }
+    wrap.innerHTML = tdfState.reviews.map(r => {
+      const tt = TDF_REVIEW_TYPE_LABEL[r.review_type] || TDF_REVIEW_TYPE_LABEL.other;
+      const st = TDF_REVIEW_STATUS_LABEL[r.status] || TDF_REVIEW_STATUS_LABEL.open;
+      const date = PC.fmtDate(r.created_at);
+      // Gate the per-review "view/edit" reference: if the viewer cannot read
+      // performance reviews they still see the card metadata, but the action
+      // button collapses to a no-op span.
+      const editBtn = r.status === 'open'
+        ? ((typeof PC !== 'undefined' && PC.gateLinkHtml)
+            ? PC.gateLinkHtml('review', r.id, 'Edit', {onClick: 'function(){ openEditTechReview(' + r.id + '); }'})
+            : `<button class="btn btn-ghost btn-sm pc-stop-prop" onclick="openEditTechReview(${r.id})">Edit</button>`)
+        : '';
+      const actions = r.action_items
+        ? `<details style="margin-top:8px;"><summary style="cursor:pointer;color:var(--ink);font-weight:600;font-size:12px;">Action items</summary><div style="margin-top:6px;font-size:13px;color:var(--text);white-space:pre-wrap;">${escHtml(r.action_items)}</div></details>`
+        : '';
+      const fu = r.followup_date
+        ? `<div style="font-size:11px;color:var(--muted);margin-top:4px;">Follow-up: <strong>${escHtml(r.followup_date)}</strong></div>`
+        : '';
+      return `<div style="border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:10px;background:var(--surface-2);">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            ${_tdfBadge(tt.label, tt.bg, tt.fg)}
+            ${_tdfBadge(st.label, st.bg, st.fg)}
+            <span style="font-size:11px;color:var(--muted);">${escHtml(date)} — ${escHtml(r.reviewer_name || ('Admin #'+r.reviewer_id))}</span>
+          </div>
+          <div>${editBtn}</div>
+        </div>
+        <div style="font-size:13px;color:var(--text);white-space:pre-wrap;">${escHtml(r.summary || '')}</div>
+        ${actions}${fu}
+      </div>`;
+    }).join('');
+  }
+
+  function openAddTechReview() {
+    tdfState.editingReviewId = null;
+    document.getElementById('tr-modal-title').textContent = 'Add Performance Review';
+    document.getElementById('tr-type').value     = 'coaching';
+    document.getElementById('tr-status').value   = 'open';
+    document.getElementById('tr-summary').value  = '';
+    document.getElementById('tr-actions').value  = '';
+    document.getElementById('tr-followup').value = '';
+    ['tr-err-summary','tr-err-actions','err-techReview'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.style.display = 'none';
+    });
+    document.getElementById('modal-techReview').classList.add('open');
+  }
+
+  function openEditTechReview(reviewId) {
+    const r = (tdfState.reviews || []).find(x => x.id === reviewId);
+    if (!r) return;
+    if (r.status !== 'open') {
+      toast('Only open reviews can be edited', 'error'); return;
+    }
+    tdfState.editingReviewId = reviewId;
+    document.getElementById('tr-modal-title').textContent = 'Edit Performance Review';
+    document.getElementById('tr-type').value     = r.review_type || 'coaching';
+    document.getElementById('tr-status').value   = r.status || 'open';
+    document.getElementById('tr-summary').value  = r.summary || '';
+    document.getElementById('tr-actions').value  = r.action_items || '';
+    document.getElementById('tr-followup').value = r.followup_date || '';
+    ['tr-err-summary','tr-err-actions','err-techReview'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.style.display = 'none';
+    });
+    document.getElementById('modal-techReview').classList.add('open');
+  }
+
+  async function submitTechReview() {
+    const body = {
+      review_type:   document.getElementById('tr-type').value,
+      status:        document.getElementById('tr-status').value,
+      summary:       document.getElementById('tr-summary').value.trim(),
+      action_items:  document.getElementById('tr-actions').value.trim() || null,
+      followup_date: document.getElementById('tr-followup').value || null,
+    };
+    let bad = false;
+    if (!body.summary) {
+      const el = document.getElementById('tr-err-summary');
+      el.textContent = 'Summary is required'; el.style.display = 'block'; bad = true;
+    } else if (body.summary.length > 1000) {
+      const el = document.getElementById('tr-err-summary');
+      el.textContent = 'Summary must be ≤ 1000 characters'; el.style.display = 'block'; bad = true;
+    }
+    if (body.action_items && body.action_items.length > 2000) {
+      const el = document.getElementById('tr-err-actions');
+      el.textContent = 'Action items must be ≤ 2000 characters'; el.style.display = 'block'; bad = true;
+    }
+    if (bad) return;
+    const btn = document.getElementById('tr-save-btn');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      if (tdfState.editingReviewId) {
+        await api('PATCH', `/api/admin/technicians/${tdfState.tech.id}/reviews/${tdfState.editingReviewId}`, body);
+      } else {
+        await api('POST',  `/api/admin/technicians/${tdfState.tech.id}/reviews`, body);
+      }
+      toast('Review saved', 'success');
+      closeModal('techReview');
+      loadTdfReviews();
+    } catch (e) {
+      const err = document.getElementById('err-techReview');
+      err.textContent = e.message || 'Unable to save'; err.style.display = 'block';
+    } finally {
+      btn.disabled = false; btn.textContent = 'Save';
+    }
+  }
+
+  // ── Edit Info modal ──────────────────────────────────────────────────────
+  function openEditTechProfile() {
+    const t = tdfState.tech; if (!t) return;
+    document.getElementById('etp-name').value   = t.name || '';
+    document.getElementById('etp-prid').value   = t.prid || t.tech_code || '';
+    document.getElementById('etp-phone').value  = t.phone || '';
+    document.getElementById('etp-email').value  = t.email || '';
+    document.getElementById('etp-role').value   = t.role || 'tech';
+    document.getElementById('etp-rate').value   = t.hourly_rate || '';
+    document.getElementById('etp-hire').value   = t.hire_date || '';
+    document.getElementById('etp-status').value = (t.active === 0 || t.active === false) ? 'terminated' : 'active';
+    ['etp-err-phone','etp-err-email','etp-err-rate','err-editTechProfile'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.style.display = 'none';
+    });
+    document.getElementById('modal-editTechProfile').classList.add('open');
+  }
+
+  async function submitEditTechProfile() {
+    const t = tdfState.tech; if (!t) return;
+    ['etp-err-phone','etp-err-email','etp-err-rate','err-editTechProfile'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.style.display = 'none';
+    });
+    const body = {
+      phone:             document.getElementById('etp-phone').value.trim() || null,
+      email:             document.getElementById('etp-email').value.trim() || null,
+      role:              document.getElementById('etp-role').value || null,
+      hourly_rate:       parseFloat(document.getElementById('etp-rate').value) || null,
+      employment_status: document.getElementById('etp-status').value || null,
+    };
+
+    let bad = false;
+    if (body.phone && !/^[\d\+\-\(\) ]+$/.test(body.phone)) {
+      const el = document.getElementById('etp-err-phone');
+      el.textContent = 'Phone may contain digits, +, -, (), and spaces only'; el.style.display = 'block'; bad = true;
+    }
+    if (body.email && (body.email.indexOf('@') < 1 || body.email.split('@')[1].indexOf('.') < 1)) {
+      const el = document.getElementById('etp-err-email');
+      el.textContent = 'Enter a valid email address'; el.style.display = 'block'; bad = true;
+    }
+    if (body.hourly_rate !== null && !(body.hourly_rate > 0)) {
+      const el = document.getElementById('etp-err-rate');
+      el.textContent = 'Hourly rate must be > 0'; el.style.display = 'block'; bad = true;
+    }
+    if (bad) return;
+
+    // Termination guard — redirect user to offboarding flow.
+    if (body.employment_status === 'terminated' && (t.active !== 0 && t.active !== false)) {
+      if (!confirm('Termination must go through the offboarding flow (not this edit form). Open offboarding now?')) return;
+      closeModal('editTechProfile');
+      openOffboard('tech', t.id, t.name);
+      return;
+    }
+
+    const btn = document.getElementById('etp-save-btn');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const res = await fetch(`/api/admin/technicians/${t.id}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + adminToken,
+        },
+        body: JSON.stringify(body),
+      });
+      if (res.status === 400) {
+        const d = await res.json().catch(() => ({}));
+        const detail = d.detail;
+        if (Array.isArray(detail)) {
+          detail.forEach(e => {
+            const el = document.getElementById('etp-err-' + e.field);
+            if (el) { el.textContent = e.message; el.style.display = 'block'; }
+          });
+        } else {
+          const err = document.getElementById('err-editTechProfile');
+          err.textContent = (typeof detail === 'string') ? detail : 'Validation failed';
+          err.style.display = 'block';
+        }
+        return;
+      }
+      if (res.status === 403) { toast('Insufficient permission — super_admin only', 'error'); return; }
+      if (res.status === 409) {
+        // Concurrency conflict — keep modal open, do not overwrite.
+        toast('This technician record was updated by another admin. Refresh to see latest changes.', 'error');
+        return;
+      }
+      if (!res.ok) { toast('Unable to save. Please try again.', 'error'); return; }
+      const data = await res.json();
+      tdfState.tech = data.technician || tdfState.tech;
+      toast('Technician info updated', 'success');
+      closeModal('editTechProfile');
+      renderTdfHeader();
+      loadTechs();
+    } catch (e) {
+      toast('Unable to save: ' + e.message, 'error');
+    } finally {
+      btn.disabled = false; btn.textContent = 'Save';
+    }
+  }
+
+  // ── Promote-from-within (field tech → office/admin role) ─────────────────
+  function openPromoteTech() {
+    const t = tdfState.tech; if (!t) return;
+    document.getElementById('prm-who').textContent  = t.name || 'this technician';
+    document.getElementById('prm-name').value       = t.name || '';
+    document.getElementById('prm-from').value        = TDF_ROLE_LABEL[t.role || 'tech'] || (t.role || 'Technician');
+    document.getElementById('prm-role').value        = '';
+    document.getElementById('prm-username').value    = '';
+    document.getElementById('prm-password').value    = '';
+    const err = document.getElementById('err-promoteTech');
+    if (err) err.style.display = 'none';
+    document.getElementById('modal-promoteTech').classList.add('open');
+  }
+
+  async function submitPromoteTech() {
+    const t = tdfState.tech; if (!t) return;
+    const err = document.getElementById('err-promoteTech');
+    const showErr = (m) => { if (err) { err.textContent = m; err.style.display = 'block'; } };
+    if (err) err.style.display = 'none';
+
+    const role     = document.getElementById('prm-role').value;
+    const username = document.getElementById('prm-username').value.trim();
+    const password = document.getElementById('prm-password').value;
+    if (!role)              { showErr('Pick the new office role.'); return; }
+    if (!password || password.length < 8) { showErr('Initial password must be at least 8 characters.'); return; }
+
+    const roleLabel = document.querySelector(`#prm-role option[value="${role}"]`)?.textContent || role;
+    if (!confirm(`Promote ${t.name} to ${roleLabel}? This creates a new /admin login and archives their field record. This cannot be undone here.`)) return;
+
+    const btn = document.getElementById('prm-save-btn');
+    btn.disabled = true; btn.textContent = 'Promoting…';
+    try {
+      const res = await api('POST', `/api/admin/techs/${t.id}/promote`,
+                            { role, password, username });
+      toast(`${t.name} promoted — new login: ${res.username} (PRID ${res.prid})`, 'success');
+      closeModal('promoteTech');
+      showTechList();
+      loadTechs();
+    } catch (e) {
+      showErr(e.message || 'Promotion failed.');
+    } finally {
+      btn.disabled = false; btn.textContent = 'Promote';
+    }
+  }
+
+  // ── Certifications + payroll degraded sections ───────────────────────────
+  async function loadTdfCertifications() {
+    if (!tdfState.tech) return;
+    const el = document.getElementById('tdf-certs-inline');
+    try {
+      const c = await api('GET', `/api/admin/technicians/${tdfState.tech.id}/certifications`);
+      if (c.available === false) {
+        el.innerHTML = '<em>Certifications: ' + escHtml(c.message || 'module not yet active') + '</em>';
+      } else if (!c.rows || !c.rows.length) {
+        el.innerHTML = '<em>Certifications: none tracked yet.</em>';
+      } else {
+        el.innerHTML = '<strong style="color:var(--text);">Certifications:</strong> ' +
+          c.rows.map(r => escHtml(r.name || r.cert_name || '—')).join(', ');
+      }
+    } catch (e) {
+      el.innerHTML = '<em>Certifications unavailable.</em>';
+    }
+  }
+
+  // ── Schedule & On-Call editor ─────────────────────────────────────
+  const TDF_DOW = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  async function loadTdfSchedule() {
+    if (!tdfState.tech) return;
+    const tid = tdfState.tech.id;
+    const sBody = document.getElementById('tdf-sched-body');
+    const oBody = document.getElementById('tdf-oncall-body');
+    let sched = [];
+    let overrides = [];
+    try {
+      sched = await api('GET', `/api/admin/technicians/${tid}/schedule`);
+    } catch (e) {
+      sBody.innerHTML = `<tr><td colspan="6" class="empty">Could not load schedule: ${escHtml(e.message)}</td></tr>`;
+      return;
+    }
+    try {
+      overrides = await api('GET', `/api/admin/technicians/${tid}/on-call-overrides`);
+    } catch (_) { /* override endpoint may 404 on older deploys */ }
+    sBody.innerHTML = (sched || []).map((d, i) => `
+      <tr data-dow="${i}">
+        <td><strong>${TDF_DOW[i]}</strong></td>
+        <td><input type="time" value="${escHtml(d.start_time || '')}" data-f="start"
+                   style="padding:6px;border:1px solid var(--border);border-radius:6px;"></td>
+        <td><input type="time" value="${escHtml(d.end_time || '')}" data-f="end"
+                   style="padding:6px;border:1px solid var(--border);border-radius:6px;"></td>
+        <td style="text-align:center;"><input type="checkbox" data-f="active" ${d.active ? 'checked' : ''}></td>
+        <td style="text-align:center;"><input type="checkbox" data-f="oncall" ${d.on_call ? 'checked' : ''}></td>
+        <td><button class="btn btn-primary btn-sm" onclick="tdfSaveSchedDay(${i})">Save</button></td>
+      </tr>`).join('');
+    if (!overrides || !overrides.length) {
+      oBody.innerHTML = '<tr><td colspan="4" class="empty">No overrides set.</td></tr>';
+    } else {
+      oBody.innerHTML = overrides.map(o => `
+        <tr>
+          <td>${escHtml(o.work_date)}</td>
+          <td>${o.on_call ? '<span class="badge" style="background:var(--teal-bg);color:var(--teal-deep);">On call</span>'
+                          : '<span class="badge" style="background:var(--err-bg);color:var(--err-fg);">Off-call (override)</span>'}</td>
+          <td>${escHtml(o.note || '')}</td>
+          <td><button class="btn btn-ghost btn-sm" onclick="tdfDeleteOnCallOverride('${escHtml(o.work_date)}')">Clear</button></td>
+        </tr>`).join('');
+    }
+  }
+  async function tdfSaveSchedDay(dow) {
+    if (!tdfState.tech) return;
+    const row = document.querySelector(`#tdf-sched-body tr[data-dow="${dow}"]`);
+    const body = {
+      day_of_week: dow,
+      start_time: row.querySelector('[data-f="start"]').value || null,
+      end_time:   row.querySelector('[data-f="end"]').value   || null,
+      active:     row.querySelector('[data-f="active"]').checked ? 1 : 0,
+      on_call:    row.querySelector('[data-f="oncall"]').checked ? 1 : 0,
+    };
+    try {
+      await api('POST', `/api/admin/technicians/${tdfState.tech.id}/schedule`, body);
+      toast('Saved ' + TDF_DOW[dow], 'success');
+    } catch (e) {
+      toast('Save failed: ' + e.message, 'error');
+    }
+  }
+  async function tdfAddOnCallOverride(onCall) {
+    if (!tdfState.tech) return;
+    const date = document.getElementById('tdf-oncall-date').value;
+    const note = document.getElementById('tdf-oncall-note').value;
+    if (!date) { toast('Pick a date', 'warning'); return; }
+    try {
+      await api('POST', `/api/admin/technicians/${tdfState.tech.id}/on-call-overrides`,
+                { work_date: date, on_call: onCall ? 1 : 0, note: note || null });
+      toast('Override saved', 'success');
+      document.getElementById('tdf-oncall-note').value = '';
+      loadTdfSchedule();
+    } catch (e) {
+      toast('Save failed: ' + e.message, 'error');
+    }
+  }
+  async function tdfDeleteOnCallOverride(date) {
+    if (!tdfState.tech) return;
+    if (!confirm('Clear the override for ' + date + '?')) return;
+    try {
+      await api('DELETE', `/api/admin/technicians/${tdfState.tech.id}/on-call-overrides/${date}`);
+      toast('Cleared', 'success');
+      loadTdfSchedule();
+    } catch (e) {
+      toast('Clear failed: ' + e.message, 'error');
+    }
+  }
+
+  // ── CV edit-request approval queue (per tech) ─────────────────────
+  async function loadTdfCvRequests() {
+    if (!tdfState.tech) return;
+    const grantBox = document.getElementById('tdf-cv-grant-direct');
+    if (grantBox) grantBox.style.display = can('tech:grant_cv_edit') ? 'flex' : 'none';
+    const el = document.getElementById('tdf-cv-requests');
+    let list = [];
+    try {
+      list = await api('GET', `/api/admin/cv-edit-requests?tech_id=${tdfState.tech.id}`);
+    } catch (e) {
+      el.innerHTML = `<div class="empty">Could not load requests: ${escHtml(e.message)}</div>`;
+      return;
+    }
+    if (!list.length) {
+      el.innerHTML = '<div class="empty" style="padding:14px;">No pending CV edit requests.</div>';
+      return;
+    }
+    el.innerHTML = list.map(r => `
+      <div style="padding:10px 12px;background:var(--teal-bg);border:1px solid var(--teal-bg);border-radius:8px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+        <div style="min-width:0;flex:1;">
+          <div style="font-weight:600;color:var(--ink);">Entry #${r.entry_id}</div>
+          <div class="muted" style="font-size:12px;">Requested ${escHtml(r.requested_at || '')}</div>
+          ${r.note ? `<div style="font-size:13px;margin-top:4px;">${escHtml(r.note)}</div>` : ''}
+        </div>
+        <div style="display:flex;gap:6px;">
+          <button class="btn btn-primary btn-sm" onclick="tdfApproveCv(${r.id})">Approve 60 min</button>
+          <button class="btn btn-ghost btn-sm" onclick="tdfDenyCv(${r.id})">Deny</button>
+        </div>
+      </div>`).join('');
+  }
+  async function tdfApproveCv(rid) {
+    try {
+      await api('POST', `/api/admin/cv-edit-requests/${rid}/approve`, { grant_minutes: 60 });
+      toast('Approved — tech has 60 minutes to edit.', 'success');
+      loadTdfCvRequests();
+    } catch (e) { toast('Approve failed: ' + e.message, 'error'); }
+  }
+  async function tdfDenyCv(rid) {
+    const note = prompt('Reason (optional):') || null;
+    try {
+      await api('POST', `/api/admin/cv-edit-requests/${rid}/deny`, { note });
+      toast('Denied.', 'success');
+      loadTdfCvRequests();
+    } catch (e) { toast('Deny failed: ' + e.message, 'error'); }
+  }
+  async function tdfGrantCvDirect() {
+    const t = tdfState.tech; if (!t) return;
+    const entryId = parseInt(document.getElementById('tdf-cv-grant-entry').value, 10);
+    const mins = parseInt(document.getElementById('tdf-cv-grant-mins').value, 10) || 60;
+    if (!entryId) { toast('Enter a CV entry number.', 'error'); return; }
+    const grantUntil = new Date(Date.now() + mins * 60000).toISOString();
+    try {
+      await api('POST', `/api/admin/technicians/${t.id}/cv/${entryId}/grant-edit`, { grant_until: grantUntil });
+      toast(`Edit access granted on entry #${entryId} for ${mins} min.`, 'success');
+      document.getElementById('tdf-cv-grant-entry').value = '';
+      loadTdfCvRequests();
+    } catch (e) {
+      toast('Grant failed: ' + (e.message === 'not_found' ? 'no such CV entry' : e.message), 'error');
+    }
+  }
+
+  // ── Company Messages panel ────────────────────────────────────────
+  async function cmLoad() {
+    const el = document.getElementById('cm-list');
+    try {
+      const list = await api('GET', '/api/admin/company/messages');
+      if (!list || !list.length) {
+        el.innerHTML = '<div class="empty" style="padding:14px;">No messages posted.</div>';
+        return;
+      }
+      el.innerHTML = list.map(m => `
+        <div style="padding:12px 14px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;margin-bottom:8px;">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;">
+            <div style="font-weight:600;color:var(--ink);">${escHtml(m.title || '—')}</div>
+            <div style="font-size:11px;color:var(--muted);white-space:nowrap;">${escHtml(m.posted_at || '')}</div>
+          </div>
+          <div style="font-size:13px;color:var(--text);margin-top:4px;white-space:pre-wrap;">${escHtml(m.body || '')}</div>
+          ${m.expires_at ? `<div style="font-size:11px;color:var(--muted);margin-top:6px;">Expires ${escHtml(m.expires_at)}</div>` : ''}
+          ${m.hidden_at ? `<div style="font-size:11px;color:var(--err-fg);margin-top:6px;">Hidden ${escHtml(m.hidden_at)}</div>` : `<div style="margin-top:8px;"><button class="btn btn-ghost btn-sm" onclick="cmHideMessage(${m.id})">Hide</button></div>`}
+        </div>`).join('');
+    } catch (e) {
+      el.innerHTML = `<div class="empty">Could not load: ${escHtml(e.message)}</div>`;
+    }
+  }
+  async function cmPostMessage() {
+    const title = document.getElementById('cm-title').value.trim();
+    const body  = document.getElementById('cm-body').value.trim();
+    const exp   = document.getElementById('cm-expires').value;
+    if (!title || !body) { toast('Title and body are required.', 'warning'); return; }
+    const payload = { title, body };
+    if (exp) payload.expires_at = exp + 'T23:59:59+00:00';
+    try {
+      await api('POST', '/api/admin/company/messages', payload);
+      toast('Posted to the message board.', 'success');
+      document.getElementById('cm-title').value = '';
+      document.getElementById('cm-body').value = '';
+      document.getElementById('cm-expires').value = '';
+      cmLoad();
+    } catch (e) {
+      toast('Post failed: ' + e.message, 'error');
+    }
+  }
+  async function cmHideMessage(id) {
+    if (!confirm('Hide this message from the board?')) return;
+    try {
+      await api('DELETE', `/api/admin/company/messages/${id}`);
+      toast('Hidden.', 'success');
+      cmLoad();
+    } catch (e) {
+      toast('Hide failed: ' + e.message, 'error');
+    }
+  }
+
+  // ── Service Requests triage queue ─────────────────────────────────
+  const SVCREQ_STATUS_COLORS = {
+    new:       { bg: 'var(--err-bg)',   fg: 'var(--err-fg)' },
+    triaged:   { bg: 'var(--steel-bg)', fg: 'var(--steel)' },
+    scheduled: { bg: 'var(--teal-bg)',  fg: 'var(--teal-deep)' },
+    closed:    { bg: 'var(--surface-2)', fg: 'var(--muted)' },
+  };
+  function _svcReqStatusBadge(s) {
+    const c = SVCREQ_STATUS_COLORS[s] || { bg: 'var(--surface-2)', fg: 'var(--muted)' };
+    return `<span class="badge" style="background:${c.bg};color:${c.fg};">${escHtml(s || '—')}</span>`;
+  }
+  async function svcReqLoad() {
+    const tbody = document.getElementById('svcReqBody');
+    if (!tbody) return;
+    const status = document.getElementById('svcReqStatusFilter').value;
+    let list = [];
+    try {
+      list = await api('GET', '/api/admin/service-requests' + (status ? '?status=' + encodeURIComponent(status) : ''));
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="6" class="empty" style="padding:16px;color:var(--err-fg);">Could not load: ${escHtml(e.message)}</td></tr>`;
+      return;
+    }
+    if (!list.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty" style="padding:16px;">No service requests' + (status ? ' with status “' + escHtml(status) + '”' : '') + '.</td></tr>';
+      return;
+    }
+    const canTriage = can('visit:update');
+    tbody.innerHTML = list.map(r => {
+      const cust = r.customer_name || ('Customer #' + r.customer_id);
+      const code = r.customer_code ? ` <span class="muted" style="font-size:11px;">(${escHtml(r.customer_code)})</span>` : '';
+      const eq = r.equipment_name ? `<div class="muted" style="font-size:11px;">Equipment: ${escHtml(r.equipment_name)}</div>` : '';
+      const pref = r.preferred_date ? `<div class="muted" style="font-size:11px;">Preferred: ${escHtml(r.preferred_date)}</div>` : '';
+      const actions = canTriage && r.status !== 'closed'
+        ? `<div style="display:flex;gap:6px;flex-wrap:wrap;">
+             ${r.status === 'new' ? `<button class="btn btn-ghost btn-sm" onclick="svcReqTriage(${r.id},'triaged')">Mark triaged</button>` : ''}
+             <button class="btn btn-primary btn-sm" onclick="svcReqScheduleToVisit(${r.id})">Schedule visit</button>
+             <button class="btn btn-ghost btn-sm" onclick="svcReqTriage(${r.id},'closed')">Close</button>
+           </div>`
+        : (r.visit_id ? `<span class="muted" style="font-size:11px;">Visit #${r.visit_id}</span>` : '<span class="muted" style="font-size:11px;">—</span>');
+      return `<tr style="border-top:1px solid var(--border);">
+        <td style="padding:10px 14px;white-space:nowrap;color:var(--muted);font-size:12px;">${PC.fmtDateTime(r.created_at)}</td>
+        <td style="padding:10px 14px;"><strong>${escHtml(cust)}</strong>${code}${eq}</td>
+        <td style="padding:10px 14px;">${escHtml(r.request_type || '—')}</td>
+        <td style="padding:10px 14px;"><div>${escHtml(r.subject || '—')}</div><div class="muted" style="font-size:12px;white-space:pre-wrap;max-width:340px;">${escHtml((r.body || '').slice(0, 180))}${(r.body || '').length > 180 ? '…' : ''}</div>${pref}</td>
+        <td style="padding:10px 14px;">${_svcReqStatusBadge(r.status)}</td>
+        <td style="padding:10px 14px;">${actions}</td>
+      </tr>`;
+    }).join('');
+  }
+  async function svcReqTriage(reqId, status, visitId) {
+    const verb = status === 'closed' ? 'Close' : (status === 'scheduled' ? 'Mark scheduled' : 'Mark triaged');
+    const note = prompt(`${verb} this request — optional note for the audit trail:`, '');
+    if (note === null) return; // cancelled
+    try {
+      await api('PUT', `/api/admin/service-requests/${reqId}/triage`,
+                { status, visit_id: visitId || null, note: note.trim() });
+      toast('Request updated → ' + status + '.', 'success');
+      svcReqLoad();
+      refreshSvcReqBadge();
+    } catch (e) {
+      toast('Triage failed: ' + e.message, 'error');
+    }
+  }
+  async function svcReqScheduleToVisit(reqId) {
+    // The request becomes 'scheduled' once a visit exists. We let the admin
+    // optionally link an existing visit id; creating a brand-new visit from
+    // here is left to the Visits panel (this only records the linkage).
+    const vid = prompt('Link to an existing Visit #? Leave blank to mark scheduled without a link:', '');
+    if (vid === null) return; // cancelled
+    const visitId = vid.trim() ? parseInt(vid.trim(), 10) : null;
+    if (vid.trim() && (!visitId || visitId < 1)) { toast('Enter a valid visit number.', 'error'); return; }
+    try {
+      await api('PUT', `/api/admin/service-requests/${reqId}/triage`,
+                { status: 'scheduled', visit_id: visitId, note: visitId ? ('Linked to visit #' + visitId) : '' });
+      toast('Request marked scheduled.', 'success');
+      svcReqLoad();
+      refreshSvcReqBadge();
+    } catch (e) {
+      toast('Update failed: ' + e.message, 'error');
+    }
+  }
+  async function refreshSvcReqBadge() {
+    const badge = document.getElementById('svcReqBadge');
+    if (!badge || !can('visit:view')) return;
+    try {
+      const list = await api('GET', '/api/admin/service-requests?status=new');
+      const n = (list || []).length;
+      if (n > 0) { badge.textContent = String(n); badge.style.display = ''; }
+      else { badge.style.display = 'none'; }
+    } catch { /* silent — badge is best-effort */ }
+  }
+
+  // ── Warehouse panel (Pass A) ──────────────────────────────────────
+  // Three sub-tabs: staff roster, per-asset 5S checklist editor, and
+  // the month-end equipment checksheet archive. All wired to the
+  // backend endpoints shipped in W2 + W3.
+  let _whCurrentTab = null;
+  let _whAssetsCache = null;        // [{id, asset_code, label, asset_type}]
+  let _whChecklistItems = null;     // current edited override (mutable)
+  let _whCatalog = [];              // known-keys catalog for the picker
+  let _whActiveSec = 'sort';        // last-focused section textarea
+
+  function whInit() {
+    // Default to staff on first open.
+    if (!_whCurrentTab) whSwitchTab('staff');
+  }
+
+  function whSwitchTab(tab) {
+    _whCurrentTab = tab;
+    ['staff','receiving','stock','shipping','checklist','sheets'].forEach(t => {
+      const pane = document.getElementById('wh-pane-' + t);
+      const btn  = document.getElementById('wh-tab-' + t);
+      if (pane) pane.style.display = (t === tab ? '' : 'none');
+      if (btn)  btn.classList.toggle('active', t === tab);
+    });
+    if (tab === 'staff')     whLoadStaff();
+    if (tab === 'receiving') whLoadReceiving();
+    if (tab === 'stock')     { whLoadStockLocations(); whLoadStock(); }
+    if (tab === 'shipping')  whLoadShipping();
+    if (tab === 'checklist') whLoadAssetsThenChecklist();
+    if (tab === 'sheets')    { whLoadAssetsForChecksheet(); whLoadChecksheets(); }
+  }
+
+  // ── Sub-tab: staff roster ────────────────────────────────────────
+  async function whLoadStaff() {
+    const tbody = document.getElementById('wh-staff-body');
+    try {
+      const rows = await api('GET', '/api/admin/warehouse/staff');
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty">No warehouse staff yet — tap "+ Add staff" above.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = rows.map(s => `
+        <tr>
+          <td><strong>${escHtml(s.tech_code)}</strong></td>
+          <td>${escHtml(s.name)}</td>
+          <td>${escHtml((s.staff_type || '').replace(/_/g,' '))}</td>
+          <td>${escHtml(s.department || '')}</td>
+          <td>${escHtml(s.phone || '')}</td>
+          <td>${s.active ? '<span class="badge" style="background:var(--teal-bg);color:var(--teal-deep);">Active</span>'
+                          : '<span class="badge" style="background:var(--err-bg);color:var(--err-fg);">Inactive</span>'}</td>
+        </tr>`).join('');
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="6" class="empty">Could not load: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  // whOpenAddStaff / whSubmitAddStaff removed: warehouse staff onboarding is
+  // now handled exclusively by the unified Onboarding panel (super_admin +
+  // hr_admin), where the position-type selector covers warehouse archetypes.
+
+  // ── Sub-tab: per-asset 5S checklist editor ──────────────────────
+  async function _whLoadAssetsCache() {
+    if (_whAssetsCache) return _whAssetsCache;
+    try {
+      // Existing 5S admin endpoint — gated by fs:report_view, which
+      // any role with warehouse:view_queue should already have
+      // (inventory_manager + supervisor + super_admin all pass).
+      const rows = await api('GET', '/api/admin/5s/assets');
+      _whAssetsCache = rows || [];
+    } catch (e) {
+      _whAssetsCache = [];
+    }
+    return _whAssetsCache;
+  }
+
+  async function whLoadAssetsThenChecklist() {
+    const sel = document.getElementById('wh-cl-asset');
+    sel.innerHTML = '<option value="">Pick an asset…</option>';
+    const assets = await _whLoadAssetsCache();
+    assets.forEach(a => {
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = `${a.asset_code} — ${a.label} (${a.asset_type})`;
+      sel.appendChild(opt);
+    });
+  }
+
+  async function whLoadChecklist() {
+    const assetId = document.getElementById('wh-cl-asset').value;
+    const phase   = document.getElementById('wh-cl-phase').value;
+    const editor  = document.getElementById('wh-cl-editor');
+    if (!assetId) {
+      editor.innerHTML = '<div class="empty" style="padding:14px;">Choose an asset to view its checklist.</div>';
+      return;
+    }
+    try {
+      const data = await api('GET', `/api/admin/fs/assets/${assetId}/checklist/${phase}`);
+      // Group items by section for the editor.
+      const sections = ['sort','set','shine','standardize','sustain'];
+      const grouped = {};
+      sections.forEach(s => grouped[s] = []);
+      const safetySet = new Set();
+      (data.items || []).forEach(it => {
+        if (grouped[it.section]) grouped[it.section].push(it.item_key);
+        if (it.safety_critical) safetySet.add(it.item_key);
+      });
+      _whChecklistItems = grouped;
+      _whCatalog = data.catalog || [];
+      _whActiveSec = 'sort';
+      const safetyInUse = [...safetySet];
+      let html = `<div class="muted" style="font-size:12px;margin-bottom:8px;">Edit per-section. Save replaces the override; "Clear" removes it (back to default). Click a key below to insert it into the last-focused section.</div>`;
+      if (safetyInUse.length) {
+        html += `<div style="margin-bottom:10px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);font-size:12px;">
+          <strong style="color:var(--ink);">⚠ Safety / LOTO items in this checklist:</strong>
+          ${safetyInUse.map(k => `<span class="badge" style="background:var(--err-bg);color:var(--err-fg);margin:2px;">${escHtml(k)}</span>`).join(' ')}
+          <div class="muted" style="margin-top:4px;">A failed audit on any of these forces a safety exception. Spell them exactly — typo'd safety keys are rejected on save.</div>
+        </div>`;
+      }
+      sections.forEach(sec => {
+        html += `
+          <div style="margin-bottom:14px;border:1px solid var(--border);border-radius:8px;padding:10px 12px;">
+            <div style="font-weight:600;color:var(--ink);text-transform:capitalize;margin-bottom:6px;">${sec === 'set' ? 'Set in order' : sec}</div>
+            <textarea data-wh-sec="${sec}" onfocus="_whActiveSec='${sec}'" rows="3" style="width:100%;padding:7px;border:1px solid var(--border);border-radius:6px;font-family:monospace;font-size:12px;" placeholder="one item_key per line">${escHtml(grouped[sec].join('\n'))}</textarea>
+          </div>`;
+      });
+      // Known-keys picker: safety items badged so the manager sees which
+      // keys carry LOTO weight. Clicking inserts into the active section.
+      if (_whCatalog.length) {
+        const chip = (c) => `<button type="button" class="btn btn-ghost" style="padding:2px 8px;margin:2px;font-size:11px;${c.safety_critical ? 'border-color:var(--err-fg);color:var(--err-fg);' : ''}" onclick="_whInsertKey('${c.item_key}')" title="${c.safety_critical ? 'Safety / LOTO key — failed audit forces a safety exception' : 'Standard checklist key'}">${c.safety_critical ? '⚠ ' : ''}${escHtml(c.item_key)}</button>`;
+        const safetyChips = _whCatalog.filter(c => c.safety_critical).map(chip).join('');
+        const otherChips  = _whCatalog.filter(c => !c.safety_critical).map(chip).join('');
+        html += `<details style="margin-top:6px;"><summary style="cursor:pointer;font-size:12px;color:var(--ink);font-weight:600;">Known keys (click to insert into the focused section)</summary>
+          <div style="margin-top:8px;font-size:11px;color:var(--muted);">Safety / LOTO keys:</div>
+          <div style="margin:4px 0;">${safetyChips}</div>
+          <div style="font-size:11px;color:var(--muted);">Standard keys:</div>
+          <div style="margin:4px 0;">${otherChips}</div>
+        </details>`;
+      }
+      html += `<div style="display:flex;gap:8px;margin-top:14px;">
+        <button class="btn btn-primary" onclick="whSaveChecklist()">Save override</button>
+        <button class="btn btn-ghost"   onclick="whClearChecklist()">Clear override (use default)</button>
+      </div>`;
+      editor.innerHTML = html;
+    } catch (e) {
+      editor.innerHTML = `<div class="empty">Could not load: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  // Insert a catalog key into the last-focused section textarea (dedup'd).
+  function _whInsertKey(key) {
+    const sec = _whActiveSec || 'sort';
+    const ta = document.querySelector(`[data-wh-sec="${sec}"]`);
+    if (!ta) return;
+    const lines = (ta.value || '').split('\n').map(s => s.trim()).filter(Boolean);
+    if (lines.includes(key)) { toast(`'${key}' already in ${sec}.`, 'info'); return; }
+    lines.push(key);
+    ta.value = lines.join('\n');
+    ta.focus();
+  }
+
+  function _whCollectEditorItems() {
+    const out = {};
+    document.querySelectorAll('[data-wh-sec]').forEach(ta => {
+      const sec = ta.getAttribute('data-wh-sec');
+      out[sec] = (ta.value || '').split('\n')
+        .map(s => s.trim().replace(/\s+/g, '_').toLowerCase())
+        .filter(Boolean);
+    });
+    return out;
+  }
+
+  async function whSaveChecklist() {
+    const assetId = document.getElementById('wh-cl-asset').value;
+    const phase   = document.getElementById('wh-cl-phase').value;
+    const body    = { items_by_section: _whCollectEditorItems() };
+    try {
+      await api('POST', `/api/admin/fs/assets/${assetId}/checklist/${phase}`, body);
+      toast('Checklist saved.', 'success');
+      whLoadChecklist();
+    } catch (e) {
+      toast('Save failed: ' + e.message, 'error');
+    }
+  }
+
+  async function whClearChecklist() {
+    const assetId = document.getElementById('wh-cl-asset').value;
+    const phase   = document.getElementById('wh-cl-phase').value;
+    if (!confirm('Clear the override and revert to the default checklist for this asset/phase?')) return;
+    try {
+      await api('POST', `/api/admin/fs/assets/${assetId}/checklist/${phase}`,
+                { items_by_section: {} });
+      toast('Override cleared. Using default.', 'success');
+      whLoadChecklist();
+    } catch (e) {
+      toast('Clear failed: ' + e.message, 'error');
+    }
+  }
+
+  // ── Sub-tab: month-end checksheet archive ───────────────────────
+  async function whLoadAssetsForChecksheet() {
+    const sel = document.getElementById('wh-ck-asset');
+    sel.innerHTML = '<option value="">Pick…</option>';
+    const assets = await _whLoadAssetsCache();
+    assets.forEach(a => {
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = `${a.asset_code} — ${a.label}`;
+      sel.appendChild(opt);
+    });
+  }
+
+  async function whLoadChecksheets() {
+    const tbody = document.getElementById('wh-ck-list');
+    try {
+      const rows = await api('GET', '/api/admin/warehouse/checksheets');
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty">No checksheets uploaded yet.</td></tr>';
+        return;
+      }
+      const assets = await _whLoadAssetsCache();
+      const assetById = Object.fromEntries(assets.map(a => [a.id, a]));
+      tbody.innerHTML = rows.map(r => {
+        const a = assetById[r.asset_id] || {};
+        const kb = Math.round((r.size_bytes || 0) / 1024);
+        return `<tr>
+          <td><strong>${escHtml(r.period_yyyymm)}</strong></td>
+          <td>${escHtml(a.asset_code || ('asset#' + r.asset_id))} <span class="muted" style="font-size:11px;">${escHtml(a.label || '')}</span></td>
+          <td><span style="font-family:monospace;font-size:11px;">${escHtml(r.filename)}</span></td>
+          <td>${kb} KB</td>
+          <td><span class="muted" style="font-size:11px;">${escHtml(r.uploaded_at || '')}</span></td>
+          <td><a class="btn btn-ghost btn-sm" href="/api/admin/warehouse/checksheets/${r.id}/download" target="_blank">Download</a></td>
+        </tr>`;
+      }).join('');
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="6" class="empty">Could not load: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  async function whUploadChecksheet() {
+    const assetId   = document.getElementById('wh-ck-asset').value;
+    const period    = document.getElementById('wh-ck-period').value;
+    const notes     = document.getElementById('wh-ck-notes').value.trim();
+    const fileInput = document.getElementById('wh-ck-file');
+    const file      = fileInput.files && fileInput.files[0];
+    if (!assetId || !period || !file) {
+      toast('Asset, period, and file are required.', 'warning');
+      return;
+    }
+    const fd = new FormData();
+    fd.append('asset_id', assetId);
+    fd.append('period_yyyymm', period);
+    fd.append('notes', notes);
+    fd.append('file', file);
+    try {
+      // FormData → don't set Content-Type; browser/fetch chooses the boundary.
+      const r = await fetch('/api/admin/warehouse/checksheets', {
+        method: 'POST', credentials: 'include', body: fd,
+        headers: { 'Origin': window.location.origin,
+                   ...(adminToken ? { 'Authorization': `Bearer ${adminToken}` } : {}) },
+      });
+      if (!r.ok) {
+        let det = r.statusText;
+        try { det = (await r.json()).detail || det; } catch (_) {}
+        throw new Error(det);
+      }
+      toast('Uploaded.', 'success');
+      // Clear form
+      fileInput.value = '';
+      document.getElementById('wh-ck-notes').value = '';
+      whLoadChecksheets();
+    } catch (e) {
+      toast('Upload failed: ' + e.message, 'error');
+    }
+  }
+
+  // ── Sub-tab: Receiving queue (Pass C) ────────────────────────────
+  let _whRxContext = null;  // {po, line} of the row being received
+
+  function _whAssetOptions(filter) {
+    // Returns asset rows usable as a storage destination (any vehicle,
+    // toolkit, or storage bin). filter is an optional predicate.
+    const assets = _whAssetsCache || [];
+    return assets.filter(a => filter ? filter(a) : true);
+  }
+
+  async function whLoadReceiving() {
+    const host = document.getElementById('wh-receiving-list');
+    try {
+      const pos = await api('GET', '/api/admin/warehouse/receiving/queue');
+      if (!pos.length) {
+        host.innerHTML = '<div class="empty" style="padding:14px;">No open POs awaiting delivery.</div>';
+        return;
+      }
+      host.innerHTML = pos.map(po => `
+        <div style="border:1px solid var(--border);border-radius:8px;margin-bottom:14px;background:var(--surface-2);">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;padding:12px 14px;border-bottom:1px solid var(--border);background:var(--card);border-radius:8px 8px 0 0;">
+            <div>
+              <strong style="color:var(--ink);">${escHtml(po.po_number)}</strong>
+              <span style="margin-left:8px;font-size:12px;color:var(--muted);">${escHtml(po.supplier)}</span>
+            </div>
+            <div style="font-size:11px;color:var(--muted);">
+              <span class="badge" style="background:${po.status === 'sent' ? 'var(--steel-bg)' : 'var(--teal-bg)'};color:${po.status === 'sent' ? 'var(--steel)' : 'var(--teal-deep)'};text-transform:uppercase;">${escHtml(po.status)}</span>
+              <span style="margin-left:8px;">${po.pending_count} pending</span>
+            </div>
+          </div>
+          <table style="width:100%;font-size:13px;">
+            <thead>
+              <tr style="text-align:left;color:var(--muted);background:var(--surface-2);">
+                <th style="padding:6px 12px;">SKU</th>
+                <th style="padding:6px 12px;">Part</th>
+                <th style="padding:6px 12px;text-align:right;">Ordered</th>
+                <th style="padding:6px 12px;text-align:right;">Received</th>
+                <th style="padding:6px 12px;text-align:right;">Remaining</th>
+                <th style="padding:6px 12px;text-align:right;">Unit cost</th>
+                <th style="padding:6px 12px;"></th>
+              </tr>
+            </thead>
+            <tbody>
+              ${po.lines.map(l => {
+                const fully = (l.remaining <= 0.0001);
+                return `<tr style="border-top:1px solid var(--border);${fully ? 'opacity:0.55;' : ''}">
+                  <td style="padding:6px 12px;font-family:monospace;font-size:11px;">${escHtml(l.sku)}</td>
+                  <td style="padding:6px 12px;">${escHtml(l.part_name)}</td>
+                  <td style="padding:6px 12px;text-align:right;">${l.quantity} ${escHtml(l.unit || '')}</td>
+                  <td style="padding:6px 12px;text-align:right;">${l.received_qty}</td>
+                  <td style="padding:6px 12px;text-align:right;font-weight:600;">${fully ? '<span style="color:var(--teal-dark);">complete</span>' : l.remaining}</td>
+                  <td style="padding:6px 12px;text-align:right;">J$ ${(l.expected_unit_cost || 0).toFixed(2)}</td>
+                  <td style="padding:6px 12px;text-align:right;">
+                    ${fully ? '' : `<button class="btn btn-primary btn-sm" onclick='whOpenReceive(${JSON.stringify({po_id: po.id, po_number: po.po_number, line: l}).replace(/'/g, "&apos;")})'>Receive</button>`}
+                  </td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      `).join('');
+    } catch (e) {
+      host.innerHTML = `<div class="empty">Could not load receiving queue: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  async function whOpenReceive(ctx) {
+    _whRxContext = ctx;
+    document.getElementById('wh-rx-summary').innerHTML =
+      `<strong>${escHtml(ctx.po_number)}</strong> · ${escHtml(ctx.line.sku)} ${escHtml(ctx.line.part_name)}
+       <br><span style="color:var(--muted);font-size:12px;">remaining ${ctx.line.remaining} ${escHtml(ctx.line.unit || '')}</span>`;
+    document.getElementById('wh-rx-qty').value  = ctx.line.remaining;
+    document.getElementById('wh-rx-cost').value = (ctx.line.expected_unit_cost || 0).toFixed(2);
+    document.getElementById('wh-rx-notes').value = '';
+    // Populate destination dropdown — prefer storage bins, then vans/toolkits.
+    await _whLoadAssetsCache();
+    const dst = document.getElementById('wh-rx-to');
+    dst.innerHTML = '<option value="">(no location — legacy receipt)</option>';
+    _whAssetOptions().forEach(a => {
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = `${a.asset_code} — ${a.label} (${a.asset_type})`;
+      if (a.asset_type === 'storage') opt.selected = true;  // default to a bin
+      dst.appendChild(opt);
+    });
+    document.getElementById('err-whReceive').style.display = 'none';
+    document.getElementById('modal-whReceive').classList.add('open');
+  }
+
+  async function whSubmitReceive() {
+    const ctx = _whRxContext;
+    if (!ctx) return;
+    const qty   = parseFloat(document.getElementById('wh-rx-qty').value) || 0;
+    const cost  = parseFloat(document.getElementById('wh-rx-cost').value) || 0;
+    const notes = document.getElementById('wh-rx-notes').value.trim();
+    const toLoc = document.getElementById('wh-rx-to').value || null;
+    const errEl = document.getElementById('err-whReceive');
+    errEl.style.display = 'none';
+    if (qty <= 0) {
+      errEl.textContent = 'Quantity must be positive.';
+      errEl.style.display = 'block';
+      return;
+    }
+    if (qty > ctx.line.remaining + 0.0001) {
+      errEl.textContent = `Over-receipt — only ${ctx.line.remaining} remaining on this line.`;
+      errEl.style.display = 'block';
+      return;
+    }
+    try {
+      await api('POST', `/api/admin/purchase-orders/${ctx.po_id}/receive`, {
+        po_line_id:       ctx.line.id,
+        quantity:         qty,
+        actual_unit_cost: cost,
+        notes:            notes,
+        to_location_id:   toLoc ? parseInt(toLoc, 10) : null,
+      });
+      closeModal('whReceive');
+      toast('Received.', 'success');
+      whLoadReceiving();
+    } catch (e) {
+      errEl.textContent = e.message || 'Receive failed.';
+      errEl.style.display = 'block';
+    }
+  }
+
+  // ── Sub-tab: Stock by location ───────────────────────────────────
+  let _whTxContext = null;  // {asset_code, label, part_id, sku, part_name, on_hand, location_id}
+
+  async function whLoadStockLocations() {
+    const sel = document.getElementById('wh-stock-loc');
+    sel.innerHTML = '<option value="">All locations</option>';
+    const assets = await _whLoadAssetsCache();
+    assets.forEach(a => {
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = `${a.asset_code} — ${a.label}`;
+      sel.appendChild(opt);
+    });
+  }
+
+  async function whLoadStock() {
+    const tbody = document.getElementById('wh-stock-body');
+    const locId = document.getElementById('wh-stock-loc').value;
+    try {
+      const q = locId ? `?location_id=${encodeURIComponent(locId)}` : '';
+      const rows = await api('GET', '/api/admin/warehouse/stock-by-location' + q);
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="7" class="empty">No on-hand stock at this location.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = rows.map(r => `
+        <tr>
+          <td><strong>${escHtml(r.asset_code)}</strong>
+              <div class="muted" style="font-size:11px;">${escHtml(r.label || '')}</div></td>
+          <td><span style="font-family:monospace;font-size:11px;">${escHtml(r.sku)}</span></td>
+          <td>${escHtml(r.part_name)}</td>
+          <td class="num"><strong>${r.on_hand}</strong> ${escHtml(r.unit || '')}</td>
+          <td class="num">${r.inflow}</td>
+          <td class="num">${r.outflow}</td>
+          <td><button class="btn btn-ghost btn-sm" onclick='whOpenTransfer(${JSON.stringify(r).replace(/'/g, "&apos;")})'>Transfer</button></td>
+        </tr>`).join('');
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="7" class="empty">Could not load stock: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  async function whOpenTransfer(row) {
+    _whTxContext = row;
+    document.getElementById('wh-tx-summary').innerHTML =
+      `<strong>${escHtml(row.sku)}</strong> ${escHtml(row.part_name)}
+       <br><span style="color:var(--muted);font-size:12px;">${row.on_hand} ${escHtml(row.unit || '')} on hand at ${escHtml(row.asset_code)}</span>`;
+    document.getElementById('wh-tx-qty').value = '';
+    await _whLoadAssetsCache();
+    const to = document.getElementById('wh-tx-to');
+    to.innerHTML = '';
+    _whAssetOptions().forEach(a => {
+      if (a.id === row.location_id) return;  // can't transfer to itself
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = `${a.asset_code} — ${a.label} (${a.asset_type})`;
+      to.appendChild(opt);
+    });
+    document.getElementById('err-whTransfer').style.display = 'none';
+    document.getElementById('modal-whTransfer').classList.add('open');
+  }
+
+  async function whSubmitTransfer() {
+    const ctx = _whTxContext;
+    if (!ctx) return;
+    const qty   = parseFloat(document.getElementById('wh-tx-qty').value) || 0;
+    const toLoc = parseInt(document.getElementById('wh-tx-to').value || '0', 10);
+    const errEl = document.getElementById('err-whTransfer');
+    errEl.style.display = 'none';
+    if (qty <= 0) {
+      errEl.textContent = 'Quantity must be positive.';
+      errEl.style.display = 'block';
+      return;
+    }
+    if (qty > ctx.on_hand + 0.0001) {
+      errEl.textContent = `Only ${ctx.on_hand} on hand at ${ctx.asset_code}.`;
+      errEl.style.display = 'block';
+      return;
+    }
+    if (!toLoc) {
+      errEl.textContent = 'Pick a destination.';
+      errEl.style.display = 'block';
+      return;
+    }
+    // A transfer is two atomic movements (OUT + IN). The server's
+    // record_transfer helper handles the chain hashing.
+    try {
+      // OUT row — quantity_delta < 0, from_location set
+      const out = await api('POST', '/api/admin/warehouse/movements', {
+        part_id: ctx.part_id, quantity_delta: -qty, reason: 'transfer',
+        from_location_id: ctx.location_id,
+        reference_kind: 'transfer',
+      });
+      // IN row — quantity_delta > 0, to_location set, references the OUT id
+      await api('POST', '/api/admin/warehouse/movements', {
+        part_id: ctx.part_id, quantity_delta: qty, reason: 'transfer',
+        to_location_id: toLoc,
+        reference_kind: 'transfer',
+        reference_id: out.id,
+      });
+      closeModal('whTransfer');
+      toast('Transferred.', 'success');
+      whLoadStock();
+    } catch (e) {
+      errEl.textContent = e.message || 'Transfer failed.';
+      errEl.style.display = 'block';
+    }
+  }
+
+  // ── Sub-tab: Shipping / deliveries log (Pass D) ──────────────────
+  let _whPartsCache = null;
+  let _whRunnersCache = null;
+
+  async function _whLoadPartsCache() {
+    if (_whPartsCache) return _whPartsCache;
+    try { _whPartsCache = (await api('GET', '/api/admin/parts')) || []; }
+    catch (e) { _whPartsCache = []; }
+    return _whPartsCache;
+  }
+  async function _whLoadRunnersCache() {
+    if (_whRunnersCache) return _whRunnersCache;
+    try {
+      // Anyone in the warehouse department can run a delivery, but
+      // parts_runner is the canonical role. We surface both so the
+      // operator can dispatch a floor staffer in a pinch.
+      const all = await api('GET', '/api/admin/warehouse/staff');
+      _whRunnersCache = (all || []).filter(s =>
+        ['parts_runner', 'warehouse_floor', 'warehouse_manager'].includes(s.staff_type));
+    } catch (e) { _whRunnersCache = []; }
+    return _whRunnersCache;
+  }
+
+  async function whLoadShipping() {
+    const tbody = document.getElementById('wh-ship-body');
+    const status = document.getElementById('wh-ship-status').value;
+    try {
+      // Empty status filter means "active" — fetch pending + loaded
+      // separately and combine; cleaner than asking the server to
+      // OR them inline.
+      let rows;
+      if (status) {
+        rows = await api('GET', '/api/admin/warehouse/deliveries?status=' + encodeURIComponent(status));
+      } else {
+        const [p, l] = await Promise.all([
+          api('GET', '/api/admin/warehouse/deliveries?status=pending'),
+          api('GET', '/api/admin/warehouse/deliveries?status=loaded'),
+        ]);
+        rows = [...p, ...l];
+      }
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty">No deliveries in this state.</td></tr>';
+        return;
+      }
+      const _statusBadge = (s) => {
+        const map = {
+          pending:   ['var(--teal-bg)', 'var(--teal-deep)', 'PENDING'],
+          loaded:    ['var(--steel-bg)', 'var(--steel)', 'LOADED'],
+          delivered: ['var(--teal-bg)', 'var(--teal-deep)', 'DELIVERED'],
+          cancelled: ['var(--err-bg)', 'var(--err-fg)', 'CANCELLED'],
+        };
+        const [bg, fg, lbl] = map[s] || ['var(--border)', 'var(--text)', s.toUpperCase()];
+        return `<span class="badge" style="background:${bg};color:${fg};">${lbl}</span>`;
+      };
+      tbody.innerHTML = rows.map(r => {
+        const dest = r.destination_label ||
+          (r.destination_kind + (r.destination_id ? ' #' + r.destination_id : ''));
+        let actions = '';
+        if (r.status === 'pending') {
+          actions = `<button class="btn btn-primary btn-sm" onclick="whMarkLoaded(${r.id})">Mark loaded</button>
+                     <button class="btn btn-ghost btn-sm" onclick="whCancelDelivery(${r.id})">Cancel</button>`;
+        } else if (r.status === 'loaded') {
+          actions = `<button class="btn btn-primary btn-sm" onclick="whMarkDelivered(${r.id})">Mark delivered</button>`;
+        }
+        return `<tr>
+          <td><span class="muted" style="font-size:11px;">${escHtml(PC.fmtDateTime(r.created_at))}</span></td>
+          <td><strong>${escHtml(r.source_code)}</strong></td>
+          <td><span style="font-family:monospace;font-size:11px;">${escHtml(r.sku)}</span> ${escHtml(r.part_name)}</td>
+          <td class="num">${r.quantity} ${escHtml(r.unit || '')}</td>
+          <td>${escHtml(dest)}<div class="muted" style="font-size:11px;">${escHtml(r.destination_kind)}</div></td>
+          <td>${r.runner_name ? escHtml(r.runner_name) + '<div class="muted" style="font-size:11px;">' + escHtml(r.runner_code) + '</div>' : '<span class="muted">unassigned</span>'}</td>
+          <td>${_statusBadge(r.status)}</td>
+          <td>${actions}</td>
+        </tr>`;
+      }).join('');
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="8" class="empty">Could not load shipping: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  async function whOpenNewDelivery() {
+    // Populate dropdowns from caches
+    await Promise.all([
+      _whLoadAssetsCache(), _whLoadPartsCache(), _whLoadRunnersCache(),
+    ]);
+    const fromSel   = document.getElementById('wh-nd-from');
+    const partSel   = document.getElementById('wh-nd-part');
+    const runnerSel = document.getElementById('wh-nd-runner');
+    fromSel.innerHTML = '';
+    _whAssetOptions().forEach(a => {
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = `${a.asset_code} — ${a.label}`;
+      if (a.asset_type === 'storage') opt.selected = true;
+      fromSel.appendChild(opt);
+    });
+    partSel.innerHTML = '';
+    (_whPartsCache || []).filter(p => p.active).forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = `${p.sku} — ${p.name} (on hand ${p.quantity})`;
+      partSel.appendChild(opt);
+    });
+    runnerSel.innerHTML = '<option value="">(unassigned)</option>';
+    (_whRunnersCache || []).forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s.id;
+      opt.textContent = `${s.tech_code} — ${s.name} (${s.staff_type.replace(/_/g, ' ')})`;
+      if (s.staff_type === 'parts_runner') opt.selected = true;
+      runnerSel.appendChild(opt);
+    });
+    ['wh-nd-qty', 'wh-nd-dlabel', 'wh-nd-notes'].forEach(id => {
+      document.getElementById(id).value = '';
+    });
+    document.getElementById('wh-nd-dkind').value = 'customer';
+    document.getElementById('err-whNewDelivery').style.display = 'none';
+    document.getElementById('modal-whNewDelivery').classList.add('open');
+  }
+
+  async function whSubmitNewDelivery() {
+    const body = {
+      source_location_id: parseInt(document.getElementById('wh-nd-from').value, 10),
+      part_id:            parseInt(document.getElementById('wh-nd-part').value, 10),
+      quantity:           parseFloat(document.getElementById('wh-nd-qty').value) || 0,
+      destination_kind:   document.getElementById('wh-nd-dkind').value,
+      destination_label:  document.getElementById('wh-nd-dlabel').value.trim(),
+      notes:              document.getElementById('wh-nd-notes').value.trim(),
+    };
+    const runnerVal = document.getElementById('wh-nd-runner').value;
+    if (runnerVal) body.runner_staff_id = parseInt(runnerVal, 10);
+    const errEl = document.getElementById('err-whNewDelivery');
+    errEl.style.display = 'none';
+    if (!body.source_location_id || !body.part_id || body.quantity <= 0) {
+      errEl.textContent = 'Source, part, and a positive quantity are required.';
+      errEl.style.display = 'block';
+      return;
+    }
+    try {
+      await api('POST', '/api/admin/warehouse/deliveries', body);
+      closeModal('whNewDelivery');
+      toast('Delivery scheduled.', 'success');
+      whLoadShipping();
+    } catch (e) {
+      errEl.textContent = e.message || 'Schedule failed.';
+      errEl.style.display = 'block';
+    }
+  }
+
+  async function whMarkLoaded(id) {
+    if (!confirm('Confirm parts physically loaded? An outbound movement will be posted (qty leaves source location).')) return;
+    try {
+      await api('POST', `/api/admin/warehouse/deliveries/${id}/mark-loaded`);
+      toast('Marked loaded.', 'success');
+      whLoadShipping();
+    } catch (e) {
+      toast('Failed: ' + e.message, 'error');
+    }
+  }
+  async function whMarkDelivered(id) {
+    if (!confirm('Confirm delivery completed at destination?')) return;
+    try {
+      await api('POST', `/api/admin/warehouse/deliveries/${id}/mark-delivered`);
+      toast('Marked delivered.', 'success');
+      whLoadShipping();
+    } catch (e) {
+      toast('Failed: ' + e.message, 'error');
+    }
+  }
+  async function whCancelDelivery(id) {
+    const reason = prompt('Reason for cancellation (optional):') || '';
+    try {
+      await api('POST', `/api/admin/warehouse/deliveries/${id}/cancel`, { reason });
+      toast('Cancelled.', 'success');
+      whLoadShipping();
+    } catch (e) {
+      toast('Failed: ' + e.message, 'error');
+    }
+  }
+
+  async function loadTdfPayroll() {
+    if (!tdfState.tech) return;
+    const el = document.getElementById('tdf-payroll-body');
+    try {
+      const p = await api('GET', `/api/admin/technicians/${tdfState.tech.id}/payroll-summary?limit=6`);
+      if (p.available === false) {
+        el.innerHTML = '<em>Payroll module not yet active.</em>';
+        return;
+      }
+      if (!p.rows || !p.rows.length) {
+        el.innerHTML = '<em>No payslips generated for this technician yet.</em>';
+        return;
+      }
+      // Sensitive-value gating: payslip amounts only render if the viewer can
+      // read payslips for this technician. Otherwise the labels still appear
+      // but the monetary cells are masked with "—".
+      const _payVis = (typeof PC !== 'undefined' && PC.canRead && PC.canRead('payslip', null));
+      const _labelLink = function (r) {
+        const label = escHtml(r.label || '');
+        if (r.payslip_id && typeof PC !== 'undefined' && PC.gateLinkHtml) {
+          return PC.gateLinkHtml('payslip', r.payslip_id, r.label || '', {onClick: 'function(){ adminOpenPayslip(' + r.payslip_id + '); }'});
+        }
+        return label;
+      };
+      el.innerHTML = `<table style="width:100%;font-size:12px;border-collapse:collapse;">
+        <thead><tr style="text-align:left;color:var(--muted);">
+          <th style="padding:4px 6px;border-bottom:1px solid var(--border);">Period</th>
+          <th style="padding:4px 6px;border-bottom:1px solid var(--border);">Status</th>
+          <th style="padding:4px 6px;border-bottom:1px solid var(--border);">Gross</th>
+          <th style="padding:4px 6px;border-bottom:1px solid var(--border);">Bonus</th>
+          <th style="padding:4px 6px;border-bottom:1px solid var(--border);">Net</th>
+        </tr></thead>
+        <tbody>${p.rows.map(r => `<tr>
+          <td style="padding:4px 6px;border-bottom:1px solid var(--border);">${_labelLink(r)}</td>
+          <td style="padding:4px 6px;border-bottom:1px solid var(--border);">${escHtml(r.period_status || '—')}</td>
+          <td style="padding:4px 6px;border-bottom:1px solid var(--border);">${_payVis && r.gross_pay != null ? 'J$'+Math.round(r.gross_pay).toLocaleString() : '—'}</td>
+          <td style="padding:4px 6px;border-bottom:1px solid var(--border);">${_payVis && r.bonus != null ? 'J$'+Math.round(r.bonus).toLocaleString() : '—'}</td>
+          <td style="padding:4px 6px;border-bottom:1px solid var(--border);">${_payVis && r.net_pay != null ? 'J$'+Math.round(r.net_pay).toLocaleString() : '—'}</td>
+        </tr>`).join('')}</tbody></table>`;
+    } catch (e) {
+      el.innerHTML = '<em>Unable to load payroll: ' + escHtml(e.message) + '</em>';
+    }
+  }
+
+  // ── Footer actions ───────────────────────────────────────────────────────
+  function tdfResetPin() {
+    if (!tdfState.tech) return;
+    openResetPin(tdfState.tech.id, tdfState.tech.name);
+  }
+
+  function tdfOffboard() {
+    if (!tdfState.tech) return;
+    openOffboard('tech', tdfState.tech.id, tdfState.tech.name);
+  }
+
+  async function tdfResetMfa() {
+    const t = tdfState.tech; if (!t) return;
+    if (!confirm(`Reset MFA for ${t.name}? Their authenticator is removed and they'll be forced to re-enrol on next login.`)) return;
+    try {
+      await api('POST', `/api/admin/technicians/${t.id}/mfa/reset`, {});
+      toast('MFA reset — tech must re-enrol at next login.', 'success');
+    } catch (e) {
+      toast('MFA reset failed: ' + e.message, 'error');
+    }
+  }
+
+  async function tdfApproveOvertime() {
+    const t = tdfState.tech; if (!t) return;
+    const notes = prompt(`Approve overtime for ${t.name}? Optional note for the record:`, '');
+    if (notes === null) return; // cancelled
+    try {
+      await api('POST', `/api/admin/technicians/${t.id}/overtime/approve`, { notes: notes.trim() });
+      toast('Overtime approved.', 'success');
+    } catch (e) {
+      toast('Overtime approval failed: ' + e.message, 'error');
+    }
+  }
+
+  async function tdfReleaseKpiPeriod() {
+    const t = tdfState.tech; if (!t) return;
+    let periods = [];
+    try {
+      const r = await api('GET', '/api/admin/kpi/periods');
+      periods = (r.periods || r || []);
+    } catch (e) {
+      toast('Could not load KPI periods: ' + e.message, 'error');
+      return;
+    }
+    if (!periods.length) { toast('No KPI periods exist yet.', 'error'); return; }
+    const keys = periods.map(p => p.period_key);
+    const def = keys[0];
+    const pk = prompt(`Release which KPI period to ${t.name}?\nAvailable: ${keys.join(', ')}`, def);
+    if (pk === null) return;
+    const chosen = pk.trim();
+    if (!keys.includes(chosen)) { toast('Unknown period key: ' + chosen, 'error'); return; }
+    try {
+      await api('POST', `/api/admin/technicians/${t.id}/kpi-period/${encodeURIComponent(chosen)}/release`, {});
+      toast(`Scorecard for ${chosen} released to ${t.name}.`, 'success');
+    } catch (e) {
+      toast('Release failed: ' + e.message, 'error');
+    }
+  }
+
+  function _maybeOpenTechnicianFromHash() {
+    const m = (location.hash || '').match(/^#technician\/(\d+)$/);
+    if (!m) return;
+    if (!currentAdmin || currentAdmin.role !== 'super_admin') return;
+    showPanel('techs');
+    openTechnicianDetailFull(parseInt(m[1], 10));
+  }
+  window.addEventListener('hashchange', _maybeOpenTechnicianFromHash);
+
+  async function loadCustomerEquipment() {
+    if (!currentCustomer) return;
+    try {
+      const eq = await api('GET', `/api/admin/customers/${currentCustomer.id}/equipment`);
+      const tbody = document.getElementById('equipTableBody');
+      if (!eq.length) {
+        tbody.innerHTML = '<tr><td class="empty">No equipment on record.</td></tr>';
+        return;
+      }
+      const canUpd = can('customer:update');
+      tbody.innerHTML = eq.map(e => {
+        const inactive = (e.active === 0 || e.active === false);
+        return `
+        <tr${inactive ? ' style="opacity:0.55;"' : ''}>
+          <td><strong>${esc(e.name)}</strong>${inactive ? ' <span class="badge" style="background:var(--surface-2);color:var(--muted);">inactive</span>' : ''}</td>
+          <td>${esc(e.type) || '—'}</td>
+          <td>${esc(e.model) || '—'}</td>
+          <td>${esc(e.serial_number) || '—'}</td>
+          <td>${esc(e.location) || '—'}</td>
+          <td style="white-space:nowrap;">
+            ${(canUpd && !inactive) ? `<button class="btn btn-ghost btn-sm" onclick="deactivateEquipment(${e.id},'${esc(e.name)}')">Deactivate</button> ` : ''}
+            <button class="btn btn-danger btn-sm" onclick="deleteEquipment(${e.id},'${esc(e.name)}')">Remove</button>
+          </td>
+        </tr>`; }).join('');
+    } catch {}
+  }
+
+  async function loadCustomerVisits() {
+    if (!currentCustomer) return;
+    try {
+      const visits = allVisits.filter(v => v.customer_id === currentCustomer.id);
+      renderCustomerVisitTable(visits);
+    } catch {}
+  }
+
+  function renderCustomerVisitTable(visits) {
+    const tbody = document.getElementById('customerVisitTableBody');
+    if (!visits.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty">No visits on record.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = visits.map(v => `
+      <tr>
+        <td><span class="badge badge-${v.visit_type.toLowerCase()}">${v.visit_type}</span></td>
+        <td><span class="badge badge-${v.status}">${v.status.replace('_',' ')}</span></td>
+        <td>${fmtDateTime(v.scheduled_date, v.scheduled_time)}</td>
+        <td>${fmtDate(v.completed_date)}</td>
+        <td>${v.technician ? esc(v.technician) : '—'}</td>
+        <td style="white-space:nowrap;">
+          <button class="btn btn-edit btn-sm" onclick="openEditVisit(${v.id})">Edit</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteVisit(${v.id})" style="margin-left:6px;">Delete</button>
+        </td>
+      </tr>`).join('');
+  }
+
+  // Hide Company input when account type is Residential (their company
+  // column renders as "—" anyway, so showing the field is noise).
+  function _addCustomerToggleCompany() {
+    const type = document.getElementById('f-customer-type').value;
+    const wrap = document.getElementById('f-company-wrap');
+    if (wrap) wrap.style.display = (type === 'commercial') ? '' : 'none';
+  }
+
+  // Per-field inline error helper. Sets aria-invalid + red border +
+  // shows the field-error <div> beneath. Clears on next input.
+  function _setFieldErr(fieldId, msg) {
+    const inp = document.getElementById(fieldId);
+    const errEl = document.getElementById('err-' + fieldId);
+    if (!inp || !errEl) return;
+    if (msg) {
+      inp.setAttribute('aria-invalid', 'true');
+      inp.style.borderColor = 'var(--danger)';
+      inp.setAttribute('aria-describedby', 'err-' + fieldId);
+      errEl.textContent = msg;
+      errEl.style.display = '';
+      // First invalid field gets focus.
+      if (!document.querySelector('[aria-invalid="true"]:focus')) inp.focus();
+    } else {
+      inp.removeAttribute('aria-invalid');
+      inp.style.borderColor = '';
+      errEl.textContent = '';
+      errEl.style.display = 'none';
+    }
+  }
+  function _clearAddCustomerErrs() {
+    ['f-code','f-pin','f-name'].forEach(id => _setFieldErr(id, ''));
+    const banner = document.getElementById('err-addCustomer');
+    if (banner) { banner.style.display = 'none'; banner.textContent = ''; }
+  }
+  // Clear field-level error as soon as the user starts typing.
+  ['f-code','f-pin','f-name'].forEach(id => {
+    document.addEventListener('input', (e) => {
+      if (e.target && e.target.id === id) _setFieldErr(id, '');
+    });
+  });
+
+  async function submitAddCustomer() {
+    _clearAddCustomerErrs();
+    const body = {
+      customer_code: document.getElementById('f-code').value.trim(),
+      pin:           document.getElementById('f-pin').value.trim(),
+      name:          document.getElementById('f-name').value.trim(),
+      company:       document.getElementById('f-company').value.trim(),
+      phone:         document.getElementById('f-phone').value.trim(),
+      email:         document.getElementById('f-email').value.trim(),
+      address:       document.getElementById('f-address').value.trim(),
+      notes:         document.getElementById('f-notes').value.trim(),
+      customer_type: document.getElementById('f-customer-type').value,
+    };
+    // Per-field validation. Collect all errors; aria-invalid + red
+    // border on each missing/bad field so the user can fix them in
+    // one pass instead of fix-submit-error-fix-submit-error.
+    let firstBad = null;
+    if (!body.customer_code)              { _setFieldErr('f-code', 'Customer ID is required.'); firstBad = firstBad || 'f-code'; }
+    else if (!/^(RES|COM)-\d{3,}$/i.test(body.customer_code)) {
+      _setFieldErr('f-code', 'Use RES-### (residential) or COM-### (commercial).');
+      firstBad = firstBad || 'f-code';
+    }
+    if (!body.name)                       { _setFieldErr('f-name', 'Full name is required.'); firstBad = firstBad || 'f-name'; }
+    if (!body.pin)                        { _setFieldErr('f-pin', 'Initial PIN is required.'); firstBad = firstBad || 'f-pin'; }
+    else if (!/^\d{6,16}$/.test(body.pin)) { _setFieldErr('f-pin', 'PIN must be 6–16 digits.');   firstBad = firstBad || 'f-pin'; }
+    if (firstBad) {
+      // Move focus to first invalid field so keyboard users land there.
+      document.getElementById(firstBad)?.focus();
+      return;
+    }
+    // Residential customers don't need a company name; ensure we
+    // don't accidentally send the placeholder text the user typed.
+    if (body.customer_type !== 'commercial') body.company = '';
+    try {
+      await api('POST', '/api/admin/customers', body);
+      closeModal('addCustomer');
+      clearForm(['f-code','f-pin','f-name','f-company','f-phone','f-email','f-address','f-notes']);
+      await loadCustomers();
+    } catch(e) {
+      // Map common server-side errors back to field-level when we can.
+      const m = (e.message || '').toLowerCase();
+      if (m.includes('customer_code')) _setFieldErr('f-code', e.message);
+      else if (m.includes('pin'))      _setFieldErr('f-pin',  e.message);
+      else                              showErr('err-addCustomer', e.message);
+    }
+  }
+
+  function openResetCustomerPin(id, name) {
+    resetPinCustomerId = id;
+    document.getElementById('resetCustPinName').textContent = name;
+    document.getElementById('rcp-pin').value = '';
+    document.getElementById('err-resetCustomerPin').style.display = 'none';
+    document.getElementById('modal-resetCustomerPin').classList.add('open');
+  }
+
+  async function submitResetCustomerPin() {
+    const pin = document.getElementById('rcp-pin').value.trim();
+    if (!/^\d{6,16}$/.test(pin)) { showErr('err-resetCustomerPin','PIN must be 6–16 digits.'); return; }
+    try {
+      await api('PUT', `/api/admin/customers/${resetPinCustomerId}/pin`, { pin });
+      closeModal('resetCustomerPin');
+      alert('PIN saved. Share the new PIN with the customer privately.');
+      await loadCustomers();
+    } catch(e) { showErr('err-resetCustomerPin', e.message); }
+  }
+
+  async function deleteCustomer(id, name) {
+    if (!confirm(`Delete customer "${name}" and all their data? This cannot be undone.`)) return;
+    try {
+      await api('DELETE', `/api/admin/customers/${id}`);
+      await loadCustomers();
+      await loadAllVisits();
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  // ── Equipment ──────────────────────────────────────────────────────────────
+  async function submitAddEquipment() {
+    const err = document.getElementById('err-addEquipment');
+    err.style.display = 'none';
+    if (!currentCustomer) return;
+    const body = {
+      customer_id:   currentCustomer.id,
+      name:          document.getElementById('eq-name').value.trim(),
+      type:          document.getElementById('eq-type').value.trim(),
+      model:         document.getElementById('eq-model').value.trim(),
+      serial_number: document.getElementById('eq-serial').value.trim(),
+      location:      document.getElementById('eq-location').value.trim(),
+      notes:         document.getElementById('eq-notes').value.trim(),
+    };
+    // CMMS Phase 6 nameplate / spec — only include populated optional fields.
+    const _np = {
+      manufacturer:      document.getElementById('eq-manufacturer').value.trim(),
+      specification:     document.getElementById('eq-specification').value.trim(),
+      refrigerant_type:  document.getElementById('eq-refrigerant').value.trim(),
+      voltage:           document.getElementById('eq-voltage').value.trim(),
+      phase:             document.getElementById('eq-phase').value.trim(),
+      commissioned_date: document.getElementById('eq-commissioned').value.trim(),
+    };
+    Object.keys(_np).forEach(k => { if (_np[k]) body[k] = _np[k]; });
+    const _cap = document.getElementById('eq-capacity').value.trim();
+    if (_cap) body.capacity_btu = parseInt(_cap, 10);
+    if (!body.name) { showErr('err-addEquipment','Equipment name is required.'); return; }
+    try {
+      await api('POST', '/api/admin/equipment', body);
+      closeModal('addEquipment');
+      clearForm(['eq-name','eq-type','eq-model','eq-serial','eq-location','eq-notes',
+                 'eq-manufacturer','eq-specification','eq-capacity','eq-refrigerant',
+                 'eq-voltage','eq-phase','eq-commissioned']);
+      loadCustomerEquipment();
+    } catch(e) { showErr('err-addEquipment', e.message); }
+  }
+
+  async function deleteEquipment(id, name) {
+    if (!confirm(`Remove equipment "${name}"?`)) return;
+    try {
+      await api('DELETE', `/api/admin/equipment/${id}`);
+      loadCustomerEquipment();
+      await loadAllVisits();
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  // Soft-delete: hides the unit from everyday pick-lists while preserving
+  // the visit_id → equipment_id history (vs. the hard "Remove" above).
+  async function deactivateEquipment(id, name) {
+    if (!confirm(`Deactivate equipment "${name}"?\n\nIt will be hidden from new-visit pick-lists but its visit history is kept. This is reversible by re-activating the unit.`)) return;
+    try {
+      await api('POST', `/api/admin/equipment/${id}/deactivate`);
+      toast('Equipment deactivated.', 'success');
+      loadCustomerEquipment();
+    } catch(e) { toast('Deactivate failed: ' + e.message, 'error'); }
+  }
+
+  // ── Visits ─────────────────────────────────────────────────────────────────
+  let _vlToolbarInit = false;
+  async function loadAllVisits() {
+    try {
+      allVisits = await api('GET', '/api/admin/visits');
+      // One-time toolbar bootstrap: user-status vocabulary + saved views.
+      if (!_vlToolbarInit) {
+        _vlToolbarInit = true;
+        await vlLoadUserStatusVocab();
+        await vlLoadSavedViews();
+      }
+      renderVisitTable();
+      if (currentCustomer) loadCustomerVisits();
+      if (can && can('schedule:view')) loadSchedule();
+    } catch {}
+    loadCmMargin();
+  }
+
+  // ── CM gross-margin rollup (doctrine organ) ────────────────────────────
+  async function loadCmMargin() {
+    const wrap = document.getElementById('cm-margin-wrap');
+    const body = document.getElementById('cm-margin-body');
+    const headline = document.getElementById('cm-margin-headline');
+    if (!body) return;
+    try {
+      const r = await api('GET', '/api/admin/visits/cm-margin');
+      const a = r.aggregate || {};
+      const fmt = (n) => 'J$' + Number(n||0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+      // Headline: shown on the collapsed summary line so the signal is
+      // visible without expanding.
+      const mp = a.margin_pct;
+      const mpStr = (mp === null || mp === undefined) ? 'n/a' : (mp + '%');
+      const tone = (mp == null) ? 'var(--muted)'
+                 : mp >= 25 ? 'var(--teal-deep)'    // doctrine target met
+                 : mp >= 15 ? 'var(--teal-deep)'    // below target
+                 : 'var(--err-fg)';              // bleeding
+      headline.innerHTML = `· ${a.visit_count} CM visits · revenue ${fmt(a.revenue)} · margin <strong style="color:${tone};">${mpStr}</strong>`;
+
+      const rows = (r.visits || []).slice(0, 25);
+      const tableRows = rows.map(v => {
+        const mt = v.margin_pct;
+        const mc = mt == null ? 'var(--muted)' : mt >= 25 ? 'var(--teal-deep)' : mt >= 15 ? 'var(--teal-deep)' : 'var(--err-fg)';
+        return `<tr style="border-top:1px solid var(--border);">
+          <td style="padding:6px 4px;">${escHtml(v.completed_date||v.scheduled_date||'')}</td>
+          <td style="padding:6px 4px;">${escHtml(v.customer_name)} <span style="color:var(--muted);font-size:11px;">${escHtml(v.customer_code)}</span></td>
+          <td style="padding:6px 4px;text-align:right;">${fmt(v.revenue)}</td>
+          <td style="padding:6px 4px;text-align:right;color:var(--err-fg);">${fmt(v.parts_cost)}</td>
+          <td style="padding:6px 4px;text-align:right;color:var(--err-fg);">${fmt(v.labor_cost)}</td>
+          <td style="padding:6px 4px;text-align:right;font-weight:600;">${fmt(v.margin)}</td>
+          <td style="padding:6px 4px;text-align:right;color:${mc};font-weight:600;">${mt==null?'—':mt+'%'}</td>
+          <td style="padding:6px 4px;font-size:11px;">${v.billed ? escHtml(v.invoice_number) : '<span style="color:var(--err-fg);">unbilled</span>'}</td>
+        </tr>`;
+      }).join('');
+      body.innerHTML = `
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:12px;">
+          <div style="background:var(--light);padding:8px;border-radius:6px;">
+            <div style="font-size:11px;color:var(--muted);">Revenue (net of GCT)</div>
+            <div style="font-weight:700;color:var(--ink);">${fmt(a.revenue)}</div>
+          </div>
+          <div style="background:var(--light);padding:8px;border-radius:6px;">
+            <div style="font-size:11px;color:var(--muted);">Parts cost</div>
+            <div style="font-weight:700;color:var(--err-fg);">${fmt(a.parts_cost)}</div>
+          </div>
+          <div style="background:var(--light);padding:8px;border-radius:6px;">
+            <div style="font-size:11px;color:var(--muted);">Labor cost</div>
+            <div style="font-weight:700;color:var(--err-fg);">${fmt(a.labor_cost)}</div>
+          </div>
+          <div style="background:var(--light);padding:8px;border-radius:6px;">
+            <div style="font-size:11px;color:var(--muted);">Gross margin</div>
+            <div style="font-weight:700;color:${tone};">${fmt(a.margin)} <span style="font-size:12px;">(${mpStr})</span></div>
+          </div>
+          ${a.unbilled_count ? `<div style="background:var(--teal-bg);padding:8px;border-radius:6px;">
+            <div style="font-size:11px;color:var(--teal-deep);">⚠ Completed but unbilled</div>
+            <div style="font-weight:700;color:var(--teal-deep);">${a.unbilled_count} visit${a.unbilled_count===1?'':'s'}</div>
+          </div>` : ''}
+        </div>
+        ${rows.length ? `
+          <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.6px;color:var(--muted);font-weight:700;">Recent visits (top 25)</div>
+          <table style="width:100%;font-size:12px;margin-top:6px;">
+            <thead><tr style="text-align:left;color:var(--muted);">
+              <th style="padding:4px;">Date</th><th style="padding:4px;">Customer</th>
+              <th style="padding:4px;text-align:right;">Revenue</th>
+              <th style="padding:4px;text-align:right;">Parts</th>
+              <th style="padding:4px;text-align:right;">Labor</th>
+              <th style="padding:4px;text-align:right;">Margin</th>
+              <th style="padding:4px;text-align:right;">Margin %</th>
+              <th style="padding:4px;">Invoice</th>
+            </tr></thead>
+            <tbody>${tableRows}</tbody>
+          </table>` : '<div style="color:var(--muted);font-size:13px;">No completed CM visits in window.</div>'}
+        <p style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.4;">
+          Revenue is invoice subtotal (excluding GCT). Margin target per doctrine: 25–35%.
+          Visits with start/end timestamps + assigned tech contribute labor cost; missing data → labor_cost = 0.
+        </p>`;
+    } catch (e) {
+      body.innerHTML = `<div style="color:var(--muted);font-size:13px;">CM margin unavailable: ${escHtml(e.message)}</div>`;
+      if (headline) headline.textContent = '';
+    }
+  }
+
+  // Apply the IW38-style toolbar filters to allVisits.
+  function vlFilteredVisits() {
+    let rows = allVisits || [];
+    if (vlType === 'PM' || vlType === 'CM') rows = rows.filter(v => v.visit_type === vlType);
+    if (vlStatuses.size) {
+      rows = rows.filter(v => {
+        const hit = vlStatuses.has(v.status);
+        return vlStatusMode === 'exclude' ? !hit : hit;
+      });
+    }
+    const us = document.getElementById('vlUserStatusFilter');
+    const usVal = us ? us.value : '';
+    if (usVal === '__none__')      rows = rows.filter(v => !v.user_status);
+    else if (usVal)                rows = rows.filter(v => v.user_status === usVal);
+    return rows;
+  }
+
+  function vlColVisible(key) {
+    const c = VL_COLUMNS.find(x => x.key === key);
+    if (c && c.always) return true;
+    return vlVisibleCols.includes(key);
+  }
+
+  function vlRenderHead() {
+    const tr = document.getElementById('visitTableHead');
+    if (!tr) return;
+    tr.innerHTML = VL_COLUMNS.filter(c => vlColVisible(c.key))
+      .map(c => `<th>${escHtml(c.label)}</th>`).join('');
+  }
+
+  // _keepCap: when true, preserve the current vlRowCap (used by the
+  // Show more / Show all pager). Any other caller (filter/view/column change,
+  // data reload) leaves it falsy so the cap resets to the default — a fresh
+  // filter should never inherit a huge prior cap.
+  // Priority pill colours mirror the SAP-style WO priority ramp.
+  function _vlPriorityHtml(prio) {
+    const p = (prio || 'normal');
+    if (p === 'normal') return '<span style="color:var(--muted);">normal</span>';
+    const styles = {
+      low:    'background:#eef2f7;color:#5b6b7d;border:1px solid #d4dde6;',
+      high:   'background:#fff4e5;color:#a85b00;border:1px solid #ffd9a8;',
+      urgent: 'background:#fdecec;color:#b42318;border:1px solid #f6c2bd;',
+    };
+    return `<span style="display:inline-block;padding:1px 7px;border-radius:10px;font-size:11px;font-weight:600;${styles[p] || ''}">${escHtml(p)}</span>`;
+  }
+  // SLA badge keyed off the server-computed sla_status
+  // (none/met/breached/due_soon/on_track).
+  function _vlSlaHtml(st) {
+    if (!st || st === 'none') return '';
+    const map = {
+      breached: ['SLA breached', 'background:#fdecec;color:#b42318;border:1px solid #f6c2bd;'],
+      due_soon: ['Due soon',     'background:#fff4e5;color:#a85b00;border:1px solid #ffd9a8;'],
+      on_track: ['On track',     'background:#eaf7ef;color:#1a7f43;border:1px solid #bfe6cd;'],
+      met:      ['SLA met',      'background:#eaf7ef;color:#1a7f43;border:1px solid #bfe6cd;'],
+    };
+    const m = map[st];
+    if (!m) return '';
+    return `<span style="display:inline-block;margin-top:3px;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:600;${m[1]}">${m[0]}</span>`;
+  }
+
+  function renderVisitTable(_keepCap) {
+    const tbody = document.getElementById('visitTableBody');
+    if (!tbody) return;
+    if (!_keepCap) vlRowCap = VL_DEFAULT_CAP;
+    vlRenderHead();
+    const visibleCount = VL_COLUMNS.filter(c => vlColVisible(c.key)).length;
+    const rows = vlFilteredVisits();
+    const pager = document.getElementById('vlPager');
+    if (!rows.length) {
+      tbody.innerHTML = `<tr><td colspan="${visibleCount}" class="empty">No visits match this filter.</td></tr>`;
+      if (pager) pager.style.display = 'none';
+      return;
+    }
+    // Cap the rendered rows. Rendering thousands of rows eagerly balloons the
+    // DOM to ~90k nodes and makes every keystroke anywhere in the app trigger a
+    // full accessibility-tree rebuild (tab hangs / "Page Unresponsive").
+    const total = rows.length;
+    const shown = Math.min(vlRowCap, total);
+    const pageRows = rows.slice(0, shown);
+    const isSuper = (currentAdmin && currentAdmin.role === 'super_admin');
+    const _gate = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    const canSetUserStatus = can('visit:update');
+    tbody.innerHTML = pageRows.map(v => {
+      const tech = allTechs.find(t => t.id === v.assigned_tech_id);
+      const techLinked = tech
+        ? (_gate
+            ? PC.gateLinkHtml('technician', tech.id, tech.name, {}) + '<br><span class="code-pill">' + tech.tech_code + '</span>'
+            : `<strong>${escHtml(tech.name)}</strong><br><span class="code-pill">${tech.tech_code}</span>`)
+        : '<span style="color:var(--muted);">Unassigned</span>';
+      const custLinked = _gate
+        ? PC.gateLinkHtml('customer', v.customer_id, v.customer_name, {}) + '<br><span class="code-pill">' + escHtml(v.customer_code) + '</span>'
+        : `<strong>${escHtml(v.customer_name)}</strong><br><span class="code-pill">${v.customer_code}</span>`;
+      const equipLinked = (v.equipment_id && _gate)
+        ? PC.gateLinkHtml('equipment', v.equipment_id, v.equipment_name || '—', {onClick: 'function(){ pcOpenEquipment(' + v.customer_id + ',' + v.equipment_id + '); }'})
+        : (v.equipment_name || '—');
+      // User-status cell: inline editor for those who can update, read-only chip otherwise.
+      let userStatusCell;
+      if (canSetUserStatus) {
+        const opts = ['<option value="">— none —</option>']
+          .concat(vlUserStatusVocab.map(s =>
+            `<option value="${escHtml(s)}" ${v.user_status === s ? 'selected' : ''}>${escHtml(s)}</option>`));
+        userStatusCell = `<select class="ustat-edit" onclick="event.stopPropagation();" onchange="event.stopPropagation();setVisitUserStatus(${v.id}, this.value)">${opts.join('')}</select>`;
+      } else {
+        userStatusCell = v.user_status
+          ? `<span class="ustat-chip">${escHtml(v.user_status)}</span>`
+          : '<span class="ustat-none">—</span>';
+      }
+      const cells = {
+        customer:   `<td>${custLinked}</td>`,
+        type:       `<td><span class="badge badge-${v.visit_type.toLowerCase()}">${v.visit_type}</span></td>`,
+        status:     `<td><span class="badge badge-${v.status}">${v.status.replace('_',' ')}</span></td>`,
+        priosla:    `<td>${_vlPriorityHtml(v.priority)}${(() => { const s = _vlSlaHtml(v.sla_status); return s ? '<br>' + s : ''; })()}</td>`,
+        userstatus: `<td>${userStatusCell}</td>`,
+        scheduled:  `<td>${fmtDateTime(v.scheduled_date, v.scheduled_time)}</td>`,
+        completed:  `<td>${fmtDate(v.completed_date)}</td>`,
+        tech:       `<td>${techLinked}</td>`,
+        equipment:  `<td>${equipLinked}</td>`,
+        actions:    `<td style="white-space:nowrap;" onclick="event.stopPropagation();">
+          ${isSuper ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();routeVisitDetail(${v.id})" aria-label="View visit detail">View →</button>` : ''}
+          <button class="btn btn-edit btn-sm" onclick="event.stopPropagation();openEditVisit(${v.id})" style="margin-left:6px;">Edit</button>
+          ${v.status === 'completed' && can('visit:flag') ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();toggleVisitFlag(${v.id}, ${v.flagged_for_review ? 'false' : 'true'})" style="margin-left:6px;${v.flagged_for_review ? 'background:var(--teal-bg);color:var(--teal-deep);border-color:var(--teal);' : ''}">${v.flagged_for_review ? '🚩 Flagged' : 'Flag for review'}</button>` : ''}
+          ${(v.status === 'completed' || v.submitted_at) && can('visit:update') ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openReverseConfirmation(${v.id})" title="Reverse this confirmation (SAP IW45-style — re-opens the visit, keeps history)" style="margin-left:6px;">↩ Reverse</button>` : ''}
+          ${v.status === 'completed' && can('invoice:create') ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();generateInvoiceFromVisit(${v.id})" style="margin-left:6px;background:var(--teal-solid);">+ Invoice</button>` : ''}
+          <button class="btn btn-danger btn-sm pc-stop-prop" onclick="event.stopPropagation();deleteVisit(${v.id})" style="margin-left:6px;">Delete</button>
+        </td>`,
+      };
+      const tds = VL_COLUMNS.filter(c => vlColVisible(c.key)).map(c => cells[c.key]).join('');
+      return `<tr data-pc-row-visit="${v.id}">${tds}</tr>`;
+    }).join('');
+    if (typeof PC !== 'undefined' && PC.gateRow) {
+      tbody.querySelectorAll('tr[data-pc-row-visit]').forEach(function (tr) {
+        const vid = Number(tr.getAttribute('data-pc-row-visit'));
+        PC.gateRow(tr, 'visit', vid, {
+          onClick: function () { routeVisitDetail(vid); },
+          ariaLabel: 'View visit #' + vid,
+        });
+      });
+    }
+    // Pager: "Showing N of TOTAL" + Show more / Show all. Hidden when everything
+    // already fits under the cap.
+    if (pager) {
+      if (shown >= total) {
+        pager.style.display = 'none';
+        pager.innerHTML = '';
+      } else {
+        pager.style.display = 'flex';
+        pager.innerHTML =
+          `<span>Showing <strong>${shown.toLocaleString()}</strong> of <strong>${total.toLocaleString()}</strong> visits</span>`
+          + `<button type="button" class="btn btn-ghost btn-sm" onclick="vlShowMore()">Show ${Math.min(VL_DEFAULT_CAP, total - shown)} more</button>`
+          + `<button type="button" class="btn btn-ghost btn-sm" onclick="vlShowAll()">Show all ${total.toLocaleString()}</button>`;
+      }
+    }
+  }
+
+  // Pager handlers. Both pass _keepCap=true so the cap we set here survives the
+  // re-render (renderVisitTable resets the cap only on a fresh filter/view).
+  function vlShowMore() {
+    vlRowCap += VL_DEFAULT_CAP;
+    renderVisitTable(true);
+  }
+  function vlShowAll() {
+    vlRowCap = Infinity;
+    renderVisitTable(true);
+  }
+
+  async function toggleVisitFlag(visitId, flagged) {
+    let note = '';
+    if (flagged) {
+      note = prompt('Reason for flagging (visible to manager and admin only):', '');
+      if (note === null) return;
+    } else {
+      if (!confirm('Remove the flag from this visit?')) return;
+    }
+    try {
+      await api('PUT', `/api/admin/visits/${visitId}/flag`, { flagged, note });
+      toast(flagged ? 'Visit flagged for review' : 'Flag removed', 'success');
+      loadAllVisits();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function generateInvoiceFromVisit(visitId) {
+    try {
+      const prefill = await api('GET', `/api/admin/visits/${visitId}/invoice-prefill`);
+      await openInvoiceModal(null, prefill);
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  // ── Visit-list toolbar handlers (SAP IW38 Variant/Layout/status) ─────────
+  function vlSetType(t) {
+    vlType = t;
+    document.querySelectorAll('#vlTypePills [data-vtype]').forEach(b =>
+      b.classList.toggle('active', b.getAttribute('data-vtype') === t));
+    renderVisitTable();
+  }
+
+  function vlToggleStatus(status, btn) {
+    if (vlStatuses.has(status)) vlStatuses.delete(status);
+    else vlStatuses.add(status);
+    vlSyncStatusPills();
+    renderVisitTable();
+  }
+
+  function vlToggleStatusMode() {
+    vlStatusMode = (vlStatusMode === 'include') ? 'exclude' : 'include';
+    vlSyncStatusPills();   // also refreshes the mode-button label
+    renderVisitTable();
+  }
+
+  function vlSyncStatusPills() {
+    document.querySelectorAll('#vlStatusPills [data-vstatus]').forEach(b => {
+      const on = vlStatuses.has(b.getAttribute('data-vstatus'));
+      b.classList.toggle('active', on);
+      b.classList.toggle('excluding', on && vlStatusMode === 'exclude');
+    });
+    // Keep the mode-button label as the single source of truth for vlStatusMode
+    // so the label can never drift from the actual filter behaviour.
+    const modeBtn = document.getElementById('vlStatusModeBtn');
+    if (modeBtn) modeBtn.textContent =
+      'Match: ' + (vlStatusMode === 'include' ? 'Include' : 'Exclude');
+  }
+
+  // Back-compat shim: anything still calling setFilter() maps onto the new model.
+  function setFilter(f, btn) {
+    if (f === 'all') { vlSetType('all'); vlStatuses.clear(); vlSyncStatusPills(); }
+    else if (f === 'PM' || f === 'CM') vlSetType(f);
+    else { vlStatuses = new Set([f]); vlStatusMode = 'include'; vlSyncStatusPills(); }
+    renderVisitTable();
+  }
+
+  // ── Column (Layout) picker ──────────────────────────────────────────────
+  function vlToggleColMenu(ev) {
+    if (ev) ev.stopPropagation();
+    const menu = document.getElementById('vlColMenu');
+    if (!menu) return;
+    if (menu.style.display === 'block') { menu.style.display = 'none'; return; }
+    menu.innerHTML = VL_COLUMNS.map(c => {
+      const checked = vlColVisible(c.key) ? 'checked' : '';
+      const disabled = c.always ? 'disabled' : '';
+      return `<label><input type="checkbox" ${checked} ${disabled}
+                onchange="vlToggleColumn('${c.key}', this.checked)">${escHtml(c.label)}${c.always ? ' <span class="ustat-none">(always)</span>' : ''}</label>`;
+    }).join('');
+    menu.style.display = 'block';
+    // close on outside click
+    setTimeout(() => document.addEventListener('click', vlCloseColMenuOnce), 0);
+  }
+  function vlCloseColMenuOnce(e) {
+    const menu = document.getElementById('vlColMenu');
+    if (menu && !menu.contains(e.target)) {
+      menu.style.display = 'none';
+      document.removeEventListener('click', vlCloseColMenuOnce);
+    }
+  }
+  function vlToggleColumn(key, on) {
+    const c = VL_COLUMNS.find(x => x.key === key);
+    if (c && c.always) return;
+    if (on && !vlVisibleCols.includes(key)) vlVisibleCols.push(key);
+    else if (!on) vlVisibleCols = vlVisibleCols.filter(k => k !== key);
+    renderVisitTable();
+  }
+
+  // ── Saved Views (Variant + Layout) ──────────────────────────────────────
+  function vlCurrentViewPayload() {
+    return {
+      filters: {
+        type:        vlType,
+        statuses:    Array.from(vlStatuses),
+        statusMode:  vlStatusMode,
+        userStatus:  (document.getElementById('vlUserStatusFilter') || {}).value || '',
+      },
+      columns: vlVisibleCols.slice(),
+    };
+  }
+
+  async function vlLoadSavedViews() {
+    try {
+      const res = await api('GET', '/api/admin/saved-views?scope=visits');
+      vlSavedViewList = (res && res.views) || [];
+    } catch { vlSavedViewList = []; }
+    const sel = document.getElementById('vlSavedViews');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">— Saved views —</option>' +
+      vlSavedViewList.map(v =>
+        `<option value="${v.id}">${escHtml(v.name)}${v.is_default ? ' ★' : ''}</option>`).join('');
+    document.getElementById('vlDeleteViewBtn').style.display = 'none';
+    // Auto-apply the default view on first load.
+    const def = vlSavedViewList.find(v => v.is_default);
+    if (def && !vlSavedViewList._applied) {
+      vlSavedViewList._applied = true;
+      sel.value = String(def.id);
+      vlApplySavedView(String(def.id));
+    }
+  }
+
+  function vlApplySavedView(idStr) {
+    const delBtn = document.getElementById('vlDeleteViewBtn');
+    if (!idStr) { if (delBtn) delBtn.style.display = 'none'; return; }
+    const view = vlSavedViewList.find(v => String(v.id) === String(idStr));
+    if (!view) return;
+    const p = view.payload || {};
+    const f = p.filters || {};
+    vlType       = f.type || 'all';
+    vlStatuses   = new Set(Array.isArray(f.statuses) ? f.statuses : []);
+    vlStatusMode = (f.statusMode === 'exclude') ? 'exclude' : 'include';
+    if (Array.isArray(p.columns) && p.columns.length) vlVisibleCols = p.columns.slice();
+    // reflect into the controls
+    document.querySelectorAll('#vlTypePills [data-vtype]').forEach(b =>
+      b.classList.toggle('active', b.getAttribute('data-vtype') === vlType));
+    vlSyncStatusPills();   // also refreshes the mode-button label
+    const us = document.getElementById('vlUserStatusFilter');
+    if (us) us.value = f.userStatus || '';
+    if (delBtn) delBtn.style.display = '';
+    renderVisitTable();
+  }
+
+  async function vlSaveCurrentView() {
+    const name = prompt('Name this view (filters + columns):', '');
+    if (name === null) return;
+    const trimmed = name.trim();
+    if (!trimmed) { toast('A name is required', 'error'); return; }
+    const makeDefault = confirm('Make this your default view for the Visits list?\n\nOK = default, Cancel = just save.');
+    try {
+      await api('POST', '/api/admin/saved-views', {
+        scope: 'visits', name: trimmed,
+        payload: vlCurrentViewPayload(), is_default: makeDefault,
+      });
+      toast('View saved', 'success');
+      vlSavedViewList._applied = true;   // don't auto-jump after manual save
+      await vlLoadSavedViews();
+      // select the one we just saved
+      const sel = document.getElementById('vlSavedViews');
+      const saved = vlSavedViewList.find(v => v.name === trimmed);
+      if (sel && saved) { sel.value = String(saved.id); document.getElementById('vlDeleteViewBtn').style.display = ''; }
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function vlDeleteSelectedView() {
+    const sel = document.getElementById('vlSavedViews');
+    const id = sel && sel.value;
+    if (!id) return;
+    const view = vlSavedViewList.find(v => String(v.id) === String(id));
+    if (!confirm(`Delete saved view "${view ? view.name : ''}"?`)) return;
+    try {
+      await api('DELETE', `/api/admin/saved-views/${id}`);
+      toast('View deleted', 'success');
+      vlSavedViewList._applied = true;
+      await vlLoadSavedViews();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  // ── User Status (manual tag alongside lifecycle status) ──────────────────
+  async function vlLoadUserStatusVocab() {
+    try {
+      const res = await api('GET', '/api/admin/visit-user-statuses');
+      vlUserStatusVocab = (res && res.statuses) || [];
+    } catch { vlUserStatusVocab = []; }
+    // populate the filter dropdown (keep Any / Not set)
+    const sel = document.getElementById('vlUserStatusFilter');
+    if (sel) {
+      sel.innerHTML = '<option value="">Any</option><option value="__none__">— Not set —</option>' +
+        vlUserStatusVocab.map(s => `<option value="${escHtml(s)}">${escHtml(s)}</option>`).join('');
+    }
+  }
+
+  async function setVisitUserStatus(visitId, value) {
+    try {
+      await api('PUT', `/api/admin/visits/${visitId}/user-status`, { user_status: value || '' });
+      const v = allVisits.find(x => x.id === visitId);
+      if (v) v.user_status = value || null;
+      toast(value ? 'User status set' : 'User status cleared', 'success');
+    } catch (e) { toast(e.message, 'error'); renderVisitTable(); }
+  }
+
+  // ── Reverse confirmation (SAP IW45 reversal-by-append) ───────────────────
+  async function openReverseConfirmation(visitId) {
+    rcVisitId = visitId;
+    const v = allVisits.find(x => x.id === visitId);
+    document.getElementById('rcVisitLabel').textContent =
+      v ? `${v.visit_type} — ${v.customer_name} (#${v.id})` : `#${visitId}`;
+    document.getElementById('rcReason').value = '';
+    document.getElementById('rcErr').style.display = 'none';
+    document.getElementById('rcHistory').innerHTML = '<div class="ustat-none">Loading…</div>';
+    document.getElementById('modal-reverseConfirm').classList.add('open');
+    await rcLoadHistory(visitId);
+  }
+
+  async function rcLoadHistory(visitId) {
+    const box = document.getElementById('rcHistory');
+    try {
+      const res = await api('GET', `/api/admin/visits/${visitId}/confirmation-events`);
+      const events = (res && res.events) || [];
+      if (!events.length) {
+        box.innerHTML = '<div class="ustat-none">No reversals yet — this confirmation is original.</div>';
+        return;
+      }
+      box.innerHTML = events.map(e => {
+        const snap = e.snapshot || {};
+        const when = e.created_at ? fmtDateTime(e.created_at, '') : '';
+        const rs = (snap.restored_stock || []);
+        const rsN = rs.reduce((s, r) => s + (Number(r.quantity) || 0), 0);
+        return `<div class="vce-row vce-reversal">
+          <div><strong>Reversal</strong> — ${escHtml(e.reason || '')}</div>
+          <div class="vce-meta">by ${escHtml(e.actor_label || 'admin')} · ${escHtml(when)}
+            ${snap.work_done ? '· had logged: “' + escHtml(String(snap.work_done).slice(0,80)) + '”' : ''}
+            ${rs.length ? '· returned ' + rsN + ' unit(s) to stock' : ''}</div>
+        </div>`;
+      }).join('');
+    } catch (e) {
+      box.innerHTML = `<div class="ustat-none">Couldn't load history: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  async function submitReverseConfirmation() {
+    const reason = document.getElementById('rcReason').value.trim();
+    const err = document.getElementById('rcErr');
+    if (!reason) { err.textContent = 'A reason is required.'; err.style.display = 'block'; return; }
+    const btn = document.getElementById('rcSubmitBtn');
+    btn.disabled = true;
+    try {
+      const res = await api('POST', `/api/admin/visits/${rcVisitId}/reverse-confirmation`, { reason });
+      const restored = (res && res.restored) || [];
+      const n = restored.reduce((s, r) => s + (Number(r.quantity) || 0), 0);
+      toast(restored.length
+        ? `Confirmation reversed — visit re-opened · ${n} unit(s) across ${restored.length} part(s) returned to stock`
+        : 'Confirmation reversed — visit re-opened', 'success');
+      closeModal('reverseConfirm');
+      await loadAllVisits();
+    } catch (e) {
+      err.textContent = e.message; err.style.display = 'block';
+    } finally { btn.disabled = false; }
+  }
+
+  // ── PM Contracts ─────────────────────────────────────────────────────────
+  // Preventive-maintenance service agreements. The cross-customer list and
+  // the manual generator hit _require_admin_or_power; per-contract create/
+  // detail/edit/cancel hit _require_record_access("customer",…) so a customer
+  // delegate manages their own customer's contracts. All money is J$.
+  let _pmContracts = [];
+  let _pmFilter = 'all';
+  const _PM_FREQ_LABEL = { monthly:'Monthly', quarterly:'Quarterly', semiannual:'Semi-annual', annual:'Annual' };
+
+  function _pmCustomerName(id) {
+    const c = (allCustomers || []).find(c => c.id === id);
+    return c ? `${c.name} (${c.customer_code})` : ('#' + id);
+  }
+
+  async function loadPmContracts() {
+    const tbody = document.getElementById('pmContractTableBody');
+    if (tbody) tbody.innerHTML = '<tr><td colspan="8" class="empty">Loading…</td></tr>';
+    // The customer picker / name resolution leans on allCustomers; make sure
+    // it's populated even if the operator lands on Contracts before Customers.
+    if (!allCustomers || !allCustomers.length) {
+      try { allCustomers = await api('GET', '/api/admin/customers'); } catch(_) {}
+    }
+    try {
+      const qs = _pmFilter && _pmFilter !== 'all' ? ('?status=' + encodeURIComponent(_pmFilter)) : '';
+      const rows = await api('GET', '/api/admin/pm-contracts' + qs);
+      _pmContracts = Array.isArray(rows) ? rows : (rows.contracts || rows.items || []);
+      renderPmContractTable();
+    } catch (e) {
+      if (tbody) tbody.innerHTML = `<tr><td colspan="8" class="empty">Could not load contracts: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  function setPmFilter(f, btn) {
+    _pmFilter = f;
+    document.querySelectorAll('#pmContractFilters .filter-btn').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    loadPmContracts();
+  }
+
+  function _pmStatusPill(status) {
+    const map = { active:'var(--teal)', paused:'#9a6b00', expired:'var(--muted)', cancelled:'var(--danger)' };
+    const c = map[status] || 'var(--muted)';
+    return `<span style="display:inline-block;padding:1px 9px;border-radius:10px;font-size:11px;font-weight:700;color:#fff;background:${c};text-transform:capitalize;">${escHtml(status||'')}</span>`;
+  }
+
+  function renderPmContractTable() {
+    const tbody = document.getElementById('pmContractTableBody');
+    if (!tbody) return;
+    if (!_pmContracts.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="empty">No contracts yet. Click “+ New Contract”.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = _pmContracts.map(c => {
+      const term = `${escHtml(c.start_date||'')} → ${escHtml(c.end_date||'')}`;
+      const canEdit = c.status !== 'cancelled';
+      const canCancel = c.status !== 'cancelled';
+      return `<tr>
+        <td><code>${escHtml(c.contract_code||'')}</code></td>
+        <td>${escHtml(_pmCustomerName(c.customer_id))}</td>
+        <td>${escHtml(c.title||'—')}</td>
+        <td>${escHtml(_PM_FREQ_LABEL[c.frequency]||c.frequency||'')}</td>
+        <td style="white-space:nowrap;">${term}</td>
+        <td class="pc-mono">${fmtJMD(c.contract_value)}</td>
+        <td>${_pmStatusPill(c.status)}</td>
+        <td style="white-space:nowrap;">
+          <button class="btn btn-ghost btn-sm" onclick="openPmContractDetail(${c.id})">View</button>
+          ${canEdit ? `<button class="btn btn-ghost btn-sm" onclick="openPmContractModal(${c.id})">Edit</button>` : ''}
+          ${canCancel ? `<button class="btn btn-ghost btn-sm" style="color:var(--danger);" onclick="cancelPmContract(${c.id})">Cancel</button>` : ''}
+        </td>
+      </tr>`;
+    }).join('');
+  }
+
+  async function pmcOnCustomerChange() {
+    const cid = document.getElementById('pmc-customer').value;
+    const sel = document.getElementById('pmc-equipment');
+    sel.innerHTML = '<option value="">— Not equipment-specific —</option>';
+    if (!cid) return;
+    try {
+      const eq = await api('GET', `/api/admin/customers/${cid}/equipment`);
+      (eq || []).forEach(e => {
+        const opt = document.createElement('option');
+        opt.value = e.id; opt.textContent = e.name;
+        sel.appendChild(opt);
+      });
+    } catch(_) {}
+  }
+
+  async function openPmContractModal(id) {
+    if (!allCustomers || !allCustomers.length) {
+      try { allCustomers = await api('GET', '/api/admin/customers'); } catch(_) {}
+    }
+    const custSel = document.getElementById('pmc-customer');
+    custSel.innerHTML = '<option value="">Select customer…</option>' +
+      (allCustomers || []).map(c => `<option value="${c.id}">${escHtml(c.name)} (${escHtml(c.customer_code)})</option>`).join('');
+    const errEl = document.getElementById('err-pmContract');
+    if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+    const statusWrap = document.getElementById('pmc-status-wrap');
+
+    if (id) {
+      const c = _pmContracts.find(x => x.id === id);
+      if (!c) { toast('Contract not found', 'error'); return; }
+      document.getElementById('pmContractTitle').textContent = 'Edit Contract ' + (c.contract_code || '');
+      document.getElementById('pmcSubmitBtn').textContent = 'Save Changes';
+      document.getElementById('pmc-id').value = c.id;
+      custSel.value = c.customer_id;
+      custSel.disabled = true;                       // a contract never changes hands
+      await pmcOnCustomerChange();
+      document.getElementById('pmc-equipment').value = c.equipment_id || '';
+      document.getElementById('pmc-title').value = c.title || '';
+      document.getElementById('pmc-start').value = c.start_date || '';
+      document.getElementById('pmc-end').value = c.end_date || '';
+      document.getElementById('pmc-frequency').value = c.frequency || 'quarterly';
+      document.getElementById('pmc-value').value = (c.contract_value != null ? c.contract_value : '');
+      document.getElementById('pmc-notes').value = c.notes || '';
+      document.getElementById('pmc-status').value = c.status || 'active';
+      if (statusWrap) statusWrap.style.display = 'block';
+    } else {
+      document.getElementById('pmContractTitle').textContent = 'New PM Contract';
+      document.getElementById('pmcSubmitBtn').textContent = 'Create Contract';
+      document.getElementById('pmc-id').value = '';
+      custSel.disabled = false;
+      custSel.value = '';
+      document.getElementById('pmc-equipment').innerHTML = '<option value="">— Not equipment-specific —</option>';
+      document.getElementById('pmc-title').value = '';
+      document.getElementById('pmc-start').value = '';
+      document.getElementById('pmc-end').value = '';
+      document.getElementById('pmc-frequency').value = 'quarterly';
+      document.getElementById('pmc-value').value = '';
+      document.getElementById('pmc-notes').value = '';
+      if (statusWrap) statusWrap.style.display = 'none';
+    }
+    document.getElementById('modal-pmContract').classList.add('open');
+  }
+
+  async function submitPmContract() {
+    const errEl = document.getElementById('err-pmContract');
+    const showErr = (m) => { if (errEl) { errEl.textContent = m; errEl.style.display = 'block'; } };
+    if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+    const id = document.getElementById('pmc-id').value;
+    const customerId = document.getElementById('pmc-customer').value;
+    const equipmentId = document.getElementById('pmc-equipment').value;
+    const title = document.getElementById('pmc-title').value.trim();
+    const start = document.getElementById('pmc-start').value;
+    const end = document.getElementById('pmc-end').value;
+    const freq = document.getElementById('pmc-frequency').value;
+    const valRaw = document.getElementById('pmc-value').value;
+    const notes = document.getElementById('pmc-notes').value.trim();
+
+    if (!id && !customerId) return showErr('Pick a customer.');
+    if (!start || !end) return showErr('Start and end dates are both required.');
+    if (end < start) return showErr('End date cannot be before the start date.');
+    const value = valRaw === '' ? 0 : Number(valRaw);
+    if (isNaN(value) || value < 0) return showErr('Contract value must be a non-negative number.');
+
+    const btn = document.getElementById('pmcSubmitBtn');
+    btn.disabled = true;
+    try {
+      if (id) {
+        const body = {
+          title, start_date: start, end_date: end, frequency: freq,
+          contract_value: value, notes,
+          status: document.getElementById('pmc-status').value,
+          equipment_id: equipmentId ? Number(equipmentId) : null,
+        };
+        await api('PATCH', `/api/admin/pm-contracts/${id}`, body);
+        toast('Contract updated', 'success');
+      } else {
+        const body = {
+          customer_id: Number(customerId), title, start_date: start, end_date: end,
+          frequency: freq, contract_value: value, notes,
+        };
+        if (equipmentId) body.equipment_id = Number(equipmentId);
+        await api('POST', '/api/admin/pm-contracts', body);
+        toast('Contract created', 'success');
+      }
+      closeModal('pmContract');
+      loadPmContracts();
+    } catch (e) {
+      showErr(e.message || 'Could not save contract.');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function openPmContractDetail(id) {
+    const body = document.getElementById('pmContractDetailBody');
+    const footer = document.getElementById('pmContractDetailFooter');
+    document.getElementById('pmContractDetailTitle').textContent = 'Contract';
+    body.innerHTML = 'Loading…';
+    footer.innerHTML = '';
+    document.getElementById('modal-pmContractDetail').classList.add('open');
+    try {
+      const d = await api('GET', `/api/admin/pm-contracts/${id}`);
+      const c = d.contract || d;
+      const visits = d.visits || c.visits || [];
+      document.getElementById('pmContractDetailTitle').textContent = (c.contract_code || 'Contract');
+      const rows = visits.length ? visits.map(v => `<tr>
+          <td>${escHtml(v.scheduled_date||'')}</td>
+          <td style="text-transform:capitalize;">${escHtml(v.status||'')}</td>
+          <td>${escHtml(v.technician||v.assigned_tech_name||'—')}</td>
+        </tr>`).join('')
+        : '<tr><td colspan="3" class="empty">No visits materialised yet.</td></tr>';
+      body.innerHTML = `
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 18px;font-size:13px;margin-bottom:16px;">
+          <div><div style="color:var(--muted);">Customer</div><div>${escHtml(_pmCustomerName(c.customer_id))}</div></div>
+          <div><div style="color:var(--muted);">Status</div><div>${_pmStatusPill(c.status)}</div></div>
+          <div><div style="color:var(--muted);">Title</div><div>${escHtml(c.title||'—')}</div></div>
+          <div><div style="color:var(--muted);">Frequency</div><div>${escHtml(_PM_FREQ_LABEL[c.frequency]||c.frequency||'')}</div></div>
+          <div><div style="color:var(--muted);">Term</div><div>${escHtml(c.start_date||'')} → ${escHtml(c.end_date||'')}</div></div>
+          <div><div style="color:var(--muted);">Value</div><div class="pc-mono">${fmtJMD(c.contract_value)}</div></div>
+          ${c.notes ? `<div style="grid-column:1/-1;"><div style="color:var(--muted);">Notes</div><div style="white-space:pre-wrap;">${escHtml(c.notes)}</div></div>` : ''}
+        </div>
+        <div id="pmContractSites" style="margin-bottom:18px;"></div>
+        <h4 style="margin:0 0 8px;font-size:13px;color:var(--ink);">Materialised visits (${visits.length})</h4>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Scheduled</th><th>Status</th><th>Tech</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>`;
+      renderContractSites(c.id, c.customer_id, d.sites || c.sites || [],
+                          c.status !== 'cancelled');
+      const parts = [`<button class="btn btn-ghost" onclick="closeModal('pmContractDetail')">Close</button>`];
+      if (c.status !== 'cancelled') {
+        parts.push(`<button class="btn btn-primary" onclick="closeModal('pmContractDetail');openPmContractModal(${c.id})">Edit</button>`);
+      }
+      footer.innerHTML = parts.join('');
+    } catch (e) {
+      body.innerHTML = `<div style="color:var(--danger);">Could not load contract: ${escHtml(e.message)}</div>`;
+      footer.innerHTML = `<button class="btn btn-ghost" onclick="closeModal('pmContractDetail')">Close</button>`;
+    }
+  }
+
+  // ── CMMS Gap #5 — contract ↔ site (functional-location) coverage ──────────
+  const _FL_CLASS_LABEL = {site:'Site', building:'Building', space:'Space', slot:'Slot'};
+  // Cache of the contract currently shown in the detail modal so add/remove can
+  // re-render without re-opening. {id, customer_id, editable}
+  let _contractSitesCtx = null;
+
+  function renderContractSites(contractId, customerId, sites, editable) {
+    _contractSitesCtx = {id: contractId, customer_id: customerId, editable: !!editable};
+    const host = document.getElementById('pmContractSites');
+    if (!host) return;
+    const canEdit = editable && (typeof can === 'function') && can('customer:update');
+    const list = (sites && sites.length)
+      ? sites.map(s => `<li style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);">
+            <span style="font-size:11px;font-weight:700;color:var(--teal);text-transform:uppercase;min-width:62px;">${escHtml(_FL_CLASS_LABEL[s.fl_class]||s.fl_class||'')}</span>
+            <span style="flex:1;">${escHtml(s.name||'')}${s.code ? ` <code style="color:var(--muted);">${escHtml(s.code)}</code>` : ''}${s.active ? '' : ' <span style="color:var(--muted);font-size:11px;">(inactive)</span>'}</span>
+            ${canEdit ? `<button class="btn btn-ghost btn-sm" style="color:var(--danger);" title="Remove from contract" onclick="removeContractSite(${s.id})">×</button>` : ''}
+          </li>`).join('')
+      : '<li class="empty" style="padding:6px 0;color:var(--muted);">No sites linked. This contract is not yet scoped to any functional location.</li>';
+    host.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin:0 0 8px;">
+        <h4 style="margin:0;font-size:13px;color:var(--ink);">Covered sites (${(sites||[]).length})</h4>
+        ${canEdit ? `<button class="btn btn-ghost btn-sm" onclick="openAddContractSite()">+ Add site</button>` : ''}
+      </div>
+      <ul style="list-style:none;margin:0;padding:0;">${list}</ul>
+      <div id="pmContractSiteAdd"></div>`;
+  }
+
+  async function openAddContractSite() {
+    if (!_contractSitesCtx) return;
+    const slot = document.getElementById('pmContractSiteAdd');
+    if (!slot) return;
+    slot.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:6px 0;">Loading locations…</div>';
+    try {
+      const fls = await api('GET', `/api/admin/customers/${_contractSitesCtx.customer_id}/functional-locations`);
+      const opts = (fls || []).map(f =>
+        `<option value="${f.id}">${escHtml((_FL_CLASS_LABEL[f.fl_class]||f.fl_class||'')+' · '+(f.name||''))}${f.code ? ' ('+escHtml(f.code)+')' : ''}</option>`).join('');
+      if (!opts) {
+        slot.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:6px 0;">This customer has no functional locations yet. Create one under the customer first.</div>';
+        return;
+      }
+      slot.innerHTML = `
+        <div style="display:flex;gap:8px;align-items:center;margin-top:8px;">
+          <select id="pmContractSiteSelect" class="input" style="flex:1;">${opts}</select>
+          <button class="btn btn-primary btn-sm" onclick="addContractSite()">Add</button>
+          <button class="btn btn-ghost btn-sm" onclick="document.getElementById('pmContractSiteAdd').innerHTML='';">Cancel</button>
+        </div>`;
+    } catch (e) {
+      slot.innerHTML = `<div style="color:var(--danger);font-size:12px;padding:6px 0;">Could not load locations: ${escHtml(e.message||'')}</div>`;
+    }
+  }
+
+  async function addContractSite() {
+    if (!_contractSitesCtx) return;
+    const sel = document.getElementById('pmContractSiteSelect');
+    if (!sel || !sel.value) return;
+    try {
+      const r = await api('POST', `/api/admin/pm-contracts/${_contractSitesCtx.id}/sites`,
+                          {functional_location_id: parseInt(sel.value, 10)});
+      toast('Site added to contract', 'success');
+      renderContractSites(_contractSitesCtx.id, _contractSitesCtx.customer_id,
+                          r.sites || [], _contractSitesCtx.editable);
+    } catch (e) {
+      toast(e.message || 'Could not add site', 'error');
+    }
+  }
+
+  async function removeContractSite(flId) {
+    if (!_contractSitesCtx) return;
+    if (!confirm('Remove this site from the contract?')) return;
+    try {
+      const r = await api('DELETE', `/api/admin/pm-contracts/${_contractSitesCtx.id}/sites/${flId}`);
+      toast('Site removed', 'success');
+      renderContractSites(_contractSitesCtx.id, _contractSitesCtx.customer_id,
+                          r.sites || [], _contractSitesCtx.editable);
+    } catch (e) {
+      toast(e.message || 'Could not remove site', 'error');
+    }
+  }
+
+  async function cancelPmContract(id) {
+    const c = _pmContracts.find(x => x.id === id);
+    const label = c ? (c.contract_code || ('#' + id)) : ('#' + id);
+    if (!confirm(`Cancel contract ${label}? This stops future PM-visit generation. Existing scheduled visits are not deleted.`)) return;
+    try {
+      await api('POST', `/api/admin/pm-contracts/${id}/cancel`, {});
+      toast('Contract cancelled', 'success');
+      loadPmContracts();
+    } catch (e) {
+      toast(e.message || 'Could not cancel contract', 'error');
+    }
+  }
+
+  async function pmGenerateNow() {
+    const btn = document.getElementById('pmGenerateBtn');
+    if (btn) btn.disabled = true;
+    try {
+      const r = await api('POST', '/api/admin/pm-contracts/generate', {});
+      const created = (r.created || []).length;
+      const expired = (r.expired || []).length;
+      const bits = [];
+      bits.push(created ? `${created} visit${created===1?'':'s'} scheduled` : 'no new visits due');
+      if (expired) bits.push(`${expired} contract${expired===1?'':'s'} expired`);
+      toast('Generator ran — ' + bits.join(', '), 'success');
+      loadPmContracts();
+    } catch (e) {
+      toast(e.message || 'Generator failed', 'error');
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function populateCustomerSelect(selectedId) {
+    const sel = document.getElementById('v-customer');
+    sel.innerHTML = '<option value="">Select customer…</option>' +
+      allCustomers.map(c => `<option value="${c.id}" ${c.id == selectedId ? 'selected' : ''}>${c.name} (${c.customer_code})</option>`).join('');
+  }
+
+  async function loadEquipmentForVisit(selectedEqId) {
+    const customerId = document.getElementById('v-customer').value;
+    const sel = document.getElementById('v-equipment');
+    sel.innerHTML = '<option value="">— All / Not specific —</option>';
+    if (!customerId) return;
+    try {
+      const eq = await api('GET', `/api/admin/customers/${customerId}/equipment`);
+      eq.forEach(e => {
+        const opt = document.createElement('option');
+        opt.value = e.id;
+        opt.textContent = e.name;
+        if (e.id == selectedEqId) opt.selected = true;
+        sel.appendChild(opt);
+      });
+    } catch {}
+  }
+
+  async function openModal(name, visitId) {
+    if (name === 'addVisit') {
+      currentVisitId = null;
+      document.getElementById('visitModalTitle').textContent   = 'Schedule Visit';
+      document.getElementById('visitSubmitBtn').textContent    = 'Save Visit';
+      document.getElementById('visitCustomerField').style.display = 'block';
+      clearVisitForm();
+      await populateCustomerSelect(null);
+      await loadEquipmentForVisit(null);
+      populateTechSelect();
+      document.getElementById('visitCrewSection').style.display = 'none';
+      document.getElementById('visitPartsLoggedSection').style.display = 'none';
+    }
+    document.getElementById(`modal-${name}`).classList.add('open');
+  }
+
+  function openAddVisitFromCustomer() {
+    currentVisitId = null;
+    document.getElementById('visitModalTitle').textContent   = 'Schedule Visit';
+    document.getElementById('visitSubmitBtn').textContent    = 'Save Visit';
+    document.getElementById('visitCustomerField').style.display = 'none';
+    clearVisitForm();
+    loadEquipmentForVisitForCustomer();
+    populateTechSelect();
+    document.getElementById('visitCrewSection').style.display = 'none';
+    document.getElementById('visitPartsLoggedSection').style.display = 'none';
+    document.getElementById('modal-addVisit').classList.add('open');
+  }
+
+  async function loadEquipmentForVisitForCustomer() {
+    if (!currentCustomer) return;
+    const sel = document.getElementById('v-equipment');
+    sel.innerHTML = '<option value="">— All / Not specific —</option>';
+    try {
+      const eq = await api('GET', `/api/admin/customers/${currentCustomer.id}/equipment`);
+      eq.forEach(e => {
+        const opt = document.createElement('option');
+        opt.value = e.id;
+        opt.textContent = e.name;
+        sel.appendChild(opt);
+      });
+    } catch {}
+  }
+
+  async function openEditVisit(id) {
+    currentVisitId = id;
+    const v = allVisits.find(v => v.id === id);
+    if (!v) return;
+    document.getElementById('visitModalTitle').textContent   = 'Edit Visit';
+    document.getElementById('visitSubmitBtn').textContent    = 'Update Visit';
+    document.getElementById('visitCustomerField').style.display = 'block';
+    const _vhb = document.getElementById('v-hist-btn');
+    if (_vhb) _vhb.style.display = (can('audit:view_self') || can('audit:view_all')) ? 'inline-flex' : 'none';
+    await populateCustomerSelect(v.customer_id);
+    await loadEquipmentForVisit(v.equipment_id);
+    populateTechSelect();
+    document.getElementById('v-type').value           = v.visit_type;
+    document.getElementById('v-status').value         = v.status;
+    document.getElementById('v-tech').value           = v.assigned_tech_id || '';
+    document.getElementById('v-scheduled-date').value = v.scheduled_date || '';
+    document.getElementById('v-scheduled-time').value = v.scheduled_time || '';
+    document.getElementById('v-completed-date').value = v.completed_date || '';
+    document.getElementById('v-technician').value     = v.technician     || '';
+    document.getElementById('v-work-done').value      = v.work_done      || '';
+    document.getElementById('v-parts').value          = v.parts_replaced || '';
+    document.getElementById('v-notes').value          = v.notes          || '';
+    document.getElementById('v-scope').value          = v.scope_of_work  || '';
+    document.getElementById('v-duration').value       = v.estimated_duration_min || '';
+    document.getElementById('v-contact-name').value   = v.contact_person_name || '';
+    document.getElementById('v-contact-phone').value  = v.contact_person_phone || '';
+    document.getElementById('v-hazards').value        = v.hazards        || '';
+    document.getElementById('v-access').value         = v.access_codes   || '';
+    document.getElementById('v-work-summary').value   = v.work_done_summary || '';
+    // CMMS #1 — order classification / priority / SLA
+    document.getElementById('v-order-type').value     = v.order_type     || '';
+    document.getElementById('v-priority').value       = v.priority       || 'normal';
+    document.getElementById('v-sla-deadline').value   = _isoToLocalInput(v.sla_deadline);
+    document.getElementById('v-sla-basis').value      = v.sla_basis       || 'start';
+    // CMMS #6 — entity tag
+    await vEntityPopulate(v.entity_id);
+    // Crew picker is edit-only (incremental endpoints need a visit id).
+    document.getElementById('visitCrewSection').style.display = 'block';
+    // Seed from the cached list, then refresh from the canonical crew endpoint
+    // (returns lead + extras with a `lead` flag — we keep only the extras).
+    visitCrewState = (v.crew_tech_ids || []).map((cid, i) => ({
+      id: cid, name: (v.crew_tech_names || [])[i] || ('#' + cid) }));
+    renderVisitCrewChips();
+    document.getElementById('modal-addVisit').classList.add('open');
+    try {
+      const crew = await api('GET', `/api/admin/visits/${id}/crew`);
+      visitCrewState = (crew || []).filter(c => !c.lead).map(c => ({ id: c.id, name: c.name }));
+      renderVisitCrewChips();
+    } catch (_) { /* keep cached crew on failure */ }
+    loadVisitPartsLogged(id);
+  }
+
+  async function submitVisit() {
+    const err = document.getElementById('err-addVisit');
+    err.style.display = 'none';
+    const customerIdRaw = currentCustomer
+      ? currentCustomer.id
+      : document.getElementById('v-customer').value;
+    if (!customerIdRaw) { showErr('err-addVisit', 'Please select a customer.'); return; }
+    const schedDate = document.getElementById('v-scheduled-date').value;
+    const schedTime = document.getElementById('v-scheduled-time').value;
+    if (!schedDate || !schedTime) {
+      showErr('err-addVisit', 'Scheduled date and time are required.');
+      return;
+    }
+    const body = {
+      customer_id:      parseInt(customerIdRaw),
+      equipment_id:     document.getElementById('v-equipment').value ? parseInt(document.getElementById('v-equipment').value) : null,
+      assigned_tech_id: document.getElementById('v-tech').value ? parseInt(document.getElementById('v-tech').value) : null,
+      visit_type:       document.getElementById('v-type').value,
+      status:           document.getElementById('v-status').value,
+      scheduled_date:   document.getElementById('v-scheduled-date').value,
+      scheduled_time:   document.getElementById('v-scheduled-time').value,
+      completed_date: document.getElementById('v-completed-date').value,
+      technician:     document.getElementById('v-technician').value.trim(),
+      work_done:      document.getElementById('v-work-done').value.trim(),
+      parts_replaced: document.getElementById('v-parts').value.trim(),
+      notes:          document.getElementById('v-notes').value.trim(),
+      scope_of_work:          document.getElementById('v-scope').value.trim(),
+      estimated_duration_min: document.getElementById('v-duration').value ? parseInt(document.getElementById('v-duration').value) : null,
+      contact_person_name:    document.getElementById('v-contact-name').value.trim(),
+      contact_person_phone:   document.getElementById('v-contact-phone').value.trim(),
+      hazards:                document.getElementById('v-hazards').value.trim(),
+      access_codes:           document.getElementById('v-access').value.trim(),
+      // CMMS #1 — classification / priority / SLA. order_type '' → null so the
+      // server applies its auto default (reactive vs preventive).
+      order_type:   document.getElementById('v-order-type').value || null,
+      priority:     document.getElementById('v-priority').value || 'normal',
+      sla_deadline: _localInputToIso(document.getElementById('v-sla-deadline').value),
+      sla_basis:    document.getElementById('v-sla-basis').value || 'start',
+    };
+    // CMMS #6 — entity tag (only when the picker is shown / has a value)
+    const _vEnt = document.getElementById('v-entity');
+    if (_vEnt && _vEnt.value) body.entity_id = parseInt(_vEnt.value, 10);
+    try {
+      if (currentVisitId) {
+        await api('PUT', `/api/admin/visits/${currentVisitId}`, body);
+        // Customer-facing work summary lives on a dedicated endpoint.
+        await api('PUT', `/api/admin/visits/${currentVisitId}/work-summary`,
+                  { summary: document.getElementById('v-work-summary').value.trim() });
+      } else {
+        await api('POST', '/api/admin/visits', body);
+      }
+      closeModal('addVisit');
+      clearVisitForm();
+      await loadAllVisits();
+    } catch(e) { showErr('err-addVisit', e.message); }
+  }
+
+  async function deleteVisit(id) {
+    if (!confirm('Delete this visit record? This cannot be undone.')) return;
+    try {
+      await api('DELETE', `/api/admin/visits/${id}`);
+      await loadAllVisits();
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  // ── Visit crew picker (incremental add/remove) ───────────────────────────────
+  function renderVisitCrewChips() {
+    const wrap = document.getElementById('v-crew-chips');
+    if (!wrap) return;
+    if (!visitCrewState.length) {
+      wrap.innerHTML = '<span style="font-size:12px;color:var(--muted);">No additional crew assigned.</span>';
+    } else {
+      wrap.innerHTML = visitCrewState.map(c => `
+        <span class="badge" style="display:inline-flex;align-items:center;gap:6px;background:var(--steel-bg);color:var(--steel);">
+          ${escHtml(c.name)}
+          <button type="button" title="Remove" onclick="removeVisitCrewMember(${c.id})"
+                  style="border:0;background:transparent;color:inherit;cursor:pointer;font-size:14px;line-height:1;padding:0;">×</button>
+        </span>`).join('');
+    }
+    // Rebuild the add-dropdown excluding lead + already-assigned crew.
+    const sel = document.getElementById('v-crew-add');
+    if (sel) {
+      const leadId = parseInt(document.getElementById('v-tech').value) || null;
+      const taken = new Set(visitCrewState.map(c => c.id));
+      if (leadId) taken.add(leadId);
+      sel.innerHTML = '<option value="">Add crew member…</option>' +
+        allTechs.filter(t => t.active && !taken.has(t.id))
+          .map(t => `<option value="${t.id}">${escHtml(t.name)} (${t.tech_code})</option>`).join('');
+    }
+  }
+
+  async function addVisitCrewMember() {
+    if (!currentVisitId) return;
+    const sel = document.getElementById('v-crew-add');
+    const techId = parseInt(sel.value);
+    if (!techId) return;
+    try {
+      await api('POST', `/api/admin/visits/${currentVisitId}/crew/${techId}`);
+      const t = allTechs.find(x => x.id === techId);
+      if (t && !visitCrewState.some(c => c.id === techId)) {
+        visitCrewState.push({ id: techId, name: t.name });
+      }
+      renderVisitCrewChips();
+    } catch(e) { showErr('err-addVisit', e.message); }
+  }
+
+  async function removeVisitCrewMember(techId) {
+    if (!currentVisitId) return;
+    try {
+      await api('DELETE', `/api/admin/visits/${currentVisitId}/crew/${techId}`);
+      visitCrewState = visitCrewState.filter(c => c.id !== techId);
+      renderVisitCrewChips();
+    } catch(e) { showErr('err-addVisit', e.message); }
+  }
+
+  // Read-only reference: parts the tech logged against inventory for this visit.
+  async function loadVisitPartsLogged(visitId) {
+    const sec  = document.getElementById('visitPartsLoggedSection');
+    const host = document.getElementById('v-parts-logged');
+    if (!sec || !host) return;
+    sec.style.display = 'block';
+    host.innerHTML = '<span style="color:var(--muted);">Loading…</span>';
+    try {
+      const parts = await api('GET', `/api/admin/visits/${visitId}/parts`);
+      if (!parts || !parts.length) {
+        host.innerHTML = '<span style="color:var(--muted);">No parts logged against inventory for this visit.</span>';
+        return;
+      }
+      const rows = parts.map(p => {
+        const qty = (p.quantity != null ? p.quantity : '') + (p.part_unit ? ' ' + p.part_unit : '');
+        const line = (p.line_total != null) ? ('J$' + Number(p.line_total).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})) : '';
+        return `<tr>
+          <td style="padding:3px 8px 3px 0;">${escHtml(p.sku || '')}</td>
+          <td style="padding:3px 8px;">${escHtml(p.part_name || '')}</td>
+          <td style="padding:3px 8px;text-align:right;">${escHtml(String(qty))}</td>
+          <td style="padding:3px 0 3px 8px;text-align:right;">${line}</td>
+        </tr>`;
+      }).join('');
+      host.innerHTML = `<table style="width:100%;border-collapse:collapse;">
+        <thead><tr style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">
+          <th style="text-align:left;padding:0 8px 4px 0;">SKU</th>
+          <th style="text-align:left;padding:0 8px 4px;">Part</th>
+          <th style="text-align:right;padding:0 8px 4px;">Qty</th>
+          <th style="text-align:right;padding:0 0 4px 8px;">Line total</th>
+        </tr></thead><tbody>${rows}</tbody></table>`;
+    } catch (e) {
+      host.innerHTML = '<span style="color:var(--muted);">Unable to load logged parts.</span>';
+    }
+  }
+
+  // ── Reviews ────────────────────────────────────────────────────────────────
+  async function loadReviews() {
+    try {
+      allReviews = await api('GET', '/api/admin/reviews');
+      renderReviews();
+      const pending = allReviews.filter(r => r.status === 'pending').length;
+      const badge   = document.getElementById('pendingBadge');
+      if (pending) { badge.textContent = pending; badge.style.display = 'inline-block'; }
+      else         { badge.style.display = 'none'; }
+    } catch {}
+  }
+
+  function setReviewFilter(f, btn) {
+    reviewFilter = f;
+    document.querySelectorAll('#reviewFilters .filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    renderReviews();
+  }
+
+  function renderReviews() {
+    const wrap = document.getElementById('reviewCards');
+    let rows = allReviews;
+    if (reviewFilter !== 'all') rows = rows.filter(r => r.status === reviewFilter);
+    if (!rows.length) {
+      wrap.innerHTML = `<div class="empty" style="background:var(--card);border:1px solid var(--border);border-radius:12px;">No ${reviewFilter === 'all' ? '' : reviewFilter + ' '}reviews.</div>`;
+      return;
+    }
+    const _gateRev = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    wrap.innerHTML = rows.map(r => {
+      const stars = '★'.repeat(r.rating) + `<span class="empty">${'★'.repeat(5 - r.rating)}</span>`;
+      const typePill = r.review_type === 'visit'
+        ? `<span class="review-type-pill pill-visit">Visit Review</span>`
+        : `<span class="review-type-pill pill-company">Annual Review</span>`;
+      // Sensitive-value gating: review comment text only renders if the
+      //  viewer can read the review record. Stars (already coarse) still show.
+      const _revVis = (typeof PC === 'undefined' || !PC.canRead) ? true : PC.canRead('review', r.id);
+      // Customer + visit + technician references.
+      const custCell = (_gateRev && r.customer_id)
+        ? PC.gateLinkHtml('customer', r.customer_id, r.customer_name || '', {})
+        : `<strong>${escHtml(r.customer_name)}</strong>`;
+      const visitCell = (_gateRev && r.visit_id)
+        ? ' · Visit ' + PC.gateLinkHtml('visit', r.visit_id, '#'+r.visit_id, {})
+        : '';
+      const techCell = (r.tech_snapshot)
+        ? ((_gateRev && r.tech_id)
+            ? ' · Tech: ' + PC.gateLinkHtml('technician', r.tech_id, r.tech_snapshot, {})
+            : ` · Tech: <strong>${escHtml(r.tech_snapshot)}</strong>`)
+        : '';
+      const date = PC.fmtDate(r.created_at);
+
+      let actions = '';
+      if (r.status === 'pending') {
+        actions = `
+          <button class="btn btn-primary btn-sm pc-stop-prop" onclick="event.stopPropagation();approveReview(${r.id})">✓ Approve &amp; Publish</button>
+          <button class="btn btn-ghost btn-sm pc-stop-prop" onclick="event.stopPropagation();rejectReview(${r.id})">Reject</button>
+          <button class="btn btn-danger btn-sm pc-stop-prop" onclick="event.stopPropagation();removeReview(${r.id})">Delete</button>`;
+      } else if (r.status === 'approved') {
+        actions = `
+          <span class="badge badge-completed pc-stop-prop">Public</span>
+          <button class="btn btn-ghost btn-sm pc-stop-prop" onclick="event.stopPropagation();rejectReview(${r.id})">Unpublish</button>
+          <button class="btn btn-danger btn-sm pc-stop-prop" onclick="event.stopPropagation();removeReview(${r.id})">Delete</button>`;
+      } else {
+        actions = `
+          <span class="badge pc-stop-prop" style="background:var(--err-bg);color:var(--err-fg);">Rejected</span>
+          <button class="btn btn-primary btn-sm pc-stop-prop" onclick="event.stopPropagation();approveReview(${r.id})">Approve Now</button>
+          <button class="btn btn-danger btn-sm pc-stop-prop" onclick="event.stopPropagation();removeReview(${r.id})">Delete</button>`;
+      }
+
+      return `
+        <div class="review-card" data-pc-row-review="${r.id}">
+          <div class="review-top">
+            <div>
+              <div class="review-stars">${stars}</div>
+              <div class="review-meta" style="margin-top:4px;">
+                ${custCell}
+                ${r.customer_company ? ` · ${escHtml(r.customer_company)}` : ''}
+                ${r.role ? ` · ${escHtml(r.role)}` : ''}
+              </div>
+            </div>
+            <div style="text-align:right;">
+              ${typePill}
+              <div class="review-meta" style="margin-top:6px;">${date}${visitCell}${techCell}</div>
+            </div>
+          </div>
+          <div class="review-body">${_revVis ? escHtml(r.text).replace(/\n/g, '<br>') : '<span style="color:var(--muted);">—</span>'}</div>
+          <div class="review-actions">${actions}</div>
+        </div>`;
+    }).join('');
+    // Reviews don't have a dedicated detail page — the card is the detail. Skip gateRow click.
+  }
+
+  async function approveReview(id) {
+    try { await api('PUT', `/api/admin/reviews/${id}/approve`); await loadReviews(); }
+    catch(e) { alert('Error: ' + e.message); }
+  }
+  async function rejectReview(id) {
+    try { await api('PUT', `/api/admin/reviews/${id}/reject`); await loadReviews(); }
+    catch(e) { alert('Error: ' + e.message); }
+  }
+  async function removeReview(id) {
+    if (!confirm('Delete this review permanently?')) return;
+    try { await api('DELETE', `/api/admin/reviews/${id}`); await loadReviews(); }
+    catch(e) { alert('Error: ' + e.message); }
+  }
+
+  function escHtml(s) {
+    return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // ── Toast (delegated to PC.toast from /static/pc_shared.js) ─────────────
+  // Local alias kept for backward compatibility; bare `toast(...)` call sites continue to work.
+  const toast = (message, kind) => window.PC.toast(message, kind);
+
+  // ── Admin Users ────────────────────────────────────────────────────────────
+  const ROLE_LABEL = {
+    super_admin: 'Super Admin', supervisor_admin: 'Supervisor Admin',
+    system_admin: 'System Admin', hr_admin: 'HR Admin', ceo_assistant: 'CEO Assistant',
+    inventory_manager: 'Inventory Manager',
+  };
+
+  async function loadAdmins() {
+    try {
+      allAdmins = await api('GET', '/api/admin/users');
+      renderAdmins();
+    } catch {}
+  }
+
+  function renderAdmins() {
+    const tbody = document.getElementById('adminTableBody');
+    if (!allAdmins.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty">No admin users yet.</td></tr>';
+      return;
+    }
+    const canManage = can('admin:set_role');
+    const _gateAd = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    tbody.innerHTML = allAdmins.map(a => {
+      const isMe = currentAdmin && currentAdmin.id === a.id;
+      // Sensitive-value gating: email + phone collapse to "—" when viewer
+      //  cannot read this admin record. Name + role badge always render.
+      const _adVis = (typeof PC === 'undefined' || !PC.canRead) ? true : (PC.canRead('admin_user', a.id) || isMe);
+      // Name → admin_user (FIXME: admin_user has no SPA route today; the
+      //  helper still renders a link with proper aria-label).
+      const nameLink = (_gateAd && !isMe)
+        ? PC.gateLinkHtml('admin_user', a.id, a.username || a.name || '', {})
+        : `<strong>${escHtml(a.username)}</strong>`;
+      const supervisorRow = a.supervisor_id
+        ? `<br><span style="font-size:10px;color:var(--muted);">Supervisor: ${(_gateAd ? PC.gateLinkHtml('admin_user', a.supervisor_id, a.supervisor_name || ('#'+a.supervisor_id), {}) : ('#'+a.supervisor_id))}</span>`
+        : '';
+      return `
+      <tr data-pc-row-admin="${a.id}" style="${a.active ? '' : 'opacity:0.55;'}">
+        <td><span class="code-pill">${a.prid || '—'}</span></td>
+        <td>${nameLink}${isMe ? ' <span style="font-size:10px;color:var(--teal);">(you)</span>' : ''}<br><span style="font-size:11px;color:var(--muted);">${_adVis ? escHtml(a.email) : '—'}</span>${supervisorRow}</td>
+        <td>${escHtml(a.name)}${a.phone ? `<br><span style="font-size:11px;color:var(--muted);">${_adVis ? escHtml(a.phone) : '—'}</span>` : ''}</td>
+        <td>${
+          canManage && !isMe
+            ? `<select class="pc-stop-prop" onchange="event.stopPropagation();changeAdminRole(${a.id}, this.value)" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
+                 ${Object.entries(ROLE_LABEL).map(([k,v]) => `<option value="${k}" ${a.role===k?'selected':''}>${v}</option>`).join('')}
+               </select>`
+            : `<span class="badge badge-confirmed">${ROLE_LABEL[a.role] || a.role}</span>`
+        }</td>
+        <td>${a.active ? '<span class="badge badge-confirmed">Active</span>' : '<span class="badge" style="background:var(--surface-2);color:var(--muted);">Inactive</span>'}</td>
+        <td style="white-space:nowrap;">
+          <button class="btn btn-edit btn-sm pc-stop-prop" onclick="event.stopPropagation();openResetAdminPw(${a.id},'${escHtml(a.name)}')">Reset PW</button>
+          ${_onbCanEdit() ? `<button class="btn btn-ghost btn-sm pc-stop-prop" onclick="event.stopPropagation();openOnboardReview('admin',${a.id},'${escHtml(a.name)}')" style="margin-left:6px;">🧾 Onboarding</button>` : ''}
+          ${canManage && !isMe ? (
+            a.active
+              ? `<button class="btn btn-danger btn-sm pc-stop-prop" onclick="event.stopPropagation();openOffboard('admin',${a.id},'${escHtml(a.name)}')" style="margin-left:6px;">🚪 Offboard</button>`
+              : `<button class="btn btn-ghost btn-sm pc-stop-prop" onclick="event.stopPropagation();reinstateAccount('admin',${a.id})" style="margin-left:6px;">Reinstate</button>`
+          ) : ''}
+        </td>
+      </tr>`;
+    }).join('');
+    // FIXME: admin_user has no SPA detail route today — gateRow does not bind
+    //  a click handler (rows are not clickable beyond action buttons).
+  }
+
+  async function submitAddAdmin() {
+    const err = document.getElementById('err-addAdmin');
+    err.style.display = 'none';
+    const body = {
+      password:  document.getElementById('au-password').value,
+      name:      document.getElementById('au-name').value.trim(),
+      email:     document.getElementById('au-email').value.trim(),
+      phone:     document.getElementById('au-phone').value.trim(),
+      role:      document.getElementById('au-role').value,
+      hire_date: document.getElementById('au-hire').value,
+      date_of_birth: document.getElementById('au-dob').value || '',
+      national_id:   document.getElementById('au-natid').value.trim(),
+      trn:           document.getElementById('au-trn').value.trim(),
+    };
+    if (!body.password || !body.name || !body.email || !body.role || !body.hire_date) {
+      showErr('err-addAdmin', 'Name, email, role, hire date, and password are required.'); return;
+    }
+    if (body.password.length < 8) { showErr('err-addAdmin', 'Password must be at least 8 characters.'); return; }
+    try {
+      const res = await api('POST', '/api/admin/users', body);
+      closeModal('addAdmin');
+      ['au-password','au-name','au-email','au-phone','au-hire','au-dob','au-natid','au-trn'].forEach(id => document.getElementById(id).value = '');
+      document.getElementById('au-role').value = '';
+      await loadAdmins();
+      showPridModal(res.prid, `${escHtml(body.name)} signs in at <strong>/admin</strong> with their PRID as the username, plus the password you set.`,
+        { kind: 'admin', id: res.id });
+    } catch(e) { showErr('err-addAdmin', e.message); }
+  }
+
+  // ── PRID success modal ──
+  // Optional subject = {kind:'tech'|'admin', id:Number}. When provided AND the
+  // current admin may onboard (super_admin / hr_admin), the success modal also
+  // offers a self-service onboarding link for that new hire.
+  let _onboardSubject = null;
+  function showPridModal(prid, subText, subject) {
+    document.getElementById('pridDisplay').textContent = prid;
+    document.getElementById('pridSubText').innerHTML = subText;
+    _onboardSubject = subject || null;
+    const block = document.getElementById('onboardLinkBlock');
+    const canOnboard = (typeof can === 'function')
+      ? (can('admin:create') || can('tech:create')) : true;
+    // Reset the link sub-UI each open.
+    document.getElementById('onboardLinkReady').style.display = 'none';
+    const genBtn = document.getElementById('genOnboardBtn');
+    if (genBtn) { genBtn.disabled = false; genBtn.textContent = '🔗 Generate onboarding link'; }
+    block.style.display = (_onboardSubject && canOnboard) ? 'block' : 'none';
+    document.getElementById('modal-prid').classList.add('open');
+  }
+  async function genOnboardLink() {
+    if (!_onboardSubject) return;
+    const btn = document.getElementById('genOnboardBtn');
+    btn.disabled = true; btn.textContent = 'Generating…';
+    try {
+      const res = await api('POST', '/api/admin/onboarding/invite',
+        { staff_kind: _onboardSubject.kind, staff_id: _onboardSubject.id });
+      document.getElementById('onboardLinkInput').value = res.link;
+      document.getElementById('onboardLinkExpiry').textContent =
+        `Link valid for ${res.expires_in_days} days. Send it only to ${escHtml(res.name||'the new hire')}.`;
+      document.getElementById('onboardLinkReady').style.display = 'block';
+      btn.textContent = '🔗 Regenerate link';
+      btn.disabled = false;
+    } catch (e) {
+      btn.disabled = false; btn.textContent = '🔗 Generate onboarding link';
+      alert(e.message || 'Could not generate link');
+    }
+  }
+  async function copyOnboardLink() {
+    const link = document.getElementById('onboardLinkInput').value;
+    try {
+      await navigator.clipboard.writeText(link);
+      const btn = event.target; const orig = btn.textContent;
+      btn.textContent = '✓ Copied!'; setTimeout(() => { btn.textContent = orig; }, 1500);
+    } catch { document.getElementById('onboardLinkInput').select(); }
+  }
+
+  // ── HR onboarding-submission review ─────────────────────────────────────
+  // Read (and, for HR/super_admin, correct) the packet a hire submitted
+  // through the wizard. Works for both 'tech' and 'admin' subjects.
+  let _onbReview = { kind: null, id: null, name: '', data: null, editing: false };
+
+  const _ONB_STATUS = {
+    submitted:    ['Submitted · locked', 'var(--teal-bg)',  'var(--teal-deep)'],
+    in_progress:  ['In progress',        'var(--steel-bg)', 'var(--steel)'],
+    invited:      ['Invited — not yet submitted', 'var(--surface-2)', 'var(--muted)'],
+    '':           ['Not started',        'var(--surface-2)', 'var(--muted)'],
+  };
+  // Singleton fields HR may correct, grouped for display. [key, label, type].
+  const _ONB_GROUPS = [
+    ['Personal', [
+      ['preferred_name','Preferred name','text'],
+      ['pronouns','Pronouns','text'],
+      ['sex','Sex','text'],
+      ['date_of_birth','Date of birth','date'],
+      ['country_of_birth','Country of birth','text'],
+      ['marital_status','Marital status','text'],
+      ['primary_nationality','Primary nationality','text'],
+      ['additional_nationalities','Additional nationalities','text'],
+      ['gender_identity','Gender identity','text'],
+      ['personal_phone','Personal phone','text'],
+      ['personal_email','Personal email','text'],
+      ['home_address','Home address','text'],
+      ['home_city','City / Town','text'],
+      ['home_parish','Parish','text'],
+      ['home_country','Country','text'],
+    ]],
+    ['Work eligibility & statutory IDs', [
+      ['national_id','National ID','text'],
+      ['trn','TRN','text'],
+      ['nis','NIS','text'],
+      ['nht','NHT','text'],
+    ]],
+    ['Pay & banking', [
+      ['bank_name','Bank','text'],
+      ['bank_branch','Branch','text'],
+      ['bank_account_type','Account type','text'],
+      ['bank_account_number','Account number','text'],
+    ]],
+    ['Diversity & accessibility (optional)', [
+      ['ethnicity','Ethnicity','text'],
+      ['disability_status','Disability status','text'],
+      ['accommodation_needed','Accommodation needed','text'],
+      ['accommodation_note','Accommodation note','text'],
+    ]],
+  ];
+
+  function _onbCanEdit() {
+    return !!(currentAdmin && (currentAdmin.role === 'super_admin' || currentAdmin.role === 'hr_admin'));
+  }
+  function _onbHumanKey(k) {
+    return String(k).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  }
+  function _onbRow(label, val) {
+    return `<div style="display:flex;justify-content:space-between;gap:16px;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;">
+      <span style="color:var(--muted);">${escHtml(label)}</span>
+      <span style="color:var(--text);text-align:right;font-weight:500;">${(val !== null && val !== undefined && String(val).trim() !== '') ? escHtml(String(val)) : '—'}</span></div>`;
+  }
+  function _onbCard(title, inner) {
+    return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:14px;">
+      <h4 style="margin:0 0 8px;color:var(--ink);font-size:14px;">${escHtml(title)}</h4>${inner}</div>`;
+  }
+  function _onbCollection(title, items) {
+    if (!Array.isArray(items) || !items.length) {
+      return _onbCard(title, `<div style="font-size:12px;color:var(--muted);">None provided.</div>`);
+    }
+    const blocks = items.map(it => {
+      if (it && typeof it === 'object') {
+        const rows = Object.keys(it)
+          .filter(k => k !== 'id')
+          .map(k => _onbRow(_onbHumanKey(k), it[k])).join('');
+        return `<div style="border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:8px;background:var(--surface-2);">${rows}</div>`;
+      }
+      return `<div style="font-size:13px;padding:4px 0;">${escHtml(String(it))}</div>`;
+    }).join('');
+    return _onbCard(`${title} <span style="color:var(--muted);font-weight:400;">(${items.length})</span>`, blocks);
+  }
+
+  async function openOnboardReview(kind, id, name) {
+    kind = (kind === 'admin') ? 'admin' : 'tech';
+    _onbReview = { kind, id, name: name || '', data: null, editing: false };
+    document.getElementById('onbReviewTitle').textContent = 'Onboarding — ' + (name || '');
+    document.getElementById('onbReviewBody').innerHTML = '<div class="empty" style="padding:20px;">Loading…</div>';
+    document.getElementById('onbReviewFooter').innerHTML =
+      `<button class="btn btn-primary" onclick="closeModal('onboardReview')">Close</button>`;
+    document.getElementById('modal-onboardReview').classList.add('open');
+    try {
+      const d = await api('GET', `/api/admin/onboarding/submission/${kind}/${id}`);
+      _onbReview.data = d;
+      renderOnbReview();
+    } catch (e) {
+      document.getElementById('onbReviewBody').innerHTML =
+        `<div class="empty" style="padding:20px;color:var(--danger);">Unable to load: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  function renderOnbReview() {
+    const d = _onbReview.data; if (!d) return;
+    const p = d.personal || {};
+    const st = _ONB_STATUS[d.status] || _ONB_STATUS[''];
+    const fmtTs = ts => ts ? new Date(ts).toLocaleString() : '';
+
+    const head = `
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:14px;">
+        <span class="badge" style="background:${st[1]};color:${st[2]};">${escHtml(st[0])}</span>
+        ${d.submitted_at ? `<span style="font-size:12px;color:var(--muted);">Submitted ${escHtml(fmtTs(d.submitted_at))}</span>` : ''}
+      </div>
+      <div style="background:var(--steel-bg);border-radius:8px;padding:10px 14px;font-size:12px;color:var(--ink);margin-bottom:16px;line-height:1.6;">
+        <strong>HR-managed identity:</strong> ${escHtml(d.name || '—')}
+        ${d.work_email ? ' · ' + escHtml(d.work_email) : ''}${d.work_phone ? ' · ' + escHtml(d.work_phone) : ''}
+        <br>The fields below were entered by the hire and locked on submit. ${_onbCanEdit() ? 'As HR you can correct them.' : ''}
+      </div>`;
+
+    if (_onbReview.editing) {
+      const groups = _ONB_GROUPS.map(([title, fields]) => {
+        const inner = fields.map(([k, label, type]) => `
+          <div style="margin-bottom:8px;">
+            <label style="display:block;font-size:11px;font-weight:600;color:var(--muted);margin-bottom:3px;">${escHtml(label)}</label>
+            <input data-onbk="${k}" type="${type}" value="${escHtml(p[k] == null ? '' : String(p[k]))}"
+                   style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;">
+          </div>`).join('');
+        return _onbCard(title, inner);
+      }).join('');
+      document.getElementById('onbReviewBody').innerHTML = head + groups +
+        `<div style="font-size:12px;color:var(--muted);">Emergency contacts, education, work history and policy sign-offs are shown in read mode and aren't edited here.</div>`;
+      document.getElementById('onbReviewFooter').innerHTML =
+        `<button class="btn btn-ghost" onclick="onbReviewCancelEdit()">Cancel</button>
+         <button class="btn btn-primary" onclick="saveOnbReview()">Save changes</button>`;
+      return;
+    }
+
+    const personalCard = _onbCard('Personal', _ONB_GROUPS[0][1].map(([k,l]) => _onbRow(l, p[k])).join(''));
+    const workCard     = _onbCard('Work eligibility & statutory IDs', _ONB_GROUPS[1][1].map(([k,l]) => _onbRow(l, p[k])).join(''));
+    const bankCard     = _onbCard('Pay & banking', _ONB_GROUPS[2][1].map(([k,l]) => _onbRow(l, p[k])).join(''));
+    const divCard      = _onbCard('Diversity & accessibility (optional)', _ONB_GROUPS[3][1].map(([k,l]) => _onbRow(l, p[k])).join(''));
+    const esignCard    = _onbCard('Electronic signature', [
+      _onbRow('Signed name', p.esign_full_name),
+      _onbRow('Initials', p.esign_initials),
+      _onbRow('Agreed at', fmtTs(d.esign_agreed_at)),
+    ].join(''));
+    const col = d.collections || {};
+    const collectionCards =
+      _onbCollection('Emergency contacts', col.emergency_contacts) +
+      _onbCollection('Education', col.education) +
+      _onbCollection('Work history', col.job_history) +
+      _onbCollection('Languages', col.languages) +
+      _onbCollection('Policy acknowledgements', col.policy_acknowledgements);
+
+    document.getElementById('onbReviewBody').innerHTML =
+      head + personalCard + workCard + bankCard + collectionCards + divCard + esignCard;
+
+    document.getElementById('onbReviewFooter').innerHTML =
+      (_onbCanEdit()
+        ? `<button class="btn btn-edit" onclick="onbReviewStartEdit()">✎ Correct details</button>`
+        : '') +
+      `<button class="btn btn-primary" onclick="closeModal('onboardReview')">Close</button>`;
+  }
+
+  function onbReviewStartEdit() { _onbReview.editing = true; renderOnbReview(); }
+  function onbReviewCancelEdit() { _onbReview.editing = false; renderOnbReview(); }
+
+  async function saveOnbReview() {
+    const personal = {};
+    document.querySelectorAll('#onbReviewBody [data-onbk]').forEach(el => {
+      personal[el.getAttribute('data-onbk')] = el.value;
+    });
+    try {
+      const res = await api('POST',
+        `/api/admin/onboarding/submission/${_onbReview.kind}/${_onbReview.id}`,
+        { personal });
+      _onbReview.data.personal = res.personal;
+      _onbReview.editing = false;
+      renderOnbReview();
+      toast('Onboarding details updated.', 'success');
+    } catch (e) {
+      toast('Save failed: ' + e.message, 'error');
+    }
+  }
+
+  async function copyPrid() {
+    const prid = document.getElementById('pridDisplay').textContent;
+    try {
+      await navigator.clipboard.writeText(prid);
+      const btn = event.target;
+      const orig = btn.textContent;
+      btn.textContent = '✓ Copied!';
+      setTimeout(() => { btn.textContent = orig; }, 1500);
+    } catch {
+      alert('PRID: ' + prid);
+    }
+  }
+
+  async function changeAdminRole(id, role) {
+    try {
+      await api('PUT', `/api/admin/users/${id}/role`, { role });
+      await loadAdmins();
+    } catch(e) { alert('Error: ' + e.message); await loadAdmins(); }
+  }
+
+  async function toggleAdminActive(id, active) {
+    try {
+      await api('PUT', `/api/admin/users/${id}/active`, { active: !!active });
+      await loadAdmins();
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  function openResetAdminPw(id, name) {
+    resetAdminPwId = id;
+    document.getElementById('resetAdminPwName').textContent = name;
+    document.getElementById('rap-pw').value = '';
+    document.getElementById('err-resetAdminPw').style.display = 'none';
+    document.getElementById('modal-resetAdminPw').classList.add('open');
+  }
+
+  async function submitResetAdminPw() {
+    const pw = document.getElementById('rap-pw').value;
+    if (pw.length < 8) { showErr('err-resetAdminPw','Password must be at least 8 characters.'); return; }
+    try {
+      await api('PUT', `/api/admin/users/${resetAdminPwId}/password`, { password: pw });
+      closeModal('resetAdminPw');
+      alert('Password saved. Share it privately with the admin.');
+    } catch(e) { showErr('err-resetAdminPw', e.message); }
+  }
+
+  // ── Documents ──────────────────────────────────────────────────────────────
+  let docState = { sensitivity: '', document_type: '', search: '', view: 'all' };
+  let _docSearchTimer = null;
+
+  const DOC_TYPE_LABELS = {
+    id: 'ID Document', trn: 'TRN', nis: 'NIS', passport: 'Passport',
+    drivers_license: "Driver's Licence", police_record: 'Police Record',
+    certificate: 'Certificate', contract: 'Contract', insurance: 'Insurance',
+    invoice_receipt: 'Invoice/Receipt', service_report: 'Service Report',
+    photo: 'Photo', other: 'Other',
+  };
+
+  function setDocFilter(field, value, btn) {
+    // Selecting any "sensitivity" pill takes us back to the normal view
+    if (field === 'sensitivity') docState.view = 'all';
+    docState[field] = value;
+    document.querySelectorAll('#docFilters .filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    loadDocuments();
+  }
+
+  function loadDocumentsDebounced() {
+    clearTimeout(_docSearchTimer);
+    _docSearchTimer = setTimeout(() => {
+      docState.search = document.getElementById('doc-search').value.trim();
+      loadDocuments();
+    }, 250);
+  }
+
+  // Cache of the last full documents list, so the global search palette can
+  // index documents without an extra round-trip. Populated by loadDocuments.
+  let allDocuments = [];
+  async function loadDocuments() {
+    if (!can('documents:view')) return;
+    // Populate type dropdown once
+    const sel = document.getElementById('doc-type-filter');
+    if (sel.options.length <= 1) {
+      Object.entries(DOC_TYPE_LABELS).forEach(([k, v]) => {
+        const o = document.createElement('option');
+        o.value = k; o.textContent = v; sel.appendChild(o);
+      });
+    }
+    docState.document_type = sel.value || '';
+
+    // Refresh the expiring badge regardless of current view
+    loadExpiringBadge();
+
+    if (docState.view === 'expiring') {
+      try {
+        const res = await api('GET', '/api/admin/documents/expiring?within_days=30');
+        const rows = [...(res.expired || []), ...(res.expiring_soon || [])];
+        renderDocuments(rows);
+      } catch(e) {
+        document.getElementById('docTableBody').innerHTML =
+          `<tr><td colspan="9" class="empty">Error: ${escHtml(e.message)}</td></tr>`;
+      }
+      return;
+    }
+
+    const params = new URLSearchParams();
+    if (docState.sensitivity)  params.set('sensitivity',  docState.sensitivity);
+    if (docState.document_type) params.set('document_type', docState.document_type);
+    if (docState.search)       params.set('search',       docState.search);
+    try {
+      const rows = await api('GET', '/api/admin/documents?' + params.toString());
+      allDocuments = rows || [];
+      renderDocuments(rows);
+    } catch(e) {
+      document.getElementById('docTableBody').innerHTML =
+        `<tr><td colspan="9" class="empty">Error: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  async function loadExpiringBadge() {
+    if (!can('documents:view')) return;
+    try {
+      const res = await api('GET', '/api/admin/documents/expiring?within_days=30');
+      const total = (res.expired?.length || 0) + (res.expiring_soon?.length || 0);
+      const badge = document.getElementById('docsExpiringBadge');
+      if (total > 0) {
+        badge.textContent = total;
+        badge.style.display = 'inline-block';
+        badge.title = `${res.expired?.length || 0} expired, ${res.expiring_soon?.length || 0} expiring soon`;
+      } else {
+        badge.style.display = 'none';
+      }
+    } catch {}
+  }
+
+  function renderDocuments(rows, _keepCap) {
+    if (!_keepCap) docRowCap = PC_TABLE_CAP;
+    docRenderRows = rows || [];
+    const tbody = document.getElementById('docTableBody');
+    const docPager = document.getElementById('docPager');
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="9" class="empty">No documents found.</td></tr>';
+      if (docPager) docPager.style.display = 'none';
+      return;
+    }
+    const docTotal = rows.length;
+    const docShown = Math.min(docRowCap, docTotal);
+    const docPageRows = rows.slice(0, docShown);
+    const sensitivityBadge = (s) => {
+      const meta = {
+        public:           { label: 'Public',           bg: 'var(--steel-bg)', fg: 'var(--steel)' },
+        confidential:     { label: 'Confidential',     bg: 'var(--teal-bg)', fg: 'var(--teal-deep)' },
+        highly_sensitive: { label: 'Highly Sensitive', bg: 'var(--err-bg)', fg: 'var(--err-fg)' },
+      }[s] || { label: s, bg: 'var(--surface-2)', fg: 'var(--text)' };
+      return `<span class="badge" style="background:${meta.bg};color:${meta.fg};">${meta.label}</span>`;
+    };
+    const fmtBytes = (n) => {
+      if (n < 1024) return `${n} B`;
+      if (n < 1024 * 1024) return `${(n/1024).toFixed(1)} KB`;
+      return `${(n/1024/1024).toFixed(1)} MB`;
+    };
+    const expiryCell = (d) => {
+      if (!d.expiry_date) return '<span style="color:var(--muted);">—</span>';
+      // Compute days client-side too (in case row came from the standard list)
+      let days = d.days_to_expiry;
+      if (days == null) {
+        const exp = new Date(d.expiry_date + 'T00:00:00');
+        const today = new Date(new Date().toDateString());
+        days = Math.round((exp - today) / (1000 * 60 * 60 * 24));
+      }
+      const dateStr = PC.fmtDate(d.expiry_date);
+      let bg, fg, label;
+      if (days < 0)        { bg = 'var(--err-bg)'; fg = 'var(--err-fg)'; label = `Expired ${-days}d ago`; }
+      else if (days <= 30) { bg = 'var(--teal-bg)'; fg = 'var(--teal-deep)'; label = `In ${days}d`; }
+      else                  { bg = 'var(--teal-bg)'; fg = 'var(--teal-deep)'; label = `In ${days}d`; }
+      return `<div style="font-size:12px;font-weight:600;">${dateStr}</div><span class="badge" style="background:${bg};color:${fg};font-size:9px;margin-top:2px;display:inline-block;">${label}</span>`;
+    };
+    const _gateDoc = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    // Sensitive-value gating: file size + sensitivity badge + version-ish
+    //  metadata collapse to "—" when the viewer cannot read this document.
+    tbody.innerHTML = docPageRows.map(d => {
+      const _docVis = (typeof PC === 'undefined' || !PC.canRead) ? true : PC.canRead('document', d.id);
+      // Attached entity link — per-attached-type
+      let attached = d.linked_to_label ? escHtml(d.linked_to_label) : '<span style="color:var(--muted);">—</span>';
+      if (_gateDoc && d.linked_to_label) {
+        const at = (d.attached_type || d.linked_to_type || '').toLowerCase();
+        const aid = d.attached_id || d.linked_to_id;
+        if (aid && (at === 'customer' || at === 'invoice' || at === 'visit' || at === 'work_order' || at === 'technician')) {
+          const ttype = (at === 'work_order') ? 'visit' : at;
+          attached = PC.gateLinkHtml(ttype, aid, d.linked_to_label, {});
+        }
+      }
+      // Uploader — actor may be technician or admin_user. We can't always tell
+      //  which from the row payload, so prefer admin_user when uploaded_by_kind
+      //  is 'admin', else technician. FIXME: admin_user route may not exist —
+      //  the helper still renders a link (text+aria) without a destination.
+      let uploader = `<span style="font-size:11px;">${escHtml(d.uploaded_by_label || '?')}</span>`;
+      if (_gateDoc && d.uploaded_by_id) {
+        const utype = (d.uploaded_by_kind === 'admin') ? 'admin_user' : 'technician';
+        uploader = PC.gateLinkHtml(utype, d.uploaded_by_id, d.uploaded_by_label || '?', {});
+      }
+      return `
+      <tr>
+        <td><strong>${escHtml(d.title)}</strong>${d.description ? `<br><span style="font-size:11px;color:var(--muted);">${escHtml(d.description)}</span>` : ''}<br><span style="font-size:11px;color:var(--muted);font-family:'Courier New',monospace;">${escHtml(d.original_filename)}</span></td>
+        <td>${escHtml(DOC_TYPE_LABELS[d.document_type] || d.document_type)}</td>
+        <td>${_docVis ? sensitivityBadge(d.sensitivity) : '<span style="color:var(--muted);">—</span>'}</td>
+        <td>${attached}</td>
+        <td>${expiryCell(d)}</td>
+        <td style="white-space:nowrap;">${_docVis ? fmtBytes(d.size_bytes) : '—'}</td>
+        <td style="white-space:nowrap;font-size:12px;color:var(--muted);">${PC.fmtDateTime(d.uploaded_at)}</td>
+        <td>${uploader}<br><span style="font-size:10px;color:var(--muted);font-family:'Courier New',monospace;">${escHtml(d.uploaded_by_prid||'')}</span></td>
+        <td style="white-space:nowrap;">
+          <button class="btn btn-edit btn-sm pc-stop-prop" onclick="event.stopPropagation();downloadDocument(${d.id})">📥 Download</button>
+          ${can('documents:delete') || (d.sensitivity==='highly_sensitive' && can('documents:delete_highly_sensitive'))
+            ? `<button class="btn btn-danger btn-sm pc-stop-prop" onclick="event.stopPropagation();deleteDocument(${d.id},'${escHtml(d.title)}',${d.sensitivity==='highly_sensitive'})" style="margin-left:4px;">Delete</button>`
+            : ''}
+        </td>
+      </tr>`;
+    }).join('');
+    pcRenderTablePager(docPager, docTotal, docShown, 'docShowMore', 'docShowAll', 'documents');
+  }
+  function docShowMore() { docRowCap += PC_TABLE_CAP; renderDocuments(docRenderRows, true); }
+  function docShowAll()  { docRowCap = Infinity;      renderDocuments(docRenderRows, true); }
+
+  async function downloadDocument(id) {
+    try {
+      await _doDocumentDownload(id);
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  async function _doDocumentDownload(id) {
+    // Use fetch directly so we can read response headers
+    const res = await fetch(`/api/admin/documents/${id}/download`, {
+      headers: { 'Authorization': `Bearer ${adminToken}` },
+    });
+    if (res.status === 401 && res.headers.get('X-Require-MFA-Reauth') === 'true') {
+      // Tier-3 step-up: prompt for code and retry once
+      const code = await _promptMfaReauth();
+      if (!code) return;  // user cancelled
+      const ok = await fetch('/api/admin/mfa/reauth', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${adminToken}` },
+        body:    JSON.stringify({ code }),
+      });
+      if (!ok.ok) {
+        const d = await ok.json().catch(() => ({}));
+        throw new Error(d.detail || 'MFA verification failed');
+      }
+      return _doDocumentDownload(id);   // retry
+    }
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      throw new Error(d.detail || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    const a = document.createElement('a');
+    a.href = data.url;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.download = data.original_filename || '';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
+  function _promptMfaReauth() {
+    return new Promise(resolve => {
+      const code = prompt(
+        'This is a Highly Sensitive document.\n\n' +
+        'For your security, enter your current 6-digit authenticator code ' +
+        '(or a backup code) to continue:'
+      );
+      resolve(code && code.trim() ? code.trim() : null);
+    });
+  }
+
+  async function deleteDocument(id, title, isHighlySensitive) {
+    const warning = isHighlySensitive
+      ? `Delete "${title}"?\n\nThis is a Highly Sensitive document. It will be archived (kept on disk for forensic retention) but no longer visible. This is logged.`
+      : `Permanently delete "${title}"? This cannot be undone.`;
+    if (!confirm(warning)) return;
+    try {
+      await api('DELETE', `/api/admin/documents/${id}`);
+      await loadDocuments();
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  // ── Upload modal ──
+  function loadDocLinkOptions() {
+    const type = document.getElementById('doc-link-type').value;
+    const sel  = document.getElementById('doc-link-id');
+    sel.innerHTML = '<option value="">—</option>';
+    if (!type) return;
+    if (type === 'customer') {
+      sel.innerHTML += allCustomers.map(c => `<option value="${c.id}">${escHtml(c.name)} (${c.customer_code})</option>`).join('');
+    } else if (type === 'tech') {
+      sel.innerHTML += allTechs.map(t => `<option value="${t.id}">${escHtml(t.name)} (${t.tech_code})</option>`).join('');
+    } else if (type === 'admin') {
+      sel.innerHTML += (allAdmins || []).map(a => `<option value="${a.id}">${escHtml(a.name)} (${a.username})</option>`).join('');
+    }
+  }
+
+  // Force sensitivity → highly_sensitive when an HS-typed document is selected
+  document.addEventListener('change', e => {
+    if (e.target && e.target.id === 'doc-type') {
+      const hsTypes = new Set(['id','trn','nis','passport','police_record']);
+      if (hsTypes.has(e.target.value)) {
+        document.getElementById('doc-sensitivity').value = 'highly_sensitive';
+      }
+    }
+  });
+
+  async function submitUploadDoc() {
+    const err = document.getElementById('err-uploadDoc');
+    err.style.display = 'none';
+    const file        = document.getElementById('doc-file').files[0];
+    const title       = document.getElementById('doc-title').value.trim();
+    const type        = document.getElementById('doc-type').value;
+    const sensitivity = document.getElementById('doc-sensitivity').value;
+    const desc        = document.getElementById('doc-desc').value.trim();
+    const linkType    = document.getElementById('doc-link-type').value;
+    const linkId      = document.getElementById('doc-link-id').value;
+
+    if (!file)  { showErr('err-uploadDoc', 'Pick a file to upload.'); return; }
+    if (!title) { showErr('err-uploadDoc', 'Title is required.'); return; }
+    if (!type)  { showErr('err-uploadDoc', 'Pick a document type.'); return; }
+    if (file.size > 25 * 1024 * 1024) { showErr('err-uploadDoc','File is too large (max 25 MB).'); return; }
+
+    const expiry = document.getElementById('doc-expiry').value;
+
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('title', title);
+    fd.append('document_type', type);
+    fd.append('sensitivity', sensitivity);
+    fd.append('description', desc);
+    fd.append('linked_to_type', linkType);
+    fd.append('linked_to_id', linkId || '0');
+    if (expiry) fd.append('expiry_date', expiry);
+
+    const btn = document.getElementById('uploadDocSubmitBtn');
+    btn.disabled = true; btn.textContent = 'Uploading…';
+    try {
+      const res = await fetch('/api/admin/documents', {
+        method:  'POST',
+        headers: { 'Authorization': `Bearer ${adminToken}` },
+        body:    fd,
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        showErr('err-uploadDoc', d.detail || 'Upload failed.');
+        return;
+      }
+      closeModal('uploadDoc');
+      // Reset form
+      ['doc-file','doc-title','doc-desc','doc-expiry'].forEach(id => document.getElementById(id).value = '');
+      document.getElementById('doc-type').value = '';
+      document.getElementById('doc-sensitivity').value = 'confidential';
+      document.getElementById('doc-link-type').value = '';
+      document.getElementById('doc-link-id').innerHTML = '<option value="">—</option>';
+      await loadDocuments();
+    } catch(e) {
+      showErr('err-uploadDoc', e.message);
+    } finally {
+      btn.disabled = false; btn.textContent = 'Upload';
+    }
+  }
+
+  // ── Invoices ───────────────────────────────────────────────────────────────
+  let allInvoices = [];
+  let invoiceFilter = 'all';
+  let invoiceAgingBucket = null; // 'not_yet_due' | 'bucket_0_30' | 'bucket_31_60' | 'bucket_61_90' | 'bucket_90plus'
+  let editingInvoiceId = null;
+  let currentLineItems = [];
+  let invoiceCurrency = 'JMD';
+  let invoiceTaxRate  = 0.15;
+
+  function fmtMoney(n, currency) {
+    n = Number(n) || 0;
+    const sym = currency === 'JMD' ? 'J$' : (currency === 'USD' ? '$' : (currency === 'TTD' ? 'TT$' : ''));
+    return sym + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  // Single canonical Jamaica-dollar formatter. Always J$, always with
+  // thousands separators, always 2 decimals. Use this for *every* money
+  // display that doesn't carry an explicit currency code (i.e. all
+  // payroll / inventory / warehouse views — invoicing still uses
+  // fmtMoney(n, currency) because some customers transact in USD/TTD).
+  function fmtJMD(n) {
+    return fmtMoney(n, 'JMD');
+  }
+  window.fmtJMD = fmtJMD;
+
+  // Convenience: wrap a money value in the brand mono span so the
+  // digits line up column-wise. Use everywhere J$ appears in HTML.
+  function fmtJMDMono(n) {
+    return `<span class="pc-mono">${fmtJMD(n)}</span>`;
+  }
+  window.fmtJMDMono = fmtJMDMono;
+
+  function isOverdue(inv) {
+    if (inv.status !== 'sent') return false;
+    const balance = (inv.total || 0) - (inv.amount_paid || 0);
+    if (balance <= 0.005) return false;
+    return new Date(inv.due_date) < new Date(new Date().toDateString());
+  }
+
+  async function loadInvoices() {
+    if (!can('invoice:view')) return;
+    try {
+      allInvoices = await api('GET', '/api/admin/invoices');
+      renderInvoices();
+    } catch(e) {}
+    loadArAging();
+  }
+
+  // ── AR Aging panel — cash-discipline rollup ────────────────────────────
+  async function loadArAging() {
+    const host = document.getElementById('ar-aging');
+    if (!host) return;
+    try {
+      const a = await api('GET', '/api/admin/invoices/aging');
+      const fmt = (n) => 'J$' + Number(n||0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+      const cur = (b) => b.total_outstanding;
+      const buckets = a.buckets || {};
+      const order = ['not_yet_due','bucket_0_30','bucket_31_60','bucket_61_90','bucket_90plus'];
+      const colors = {
+        not_yet_due:   'background:var(--steel-bg);color:var(--steel);',
+        bucket_0_30:   'background:var(--teal-bg);color:var(--teal-deep);',
+        bucket_31_60:  'background:var(--teal-bg);color:var(--teal-deep);',
+        bucket_61_90:  'background:var(--steel-bg);color:var(--steel);',
+        bucket_90plus: 'background:var(--err-bg);color:var(--err-fg);',
+      };
+      const cells = order.map(k => {
+        const b = buckets[k] || {label:k, count:0, total_outstanding:0};
+        const active = invoiceAgingBucket === k ? 'box-shadow:0 0 0 2px var(--teal);' : '';
+        return `<div class="pc-aging-bucket-clickable" data-bucket="${k}" tabindex="0" role="button" aria-label="Filter invoices by ${escHtml(b.label)}" onclick="setInvoiceAgingFilter('${k}')" onkeydown="pcRowKey(event, function(){ setInvoiceAgingFilter('${k}'); })" style="${colors[k]||''};padding:10px;border-radius:8px;${active}">
+          <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.6px;font-weight:700;opacity:0.9;">${escHtml(b.label)}</div>
+          <div style="font-size:18px;font-weight:700;margin-top:4px;">${fmt(cur(b))}</div>
+          <div style="font-size:11px;opacity:0.85;">${b.count} invoice${b.count===1?'':'s'}</div>
+        </div>`;
+      }).join('');
+      const top5 = (a.by_customer || []).slice(0, 5);
+      host.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;">
+          <h3 style="margin:0;color:var(--ink);">Accounts Receivable Aging</h3>
+          <span style="font-size:12px;color:var(--muted);">as of ${escHtml(a.as_of)} · total outstanding <strong>${fmt(a.grand_total)}</strong></span>
+        </div>
+        <div id="ar-aging-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;">${cells}</div>
+        ${top5.length ? `
+          <div style="margin-top:14px;font-size:11px;text-transform:uppercase;letter-spacing:0.6px;color:var(--muted);font-weight:700;">Top customers by outstanding</div>
+          <table style="width:100%;font-size:13px;margin-top:6px;">
+            <thead><tr style="text-align:left;color:var(--muted);"><th style="padding:4px;">Customer</th><th style="padding:4px;text-align:right;">Outstanding</th><th style="padding:4px;text-align:right;">Invoices</th><th style="padding:4px;text-align:right;">Oldest (days)</th></tr></thead>
+            <tbody id="ar-top-customers-body">${top5.map(c => `
+              <tr data-customer-id="${c.customer_id}" style="border-top:1px solid var(--border);">
+                <td style="padding:6px 4px;">${escHtml(c.customer_name || '')}</td>
+                <td style="padding:6px 4px;text-align:right;font-weight:600;">${fmt(c.total_outstanding)}</td>
+                <td style="padding:6px 4px;text-align:right;">${c.invoice_count}</td>
+                <td style="padding:6px 4px;text-align:right;color:${c.oldest_days_overdue>90?'var(--err-fg)':c.oldest_days_overdue>60?'var(--steel)':c.oldest_days_overdue>30?'var(--teal-deep)':'var(--muted)'};font-weight:600;">${c.oldest_days_overdue}</td>
+              </tr>`).join('')}</tbody>
+          </table>
+        ` : ''}`;
+      // Top Customers — entire ROW is clickable, navigates to that
+      // customer's detail view. No inline link styling on the name; the
+      // row hover + cursor signal interactivity. Customer code is dropped
+      // from the cell entirely (was a leftover from the previous attempt
+      // that confused the user). PC.gateRow handles role-gating: if the
+      // viewer can't read customer, the row stays non-clickable.
+      top5.forEach(function (c) {
+        const tr = host.querySelector('#ar-top-customers-body tr[data-customer-id="' + c.customer_id + '"]');
+        if (!tr) return;
+        if (typeof PC !== 'undefined' && PC.gateRow) {
+          PC.gateRow(tr, 'customer', c.customer_id, {
+            onClick: function () { openCustomerDetailFull(c.customer_id); },
+            ariaLabel: 'Open customer ' + (c.customer_name || c.customer_code || '')
+          });
+        } else {
+          // Fallback when pc_shared.js hasn't loaded yet
+          tr.style.cursor = 'pointer';
+          tr.setAttribute('role', 'button');
+          tr.setAttribute('tabindex', '0');
+          tr.addEventListener('click', function () { openCustomerDetailFull(c.customer_id); });
+        }
+      });
+      // The bucket tiles already have onclick + tabindex + role="button" +
+      // onkeydown wired inline. We do NOT call PC.gateBadge here — that
+      // helper overwrites textContent, wiping the rich tile content
+      // (label / amount / count) and leaving blank tiles. Confirmed bug
+      // from commit ef13116. The inline click/keyboard handlers carry
+      // the a11y; PC.canRead can be added later as a render-time gate if
+      // some roles need bucket-level filtering disabled.
+    } catch (e) {
+      host.innerHTML = `<div style="color:var(--muted);font-size:13px;">AR aging unavailable: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  function setInvoiceFilter(f, btn) {
+    invoiceFilter = f;
+    document.querySelectorAll('#invoiceFilters .filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    renderInvoices();
+  }
+
+  function setInvoiceAgingFilter(bucket) {
+    // Toggle: clicking the same bucket again clears the filter.
+    invoiceAgingBucket = (invoiceAgingBucket === bucket) ? null : bucket;
+    // Re-render the aging panel (to update the active outline) and the table.
+    loadArAging();
+    renderInvoices();
+    // Scroll to the invoice table.
+    const tableEl = document.getElementById('invoiceTableBody');
+    if (tableEl && tableEl.scrollIntoView) {
+      try { tableEl.scrollIntoView({behavior: 'smooth', block: 'start'}); } catch(_) { tableEl.scrollIntoView(); }
+    }
+  }
+
+  function renderInvoices(_keepCap) {
+    if (!_keepCap) invRowCap = PC_TABLE_CAP;
+    let rows = allInvoices.slice();
+    if (invoiceFilter === 'overdue') rows = rows.filter(isOverdue);
+    else if (invoiceFilter !== 'all') rows = rows.filter(r => r.status === invoiceFilter);
+    // FIXME(client-side aging filter): backend /api/admin/invoices has no aging_bucket param,
+    // so we filter the already-loaded list client-side based on days-past-due + outstanding balance.
+    if (invoiceAgingBucket) {
+      const today = new Date(); today.setHours(0,0,0,0);
+      const daysPastDue = (inv) => {
+        if (!inv.due_date) return -9999;
+        const d = new Date(inv.due_date); d.setHours(0,0,0,0);
+        return Math.floor((today - d) / 86400000);
+      };
+      const outstanding = (inv) => (inv.total || 0) - (inv.amount_paid || 0);
+      const bucket = invoiceAgingBucket;
+      rows = rows.filter(inv => {
+        if (outstanding(inv) <= 0.005) return false;
+        if (inv.status === 'paid' || inv.status === 'cancelled' || inv.status === 'draft') return false;
+        const dpd = daysPastDue(inv);
+        if (bucket === 'not_yet_due')   return dpd < 0;
+        if (bucket === 'bucket_0_30')   return dpd >= 0  && dpd <= 30;
+        if (bucket === 'bucket_31_60')  return dpd >= 31 && dpd <= 60;
+        if (bucket === 'bucket_61_90')  return dpd >= 61 && dpd <= 90;
+        if (bucket === 'bucket_90plus') return dpd > 90;
+        return true;
+      });
+    }
+
+    // Summary cards over ALL invoices (not filtered)
+    const outstanding = allInvoices.filter(i => i.status === 'sent').reduce((s, i) => s + ((i.total || 0) - (i.amount_paid || 0)), 0);
+    const overdueCount = allInvoices.filter(isOverdue).length;
+    const thisMonth = new Date(); thisMonth.setDate(1); thisMonth.setHours(0,0,0,0);
+    const monthInvoiced = allInvoices
+      .filter(i => i.status !== 'draft' && new Date(i.issue_date) >= thisMonth)
+      .reduce((s, i) => s + (i.total || 0), 0);
+    const monthCollected = allInvoices
+      .filter(i => i.paid_at && new Date(i.paid_at) >= thisMonth)
+      .reduce((s, i) => s + (i.total || 0), 0);
+
+    document.getElementById('inv-totals').innerHTML = `
+      ${summaryCard('Outstanding',     fmtMoney(outstanding, invoiceCurrency), outstanding > 0 ? 'var(--teal-deep)' : 'var(--muted-2)')}
+      ${summaryCard('Overdue',         overdueCount, overdueCount ? 'var(--red)' : 'var(--muted-2)')}
+      ${summaryCard('Invoiced (Month)', fmtMoney(monthInvoiced, invoiceCurrency), 'var(--ink)')}
+      ${summaryCard('Collected (Month)', fmtMoney(monthCollected, invoiceCurrency), 'var(--teal-deep)')}
+    `;
+    const badge = document.getElementById('overdueBadge');
+    if (overdueCount) { badge.textContent = overdueCount; badge.style.display = 'inline-block'; }
+    else { badge.style.display = 'none'; }
+
+    const tbody = document.getElementById('invoiceTableBody');
+    const invPager = document.getElementById('invPager');
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="9" class="empty">No invoices match this filter.</td></tr>';
+      if (invPager) invPager.style.display = 'none';
+      return;
+    }
+    const invTotal = rows.length;
+    const invShown = Math.min(invRowCap, invTotal);
+    const invPageRows = rows.slice(0, invShown);
+    const _gate = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    tbody.innerHTML = invPageRows.map(i => {
+      const balance = (i.total || 0) - (i.amount_paid || 0);
+      const overdue = isOverdue(i);
+      const statusLabel = overdue ? 'overdue' : i.status;
+      const statusBg = {
+        draft: 'var(--surface-2)', sent: 'var(--teal-bg)', overdue: 'var(--err-bg)', paid: 'var(--teal-bg)', cancelled: 'var(--border)'
+      }[statusLabel] || 'var(--surface-2)';
+      const statusFg = {
+        draft: 'var(--text)', sent: 'var(--teal-deep)', overdue: 'var(--err-fg)', paid: 'var(--teal-deep)', cancelled: 'var(--muted)'
+      }[statusLabel] || 'var(--text)';
+      const custLink = (_gate && i.customer_id)
+        ? PC.gateLinkHtml('customer', i.customer_id, i.customer_name || '', {})
+        : `<strong>${escHtml(i.customer_name)}</strong>`;
+      const companyLink = (i.company_name && _gate && i.customer_id)
+        ? '<br>' + PC.gateLinkHtml('customer', i.customer_id, i.company_name, {})
+        : (i.company_name ? `<br><span style="font-size:11px;color:var(--muted);">${escHtml(i.company_name)}</span>` : '');
+      return `
+        <tr data-pc-row-invoice="${i.id}">
+          <td><span class="code-pill">${escHtml(i.invoice_number)}</span></td>
+          <td>${custLink}${companyLink}<br><span style="font-size:11px;color:var(--muted);">${escHtml(i.customer_code)}</span></td>
+          <td style="white-space:nowrap;">${fmtDate(i.issue_date)}</td>
+          <td style="white-space:nowrap;">${fmtDate(i.due_date)}</td>
+          <td style="white-space:nowrap;">${fmtMoney(i.total, i.currency)}</td>
+          <td style="white-space:nowrap;color:var(--teal-deep);">${i.amount_paid > 0 ? fmtMoney(i.amount_paid, i.currency) : '—'}</td>
+          <td style="white-space:nowrap;font-weight:600;color:${balance > 0.005 ? 'var(--teal-deep)' : 'var(--muted)'};">${balance > 0.005 ? fmtMoney(balance, i.currency) : '—'}</td>
+          <td><span class="badge" style="background:${statusBg};color:${statusFg};">${statusLabel}</span></td>
+          <td style="white-space:nowrap;" onclick="event.stopPropagation();">
+            <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();window.open('/admin/invoice/${i.id}','_blank')">View</button>
+            ${(i.status === 'draft' || i.status === 'sent') && can('invoice:update') ? `<button class="btn btn-edit btn-sm" onclick="event.stopPropagation();openInvoiceModal(${i.id})" style="margin-left:4px;">Edit</button>` : ''}
+            ${i.status === 'draft' && can('invoice:update') ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();markInvoiceStatus(${i.id},'sent')" style="margin-left:4px;background:var(--teal-solid);">Send</button>` : ''}
+            ${(i.status === 'sent' || overdue) && balance > 0.005 && can('invoice:record_payment') ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();openPaymentModal(${i.id})" style="margin-left:4px;">+ Payment</button>` : ''}
+            ${(i.status === 'draft' || i.status === 'cancelled') && can('invoice:delete') ? `<button class="btn btn-danger btn-sm pc-stop-prop" onclick="event.stopPropagation();deleteInvoiceCmd(${i.id},'${escHtml(i.invoice_number)}')" style="margin-left:4px;">Delete</button>` : ''}
+          </td>
+        </tr>`;
+    }).join('');
+    if (typeof PC !== 'undefined' && PC.gateRow) {
+      tbody.querySelectorAll('tr[data-pc-row-invoice]').forEach(function (tr) {
+        const iid = Number(tr.getAttribute('data-pc-row-invoice'));
+        PC.gateRow(tr, 'invoice', iid, {
+          onClick: function () { pcGoInvoice(iid); },
+          ariaLabel: 'View invoice ' + iid,
+        });
+      });
+    }
+
+    // Wire summary metric tiles + AR-aging buckets via PC.gateBadge.
+    if (typeof PC !== 'undefined' && PC.gateBadge) {
+      const tilesHost = document.getElementById('inv-totals');
+      if (tilesHost) {
+        const tiles = tilesHost.querySelectorAll('.summary-card, [data-summary-card]');
+        const filters = [
+          function () { setInvoiceFilter('sent', document.querySelector('#invoiceFilters .filter-btn[data-filter="sent"]') || document.querySelector('#invoiceFilters .filter-btn')); },
+          function () { setInvoiceFilter('overdue', document.querySelector('#invoiceFilters .filter-btn[data-filter="overdue"]') || document.querySelector('#invoiceFilters .filter-btn')); },
+          null,
+          null,
+        ];
+        tiles.forEach(function (el, idx) {
+          if (filters[idx]) PC.gateBadge(el, '', 'invoice', filters[idx]);
+        });
+      }
+    }
+    pcRenderTablePager(invPager, invTotal, invShown, 'invShowMore', 'invShowAll', 'invoices');
+  }
+  function invShowMore() { invRowCap += PC_TABLE_CAP; renderInvoices(true); }
+  function invShowAll()  { invRowCap = Infinity;      renderInvoices(true); }
+
+  // ── Invoice create/edit modal ──
+  async function openInvoiceModal(invoiceId, prefill) {
+    editingInvoiceId = invoiceId || null;
+    currentLineItems = [];
+    document.getElementById('err-invoice').style.display = 'none';
+    document.getElementById('invoiceModalTitle').textContent = invoiceId ? 'Edit Invoice'
+      : (prefill ? 'New Invoice (pre-filled from visit)' : 'New Invoice');
+
+    // Populate customer dropdown
+    const custSel = document.getElementById('iv-customer');
+    custSel.innerHTML = '<option value="">Select customer…</option>' +
+      allCustomers.map(c => `<option value="${c.id}">${escHtml(c.name)} (${c.customer_code})</option>`).join('');
+
+    // Defaults
+    document.getElementById('iv-issue').value = new Date().toISOString().slice(0, 10);
+    const due = new Date(); due.setDate(due.getDate() + 30);
+    document.getElementById('iv-due').value = due.toISOString().slice(0, 10);
+    document.getElementById('iv-tax').value      = '0.15';
+    document.getElementById('iv-currency').value = 'JMD';
+    document.getElementById('iv-notes').value    = '';
+    document.getElementById('iv-visit').innerHTML = '<option value="">— none —</option>';
+    document.getElementById('iv-tracked-time-hint').style.display = 'none';
+
+    if (prefill && !invoiceId) {
+      custSel.value = prefill.customer_id;
+      await loadVisitsForInvoice(prefill.visit_id);
+      document.getElementById('iv-issue').value = prefill.issue_date || document.getElementById('iv-issue').value;
+      document.getElementById('iv-due').value   = prefill.due_date   || document.getElementById('iv-due').value;
+      currentLineItems = (prefill.line_items || []).map(li => ({...li}));
+      // Show a hint banner above the totals
+      if (prefill.hourly_rate === 0 && currentLineItems.some(li => li.line_type === 'labor')) {
+        setTimeout(() => showErr('err-invoice',
+          '⚠️ Tech\'s hourly rate is not set — labor line shows J$0. Set the rate in the Technicians tab, or edit the line manually.'), 50);
+      }
+    }
+
+    if (invoiceId) {
+      try {
+        const inv = await api('GET', `/api/admin/invoices/${invoiceId}`);
+        custSel.value = inv.customer_id;
+        await loadVisitsForInvoice(inv.visit_id);
+        document.getElementById('iv-issue').value = inv.issue_date || '';
+        document.getElementById('iv-due').value   = inv.due_date || '';
+        document.getElementById('iv-tax').value   = inv.tax_rate;
+        document.getElementById('iv-currency').value = inv.currency || 'JMD';
+        document.getElementById('iv-notes').value = inv.notes || '';
+        currentLineItems = (inv.line_items || []).map(li => ({
+          line_type: li.line_type, part_id: li.part_id, description: li.description,
+          quantity: li.quantity, unit_price: li.unit_price,
+        }));
+      } catch(e) {
+        showErr('err-invoice', e.message); return;
+      }
+    }
+
+    renderLineItems();
+    document.getElementById('modal-invoice').classList.add('open');
+  }
+
+  async function loadVisitsForInvoice(selectVisitId) {
+    const cid = parseInt(document.getElementById('iv-customer').value);
+    const sel = document.getElementById('iv-visit');
+    sel.innerHTML = '<option value="">— none —</option>';
+    document.getElementById('iv-tracked-time-hint').style.display = 'none';
+    if (!cid) return;
+    const visits = allVisits.filter(v => v.customer_id === cid);
+    visits.forEach(v => {
+      const label = `${v.visit_type} · ${fmtDate(v.scheduled_date || v.completed_date || '')} · ${v.status}`;
+      const opt = document.createElement('option');
+      opt.value = v.id; opt.textContent = label;
+      if (v.id == selectVisitId) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    if (selectVisitId) showTrackedTimeHint();
+    sel.onchange = showTrackedTimeHint;
+  }
+
+  function showTrackedTimeHint() {
+    const visitId = parseInt(document.getElementById('iv-visit').value);
+    const hint = document.getElementById('iv-tracked-time-hint');
+    if (!visitId) { hint.style.display = 'none'; return; }
+    const v = allVisits.find(x => x.id === visitId);
+    if (v && v.start_time && v.end_time) {
+      const mins = Math.round((new Date(v.end_time) - new Date(v.start_time)) / 60000);
+      const h = Math.floor(mins / 60); const m = mins % 60;
+      hint.innerHTML = `Tracked time on this visit: <strong>${h}h ${m}m</strong> — use as reference for the Labor line.`;
+      hint.style.display = 'block';
+    } else {
+      hint.style.display = 'none';
+    }
+  }
+
+  function addLineItem(type) {
+    const li = { line_type: type, part_id: null, description: '', quantity: 1, unit_price: 0 };
+    if (type === 'labor') li.description = 'Labor — service visit';
+    if (type === 'other') li.description = '';
+    currentLineItems.push(li);
+    renderLineItems();
+  }
+
+  function removeLineItem(idx) {
+    currentLineItems.splice(idx, 1);
+    renderLineItems();
+  }
+
+  function updateLineItem(idx, field, value) {
+    currentLineItems[idx][field] = value;
+    recalcLineTotals();
+  }
+
+  function onPartSelected(idx, partIdStr) {
+    const pid = parseInt(partIdStr) || null;
+    currentLineItems[idx].part_id = pid;
+    if (pid) {
+      const p = allParts.find(x => x.id === pid);
+      if (p) {
+        currentLineItems[idx].description = `${p.sku} — ${p.name}`;
+        if (!currentLineItems[idx].unit_price) currentLineItems[idx].unit_price = p.unit_cost;
+        renderLineItems();
+        return;
+      }
+    }
+    renderLineItems();
+  }
+
+  function renderLineItems() {
+    const wrap = document.getElementById('iv-lines');
+    if (!currentLineItems.length) {
+      wrap.innerHTML = '<div style="text-align:center;padding:20px;color:var(--muted);font-size:12px;border:1px dashed var(--border);border-radius:8px;">No line items yet — add labor, parts, or other charges above.</div>';
+      recalcLineTotals();
+      return;
+    }
+    const partOptions = '<option value="">Pick a part…</option>' +
+      (allParts || []).filter(p => p.active).map(p => `<option value="${p.id}">${escHtml(p.sku)} — ${escHtml(p.name)} (${formatQty(p.quantity)} ${escHtml(p.unit||'')} avail, J$${Number(p.unit_cost).toFixed(2)})</option>`).join('');
+
+    wrap.innerHTML = currentLineItems.map((li, idx) => {
+      const typeClass = `type-${li.line_type}`;
+      const partRow = li.line_type === 'part' ? `
+        <select onchange="onPartSelected(${idx}, this.value)" style="grid-column:1/-1;padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;margin-bottom:4px;">
+          ${partOptions.replace(`value="${li.part_id || ''}"`, `value="${li.part_id || ''}" selected`)}
+        </select>` : '';
+      const total = (Number(li.quantity) || 0) * (Number(li.unit_price) || 0);
+      return `
+        <div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:var(--card);">
+          <div style="display:grid;grid-template-columns:auto 1fr 80px 110px 110px 30px;gap:8px;align-items:center;">
+            <span class="badge ${typeClass}" style="font-size:9px;padding:2px 8px;text-transform:uppercase;font-weight:700;">${li.line_type}</span>
+            ${partRow}
+            <input type="text" placeholder="Description" value="${escHtml(li.description)}" oninput="updateLineItem(${idx}, 'description', this.value)" style="grid-column:${li.line_type === 'part' ? '1/-5' : '2/-5'};padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
+            <input type="number" step="0.01" min="0" value="${li.quantity}" oninput="updateLineItem(${idx}, 'quantity', parseFloat(this.value)||0)" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;text-align:right;" title="Quantity">
+            <input type="number" step="0.01" min="0" value="${li.unit_price}" oninput="updateLineItem(${idx}, 'unit_price', parseFloat(this.value)||0)" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;text-align:right;" title="Unit price">
+            <span style="text-align:right;font-weight:700;color:var(--ink);font-size:13px;">${fmtMoney(total, 'JMD')}</span>
+            <button onclick="removeLineItem(${idx})" style="background:none;border:none;color:var(--danger);font-size:18px;cursor:pointer;padding:0;line-height:1;">×</button>
+          </div>
+        </div>`;
+    }).join('');
+    recalcLineTotals();
+  }
+
+  function recalcLineTotals() {
+    const subtotal = currentLineItems.reduce((s, li) => s + (Number(li.quantity) || 0) * (Number(li.unit_price) || 0), 0);
+    const rate = parseFloat(document.getElementById('iv-tax').value) || 0;
+    const tax  = subtotal * rate;
+    const total = subtotal + tax;
+    const cur = document.getElementById('iv-currency').value || 'JMD';
+    document.getElementById('iv-subtotal').textContent = fmtMoney(subtotal, cur);
+    document.getElementById('iv-taxamt').textContent   = fmtMoney(tax, cur);
+    document.getElementById('iv-total').textContent    = fmtMoney(total, cur);
+  }
+  document.getElementById('iv-tax').addEventListener('input', recalcLineTotals);
+  document.getElementById('iv-currency').addEventListener('input', recalcLineTotals);
+
+  async function submitInvoice(saveAs) {
+    const err = document.getElementById('err-invoice');
+    err.style.display = 'none';
+    const body = {
+      customer_id: parseInt(document.getElementById('iv-customer').value),
+      visit_id:    parseInt(document.getElementById('iv-visit').value) || null,
+      issue_date:  document.getElementById('iv-issue').value,
+      due_date:    document.getElementById('iv-due').value,
+      tax_rate:    parseFloat(document.getElementById('iv-tax').value) || 0,
+      currency:    document.getElementById('iv-currency').value.trim().toUpperCase() || 'JMD',
+      notes:       document.getElementById('iv-notes').value.trim(),
+      line_items:  currentLineItems.map(li => ({
+        line_type: li.line_type,
+        part_id: li.part_id || null,
+        description: li.description,
+        quantity: Number(li.quantity) || 0,
+        unit_price: Number(li.unit_price) || 0,
+      })),
+    };
+    if (!body.customer_id) { showErr('err-invoice', 'Select a customer.'); return; }
+    if (!body.issue_date || !body.due_date) { showErr('err-invoice', 'Issue date and due date are required.'); return; }
+    if (!body.line_items.length) { showErr('err-invoice', 'Add at least one line item.'); return; }
+
+    try {
+      let invId = editingInvoiceId;
+      if (editingInvoiceId) {
+        await api('PUT', `/api/admin/invoices/${editingInvoiceId}`, body);
+      } else {
+        const res = await api('POST', '/api/admin/invoices', body);
+        invId = res.id;
+      }
+      if (saveAs === 'sent') {
+        await api('PUT', `/api/admin/invoices/${invId}/status`, { status: 'sent' });
+      }
+      closeModal('invoice');
+      await loadInvoices();
+    } catch(e) { showErr('err-invoice', e.message); }
+  }
+
+  async function markInvoiceStatus(id, status) {
+    if (status === 'cancelled' && !confirm('Cancel this invoice? It will no longer count toward outstanding totals.')) return;
+    try {
+      await api('PUT', `/api/admin/invoices/${id}/status`, { status });
+      await loadInvoices();
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  async function deleteInvoiceCmd(id, num) {
+    if (!confirm(`Delete invoice ${num}? This cannot be undone.`)) return;
+    try {
+      await api('DELETE', `/api/admin/invoices/${id}`);
+      await loadInvoices();
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  // ── Estimates / Quotes ─────────────────────────────────────────────────
+  // Mirrors the invoice flow but with its own line-item buffer (estLineItems)
+  // so opening an estimate never clobbers a half-built invoice draft.
+  let allEstimates = [];
+  let estimateFilter = 'all';
+  let editingEstimateId = null;
+  let estLineItems = [];
+
+  async function loadEstimates() {
+    if (!can('estimate:view')) return;
+    try {
+      allEstimates = await api('GET', '/api/admin/estimates');
+      renderEstimates();
+    } catch(e) {
+      const tb = document.getElementById('estimateTableBody');
+      if (tb) tb.innerHTML = `<tr><td colspan="7" class="empty">Could not load estimates: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  function setEstimateFilter(f, btn) {
+    estimateFilter = f;
+    document.querySelectorAll('#estimateFilters .filter-btn').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    renderEstimates();
+  }
+
+  function _estStatusStyle(status) {
+    const bg = { draft:'var(--surface-2)', sent:'var(--teal-bg)', approved:'var(--teal-bg)',
+      declined:'var(--err-bg)', expired:'var(--border)', converted:'var(--steel-bg)', canceled:'var(--border)' }[status] || 'var(--surface-2)';
+    const fg = { draft:'var(--text)', sent:'var(--teal-deep)', approved:'var(--teal-deep)',
+      declined:'var(--err-fg)', expired:'var(--muted)', converted:'var(--steel)', canceled:'var(--muted)' }[status] || 'var(--text)';
+    return `background:${bg};color:${fg};`;
+  }
+
+  function renderEstimates(_keepCap) {
+    if (!_keepCap) estRowCap = PC_TABLE_CAP;
+    let rows = allEstimates.slice();
+    if (estimateFilter !== 'all') rows = rows.filter(r => r.status === estimateFilter);
+
+    // Summary cards over ALL estimates (not filtered).
+    const pending = allEstimates.filter(e => e.status === 'sent');
+    const pendingVal = pending.reduce((s, e) => s + (e.total || 0), 0);
+    const approvedOpen = allEstimates.filter(e => e.status === 'approved');
+    const approvedVal = approvedOpen.reduce((s, e) => s + (e.total || 0), 0);
+    const thisMonth = new Date(); thisMonth.setDate(1); thisMonth.setHours(0,0,0,0);
+    const convertedMonth = allEstimates.filter(e => e.status === 'converted' && e.decided_at && new Date(e.decided_at) >= thisMonth).length;
+    const estCur = (allEstimates[0] && allEstimates[0].currency) || 'JMD';
+    document.getElementById('est-totals').innerHTML = `
+      ${summaryCard('Awaiting Decision', fmtMoney(pendingVal, estCur), pending.length ? 'var(--teal-deep)' : 'var(--muted-2)')}
+      ${summaryCard('Sent (count)',      pending.length, pending.length ? 'var(--steel)' : 'var(--muted-2)')}
+      ${summaryCard('Approved (open)',   fmtMoney(approvedVal, estCur), approvedOpen.length ? 'var(--teal-deep)' : 'var(--muted-2)')}
+      ${summaryCard('Converted (Month)', convertedMonth, 'var(--ink)')}
+    `;
+    const badge = document.getElementById('estPendingBadge');
+    if (badge) {
+      if (pending.length) { badge.textContent = pending.length; badge.style.display = 'inline-block'; }
+      else { badge.style.display = 'none'; }
+    }
+
+    const tbody = document.getElementById('estimateTableBody');
+    const estPager = document.getElementById('estPager');
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="7" class="empty">No estimates match this filter.</td></tr>';
+      if (estPager) estPager.style.display = 'none';
+      return;
+    }
+    const estTotal = rows.length;
+    const estShown = Math.min(estRowCap, estTotal);
+    const estPageRows = rows.slice(0, estShown);
+    const _gate = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    tbody.innerHTML = estPageRows.map(e => {
+      const custLink = (_gate && e.customer_id)
+        ? PC.gateLinkHtml('customer', e.customer_id, e.customer_name || '', {})
+        : `<strong>${escHtml(e.customer_name || '')}</strong>`;
+      const companyLine = e.customer_company ? `<br><span style="font-size:11px;color:var(--muted);">${escHtml(e.customer_company)}</span>` : '';
+      const convLink = (e.status === 'converted' && e.converted_invoice_id)
+        ? `<br><span style="font-size:11px;color:var(--steel);">→ <a href="/admin/invoice/${e.converted_invoice_id}" target="_blank" style="color:var(--steel);">invoice</a></span>` : '';
+      const acts = [];
+      if ((e.status === 'draft' || e.status === 'sent') && can('estimate:update'))
+        acts.push(`<button class="btn btn-edit btn-sm" onclick="event.stopPropagation();openEstimateModal(${e.id})">Edit</button>`);
+      if (e.status === 'draft' && can('estimate:send'))
+        acts.push(`<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();sendEstimateCmd(${e.id})" style="background:var(--teal-solid);">Send</button>`);
+      if (e.status === 'approved' && can('estimate:convert'))
+        acts.push(`<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();convertEstimateCmd(${e.id},'${escHtml(e.estimate_number)}')">→ Invoice</button>`);
+      if ((e.status === 'draft' || e.status === 'sent') && can('estimate:update'))
+        acts.push(`<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();cancelEstimateCmd(${e.id},'${escHtml(e.estimate_number)}')">Cancel</button>`);
+      if ((e.status === 'draft' || e.status === 'canceled') && can('estimate:delete'))
+        acts.push(`<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();deleteEstimateCmd(${e.id},'${escHtml(e.estimate_number)}')">Delete</button>`);
+      return `
+        <tr>
+          <td><span class="code-pill">${escHtml(e.estimate_number)}</span>${convLink}</td>
+          <td>${custLink}${companyLine}</td>
+          <td style="white-space:nowrap;">${fmtDate(e.issue_date)}</td>
+          <td style="white-space:nowrap;">${e.valid_until ? fmtDate(e.valid_until) : '—'}</td>
+          <td style="white-space:nowrap;">${fmtMoney(e.total, e.currency)}</td>
+          <td><span class="badge" style="${_estStatusStyle(e.status)}">${escHtml(e.status)}</span></td>
+          <td style="white-space:nowrap;" onclick="event.stopPropagation();">${acts.join(' ') || '<span style="color:var(--muted);font-size:12px;">—</span>'}</td>
+        </tr>`;
+    }).join('');
+    pcRenderTablePager(estPager, estTotal, estShown, 'estShowMore', 'estShowAll', 'estimates');
+  }
+  function estShowMore() { estRowCap += PC_TABLE_CAP; renderEstimates(true); }
+  function estShowAll()  { estRowCap = Infinity;      renderEstimates(true); }
+
+  // ── Estimate create/edit modal ──
+  async function openEstimateModal(estimateId) {
+    editingEstimateId = estimateId || null;
+    estLineItems = [];
+    document.getElementById('err-estimate').style.display = 'none';
+    document.getElementById('estimateModalTitle').textContent = estimateId ? 'Edit Estimate' : 'New Estimate';
+
+    const custSel = document.getElementById('es-customer');
+    custSel.innerHTML = '<option value="">Select customer…</option>' +
+      (allCustomers || []).map(c => `<option value="${c.id}">${escHtml(c.name)} (${escHtml(c.customer_code)})</option>`).join('');
+
+    document.getElementById('es-issue').value = new Date().toISOString().slice(0, 10);
+    const valid = new Date(); valid.setDate(valid.getDate() + 30);
+    document.getElementById('es-valid').value    = valid.toISOString().slice(0, 10);
+    document.getElementById('es-tax').value       = '0.15';
+    document.getElementById('es-currency').value  = 'JMD';
+    document.getElementById('es-notes').value     = '';
+    document.getElementById('es-visit').innerHTML = '<option value="">— none —</option>';
+
+    custSel.onchange = estLoadVisits;
+
+    if (estimateId) {
+      try {
+        const est = await api('GET', `/api/admin/estimates/${estimateId}`);
+        custSel.value = est.customer_id;
+        estLoadVisits(est.visit_id);
+        document.getElementById('es-issue').value    = est.issue_date || '';
+        document.getElementById('es-valid').value     = est.valid_until || '';
+        document.getElementById('es-tax').value        = est.tax_rate;
+        document.getElementById('es-currency').value   = est.currency || 'JMD';
+        document.getElementById('es-notes').value      = est.notes || '';
+        estLineItems = (est.line_items || []).map(li => ({
+          line_type: li.line_type, part_id: li.part_id, description: li.description,
+          quantity: li.quantity, unit_price: li.unit_price,
+        }));
+      } catch(e) { showErr('err-estimate', e.message); return; }
+    }
+
+    estRenderLineItems();
+    document.getElementById('modal-estimate').classList.add('open');
+  }
+
+  function estLoadVisits(selectVisitId) {
+    const cid = parseInt(document.getElementById('es-customer').value);
+    const sel = document.getElementById('es-visit');
+    sel.innerHTML = '<option value="">— none —</option>';
+    if (!cid) return;
+    (allVisits || []).filter(v => v.customer_id === cid).forEach(v => {
+      const opt = document.createElement('option');
+      opt.value = v.id;
+      opt.textContent = `${v.visit_type} · ${fmtDate(v.scheduled_date || v.completed_date || '')} · ${v.status}`;
+      if (v.id == selectVisitId) opt.selected = true;
+      sel.appendChild(opt);
+    });
+  }
+
+  function estAddLineItem(type) {
+    const li = { line_type: type, part_id: null, description: '', quantity: 1, unit_price: 0 };
+    if (type === 'labour') li.description = 'Labour — service work';
+    estLineItems.push(li);
+    estRenderLineItems();
+  }
+  function estRemoveLineItem(idx) { estLineItems.splice(idx, 1); estRenderLineItems(); }
+  function estUpdateLineItem(idx, field, value) { estLineItems[idx][field] = value; estRecalcTotals(); }
+  function estOnPartSelected(idx, partIdStr) {
+    const pid = parseInt(partIdStr) || null;
+    estLineItems[idx].part_id = pid;
+    if (pid) {
+      const p = (allParts || []).find(x => x.id === pid);
+      if (p) {
+        estLineItems[idx].description = `${p.sku} — ${p.name}`;
+        if (!estLineItems[idx].unit_price) estLineItems[idx].unit_price = p.unit_cost;
+      }
+    }
+    estRenderLineItems();
+  }
+
+  function estRenderLineItems() {
+    const wrap = document.getElementById('es-lines');
+    if (!estLineItems.length) {
+      wrap.innerHTML = '<div style="text-align:center;padding:20px;color:var(--muted);font-size:12px;border:1px dashed var(--border);border-radius:8px;">No line items yet — add labour, parts, or other charges above.</div>';
+      estRecalcTotals();
+      return;
+    }
+    const partOptions = '<option value="">Pick a part…</option>' +
+      (allParts || []).filter(p => p.active).map(p => `<option value="${p.id}">${escHtml(p.sku)} — ${escHtml(p.name)} (${formatQty(p.quantity)} ${escHtml(p.unit||'')} avail, J$${Number(p.unit_cost).toFixed(2)})</option>`).join('');
+    wrap.innerHTML = estLineItems.map((li, idx) => {
+      const partRow = li.line_type === 'part' ? `
+        <select onchange="estOnPartSelected(${idx}, this.value)" style="grid-column:1/-1;padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;margin-bottom:4px;">
+          ${partOptions.replace(`value="${li.part_id || ''}"`, `value="${li.part_id || ''}" selected`)}
+        </select>` : '';
+      const total = (Number(li.quantity) || 0) * (Number(li.unit_price) || 0);
+      return `
+        <div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:var(--card);">
+          <div style="display:grid;grid-template-columns:auto 1fr 80px 110px 110px 30px;gap:8px;align-items:center;">
+            <span class="badge type-${li.line_type}" style="font-size:9px;padding:2px 8px;text-transform:uppercase;font-weight:700;">${escHtml(li.line_type)}</span>
+            ${partRow}
+            <input type="text" placeholder="Description" value="${escHtml(li.description)}" oninput="estUpdateLineItem(${idx}, 'description', this.value)" style="grid-column:${li.line_type === 'part' ? '1/-5' : '2/-5'};padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
+            <input type="number" step="0.01" min="0" value="${li.quantity}" oninput="estUpdateLineItem(${idx}, 'quantity', parseFloat(this.value)||0)" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;text-align:right;" title="Quantity">
+            <input type="number" step="0.01" min="0" value="${li.unit_price}" oninput="estUpdateLineItem(${idx}, 'unit_price', parseFloat(this.value)||0)" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;text-align:right;" title="Unit price">
+            <span style="text-align:right;font-weight:700;color:var(--ink);font-size:13px;">${fmtMoney(total, 'JMD')}</span>
+            <button onclick="estRemoveLineItem(${idx})" style="background:none;border:none;color:var(--danger);font-size:18px;cursor:pointer;padding:0;line-height:1;">×</button>
+          </div>
+        </div>`;
+    }).join('');
+    estRecalcTotals();
+  }
+
+  function estRecalcTotals() {
+    const subtotal = estLineItems.reduce((s, li) => s + (Number(li.quantity) || 0) * (Number(li.unit_price) || 0), 0);
+    const rate = parseFloat(document.getElementById('es-tax').value) || 0;
+    const tax = subtotal * rate;
+    const cur = document.getElementById('es-currency').value || 'JMD';
+    document.getElementById('es-subtotal').textContent = fmtMoney(subtotal, cur);
+    document.getElementById('es-taxamt').textContent   = fmtMoney(tax, cur);
+    document.getElementById('es-total').textContent    = fmtMoney(subtotal + tax, cur);
+  }
+
+  async function submitEstimate(saveAs) {
+    document.getElementById('err-estimate').style.display = 'none';
+    const body = {
+      customer_id: parseInt(document.getElementById('es-customer').value),
+      visit_id:    parseInt(document.getElementById('es-visit').value) || null,
+      issue_date:  document.getElementById('es-issue').value,
+      valid_until: document.getElementById('es-valid').value || null,
+      tax_rate:    parseFloat(document.getElementById('es-tax').value) || 0,
+      currency:    (document.getElementById('es-currency').value || 'JMD').trim().toUpperCase(),
+      notes:       document.getElementById('es-notes').value.trim(),
+      line_items:  estLineItems.map(li => ({
+        line_type: li.line_type, part_id: li.part_id || null,
+        description: li.description, quantity: Number(li.quantity) || 0, unit_price: Number(li.unit_price) || 0,
+      })),
+    };
+    if (!body.customer_id) { showErr('err-estimate', 'Select a customer.'); return; }
+    if (!body.issue_date)  { showErr('err-estimate', 'Issue date is required.'); return; }
+    if (!body.line_items.length) { showErr('err-estimate', 'Add at least one line item.'); return; }
+    try {
+      let eid = editingEstimateId;
+      if (editingEstimateId) {
+        await api('PUT', `/api/admin/estimates/${editingEstimateId}`, body);
+      } else {
+        const res = await api('POST', '/api/admin/estimates', body);
+        eid = res.id;
+      }
+      if (saveAs === 'sent') await api('POST', `/api/admin/estimates/${eid}/send`);
+      closeModal('estimate');
+      await loadEstimates();
+    } catch(e) { showErr('err-estimate', e.message); }
+  }
+
+  async function sendEstimateCmd(id) {
+    if (!confirm('Send this estimate to the customer? They will see it in their portal and receive an email.')) return;
+    try { await api('POST', `/api/admin/estimates/${id}/send`); await loadEstimates(); }
+    catch(e) { alert('Error: ' + e.message); }
+  }
+
+  async function convertEstimateCmd(id, num) {
+    if (!confirm(`Convert ${num} into a draft invoice? Line items carry over; you can edit the invoice before sending.`)) return;
+    try {
+      const res = await api('POST', `/api/admin/estimates/${id}/convert`);
+      await loadEstimates();
+      if (res && res.invoice_id && confirm(`Created ${res.invoice_number}. Open it now?`)) {
+        window.open(`/admin/invoice/${res.invoice_id}`, '_blank');
+      }
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  async function cancelEstimateCmd(id, num) {
+    if (!confirm(`Cancel estimate ${num}? It will be withdrawn from the customer.`)) return;
+    try { await api('POST', `/api/admin/estimates/${id}/cancel`); await loadEstimates(); }
+    catch(e) { alert('Error: ' + e.message); }
+  }
+
+  async function deleteEstimateCmd(id, num) {
+    if (!confirm(`Delete estimate ${num}? This cannot be undone.`)) return;
+    try { await api('DELETE', `/api/admin/estimates/${id}`); await loadEstimates(); }
+    catch(e) { alert('Error: ' + e.message); }
+  }
+
+  // ── Record payment ──
+  // NOTE: the v1 openPaymentModal/submitRecordPayment pair that lived here was
+  // dead code — shadowed by the currency-aware v2 openPaymentModal() defined
+  // later in this module (it builds #inv-payment-modal and submits via
+  // _paySubmit()). Removed along with its #modal-recordPayment markup to kill
+  // the function-shadowing + pay-amount/pay-method ID-collision hazard.
+
+  // ── Tax reference ──
+  async function showTaxReference() {
+    document.getElementById('modal-taxReference').classList.add('open');
+    document.getElementById('taxRefContent').innerHTML = 'Loading…';
+    try {
+      const ref = await api('GET', '/api/admin/tax-reference');
+      const p = ref.payroll;
+      document.getElementById('taxRefContent').innerHTML = `
+        <div style="background:var(--teal-bg);border:1px solid var(--teal-bg);color:var(--teal-deep);padding:10px 14px;border-radius:8px;font-size:12px;line-height:1.5;margin-bottom:16px;">
+          <strong>⚠️ Disclaimer:</strong> ${escHtml(ref.disclaimer)}
+          <br><a href="${escHtml(ref.source)}" target="_blank" style="color:var(--teal-deep);font-weight:600;">${escHtml(ref.source)}</a>
+        </div>
+        <h4 style="font-size:13px;color:var(--ink);margin-bottom:8px;">${escHtml(ref.gct.label)}</h4>
+        <table style="width:100%;font-size:12px;margin-bottom:18px;">
+          <tr><td style="padding:6px 0;">Standard rate</td><td style="text-align:right;font-weight:700;">${(ref.gct.standard_rate * 100).toFixed(1)}%</td></tr>
+          <tr><td style="padding:6px 0;">Tourism rate</td><td style="text-align:right;">${(ref.gct.tourism_rate * 100).toFixed(1)}%</td></tr>
+        </table>
+        <h4 style="font-size:13px;color:var(--ink);margin-bottom:8px;">Payroll Deductions</h4>
+        <table style="width:100%;font-size:12px;border-collapse:collapse;">
+          <thead><tr style="border-bottom:1px solid var(--border);"><th style="text-align:left;padding:6px 4px;color:var(--muted);font-size:11px;">Tax</th><th style="text-align:right;padding:6px 4px;color:var(--muted);font-size:11px;">Employee</th><th style="text-align:right;padding:6px 4px;color:var(--muted);font-size:11px;">Employer</th></tr></thead>
+          <tbody>
+            <tr><td style="padding:6px 4px;"><strong>${escHtml(p.paye.label)}</strong><br><span style="font-size:10px;color:var(--muted);">Threshold J$${p.paye.annual_threshold.toLocaleString()} · 25% band 1 · 30% above J$${p.paye.band2_min_annual.toLocaleString()}</span></td><td style="text-align:right;padding:6px 4px;">progressive</td><td style="text-align:right;padding:6px 4px;">—</td></tr>
+            <tr><td style="padding:6px 4px;">${escHtml(p.nis.label)}</td><td style="text-align:right;padding:6px 4px;">${(p.nis.employee_rate*100).toFixed(2)}%</td><td style="text-align:right;padding:6px 4px;">${(p.nis.employer_rate*100).toFixed(2)}%</td></tr>
+            <tr><td style="padding:6px 4px;">${escHtml(p.nht.label)}</td><td style="text-align:right;padding:6px 4px;">${(p.nht.employee_rate*100).toFixed(2)}%</td><td style="text-align:right;padding:6px 4px;">${(p.nht.employer_rate*100).toFixed(2)}%</td></tr>
+            <tr><td style="padding:6px 4px;">${escHtml(p.education_tax.label)}</td><td style="text-align:right;padding:6px 4px;">${(p.education_tax.employee_rate*100).toFixed(2)}%</td><td style="text-align:right;padding:6px 4px;">${(p.education_tax.employer_rate*100).toFixed(2)}%</td></tr>
+            <tr><td style="padding:6px 4px;">${escHtml(p.heart_trust.label)}</td><td style="text-align:right;padding:6px 4px;">—</td><td style="text-align:right;padding:6px 4px;">${(p.heart_trust.employer_rate*100).toFixed(2)}%</td></tr>
+          </tbody>
+        </table>
+      `;
+    } catch(e) {
+      document.getElementById('taxRefContent').innerHTML = `<div style="color:var(--danger);">Error: ${e.message}</div>`;
+    }
+  }
+
+  // ── Inventory ──────────────────────────────────────────────────────────────
+  let allParts = [];
+  let invFilter = 'all';
+  let editingPartId = null;
+  let adjustingPart = null;
+
+  // ── Procurement (POs + Physical counts) ─────────────────────────────────
+  function openProcurement() {
+    document.getElementById('modal-procurement').classList.add('open');
+    if (can('po:create'))    document.getElementById('newPoBtn').style.display = '';
+    if (can('count:create')) document.getElementById('newCountBtn').style.display = '';
+    setProcTab('pos');
+    loadPOs();
+    populateCountPartSelect();
+  }
+  function setProcTab(tab) {
+    document.querySelectorAll('.proc-tab').forEach(b => {
+      const on = b.dataset.tab === tab;
+      b.style.borderBottomColor = on ? 'var(--teal)' : 'transparent';
+    });
+    document.getElementById('proc-pane-pos').style.display    = (tab === 'pos')    ? '' : 'none';
+    document.getElementById('proc-pane-counts').style.display = (tab === 'counts') ? '' : 'none';
+    if (tab === 'counts') loadCounts();
+  }
+
+  let poLines = [];
+  function toggleNewPO() {
+    const c = document.getElementById('po-create-card');
+    const showing = c.style.display !== 'none';
+    c.style.display = showing ? 'none' : '';
+    if (!showing) { poLines = []; addPOLine(); document.getElementById('po-supplier').value = ''; }
+  }
+  function addPOLine() {
+    poLines.push({ part_id: '', quantity: 1, expected_unit_cost: 0 });
+    renderPOLines();
+  }
+  function renderPOLines() {
+    const wrap = document.getElementById('po-lines');
+    if (!allParts || !allParts.length) { wrap.innerHTML = '<div style="font-size:12px;color:var(--muted);">Load parts first.</div>'; return; }
+    wrap.innerHTML = poLines.map((l, i) => `
+      <div style="display:grid;grid-template-columns:1fr 80px 100px auto;gap:6px;align-items:end;">
+        <select onchange="updatePOLine(${i},'part_id',this.value)" style="padding:6px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
+          <option value="">part…</option>
+          ${allParts.map(p => `<option value="${p.id}" ${String(l.part_id)===String(p.id)?'selected':''}>${escHtml(p.sku)} — ${escHtml(p.name)}</option>`).join('')}
+        </select>
+        <input type="number" step="0.01" min="0.01" value="${l.quantity}" onchange="updatePOLine(${i},'quantity',this.value)" placeholder="qty" style="padding:6px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
+        <input type="number" step="0.01" min="0" value="${l.expected_unit_cost}" onchange="updatePOLine(${i},'expected_unit_cost',this.value)" placeholder="unit $" style="padding:6px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
+        <button onclick="poLines.splice(${i},1); renderPOLines();" style="background:none;border:none;color:var(--red);font-size:18px;cursor:pointer;">×</button>
+      </div>`).join('');
+    const total = poLines.reduce((s,l) => s + (parseFloat(l.quantity)||0) * (parseFloat(l.expected_unit_cost)||0), 0);
+    document.getElementById('po-total').textContent = '$' + total.toFixed(2);
+  }
+  function updatePOLine(i, k, v) {
+    poLines[i][k] = (k === 'part_id') ? parseInt(v) || '' : parseFloat(v) || 0;
+    renderPOLines();
+  }
+  async function submitPO() {
+    const supplier = document.getElementById('po-supplier').value.trim();
+    if (!supplier) { toast('Supplier required.', 'error'); return; }
+    const lines = poLines.filter(l => l.part_id && l.quantity > 0);
+    if (!lines.length) { toast('Add at least one line with part + quantity.', 'error'); return; }
+    try {
+      await api('POST', '/api/admin/purchase-orders', { supplier, lines });
+      toast('PO created', 'success');
+      toggleNewPO();
+      loadPOs();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+  async function loadPOs() {
+    try {
+      const pos = await api('GET', '/api/admin/purchase-orders');
+      const wrap = document.getElementById('po-list');
+      if (!pos.length) { wrap.innerHTML = '<div style="color:var(--muted);font-size:12px;">No purchase orders yet.</div>'; return; }
+      wrap.innerHTML = pos.map(po => {
+        const s = po.status;
+        const sc = s==='closed' ? 'background:var(--teal-bg);color:var(--teal-deep);' : s==='received' ? 'background:var(--steel-bg);color:var(--steel);' : s==='sent' ? 'background:var(--teal-bg);color:var(--teal-deep);' : 'background:var(--border);color:var(--text);';
+        return `<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+            <div><strong>${escHtml(po.po_number)}</strong> · ${escHtml(po.supplier)} · $${(po.expected_total||0).toFixed(2)}</div>
+            <span class="badge" style="${sc}">${escHtml(s.toUpperCase())}</span>
+          </div>
+          <div style="display:flex;gap:6px;margin-top:8px;">
+            ${s==='draft' && can('po:send') ? `<button class="btn btn-ghost btn-sm" onclick="sendPO(${po.id})">Send to supplier</button>` : ''}
+            ${(s==='sent'||s==='draft') && can('po:receive') ? `<button class="btn btn-ghost btn-sm" onclick="receivePO(${po.id})">Receive items</button>` : ''}
+            ${s==='received' && can('po:close_out') ? `<button class="btn btn-primary btn-sm" onclick="closePO(${po.id})">Close out (3-way match)</button>` : ''}
+            <button class="btn btn-ghost btn-sm" onclick="viewPO(${po.id})">Details</button>
+          </div>
+        </div>`;
+      }).join('');
+    } catch (e) { toast(e.message, 'error'); }
+  }
+  async function sendPO(id) {
+    if (!confirm('Mark this PO as sent to the supplier?')) return;
+    try { await api('PUT', `/api/admin/purchase-orders/${id}/send`); toast('PO sent', 'success'); loadPOs(); }
+    catch (e) { toast(e.message, 'error'); }
+  }
+  async function viewPO(id) {
+    try {
+      const po = await api('GET', `/api/admin/purchase-orders/${id}`);
+      const lines = po.lines.map(l =>
+        `${l.sku} ${l.part_name}: ordered ${l.quantity}, received ${l.received_qty}, @ $${l.expected_unit_cost.toFixed(2)}`
+      ).join('\n');
+      const grns = (po.received || []).map(g =>
+        `  GRN: ${g.sku} ${g.quantity} @ $${g.actual_unit_cost.toFixed(2)} on ${g.received_at}`
+      ).join('\n');
+      alert(`PO ${po.po_number}\nSupplier: ${po.supplier}\nStatus: ${po.status}\nExpected: $${po.expected_total.toFixed(2)}\nReceived total: $${(po.received_total||0).toFixed(2)}\n${po.invoice_number ? `Invoice: ${po.invoice_number} ($${po.invoice_total.toFixed(2)})\n` : ''}\nLines:\n${lines}\n\n${grns||''}`);
+    } catch (e) { toast(e.message, 'error'); }
+  }
+  async function receivePO(id) {
+    try {
+      const po = await api('GET', `/api/admin/purchase-orders/${id}`);
+      const pending = po.lines.filter(l => l.received_qty < l.quantity);
+      if (!pending.length) { toast('All lines already received.', 'error'); return; }
+      const choices = pending.map((l,i) => `${i+1}) ${l.sku} ${l.part_name} — remaining ${l.quantity - l.received_qty}`).join('\n');
+      const pick = prompt(`Receive which line?\n${choices}\nEnter line # (1-${pending.length}):`);
+      const idx = parseInt(pick) - 1;
+      if (isNaN(idx) || idx < 0 || idx >= pending.length) return;
+      const line = pending[idx];
+      const qty  = parseFloat(prompt(`Quantity received (remaining: ${line.quantity - line.received_qty}):`));
+      if (!qty || qty <= 0) return;
+      const cost = parseFloat(prompt(`Actual unit cost (expected $${line.expected_unit_cost.toFixed(2)}):`, line.expected_unit_cost));
+      if (isNaN(cost) || cost < 0) return;
+      await api('POST', `/api/admin/purchase-orders/${id}/receive`, {
+        po_line_id: line.id, quantity: qty, actual_unit_cost: cost, notes: ''
+      });
+      toast('Receipt recorded', 'success');
+      loadPOs();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+  async function closePO(id) {
+    try {
+      const po = await api('GET', `/api/admin/purchase-orders/${id}`);
+      const inv = prompt(`Supplier invoice number for ${po.po_number}:`);
+      if (!inv) return;
+      const total = parseFloat(prompt(`Supplier invoice total (received total: $${po.received_total.toFixed(2)}):`));
+      if (isNaN(total) || total < 0) return;
+      let note = '';
+      const expectedMatch = Math.abs(po.expected_total - po.received_total) < 0.01 * Math.max(po.expected_total, po.received_total, 1);
+      const invMatch      = Math.abs(po.received_total - total) < 0.01 * Math.max(po.received_total, total, 1);
+      if (!expectedMatch || !invMatch) {
+        note = prompt(`Variance detected (PO $${po.expected_total.toFixed(2)} / GRN $${po.received_total.toFixed(2)} / Invoice $${total.toFixed(2)}). Explain (required):`) || '';
+        if (!note.trim()) { toast('Variance note required.', 'error'); return; }
+      }
+      const res = await api('PUT', `/api/admin/purchase-orders/${id}/close`, {
+        invoice_number: inv, invoice_total: total, variance_note: note,
+      });
+      toast(res.matched ? 'PO closed (three-way match ✓)' : 'PO closed with variance — security alert raised', 'success');
+      loadPOs();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  // Physical counts
+  function toggleNewCount() {
+    const c = document.getElementById('count-create-card');
+    c.style.display = c.style.display === 'none' ? '' : 'none';
+  }
+  function populateCountPartSelect() {
+    const sel = document.getElementById('count-part');
+    if (!sel || !allParts) return;
+    sel.innerHTML = '<option value="">Select part…</option>' +
+      allParts.map(p => `<option value="${p.id}">${escHtml(p.sku)} — ${escHtml(p.name)} (system: ${formatQty(p.quantity)})</option>`).join('');
+  }
+  async function submitCount() {
+    const partId = parseInt(document.getElementById('count-part').value);
+    const qty    = parseFloat(document.getElementById('count-qty').value);
+    if (!partId || isNaN(qty) || qty < 0) { toast('Pick a part and enter the counted quantity.', 'error'); return; }
+    try {
+      const res = await api('POST', '/api/admin/physical-counts', { part_id: partId, counted_qty: qty });
+      toast(res.status === 'escalated'
+        ? `Variance ${res.variance_pct}% — escalated to manager`
+        : `Count recorded (variance ${res.variance_pct}%)`,
+        res.status === 'escalated' ? 'error' : 'success');
+      toggleNewCount();
+      loadCounts();
+      refreshSecurityBanner();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+  async function loadCounts() {
+    try {
+      const rows = await api('GET', '/api/admin/physical-counts');
+      const wrap = document.getElementById('count-list');
+      if (!rows.length) { wrap.innerHTML = '<div style="color:var(--muted);font-size:12px;">No counts recorded yet.</div>'; return; }
+      wrap.innerHTML = rows.map(c => {
+        const sc = c.status==='approved' ? 'background:var(--teal-bg);color:var(--teal-deep);' : c.status==='escalated' ? 'background:var(--err-bg);color:var(--err-fg);' : 'background:var(--teal-bg);color:var(--teal-deep);';
+        const canApprove = can('count:approve') && c.status !== 'approved' && c.counted_by !== currentAdmin.id;
+        const sameOwner  = c.counted_by === currentAdmin.id && c.status !== 'approved';
+        return `<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div><strong>${escHtml(c.sku)}</strong> ${escHtml(c.part_name)} · system ${c.system_qty} / counted ${c.counted_qty} · <strong>${c.variance_pct}%</strong></div>
+            <span class="badge" style="${sc}">${escHtml(c.status.toUpperCase())}</span>
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px;">${escHtml(c.counted_at)}</div>
+          ${canApprove ? `<button class="btn btn-primary btn-sm" onclick="approveCount(${c.id})" style="margin-top:8px;">Approve &amp; adjust stock</button>` : ''}
+          ${sameOwner ? `<div style="font-size:11px;color:var(--err-fg);margin-top:6px;">You recorded this count — a manager must approve it.</div>` : ''}
+          ${c.approval_note ? `<div style="font-size:12px;margin-top:6px;color:var(--muted);">Note: ${escHtml(c.approval_note)}</div>` : ''}
+        </div>`;
+      }).join('');
+    } catch (e) { toast(e.message, 'error'); }
+  }
+  async function approveCount(id) {
+    const note = prompt('Approval note (optional):', '') || '';
+    try {
+      await api('PUT', `/api/admin/physical-counts/${id}/approve`, { note, adjust_stock: true });
+      toast('Count approved, stock adjusted', 'success');
+      loadCounts();
+      loadInventory();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function loadInventory() {
+    if (!can('inventory:view')) return;
+    try {
+      allParts = await api('GET', '/api/admin/parts?include_inactive=true');
+      renderInventory();
+    } catch(e) {}
+  }
+
+  // Warehouse Staff roster — surfaced inside the (renamed) Warehouse panel
+  // as a read-only quick-view. Editing/onboarding lives in Warehouse Ops
+  // (super_admin + HR only), per operator requirement.
+  async function loadInventoryStaffCard() {
+    const tbody  = document.getElementById('inv-staff-body');
+    const badge  = document.getElementById('inv-staff-count');
+    const opsBtn = document.getElementById('invWhOpsBtn');
+    if (opsBtn && (typeof can === 'function') && can('warehouse:view_queue')) {
+      // Anyone who can see warehouse ops gets the shortcut button.
+      opsBtn.style.display = '';
+    }
+    if (!tbody) return;
+    try {
+      // Endpoint already exists and is permission-gated server-side;
+      // a 403 here just hides the section cleanly.
+      const rows = await api('GET', '/api/admin/warehouse/staff');
+      if (!rows || !rows.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty" style="padding:14px;">No warehouse staff on roster yet. <em>Onboarded by super_admin + HR via Warehouse Ops.</em></td></tr>';
+        if (badge) badge.textContent = '0';
+        return;
+      }
+      // Sort: manager → floor → parts_runner, then by name.
+      const order = { warehouse_manager: 0, warehouse_floor: 1, parts_runner: 2 };
+      rows.sort((a, b) => (order[a.staff_type] ?? 9) - (order[b.staff_type] ?? 9)
+                       || (a.name || '').localeCompare(b.name || ''));
+      const prettyType = (t) => ({
+        warehouse_manager: '👷‍♂️ Warehouse Manager',
+        warehouse_floor:   '📦 Warehouse Floor',
+        parts_runner:      '🚚 Parts Runner',
+      }[t] || (t || '').replace(/_/g,' '));
+      tbody.innerHTML = rows.map(s => `
+        <tr>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border);"><strong>${escHtml(s.tech_code || '')}</strong></td>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border);">${escHtml(s.name || '')}</td>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border);">${escHtml(prettyType(s.staff_type))}</td>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border);">${escHtml(s.department || '—')}</td>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border);">${escHtml(s.phone || '—')}</td>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border);">${s.active
+            ? '<span class="badge" style="background:var(--teal-bg);color:var(--teal-deep);">Active</span>'
+            : '<span class="badge" style="background:var(--err-bg);color:var(--err-fg);">Inactive</span>'}</td>
+        </tr>`).join('');
+      if (badge) badge.textContent = String(rows.length);
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="6" class="empty" style="padding:14px;">Could not load roster: ${escHtml(e.message || '')}</td></tr>`;
+    }
+  }
+
+  function setInvFilter(f, btn) {
+    invFilter = f;
+    document.querySelectorAll('#invFilters .filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    renderInventory();
+  }
+
+  function renderInventory() {
+    const q = (document.getElementById('inv-search')?.value || '').toLowerCase().trim();
+    let rows = allParts.filter(p => {
+      if (invFilter === 'inactive') return !p.active;
+      if (!p.active) return false;
+      if (invFilter === 'low') return p.quantity > 0 && p.quantity <= p.reorder_point;
+      if (invFilter === 'out') return p.quantity <= 0;
+      return true;
+    });
+    if (q) {
+      rows = rows.filter(p =>
+        (p.sku || '').toLowerCase().includes(q) ||
+        (p.name || '').toLowerCase().includes(q) ||
+        (p.category || '').toLowerCase().includes(q) ||
+        (p.supplier || '').toLowerCase().includes(q)
+      );
+    }
+
+    // Summary cards (always over the full active set, not the filter)
+    const active = allParts.filter(p => p.active);
+    const lowCount = active.filter(p => p.quantity > 0 && p.quantity <= p.reorder_point).length;
+    const outCount = active.filter(p => p.quantity <= 0).length;
+    const totalValue = active.reduce((s, p) => s + (p.quantity * p.unit_cost), 0);
+    document.getElementById('inv-summary').innerHTML = `
+      ${summaryCard('Active Parts', active.length, 'var(--ink)')}
+      ${summaryCard('Total Stock Value', fmtJMD(totalValue), 'var(--teal-deep)')}
+      ${summaryCard('Low Stock', lowCount, lowCount ? 'var(--steel)' : 'var(--muted-2)')}
+      ${summaryCard('Out of Stock', outCount, outCount ? 'var(--red)' : 'var(--muted-2)')}
+    `;
+    // Parts count badge on the collapsible section heading.
+    const partsCountEl = document.getElementById('inv-parts-count');
+    if (partsCountEl) partsCountEl.textContent = String(active.length);
+    // Sidebar badge
+    const totalAlerts = lowCount + outCount;
+    const badge = document.getElementById('lowStockBadge');
+    if (totalAlerts) { badge.textContent = totalAlerts; badge.style.display = 'inline-block'; }
+    else { badge.style.display = 'none'; }
+    // PC.gateBadge — low-stock alert badge. Filter is "viewer can read part record".
+    if (typeof PC !== 'undefined' && PC.gateBadge && badge) {
+      try {
+        PC.gateBadge(badge, totalAlerts, 'inventory_part', function (p) {
+          return p && (p.quantity <= 0 || (p.quantity > 0 && p.quantity <= p.reorder_point));
+        });
+      } catch(_) {}
+    }
+
+    const tbody = document.getElementById('inv-tbody');
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="empty">No parts match the current filter.</td></tr>';
+      return;
+    }
+    const _gateInv = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    tbody.innerHTML = rows.map(p => {
+      let qtyCell;
+      if (p.quantity <= 0) {
+        qtyCell = `<span class="badge pc-stop-prop" style="background:var(--err-bg);color:var(--err-fg);">${formatQty(p.quantity)} ${escHtml(p.unit||'')} · OUT</span>`;
+      } else if (p.quantity <= p.reorder_point) {
+        qtyCell = `<span class="badge pc-stop-prop" style="background:var(--teal-bg);color:var(--teal-deep);">${formatQty(p.quantity)} ${escHtml(p.unit||'')} · LOW</span>`;
+      } else {
+        qtyCell = `<strong>${formatQty(p.quantity)}</strong> <span style="color:var(--muted);font-size:11px;">${escHtml(p.unit||'')}</span>`;
+      }
+      const value = (p.quantity * p.unit_cost).toFixed(2);
+      const nameLink = _gateInv
+        ? PC.gateLinkHtml('inventory_part', p.id, p.name || '', {onClick: 'function(){ openMovements(' + p.id + '); }'})
+        : `<strong>${escHtml(p.name)}</strong>`;
+      return `
+        <tr data-pc-row-part="${p.id}" style="${p.active ? '' : 'opacity:0.5;'}">
+          <td><span class="code-pill">${escHtml(p.sku)}</span></td>
+          <td>${nameLink}${p.supplier ? `<br><span style="font-size:11px;color:var(--muted);">${escHtml(p.supplier)}</span>` : ''}</td>
+          <td>${escHtml(p.category) || '—'}</td>
+          <td>${qtyCell}</td>
+          <td>${formatQty(p.reorder_point)}</td>
+          <td>J$${Number(p.unit_cost).toFixed(2)}</td>
+          <td>J$${value}</td>
+          <td style="white-space:nowrap;">
+            ${can('inventory:adjust') ? `<button class="btn btn-primary btn-sm pc-stop-prop" onclick="event.stopPropagation();openAdjustStock(${p.id})">Adjust</button>` : ''}
+            ${can('inventory:update') ? `<button class="btn btn-edit btn-sm pc-stop-prop" onclick="event.stopPropagation();openEditPart(${p.id})" style="margin-left:4px;">Edit</button>` : ''}
+            <button class="btn btn-ghost btn-sm pc-stop-prop" onclick="event.stopPropagation();openMovements(${p.id})" style="margin-left:4px;">History</button>
+            ${can('inventory:delete') && p.active ? `<button class="btn btn-danger btn-sm pc-stop-prop" onclick="event.stopPropagation();removePart(${p.id},'${escHtml(p.sku)}')" style="margin-left:4px;">Delete</button>` : ''}
+          </td>
+        </tr>`;
+    }).join('');
+    if (typeof PC !== 'undefined' && PC.gateRow) {
+      tbody.querySelectorAll('tr[data-pc-row-part]').forEach(function (tr) {
+        const pid = Number(tr.getAttribute('data-pc-row-part'));
+        PC.gateRow(tr, 'inventory_part', pid, {
+          onClick: function () { openMovements(pid); },
+          ariaLabel: 'View part movements #' + pid,
+        });
+      });
+    }
+  }
+
+  function formatQty(n) {
+    // Show as integer when whole, decimals otherwise
+    return (Number(n) % 1 === 0) ? String(Number(n)) : Number(n).toFixed(2);
+  }
+
+  // ── Add / Edit Part ──
+  function openEditPart(id) {
+    const p = allParts.find(x => x.id === id);
+    if (!p) return;
+    editingPartId = id;
+    document.getElementById('partModalTitle').textContent = 'Edit Part';
+    document.getElementById('p-sku').value         = p.sku;
+    document.getElementById('p-sku').disabled      = true;
+    document.getElementById('p-name').value        = p.name;
+    document.getElementById('p-description').value = p.description || '';
+    document.getElementById('p-category').value    = p.category || '';
+    document.getElementById('p-unit').value        = p.unit || 'each';
+    document.getElementById('p-cost').value        = p.unit_cost;
+    document.getElementById('p-qty').value         = p.quantity;
+    document.getElementById('p-qty').disabled      = true;  // adjust via Adjust button
+    document.getElementById('p-reorder').value     = p.reorder_point;
+    document.getElementById('p-supplier').value    = p.supplier || '';
+    document.getElementById('p-location').value    = p.location || '';
+    document.getElementById('err-addPart').style.display = 'none';
+    document.getElementById('partImageField').style.display = '';
+    const prev = document.getElementById('partImagePreview');
+    if (p.image_filename) {
+      prev.innerHTML = `<img src="/photos/${escHtml(p.image_filename)}" alt="${escHtml(p.name)}" style="width:100%;height:100%;object-fit:cover;border-radius:6px;" onerror="this.parentElement.innerHTML='📦';">`;
+    } else {
+      prev.innerHTML = '📦';
+    }
+    document.getElementById('modal-addPart').classList.add('open');
+  }
+
+  async function uploadPartImage(input) {
+    if (!editingPartId) { toast('Save the part first, then upload an image.', 'error'); input.value=''; return; }
+    const file = input.files[0]; if (!file) return;
+    if (file.size > 12 * 1024 * 1024) { toast('Image too large (max 12 MB)', 'error'); input.value=''; return; }
+    const fd = new FormData(); fd.append('file', file);
+    try {
+      const res = await fetch(`/api/admin/parts/${editingPartId}/image`, { method: 'POST', credentials: 'include', body: fd });
+      if (!res.ok) { const t = await res.text().catch(()=> ''); throw new Error(t || res.statusText); }
+      const data = await res.json();
+      document.getElementById('partImagePreview').innerHTML =
+        `<img src="${data.image_url}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:6px;">`;
+      toast('Image uploaded', 'success');
+      await loadInventory();
+    } catch (e) { toast(e.message, 'error'); }
+    input.value = '';
+  }
+
+  async function submitPart() {
+    const err = document.getElementById('err-addPart');
+    err.style.display = 'none';
+    const body = {
+      sku:           document.getElementById('p-sku').value.trim(),
+      name:          document.getElementById('p-name').value.trim(),
+      description:   document.getElementById('p-description').value.trim(),
+      category:      document.getElementById('p-category').value.trim(),
+      unit:          document.getElementById('p-unit').value.trim() || 'each',
+      unit_cost:     parseFloat(document.getElementById('p-cost').value) || 0,
+      quantity:      parseFloat(document.getElementById('p-qty').value) || 0,
+      reorder_point: parseFloat(document.getElementById('p-reorder').value) || 0,
+      supplier:      document.getElementById('p-supplier').value.trim(),
+      location:      document.getElementById('p-location').value.trim(),
+    };
+    if (!body.sku || !body.name) { showErr('err-addPart', 'SKU and name are required.'); return; }
+    try {
+      if (editingPartId) {
+        const updateBody = {...body, active: true};
+        delete updateBody.sku;
+        delete updateBody.quantity;
+        await api('PUT', `/api/admin/parts/${editingPartId}`, updateBody);
+      } else {
+        await api('POST', '/api/admin/parts', body);
+      }
+      closeModal('addPart');
+      resetPartForm();
+      await loadInventory();
+    } catch(e) { showErr('err-addPart', e.message); }
+  }
+
+  function resetPartForm() {
+    editingPartId = null;
+    document.getElementById('partModalTitle').textContent = 'Add Part';
+    document.getElementById('p-sku').disabled = false;
+    document.getElementById('p-qty').disabled = false;
+    ['p-sku','p-name','p-description','p-category','p-supplier','p-location','p-cost','p-qty','p-reorder']
+      .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+    document.getElementById('p-unit').value = 'each';
+    const imgField = document.getElementById('partImageField');
+    if (imgField) imgField.style.display = 'none';
+    const prev = document.getElementById('partImagePreview');
+    if (prev) prev.innerHTML = '📦';
+  }
+
+  async function removePart(id, sku) {
+    if (!confirm(`Delete part ${sku}? If it has any stock movement history, it will be archived (deactivated). Otherwise, it will be removed permanently.`)) return;
+    try {
+      await api('DELETE', `/api/admin/parts/${id}`);
+      await loadInventory();
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  // ── Adjust Stock ──
+  function openAdjustStock(id) {
+    adjustingPart = allParts.find(p => p.id === id);
+    if (!adjustingPart) return;
+    document.getElementById('adj-part-name').textContent = `${adjustingPart.sku} — ${adjustingPart.name}`;
+    document.getElementById('adj-current').textContent = formatQty(adjustingPart.quantity);
+    document.getElementById('adj-unit').textContent = adjustingPart.unit || '';
+    document.getElementById('adj-unit2').textContent = adjustingPart.unit || '';
+    document.getElementById('adj-type').value = 'received';
+    document.getElementById('adj-qty').value = '';
+    document.getElementById('adj-reason').value = '';
+    document.getElementById('err-adjustStock').style.display = 'none';
+    updateAdjPreview();
+    document.getElementById('modal-adjustStock').classList.add('open');
+  }
+
+  function updateAdjPreview() {
+    if (!adjustingPart) return;
+    const type = document.getElementById('adj-type').value;
+    const qty = parseFloat(document.getElementById('adj-qty').value) || 0;
+    let delta = qty;
+    if (type === 'used') delta = -qty;
+    if (type === 'adjusted') delta = qty;  // user can enter negative manually if needed
+    const newQ = adjustingPart.quantity + delta;
+    const el = document.getElementById('adj-preview');
+    el.textContent = formatQty(newQ);
+    el.style.color = newQ < 0 ? 'var(--red)' : (newQ <= adjustingPart.reorder_point ? 'var(--teal-deep)' : 'var(--steel)');
+  }
+
+  async function submitAdjustStock() {
+    const err = document.getElementById('err-adjustStock');
+    err.style.display = 'none';
+    const type = document.getElementById('adj-type').value;
+    const qty  = parseFloat(document.getElementById('adj-qty').value);
+    const reason = document.getElementById('adj-reason').value.trim();
+    if (!qty || qty <= 0) { showErr('err-adjustStock', 'Enter a positive quantity.'); return; }
+    let delta = qty;
+    if (type === 'used') delta = -qty;
+    // For 'adjusted', user can input negative reason — for now treat as positive delta
+    // (user can edit and resubmit with negative if needed via API)
+    try {
+      await api('POST', `/api/admin/parts/${adjustingPart.id}/adjust`, {
+        movement_type: type,
+        quantity_delta: delta,
+        reason: reason,
+      });
+      closeModal('adjustStock');
+      await loadInventory();
+    } catch(e) { showErr('err-adjustStock', e.message); }
+  }
+
+  // ── Movements history ──
+  async function openMovements(id) {
+    const p = allParts.find(x => x.id === id);
+    if (!p) return;
+    document.getElementById('mov-part-name').textContent = `${p.sku} — ${p.name}`;
+    document.getElementById('mov-tbody').innerHTML = '<tr><td colspan="5" class="empty">Loading…</td></tr>';
+    document.getElementById('modal-movements').classList.add('open');
+    try {
+      const movs = await api('GET', `/api/admin/parts/${id}/movements`);
+      if (!movs.length) {
+        document.getElementById('mov-tbody').innerHTML = '<tr><td colspan="5" style="padding:24px;text-align:center;color:var(--muted);">No movement history yet.</td></tr>';
+        return;
+      }
+      document.getElementById('mov-tbody').innerHTML = movs.map(m => {
+        const when = PC.fmtDateTime(m.created_at);
+        const typeColor = m.movement_type === 'received' ? 'var(--teal-deep)' : m.movement_type === 'used' ? 'var(--red)' : 'var(--muted)';
+        const sign = m.quantity_delta >= 0 ? '+' : '';
+        return `
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 4px;font-size:12px;color:var(--muted);white-space:nowrap;">${when}</td>
+            <td style="padding:10px 4px;"><span class="badge" style="background:var(--surface-2);color:${typeColor};">${m.movement_type}</span></td>
+            <td style="padding:10px 4px;text-align:right;font-weight:700;color:${typeColor};">${sign}${formatQty(m.quantity_delta)}</td>
+            <td style="padding:10px 4px;">${escHtml(m.performed_by_label || '?')}<br><span style="font-size:10px;color:var(--muted);font-family:'Courier New',monospace;">${escHtml(m.performed_by_prid || '')}</span></td>
+            <td style="padding:10px 4px;font-size:12px;">${escHtml(m.reason || '')}${m.customer_name ? `<br><span style="font-size:11px;color:var(--muted);">${escHtml(m.customer_name)}</span>` : ''}</td>
+          </tr>`;
+      }).join('');
+    } catch(e) {
+      document.getElementById('mov-tbody').innerHTML = `<tr><td colspan="5" class="empty">Error: ${e.message}</td></tr>`;
+    }
+  }
+
+  // ── Schedule (calendar week view) ──────────────────────────────────────────
+  const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+
+  function initScheduleWeek() {
+    document.getElementById('sch-week-start').value = isoDate(mondayOf(new Date()));
+  }
+  // ── Workforce planning (CMMS #5) ───────────────────────────────────────────
+  function wfThisWeek() {
+    const mon = mondayOf(new Date());
+    document.getElementById('wf-start').value = isoDate(mon);
+    document.getElementById('wf-end').value = isoDate(addDays(mon, 6));
+    wfLoad();
+  }
+  function wfNextWeek() {
+    const mon = addDays(mondayOf(new Date()), 7);
+    document.getElementById('wf-start').value = isoDate(mon);
+    document.getElementById('wf-end').value = isoDate(addDays(mon, 6));
+    wfLoad();
+  }
+  function _wfBar(pct) {
+    const p = Math.max(0, Math.min(100, pct == null ? 0 : pct));
+    const over = pct != null && pct > 100;
+    const col = over ? 'var(--danger-solid)' : (p > 85 ? '#d9822b' : 'var(--accent, #2f9e44)');
+    return `<div style="background:var(--border);border-radius:5px;height:8px;width:120px;overflow:hidden;display:inline-block;vertical-align:middle;">
+      <div style="background:${col};height:8px;width:${Math.min(100, p)}%;"></div></div>`;
+  }
+  async function wfLoad() {
+    if (!can('tech:view')) return;
+    const s = document.getElementById('wf-start');
+    const e = document.getElementById('wf-end');
+    if (!s.value || !e.value) {
+      const mon = mondayOf(new Date());
+      if (!s.value) s.value = isoDate(mon);
+      if (!e.value) e.value = isoDate(addDays(mon, 6));
+    }
+    const start = s.value, end = e.value;
+    const fc = document.getElementById('wf-forecast');
+    const al = document.getElementById('wf-allocation');
+    fc.innerHTML = '<p style="color:var(--muted);font-size:13px;">Loading…</p>';
+    al.innerHTML = '';
+    try {
+      const [forecast, alloc] = await Promise.all([
+        api('GET', `/api/admin/workforce/forecast?start=${start}&end=${end}`),
+        api('GET', `/api/admin/workforce/allocation?start=${start}&end=${end}`),
+      ]);
+      wfRenderForecast(forecast);
+      wfRenderAllocation(alloc);
+      wfRenderAlerts(forecast, alloc);
+      const stat = document.getElementById('wf-stats');
+      if (stat) stat.textContent =
+        `${forecast.tech_count} field tech${forecast.tech_count === 1 ? '' : 's'} · ${forecast.capacity_hours}h/day capacity`;
+    } catch (err) {
+      fc.innerHTML = `<p style="color:var(--err-fg);font-size:13px;">Failed to load: ${escHtml(err.message || String(err))}</p>`;
+    }
+  }
+  function wfRenderForecast(f) {
+    const fc = document.getElementById('wf-forecast');
+    if (!f.days || !f.days.length) {
+      fc.innerHTML = '<p style="color:var(--muted);font-size:13px;">No days in range.</p>';
+      return;
+    }
+    const rows = f.days.map(d => {
+      const util = d.utilization_pct == null ? '—' : d.utilization_pct + '%';
+      const badge = d.over_capacity
+        ? '<span style="background:var(--err-bg);color:var(--err-fg);font-size:11px;font-weight:700;padding:1px 8px;border-radius:10px;">Over</span>'
+        : '';
+      return `<tr>
+        <td style="white-space:nowrap;">${escHtml(d.date)}</td>
+        <td style="text-align:right;">${d.demand_hours}h</td>
+        <td style="text-align:right;">${d.capacity_hours}h</td>
+        <td style="text-align:center;">${d.work_orders}</td>
+        <td>${_wfBar(d.utilization_pct)} <span style="font-size:12px;color:var(--muted);">${util}</span> ${badge}</td>
+      </tr>`;
+    }).join('');
+    fc.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead><tr style="color:var(--muted);text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">
+        <th>Date</th><th style="text-align:right;">Demand</th><th style="text-align:right;">Capacity</th>
+        <th style="text-align:center;">WOs</th><th>Utilisation</th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
+  }
+  function wfRenderAllocation(a) {
+    const al = document.getElementById('wf-allocation');
+    if (!a.technicians || !a.technicians.length) {
+      al.innerHTML = '<p style="color:var(--muted);font-size:13px;">No active field technicians in scope.</p>';
+      return;
+    }
+    const rows = a.technicians.map(t => {
+      const util = t.utilization_pct == null ? '—' : t.utilization_pct + '%';
+      const over = (t.over_allocated_days || []).length;
+      const badge = over
+        ? `<span style="background:var(--err-bg);color:var(--err-fg);font-size:11px;font-weight:700;padding:1px 8px;border-radius:10px;" title="${over} over-allocated day(s)">${over} over-day${over === 1 ? '' : 's'}</span>`
+        : '';
+      return `<tr>
+        <td>${escHtml(t.name)}</td>
+        <td style="text-align:right;">${t.assigned_hours}h</td>
+        <td style="text-align:right;">${t.window_capacity_hours}h</td>
+        <td style="text-align:center;">${t.work_orders}</td>
+        <td>${_wfBar(t.utilization_pct)} <span style="font-size:12px;color:var(--muted);">${util}</span> ${badge}</td>
+      </tr>`;
+    }).join('');
+    al.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead><tr style="color:var(--muted);text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">
+        <th>Technician</th><th style="text-align:right;">Assigned</th><th style="text-align:right;">Capacity</th>
+        <th style="text-align:center;">WOs</th><th>Utilisation</th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
+  }
+  function wfRenderAlerts(f, a) {
+    const box = document.getElementById('wf-alerts');
+    const items = [];
+    (f.alerts || []).forEach(x => items.push(
+      `<strong>${escHtml(x.date)}</strong>: demand ${x.demand_hours}h exceeds capacity ${x.capacity_hours}h`));
+    (a.alerts || []).forEach(x => items.push(
+      `<strong>${escHtml(x.name)}</strong> over-allocated on ${escHtml(x.date)} (${x.assigned_hours}h vs ${x.capacity_hours}h)`));
+    if (!items.length) { box.innerHTML = ''; return; }
+    box.innerHTML = `<div style="background:var(--err-bg);border:1px solid var(--err-border);color:var(--err-fg);border-radius:8px;padding:10px 14px;font-size:13px;">
+      <strong>${items.length} capacity alert${items.length === 1 ? '' : 's'}</strong>
+      <ul style="margin:6px 0 0;padding-left:18px;">${items.map(i => '<li>' + i + '</li>').join('')}</ul></div>`;
+  }
+
+  // ── Entities & per-entity P&L (CMMS #6 — multi-entity) ───────────────────
+  let _entCache = [];
+  const _ENT_KIND_LABEL = { legal_entity: 'Legal Entity', cost_center: 'Cost Centre' };
+
+  async function entLoad() {
+    if (!can('entity:view')) return;
+    const nb = document.getElementById('ent-new-btn');
+    if (nb) nb.style.display = can('entity:manage') ? 'inline-flex' : 'none';
+    await entLoadList();
+    // default the P&L range to the current month on first open
+    const s = document.getElementById('ent-start');
+    if (s && !s.value) entThisMonth(); else entLoadPnl();
+  }
+
+  async function entLoadList() {
+    const box = document.getElementById('ent-list');
+    try {
+      const r = await api('GET', '/api/admin/entities');
+      _entCache = r.entities || [];
+      const note = document.getElementById('ent-scope-note');
+      if (note) {
+        if (r.scoped) { note.style.display = 'block';
+          note.textContent = 'Your view is scoped to ' + _entCache.length + ' entit' + (_entCache.length === 1 ? 'y' : 'ies') + '.'; }
+        else note.style.display = 'none';
+      }
+      entRenderList();
+      entFillParentSelect();
+    } catch (e) { box.innerHTML = '<p style="color:var(--err-fg);font-size:13px;">' + escHtml(e.message || 'Failed to load') + '</p>'; }
+  }
+
+  function entRenderList() {
+    const box = document.getElementById('ent-list');
+    if (!_entCache.length) { box.innerHTML = '<p style="color:var(--muted);font-size:13px;">No entities yet.</p>'; return; }
+    const byId = {}; _entCache.forEach(e => byId[e.id] = e);
+    const manage = can('entity:manage');
+    const rows = _entCache.map(e => {
+      const parent = e.parent_id && byId[e.parent_id] ? byId[e.parent_id].code : '—';
+      const active = e.active ? '' : ' <span style="color:var(--muted);">(inactive)</span>';
+      return `<tr>
+        <td style="font-weight:600;">${escHtml(e.code)}</td>
+        <td>${escHtml(e.name)}${active}</td>
+        <td>${escHtml(_ENT_KIND_LABEL[e.kind] || e.kind)}</td>
+        <td>${escHtml(parent)}</td>
+        <td>${escHtml(e.currency || '')}</td>
+        <td style="text-align:right;">${manage ? '<button class="btn btn-ghost btn-sm" onclick="entOpenEdit(' + e.id + ')">Edit</button>' : ''}</td>
+      </tr>`;
+    }).join('');
+    box.innerHTML = `<table class="data-table" style="width:100%;font-size:13px;">
+      <thead><tr><th>Code</th><th>Name</th><th>Kind</th><th>Parent</th><th>Currency</th><th></th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
+  }
+
+  function entFillParentSelect() {
+    const sel = document.getElementById('ent-f-parent');
+    if (!sel) return;
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">— none —</option>' +
+      _entCache.map(e => `<option value="${e.id}">${escHtml(e.code)} — ${escHtml(e.name)}</option>`).join('');
+    sel.value = cur;
+  }
+
+  function entThisMonth() {
+    const now = new Date();
+    const first = new Date(now.getFullYear(), now.getMonth(), 1);
+    const last = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    document.getElementById('ent-start').value = isoDate(first);
+    document.getElementById('ent-end').value = isoDate(last);
+    entLoadPnl();
+  }
+  function entThisYear() {
+    const y = new Date().getFullYear();
+    document.getElementById('ent-start').value = y + '-01-01';
+    document.getElementById('ent-end').value = y + '-12-31';
+    entLoadPnl();
+  }
+
+  async function entLoadPnl() {
+    if (!can('entity:view')) return;
+    const start = document.getElementById('ent-start').value;
+    const end = document.getElementById('ent-end').value;
+    const box = document.getElementById('ent-pnl');
+    if (!start || !end) { box.innerHTML = '<p style="color:var(--muted);font-size:13px;">Pick a date range to load the P&amp;L.</p>'; return; }
+    box.innerHTML = '<p style="color:var(--muted);font-size:13px;">Loading…</p>';
+    try {
+      const r = await api('GET', `/api/admin/entities/pnl?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`);
+      entRenderPnl(r);
+    } catch (e) { box.innerHTML = '<p style="color:var(--err-fg);font-size:13px;">' + escHtml(e.message || 'Failed to load') + '</p>'; }
+  }
+
+  function _entMoney(n) { return (n < 0 ? '-' : '') + Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+
+  function entRenderPnl(r) {
+    const box = document.getElementById('ent-pnl');
+    const stats = document.getElementById('ent-pnl-stats');
+    const ents = r.entities || [];
+    if (!ents.length) { box.innerHTML = '<p style="color:var(--muted);font-size:13px;">No activity in this range.</p>'; if (stats) stats.textContent = ''; return; }
+    const t = r.totals || {};
+    if (stats) stats.textContent = `${ents.length} entit${ents.length === 1 ? 'y' : 'ies'} · profit ${_entMoney(t.gross_profit || 0)} (${t.margin_pct || 0}%)`;
+    const rows = ents.map(e => {
+      const pos = (e.gross_profit || 0) >= 0;
+      return `<tr>
+        <td style="font-weight:600;">${escHtml(e.code || ('#' + e.entity_id))}</td>
+        <td>${escHtml(e.name || '')}</td>
+        <td style="text-align:right;">${e.work_orders}</td>
+        <td style="text-align:right;">${_entMoney(e.revenue)}</td>
+        <td style="text-align:right;">${_entMoney(e.labor_cost)}</td>
+        <td style="text-align:right;">${_entMoney(e.parts_cost)}</td>
+        <td style="text-align:right;color:${pos ? 'var(--ok-fg, #137333)' : 'var(--err-fg)'};font-weight:600;">${_entMoney(e.gross_profit)}</td>
+        <td style="text-align:right;">${e.margin_pct}%</td>
+      </tr>`;
+    }).join('');
+    box.innerHTML = `<table class="data-table" style="width:100%;font-size:13px;">
+      <thead><tr><th>Code</th><th>Entity</th><th style="text-align:right;">WOs</th><th style="text-align:right;">Revenue</th><th style="text-align:right;">Labour</th><th style="text-align:right;">Parts</th><th style="text-align:right;">Gross Profit</th><th style="text-align:right;">Margin</th></tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr style="border-top:2px solid var(--border);font-weight:700;">
+        <td colspan="2">Total</td>
+        <td style="text-align:right;">${t.work_orders || 0}</td>
+        <td style="text-align:right;">${_entMoney(t.revenue || 0)}</td>
+        <td style="text-align:right;">${_entMoney(t.labor_cost || 0)}</td>
+        <td style="text-align:right;">${_entMoney(t.parts_cost || 0)}</td>
+        <td style="text-align:right;">${_entMoney(t.gross_profit || 0)}</td>
+        <td style="text-align:right;">${t.margin_pct || 0}%</td>
+      </tr></tfoot></table>`;
+  }
+
+  function entOpenCreate() {
+    if (!can('entity:manage')) return;
+    document.getElementById('ent-modal-title').textContent = 'New Entity';
+    document.getElementById('ent-f-id').value = '';
+    document.getElementById('ent-f-code').value = '';
+    document.getElementById('ent-f-code').disabled = false;
+    document.getElementById('ent-f-name').value = '';
+    document.getElementById('ent-f-kind').value = 'cost_center';
+    document.getElementById('ent-f-parent').value = '';
+    document.getElementById('ent-f-currency').value = 'TTD';
+    document.getElementById('ent-f-active-wrap').style.display = 'none';
+    document.getElementById('ent-hist-btn').style.display = 'none';
+    entFillParentSelect();
+    document.getElementById('ent-modal').style.display = 'flex';
+  }
+
+  function entOpenEdit(id) {
+    if (!can('entity:manage')) return;
+    const e = _entCache.find(x => x.id === id);
+    if (!e) return;
+    document.getElementById('ent-modal-title').textContent = 'Edit ' + e.code;
+    document.getElementById('ent-f-id').value = e.id;
+    document.getElementById('ent-f-code').value = e.code;
+    document.getElementById('ent-f-code').disabled = true;   // code is immutable
+    document.getElementById('ent-f-name').value = e.name || '';
+    document.getElementById('ent-f-kind').value = e.kind || 'cost_center';
+    entFillParentSelect();
+    document.getElementById('ent-f-parent').value = e.parent_id || '';
+    document.getElementById('ent-f-currency').value = e.currency || 'TTD';
+    document.getElementById('ent-f-active-wrap').style.display = 'block';
+    document.getElementById('ent-f-active').checked = !!e.active;
+    const hb = document.getElementById('ent-hist-btn');
+    hb.style.display = can('audit:view_self') || can('audit:view_all') ? 'inline-flex' : 'none';
+    document.getElementById('ent-modal').style.display = 'flex';
+  }
+
+  function entOpenHistory() {
+    const id = document.getElementById('ent-f-id').value;
+    if (!id) return;
+    const e = _entCache.find(x => x.id === parseInt(id, 10));
+    openAuditHistory('entity', id, e ? (e.code + ' — ' + (e.name || '')) : ('entity #' + id));
+  }
+  window.entOpenHistory = entOpenHistory;
+
+  function entCloseModal() { document.getElementById('ent-modal').style.display = 'none'; }
+
+  async function entSave() {
+    const id = document.getElementById('ent-f-id').value;
+    const parentRaw = document.getElementById('ent-f-parent').value;
+    const body = {
+      name: document.getElementById('ent-f-name').value.trim(),
+      kind: document.getElementById('ent-f-kind').value,
+      parent_id: parentRaw ? parseInt(parentRaw, 10) : null,
+      currency: (document.getElementById('ent-f-currency').value || 'TTD').trim().toUpperCase(),
+    };
+    if (!body.name) { toast('Name is required', 'error'); return; }
+    try {
+      if (id) {
+        body.active = document.getElementById('ent-f-active').checked;
+        await api('PUT', '/api/admin/entities/' + id, body);
+        toast('Entity updated', 'success');
+      } else {
+        body.code = document.getElementById('ent-f-code').value.trim().toUpperCase();
+        if (!body.code) { toast('Code is required', 'error'); return; }
+        await api('POST', '/api/admin/entities', body);
+        toast('Entity created', 'success');
+      }
+      entCloseModal();
+      await entLoadList();
+      entLoadPnl();
+    } catch (e) { toast(e.message || 'Save failed', 'error'); }
+  }
+
+  // ── Audit history / lifecycle viewer (CMMS #4) ──────────────────────────────
+  // Pulls GET /api/admin/history/{type}/{id} and renders the merged
+  // mutation+read timeline. Each mutation shows its field-level old→new diff
+  // (changed_fields) and the captured reason (the "why").
+  function auditHistClose() { document.getElementById('aud-hist-modal').style.display = 'none'; }
+
+  function _auditFmtVal(v) {
+    if (v === null || v === undefined || v === '') return '<span style="color:var(--muted);">∅</span>';
+    let s = (typeof v === 'object') ? JSON.stringify(v) : String(v);
+    if (s.length > 80) s = s.slice(0, 77) + '…';
+    return escHtml(s);
+  }
+
+  function _auditWhen(iso) {
+    if (!iso) return '';
+    try {
+      const d = new Date(iso.indexOf('Z') < 0 && iso.indexOf('+') < 0 ? iso + 'Z' : iso);
+      return d.toLocaleString();
+    } catch (e) { return escHtml(iso); }
+  }
+
+  function _auditRenderRow(r) {
+    const isRead = r.event_kind === 'read';
+    const who = escHtml(r.actor_label || r.actor_prid || (r.actor_type ? r.actor_type : 'system') || '—');
+    const role = r.actor_role ? ' · ' + escHtml(r.actor_role) : '';
+    const action = escHtml(r.action || (isRead ? 'read' : 'change'));
+    const when = _auditWhen(r.created_at);
+    const dotColor = isRead ? 'var(--muted)' : 'var(--accent, #2563eb)';
+    let diffHtml = '';
+    const cf = r.changed_fields;
+    if (Array.isArray(cf) && cf.length) {
+      const lines = cf.map(c =>
+        '<tr><td style="padding:2px 10px 2px 0;font-weight:600;white-space:nowrap;">' + escHtml(c.field) + '</td>' +
+        '<td style="padding:2px 6px;color:#b91c1c;">' + _auditFmtVal(c.old) + '</td>' +
+        '<td style="padding:2px 6px;color:var(--muted);">→</td>' +
+        '<td style="padding:2px 6px;color:#15803d;">' + _auditFmtVal(c.new) + '</td></tr>'
+      ).join('');
+      diffHtml = '<table style="margin-top:4px;font-size:12px;border-collapse:collapse;">' + lines + '</table>';
+    }
+    let reasonHtml = '';
+    if (r.reason) {
+      reasonHtml = '<div style="margin-top:4px;font-size:12px;font-style:italic;color:var(--muted);">“' + escHtml(r.reason) + '”</div>';
+    }
+    return (
+      '<div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);">' +
+        '<div style="width:9px;height:9px;border-radius:50%;background:' + dotColor + ';margin-top:5px;flex:none;"></div>' +
+        '<div style="flex:1;min-width:0;">' +
+          '<div style="font-size:13px;"><strong>' + who + '</strong>' + role +
+            ' <span style="color:var(--muted);">' + action + '</span></div>' +
+          '<div style="font-size:11px;color:var(--muted);">' + when +
+            (r.ip_address ? ' · ' + escHtml(r.ip_address) : '') + '</div>' +
+          diffHtml + reasonHtml +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  async function openAuditHistory(targetType, targetId, label) {
+    document.getElementById('aud-hist-title').textContent =
+      'History — ' + (label || (targetType + ' #' + targetId));
+    document.getElementById('aud-hist-body').innerHTML =
+      '<p style="color:var(--muted);font-size:13px;">Loading…</p>';
+    document.getElementById('aud-hist-modal').style.display = 'flex';
+    try {
+      const rows = await api('GET', '/api/admin/history/' + encodeURIComponent(targetType) +
+                             '/' + encodeURIComponent(targetId) + '?limit=200');
+      if (!rows || !rows.length) {
+        document.getElementById('aud-hist-body').innerHTML =
+          '<p style="color:var(--muted);font-size:13px;">No recorded history for this record.</p>';
+        return;
+      }
+      document.getElementById('aud-hist-body').innerHTML = rows.map(_auditRenderRow).join('');
+    } catch (e) {
+      document.getElementById('aud-hist-body').innerHTML =
+        '<p style="color:#b91c1c;font-size:13px;">' + escHtml(e.message || 'Failed to load history') + '</p>';
+    }
+  }
+  window.openAuditHistory = openAuditHistory;
+  window.auditHistClose = auditHistClose;
+
+  function setScheduleThisWeek() {
+    document.getElementById('sch-week-start').value = isoDate(mondayOf(new Date()));
+    loadSchedule();
+  }
+  function shiftScheduleWeek(n) {
+    const cur = new Date(document.getElementById('sch-week-start').value || isoDate(mondayOf(new Date())));
+    document.getElementById('sch-week-start').value = isoDate(addDays(cur, n * 7));
+    loadSchedule();
+  }
+
+  function loadSchedule() {
+    if (!can('schedule:view')) return;
+    let start = document.getElementById('sch-week-start').value;
+    if (!start) { initScheduleWeek(); start = document.getElementById('sch-week-start').value; }
+    const monday = mondayOf(new Date(start));
+    renderSchedule(monday);
+  }
+
+  function visitFallsOnDay(v, dayDateStr) {
+    if (!v.scheduled_date) return false;
+    return PC.fmtDate(v.scheduled_date) === dayDateStr;
+  }
+
+  function renderSchedule(monday) {
+    const todayStr = isoDate(new Date());
+    const days = [];
+    for (let i = 0; i < 7; i++) days.push(addDays(monday, i));
+
+    document.getElementById('sch-week-label').textContent =
+      `${PC.fmtDate(monday)} – ${PC.fmtDate(addDays(monday,6))}`;
+
+    // Filter visits to this week
+    const weekStart = monday.getTime();
+    const weekEnd   = addDays(monday, 7).getTime();
+    const weekVisits = allVisits.filter(v => {
+      if (!v.scheduled_date) return false;
+      const t = new Date(PC.fmtDate(v.scheduled_date) + 'T00:00:00').getTime();
+      return t >= weekStart && t < weekEnd;
+    });
+
+    document.getElementById('sch-stats').textContent =
+      `${weekVisits.length} visits this week`;
+
+    // Active techs only
+    const activeTechs = allTechs.filter(t => t.active);
+
+    // Build grid
+    let html = '<div class="sch-grid">';
+    // Header row
+    html += '<div class="sch-header sch-tech-cell">Technician</div>';
+    for (const d of days) {
+      const ds = isoDate(d);
+      const isToday = ds === todayStr;
+      const _wkShort = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()];
+      const _moShort = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()];
+      html += `<div class="sch-header${isToday ? ' today' : ''}">
+        ${_wkShort}
+        <div style="font-size:14px;font-weight:800;color:${isToday ? 'var(--teal)' : 'var(--navy)'};margin-top:2px;text-transform:none;letter-spacing:0;">
+          ${String(d.getDate()).padStart(2,'0')}/${_moShort}
+        </div>
+      </div>`;
+    }
+
+    // Tech rows. Only show the "no active techs" banner when the WEEK is
+    // also empty — otherwise the message contradicts the visits the user
+    // can plainly see in the Unassigned row below.
+    const _hasAnyVisits = weekVisits.length > 0;
+    if (!activeTechs.length && !_hasAnyVisits) {
+      html += '<div class="sch-empty-msg">No active technicians. Add one in the Technicians tab to schedule visits.</div>';
+    } else if (!activeTechs.length && _hasAnyVisits) {
+      html += '<div class="sch-empty-msg" style="background:var(--teal-bg);color:var(--teal-deep);border-color:var(--teal-bg);">No active technicians on the roster — visits below are unassigned. Add a tech in the Technicians tab, then drag visits into the right swimlane.</div>';
+    }
+    const roleLabel = { apprentice:'Apprentice', tech:'Tech', senior_tech:'Senior', lead_tech:'Journeyman', install_tech:'Install', commercial_tech:'Commercial' };
+    const byTimeAsc = (a, b) => (a.scheduled_time || '99:99').localeCompare(b.scheduled_time || '99:99');
+    for (const t of activeTechs) {
+      html += `<div class="sch-tech-cell">
+        ${escHtml(t.name)}
+        <div class="role-pill">${roleLabel[t.role] || 'Tech'}</div>
+      </div>`;
+      for (const d of days) {
+        const ds = isoDate(d);
+        const isToday = ds === todayStr;
+        const dayVisits = weekVisits
+          .filter(v => v.assigned_tech_id === t.id && visitFallsOnDay(v, ds))
+          .sort(byTimeAsc);
+        html += `<div class="sch-cell${isToday ? ' today' : ''}">${dayVisits.map(visitChip).join('')}</div>`;
+      }
+    }
+
+    // Unassigned row
+    const unassigned = weekVisits.filter(v => !v.assigned_tech_id);
+    if (unassigned.length) {
+      html += '<div class="sch-tech-cell unassigned">Unassigned<div class="role-pill" style="background:var(--err-bg);color:var(--danger);">Needs Tech</div></div>';
+      for (const d of days) {
+        const ds = isoDate(d);
+        const dayVisits = unassigned.filter(v => visitFallsOnDay(v, ds)).sort(byTimeAsc);
+        html += `<div class="sch-cell">${dayVisits.map(visitChip).join('')}</div>`;
+      }
+    }
+
+    html += '</div>';
+    const grid = document.getElementById('sch-grid');
+    grid.innerHTML = html;
+    // Decorate each chip with PC.gateRow so click + keyboard route to visit detail.
+    if (typeof PC !== 'undefined' && PC.gateRow) {
+      grid.querySelectorAll('[data-pc-row-visit]').forEach(function (el) {
+        const vid = Number(el.getAttribute('data-pc-row-visit'));
+        PC.gateRow(el, 'visit', vid, {
+          onClick: function () { if (typeof routeVisitDetail === 'function') routeVisitDetail(vid); else openEditVisit(vid); },
+          ariaLabel: 'View visit #' + vid,
+        });
+      });
+    }
+  }
+
+  function visitChip(v) {
+    const cls = `${v.visit_type.toLowerCase()} ${v.status}`;
+    const customer = v.customer_name || '(no customer)';
+    const equip = v.equipment_name || '';
+    const time = v.scheduled_time ? fmtTime12(v.scheduled_time) : '<span style="color:var(--danger);font-style:italic;">no time</span>';
+    const _gateSch = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    // Schedule chip references customer + visit; the chip itself opens visit edit.
+    const customerCell = (_gateSch && v.customer_id)
+      ? PC.gateLinkHtml('customer', v.customer_id, customer, {})
+      : escHtml(customer);
+    return `
+      <div class="sch-visit ${cls}" data-pc-row-visit="${v.id}" title="Click to view visit">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:4px;">
+          <span class="type">${v.visit_type}</span>
+          <span style="font-size:11px;font-weight:700;color:var(--ink);">${time}</span>
+        </div>
+        <div class="customer">${customerCell}</div>
+        ${equip ? `<div class="equip">${escHtml(equip)}</div>` : ''}
+        <div style="font-size:9px;color:var(--muted);margin-top:2px;letter-spacing:0.3px;">${v.status.replace('_',' ')}</div>
+      </div>`;
+  }
+
+  // ── Timesheets ─────────────────────────────────────────────────────────────
+  let tsCache = [];
+
+  function mondayOf(date) {
+    const d = new Date(date);
+    const day = d.getDay();
+    const diff = (day === 0 ? -6 : 1 - day);
+    d.setDate(d.getDate() + diff);
+    d.setHours(0,0,0,0);
+    return d;
+  }
+  function isoDate(d) { return d.toISOString().slice(0, 10); }
+  function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+
+  function initTimesheetWeek() {
+    const m = mondayOf(new Date());
+    document.getElementById('ts-week-start').value = isoDate(m);
+    // Populate tech dropdown
+    const sel = document.getElementById('ts-tech-filter');
+    sel.innerHTML = '<option value="">All technicians</option>' +
+      allTechs.map(t => `<option value="${t.id}">${escHtml(t.name)} (${t.tech_code})</option>`).join('');
+  }
+
+  function setThisWeek() {
+    document.getElementById('ts-week-start').value = isoDate(mondayOf(new Date()));
+    loadTimesheets();
+  }
+
+  function shiftWeek(n) {
+    const cur = new Date(document.getElementById('ts-week-start').value || isoDate(mondayOf(new Date())));
+    document.getElementById('ts-week-start').value = isoDate(addDays(cur, n * 7));
+    loadTimesheets();
+  }
+
+  async function loadTimesheets() {
+    if (!can('timesheet:view_all')) return;
+    let start = document.getElementById('ts-week-start').value;
+    if (!start) { initTimesheetWeek(); start = document.getElementById('ts-week-start').value; }
+    const m = mondayOf(new Date(start));
+    const startStr = isoDate(m);
+    const endStr   = isoDate(addDays(m, 7));
+    document.getElementById('ts-week-label').textContent =
+      `${PC.fmtDate(m)} – ${PC.fmtDate(addDays(m,6))}`;
+    const techId = document.getElementById('ts-tech-filter').value;
+    const params = new URLSearchParams({ start: startStr, end: endStr });
+    if (techId) params.set('tech_id', techId);
+    try {
+      tsCache = await api('GET', '/api/admin/timesheets?' + params.toString());
+      renderTimesheets();
+    } catch(e) {
+      document.getElementById('ts-entries').innerHTML = `<tr><td colspan="8" class="empty">Error: ${e.message}</td></tr>`;
+    }
+  }
+
+  function fmtHours(mins) {
+    if (mins == null) return '—';
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return h ? `${h}h ${m}m` : `${m}m`;
+  }
+  function decimalHours(mins) { return mins == null ? 0 : Math.round((mins / 60) * 100) / 100; }
+
+  function renderTimesheets() {
+    const rows = tsCache;
+
+    // Top summary cards
+    const totalMins = rows.reduce((s, r) => s + (r.duration_minutes || 0), 0);
+    const pmMins    = rows.filter(r => r.visit_type === 'PM').reduce((s, r) => s + (r.duration_minutes || 0), 0);
+    const cmMins    = rows.filter(r => r.visit_type === 'CM').reduce((s, r) => s + (r.duration_minutes || 0), 0);
+    const inProg    = rows.filter(r => !r.end_time).length;
+    document.getElementById('ts-summary').innerHTML = `
+      ${summaryCard('Total Hours', fmtHours(totalMins), 'var(--ink)')}
+      ${summaryCard('PM Hours',    fmtHours(pmMins),    'var(--steel)')}
+      ${summaryCard('CM Hours',    fmtHours(cmMins),    'var(--teal-deep)')}
+      ${summaryCard('Time Entries', rows.length + (inProg ? ` (${inProg} in progress)` : ''), 'var(--teal-deep)')}
+    `;
+
+    // Per-tech breakdown
+    const byTech = {};
+    for (const r of rows) {
+      const key = r.tech_id || 0;
+      if (!byTech[key]) byTech[key] = { name: r.tech_name || 'Unassigned', prid: r.tech_prid || '—', visits: 0, pm: 0, cm: 0, total: 0 };
+      byTech[key].visits += 1;
+      const m = r.duration_minutes || 0;
+      if (r.visit_type === 'PM') byTech[key].pm += m;
+      if (r.visit_type === 'CM') byTech[key].cm += m;
+      byTech[key].total += m;
+    }
+    const techRows = Object.values(byTech).sort((a, b) => b.total - a.total);
+    const tbody1 = document.getElementById('ts-by-tech');
+    if (!techRows.length) {
+      tbody1.innerHTML = '<tr><td colspan="6" class="empty">No time entries in this week.</td></tr>';
+    } else {
+      tbody1.innerHTML = techRows.map(t => `
+        <tr>
+          <td><strong>${escHtml(t.name)}</strong></td>
+          <td><span class="code-pill">${escHtml(t.prid)}</span></td>
+          <td>${t.visits}</td>
+          <td>${fmtHours(t.pm)}</td>
+          <td>${fmtHours(t.cm)}</td>
+          <td><strong>${fmtHours(t.total)}</strong></td>
+        </tr>`).join('');
+    }
+
+    // Detail entries
+    const tbody2 = document.getElementById('ts-entries');
+    if (!rows.length) {
+      tbody2.innerHTML = '<tr><td colspan="8" class="empty">No time entries in this week.</td></tr>';
+      return;
+    }
+    tbody2.innerHTML = rows.map(r => {
+      const start = new Date(r.start_time);
+      const end   = r.end_time ? new Date(r.end_time) : null;
+      const d = PC.fmtDate(start);
+      const ts = PC.fmtTime(start);
+      const te = end ? PC.fmtTime(end) : '<span style="color:var(--muted);">in progress</span>';
+      return `
+        <tr>
+          <td style="white-space:nowrap;">${d}</td>
+          <td>${escHtml(r.tech_name || 'Unassigned')}<br><span style="font-size:10px;color:var(--muted);font-family:'Courier New',monospace;">${escHtml(r.tech_prid || '')}</span></td>
+          <td><span class="badge badge-${(r.visit_type||'').toLowerCase()}">${r.visit_type}</span></td>
+          <td>${escHtml(r.customer_name || '')}<br><span class="code-pill">${escHtml(r.customer_code || '')}</span></td>
+          <td>${ts}</td>
+          <td>${te}</td>
+          <td><strong>${fmtHours(r.duration_minutes)}</strong></td>
+          <td><span class="badge badge-${r.status}">${(r.status||'').replace('_',' ')}</span></td>
+        </tr>`;
+    }).join('');
+  }
+
+  function summaryCard(label, value, accent) {
+    return `
+      <div style="background:var(--card);border:1px solid var(--border);border-left:4px solid ${accent};border-radius:10px;padding:14px 16px;">
+        <div style="font-size:10px;font-weight:700;letter-spacing:0.7px;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">${label}</div>
+        <div style="font-size:18px;font-weight:700;color:var(--ink);">${value}</div>
+      </div>`;
+  }
+
+  function exportTimesheetCsv() {
+    if (!tsCache.length) { alert('Nothing to export — load a week with time entries first.'); return; }
+    const header = ['Date','Tech Name','PRID','Tech Code','Visit Type','Customer','Customer ID','Start','End','Duration (hours)','Status'];
+    const lines  = [header.join(',')];
+    for (const r of tsCache) {
+      const start = new Date(r.start_time);
+      const end   = r.end_time ? new Date(r.end_time) : null;
+      const cells = [
+        start.toISOString().slice(0,10),
+        r.tech_name || '',
+        r.tech_prid || '',
+        r.tech_code || '',
+        r.visit_type || '',
+        r.customer_name || '',
+        r.customer_code || '',
+        start.toISOString(),
+        end ? end.toISOString() : '',
+        decimalHours(r.duration_minutes),
+        r.status || '',
+      ].map(v => {
+        const s = String(v);
+        return /[",\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+      });
+      lines.push(cells.join(','));
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    const wk   = document.getElementById('ts-week-start').value;
+    a.href = url; a.download = `primecool-timesheet-${wk}.csv`;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a); URL.revokeObjectURL(url);
+  }
+
+  // ── Timesheet approval workflow (biweekly: submitted → supervisor → super_admin) ──
+  let _tsAgg = null;            // currently-open aggregate {timesheet, days, ...}
+  const _TS_STATUS_LABEL = {
+    draft: 'Draft', submitted: 'Submitted',
+    supervisor_approved: 'Supervisor approved',
+    super_admin_approved: 'Fully approved',
+  };
+  function _tsMin(m) {            // minutes → "8h 30m"
+    if (m == null) return '—';
+    const h = Math.floor(m / 60), mm = m % 60;
+    return h ? `${h}h ${mm}m` : `${mm}m`;
+  }
+  function _isoToHm(iso) {        // ISO datetime → "HH:MM" (local-naive, server stores UTC-ish)
+    if (!iso) return '';
+    const m = String(iso).match(/T(\d{2}:\d{2})/);
+    return m ? m[1] : '';
+  }
+  function _hmToIso(date, hm) {   // ("2026-06-08","08:30") → "2026-06-08T08:30:00"
+    if (!hm) return null;
+    return `${date}T${hm}:00`;
+  }
+
+  async function loadTimesheetQueue() {
+    const tbody = document.getElementById('ts-queue');
+    if (!tbody) return;
+    if (!can('timesheet:view_all')) {
+      document.getElementById('ts-queue-card').style.display = 'none';
+      return;
+    }
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">Loading…</td></tr>';
+    try {
+      const rows = await api('GET', '/api/admin/timesheets/pending');
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="empty">Nothing waiting for approval.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = rows.map(r => {
+        const period = `${PC.fmtDate(r.period_start)} – ${PC.fmtDate(r.period_end)}`;
+        const sub = r.submitted_at ? PC.fmtDateTime(r.submitted_at) : '—';
+        return `
+          <tr>
+            <td><strong>${escHtml(r.tech_name || 'Unknown')}</strong>
+                <br><span class="code-pill">${escHtml(r.tech_prid || r.tech_code || '')}</span></td>
+            <td style="white-space:nowrap;">${period}</td>
+            <td style="white-space:nowrap;">${sub}</td>
+            <td><span class="badge">${_TS_STATUS_LABEL[r.status] || r.status}</span></td>
+            <td><button class="btn btn-sm btn-primary" onclick="openTsApprove(${r.id})">Review</button></td>
+          </tr>`;
+      }).join('');
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="5" class="empty">Error: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  async function openTsApprove(id) {
+    document.getElementById('tsApproveErr').style.display = 'none';
+    openModal('tsApprove');
+    document.getElementById('tsApproveDays').innerHTML = '<tr><td colspan="6" class="empty">Loading…</td></tr>';
+    document.getElementById('tsApproveFooter').innerHTML = '';
+    try {
+      _tsAgg = await api('GET', `/api/admin/timesheets/${id}`);
+      renderTsApprove();
+    } catch (e) {
+      document.getElementById('tsApproveDays').innerHTML =
+        `<tr><td colspan="6" class="empty">Error: ${escHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  function renderTsApprove() {
+    if (!_tsAgg) return;
+    const ts = _tsAgg.timesheet;
+    const locked = ts.status === 'super_admin_approved';
+    document.getElementById('tsApproveTitle').textContent =
+      `Timesheet — ${escHtml(ts.tech_name || ('tech #' + ts.tech_id))}`;
+    document.getElementById('tsApproveMeta').innerHTML =
+      `<strong>${PC.fmtDate(ts.period_start)} – ${PC.fmtDate(ts.period_end)}</strong> · ` +
+      `Status: <span class="badge">${_TS_STATUS_LABEL[ts.status] || ts.status}</span> · ` +
+      `Worked ${_tsMin(_tsAgg.total_minutes)} · Paid ${_tsMin(_tsAgg.total_paid_minutes)}` +
+      (_tsAgg.total_holiday_minutes ? ` · Holiday ${_tsMin(_tsAgg.total_holiday_minutes)}` : '');
+
+    // Prior rejection reason banner
+    const rej = document.getElementById('tsApproveReject');
+    if (ts.reject_reason) {
+      rej.style.display = 'block';
+      rej.innerHTML = `<strong>Sent back:</strong> ${escHtml(ts.reject_reason)}`;
+    } else { rej.style.display = 'none'; }
+
+    // Days
+    document.getElementById('tsApproveDays').innerHTML = (_tsAgg.days || []).map(d => {
+      const note = d.override_note ? ` <span title="${escHtml(d.override_note)}" style="color:var(--muted);">✎</span>` : '';
+      const hol  = d.is_holiday ? ` <span class="badge" title="${escHtml(d.holiday_name||'')}" style="font-size:9px;">HOL</span>` : '';
+      const editBtn = locked ? '' :
+        `<button class="btn btn-sm btn-ghost" onclick="openTsDayEdit('${d.work_date}')">Edit</button>`;
+      return `
+        <tr${d.has_override ? ' style="background:var(--light);"' : ''}>
+          <td style="white-space:nowrap;">${escHtml(d.weekday)} ${PC.fmtDate(d.work_date)}${hol}</td>
+          <td>${_isoToHm(d.eff_start) || '—'}</td>
+          <td>${_isoToHm(d.eff_end) || '—'}</td>
+          <td>${_tsMin(d.worked_minutes)}${note}</td>
+          <td><strong>${_tsMin(d.paid_minutes)}</strong></td>
+          <td>${editBtn}</td>
+        </tr>`;
+    }).join('');
+
+    // Tech notes
+    const notesEl = document.getElementById('tsApproveNotes');
+    notesEl.value = ts.tech_notes || '';
+    notesEl.disabled = locked;
+    document.getElementById('tsApproveNotesBtn').style.display = locked ? 'none' : '';
+
+    // Footer buttons — role + status gated
+    const isSuper = (currentAdmin && (currentAdmin.role || '').toLowerCase() === 'super_admin');
+    const f = [];
+    f.push(`<button class="btn btn-ghost" onclick="closeModal('tsApprove')">Close</button>`);
+    if (ts.status === 'draft') {
+      f.push(`<button class="btn btn-navy" onclick="tsApproveAction('submit-as-tech')">Submit as tech</button>`);
+    } else if (ts.status === 'submitted') {
+      f.push(`<button class="btn btn-danger" onclick="tsApproveAction('reject')">Send back</button>`);
+      // Stage-1 approval is the supervisor's job. A super_admin can't take
+      // the supervisor pass on a 'submitted' sheet (backend 409s) — they
+      // use force-approve to bypass straight to final.
+      if (isSuper) f.push(`<button class="btn btn-lime" onclick="tsApproveAction('force-approve')">Force approve</button>`);
+      else         f.push(`<button class="btn btn-primary" onclick="tsApproveAction('approve')">Approve (1 of 2)</button>`);
+    } else if (ts.status === 'supervisor_approved') {
+      f.push(`<button class="btn btn-danger" onclick="tsApproveAction('reject')">Send back</button>`);
+      if (isSuper) f.push(`<button class="btn btn-primary" onclick="tsApproveAction('approve')">Final approve</button>`);
+    }
+    document.getElementById('tsApproveFooter').innerHTML = f.join('');
+  }
+
+  async function tsApproveAction(action) {
+    if (!_tsAgg) return;
+    const id = _tsAgg.timesheet.id;
+    const err = document.getElementById('tsApproveErr');
+    err.style.display = 'none';
+    let body = null;
+    if (action === 'reject') {
+      const reason = (prompt('Reason for sending this timesheet back (the tech will see it):') || '').trim();
+      if (!reason) return;
+      body = { reason };
+    } else if (action === 'force-approve') {
+      const reason = (prompt('Force-approve reason (loudly audit-logged):') || '').trim();
+      if (!reason) return;
+      body = { reason };
+    }
+    try {
+      await api('POST', `/api/admin/timesheets/${id}/${action}`, body);
+      toast('Timesheet updated', 'success');
+      closeModal('tsApprove');
+      loadTimesheetQueue();
+      loadTimesheets();
+    } catch (e) {
+      err.style.display = 'block';
+      err.textContent = e.message;
+    }
+  }
+
+  async function saveTsApproveNotes() {
+    if (!_tsAgg) return;
+    const id = _tsAgg.timesheet.id;
+    const err = document.getElementById('tsApproveErr');
+    err.style.display = 'none';
+    try {
+      await api('PATCH', `/api/admin/timesheets/${id}/notes`,
+                { tech_notes: document.getElementById('tsApproveNotes').value });
+      toast('Notes saved', 'success');
+    } catch (e) {
+      err.style.display = 'block';
+      err.textContent = e.message;
+    }
+  }
+
+  let _tsDayDate = null;
+  function openTsDayEdit(date) {
+    if (!_tsAgg) return;
+    const d = (_tsAgg.days || []).find(x => x.work_date === date);
+    if (!d) return;
+    _tsDayDate = date;
+    document.getElementById('tsDayLabel').textContent = `${d.weekday} ${PC.fmtDate(date)}`;
+    document.getElementById('tsDayStart').value = _isoToHm(d.eff_start);
+    document.getElementById('tsDayEnd').value   = _isoToHm(d.eff_end);
+    document.getElementById('tsDayBreak').value = d.manual_break_minutes || '';
+    document.getElementById('tsDayNote').value  = d.override_note || '';
+    document.getElementById('tsDayErr').style.display = 'none';
+    openModal('tsDayEdit');
+  }
+
+  async function saveTsDayEdit() {
+    if (!_tsAgg || !_tsDayDate) return;
+    const id = _tsAgg.timesheet.id;
+    const err = document.getElementById('tsDayErr');
+    err.style.display = 'none';
+    const hmS = document.getElementById('tsDayStart').value;
+    const hmE = document.getElementById('tsDayEnd').value;
+    const brk = document.getElementById('tsDayBreak').value;
+    const note = document.getElementById('tsDayNote').value.trim();
+    const body = {
+      work_date: _tsDayDate,
+      manual_start_time: _hmToIso(_tsDayDate, hmS),
+      manual_end_time:   _hmToIso(_tsDayDate, hmE),
+      manual_break_minutes: brk === '' ? null : parseInt(brk, 10),
+      note: note || null,
+    };
+    try {
+      await api('PUT', `/api/admin/timesheets/${id}/day`, body);
+      toast('Day updated', 'success');
+      closeModal('tsDayEdit');
+      _tsAgg = await api('GET', `/api/admin/timesheets/${id}`);
+      renderTsApprove();
+    } catch (e) {
+      err.style.display = 'block';
+      err.textContent = e.message;
+    }
+  }
+
+  // ── Audit Log ──────────────────────────────────────────────────────────────
+  // ── Offboarding (access-lifecycle UI) ─────────────────────────────────
+  let offboardCtx = null;
+
+  async function openOffboard(subjectType, id, name) {
+    offboardCtx = { subjectType, id, name };
+    const labels = { admin: 'admin user', tech: 'technician', customer: 'customer' };
+    document.getElementById('offboardTitle').textContent =
+      subjectType === 'customer' ? `Close customer account` : `Offboard ${labels[subjectType]}`;
+    document.getElementById('offboard-target').textContent = `${name} (${labels[subjectType]} #${id})`;
+    document.getElementById('offboard-reason').value = '';
+    document.getElementById('err-offboard').style.display = 'none';
+    document.getElementById('offboardConfirmBtn').textContent =
+      subjectType === 'customer' ? 'Confirm close' : 'Confirm offboard';
+    document.getElementById('offboard-report').innerHTML = '<span style="color:var(--muted);">Loading…</span>';
+    document.getElementById('modal-offboard').classList.add('open');
+
+    const pathMap = { admin: 'users', tech: 'techs', customer: 'customers' };
+    try {
+      const r = await api('GET', `/api/admin/${pathMap[subjectType]}/${id}/exit-report?days=30`);
+      renderExitReport(r);
+    } catch (e) {
+      document.getElementById('offboard-report').innerHTML =
+        `<span style="color:var(--err-fg);">Could not load exit report: ${escHtml(e.message)}</span>`;
+    }
+  }
+
+  function renderExitReport(r) {
+    const fmtDate = (iso) => PC.fmtDateTime(iso) || '—';
+    const muts = r.mutations_by_action || [];
+    const exports = r.exports || [];
+    const acctChanges = r.account_changes || [];
+    const hotReads = (r.reads_total || 0) >= 100;
+    const hotCustomers = (r.distinct_customers || 0) >= 20;
+    const html = `
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px;">
+        <div style="background:var(--light);padding:8px;border-radius:6px;">
+          <div style="font-size:11px;color:var(--muted);">Last login</div>
+          <div style="font-weight:600;color:var(--ink);font-size:12px;">${escHtml(fmtDate(r.last_login_at))}</div>
+        </div>
+        <div style="background:${hotReads ? 'var(--teal-bg)' : 'var(--light)'};padding:8px;border-radius:6px;">
+          <div style="font-size:11px;color:var(--muted);">Reads (30d)</div>
+          <div style="font-weight:700;font-size:18px;color:${hotReads ? 'var(--teal-deep)' : 'var(--navy)'};">${r.reads_total || 0}</div>
+        </div>
+        <div style="background:${hotCustomers ? 'var(--teal-bg)' : 'var(--light)'};padding:8px;border-radius:6px;">
+          <div style="font-size:11px;color:var(--muted);">Distinct customers</div>
+          <div style="font-weight:700;font-size:18px;color:${hotCustomers ? 'var(--teal-deep)' : 'var(--navy)'};">${r.distinct_customers || 0}</div>
+        </div>
+      </div>
+      ${exports.length ? `
+        <div style="margin-bottom:10px;">
+          <strong style="color:var(--err-fg);">⚠ ${exports.length} export(s) in last 30 days:</strong>
+          ${exports.slice(0,5).map(e => `<div style="font-size:12px;color:var(--muted);margin-left:14px;">• ${escHtml(e.action)} — ${escHtml(e.target_label||'')} <span>(${escHtml(fmtDate(e.created_at))})</span></div>`).join('')}
+        </div>` : ''}
+      ${acctChanges.length ? `
+        <div style="margin-bottom:10px;">
+          <strong>Account changes by this user:</strong>
+          ${acctChanges.slice(0,5).map(c => `<div style="font-size:12px;color:var(--muted);margin-left:14px;">• ${escHtml(c.action)} → ${escHtml(c.target_label||'')} <span>(${escHtml(fmtDate(c.created_at))})</span></div>`).join('')}
+        </div>` : ''}
+      ${muts.length ? `
+        <div>
+          <strong>Mutations by action:</strong>
+          <div style="font-size:12px;color:var(--muted);">${muts.slice(0,8).map(m => `${escHtml(m.action)}: ${m.n}`).join(' · ')}</div>
+        </div>
+      ` : '<div style="color:var(--muted);font-size:12px;">No mutations recorded in window.</div>'}
+    `;
+    document.getElementById('offboard-report').innerHTML = html;
+  }
+
+  async function confirmOffboard() {
+    if (!offboardCtx) return;
+    const reason = document.getElementById('offboard-reason').value.trim();
+    if (!reason) { showErr('err-offboard', 'A reason is required (it goes into the audit log).'); return; }
+    const pathMap = { admin: 'users', tech: 'techs', customer: 'customers' };
+    const action  = offboardCtx.subjectType === 'customer' ? 'close' : 'terminate';
+    const btn = document.getElementById('offboardConfirmBtn');
+    btn.disabled = true; btn.textContent = 'Working…';
+    try {
+      const r = await api('POST', `/api/admin/${pathMap[offboardCtx.subjectType]}/${offboardCtx.id}/${action}`, { reason });
+      toast(`Done. ${r.sessions_revoked || 0} session(s) revoked.`, 'success');
+      closeModal('offboard');
+      // Reload the affected table
+      if (offboardCtx.subjectType === 'admin') loadAdmins();
+      else if (offboardCtx.subjectType === 'tech') loadTechs();
+      else loadCustomers();
+    } catch (e) {
+      showErr('err-offboard', e.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = offboardCtx.subjectType === 'customer' ? 'Confirm close' : 'Confirm offboard';
+    }
+  }
+
+  async function reinstateAccount(subjectType, id) {
+    if (!confirm(subjectType === 'customer' ? 'Reopen this customer account?' : 'Reinstate this account?')) return;
+    const pathMap = { admin: 'users', tech: 'techs', customer: 'customers' };
+    const action  = subjectType === 'customer' ? 'reopen' : 'reinstate';
+    try {
+      await api('POST', `/api/admin/${pathMap[subjectType]}/${id}/${action}`);
+      toast('Reinstated', 'success');
+      if (subjectType === 'admin') loadAdmins();
+      else if (subjectType === 'tech') loadTechs();
+      else loadCustomers();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function refreshSecurityBanner() {
+    try {
+      const r = await api('GET', '/api/admin/security/alerts/summary');
+      const el = document.getElementById('securityAlertBanner');
+      if (!el) return;
+      if (r && r.open > 0) {
+        el.dataset.hasAlert = '1';
+        // Suppress on the Audit panel — the user is already there to review.
+        const onAudit = document.getElementById('panel-audit')?.classList.contains('active');
+        el.style.display = onAudit ? 'none' : 'block';
+        el.innerHTML = `⚠ <strong>${r.open} open security alert${r.open === 1 ? '' : 's'}</strong> — click to review`;
+      } else {
+        el.dataset.hasAlert = '0';
+        el.style.display = 'none';
+      }
+    } catch {}
+  }
+
+  async function exportResource(name) {
+    // Browser download via authenticated fetch → blob (cookie auth is on the request).
+    const btn = document.getElementById('export' + name[0].toUpperCase() + name.slice(1) + 'Btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Exporting…'; }
+    try {
+      const res = await fetch('/api/admin/' + name + '/export', { credentials: 'include' });
+      if (!res.ok) {
+        const t = await res.text().catch(() => '');
+        alert('Export failed: ' + (res.status === 429 ? 'rate limit reached (10/hour).' : (t || res.statusText)));
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name + '-' + new Date().toISOString().slice(0,10) + '.csv';
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      alert('Export failed: ' + e.message);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '⬇ Export CSV'; }
+    }
+  }
+
+  async function loadAudit() {
+    if (!currentAdmin) return;
+    if (!can('audit:view_all') && !can('audit:view_self')) return;
+    const mode  = document.getElementById('auditMode')?.value || 'mutations';
+    const ap    = document.getElementById('auditAction')?.value;
+    const since = document.getElementById('auditSince')?.value;
+    const until = document.getElementById('auditUntil')?.value;
+    const minViewsEl = document.getElementById('auditMinViews');
+    if (minViewsEl) minViewsEl.style.display = (mode === 'aggregate') ? '' : 'none';
+    // Entity-history lookup inputs only matter in 'entity' mode.
+    const entTypeEl = document.getElementById('auditEntityType');
+    const entIdEl   = document.getElementById('auditEntityId');
+    if (entTypeEl) entTypeEl.style.display = (mode === 'entity') ? '' : 'none';
+    if (entIdEl)   entIdEl.style.display   = (mode === 'entity') ? '' : 'none';
+    // Switching out of alerts mode → restore the default thead and
+    // hide the bulk-resolve bar so they don't bleed into the audit /
+    // access / dormant renderers (which all assume the 5-col shape).
+    if (mode !== 'alerts') {
+      const thead = document.getElementById('auditTableHead');
+      if (thead) {
+        thead.innerHTML = '<tr><th>When</th><th>Actor</th><th>Action</th><th>Target</th><th>Detail</th></tr>';
+      }
+      _alertBulkBarVisible(false);
+      _alertSelection.clear();
+    }
+    const params = new URLSearchParams();
+    if (since) params.set('since', since + 'T00:00:00Z');
+    if (until) params.set('until', until + 'T23:59:59Z');
+    // R4 scale-up: dropped 500 → 200 to match the server-side default
+    // and avoid hauling 5K rows back into the SPA every nav switch.
+    params.set('limit', '200');
+    try {
+      if (mode === 'reads') {
+        if (ap) params.set('path_prefix', '/api/admin/' + ap);
+        const rows = await api('GET', '/api/admin/access?' + params.toString());
+        renderAudit(rows.map(_accessRowToAuditShape));
+      } else if (mode === 'aggregate') {
+        if (ap) params.set('target_type', ap);
+        params.set('min_views', String(parseInt(minViewsEl?.value || '1', 10) || 1));
+        const rows = await api('GET', '/api/admin/access/aggregate?' + params.toString());
+        renderAggregateAccess(rows);
+      } else if (mode === 'alerts') {
+        const rows = await api('GET', '/api/admin/security/alerts?limit=200');
+        renderSecurityAlerts(rows);
+      } else if (mode === 'dormant') {
+        const data = await api('GET', '/api/admin/access-lifecycle/dormant?days=90');
+        renderDormant(data);
+      } else if (mode === 'denied') {
+        // Forbidden-attempt trail (super_admin) — same row shape as the
+        // mutation chain, so renderAudit handles it directly.
+        const rows = await api('GET', '/api/admin/audit/access-denied?' + params.toString());
+        renderAudit(rows);
+      } else if (mode === 'entity') {
+        const et = entTypeEl?.value || 'customer';
+        const id = parseInt(entIdEl?.value || '', 10);
+        if (!id) { renderAudit([]); return; }
+        const rows = await api('GET', `/api/admin/history/${encodeURIComponent(et)}/${id}?limit=500`);
+        renderAudit(rows);
+      } else {
+        if (ap) params.set('action_prefix', ap + '.');
+        const rows = await api('GET', '/api/admin/audit?' + params.toString());
+        renderAudit(rows);
+      }
+    } catch {}
+  }
+
+  // Multi-select state for the alerts table. Keyed by alert id.
+  // Re-derived from checked checkboxes on every interaction so a
+  // re-render (loadAudit) doesn't have to manually preserve it.
+  const _alertSelection = new Set();
+
+  function _alertBulkBarVisible(visible) {
+    const bar = document.getElementById('alertBulkBar');
+    if (!bar) return;
+    bar.style.display = visible ? 'flex' : 'none';
+  }
+
+  function _alertSelectionChanged() {
+    const checked = document.querySelectorAll('input.alert-select:checked');
+    _alertSelection.clear();
+    checked.forEach(cb => _alertSelection.add(Number(cb.value)));
+    const n = _alertSelection.size;
+    const label = document.getElementById('alertBulkCount');
+    if (label) label.textContent = `${n} selected`;
+    _alertBulkBarVisible(n > 0);
+    // Sync header checkbox (indeterminate when partial).
+    const head = document.getElementById('alertSelectAll');
+    if (head) {
+      const all = document.querySelectorAll('input.alert-select');
+      head.checked = (n > 0 && n === all.length);
+      head.indeterminate = (n > 0 && n < all.length);
+    }
+  }
+
+  function _alertSelectAllToggle(checkbox) {
+    document.querySelectorAll('input.alert-select').forEach(cb => {
+      cb.checked = checkbox.checked;
+    });
+    _alertSelectionChanged();
+  }
+
+  function clearAlertSelection() {
+    document.querySelectorAll('input.alert-select').forEach(cb => cb.checked = false);
+    _alertSelectionChanged();
+  }
+
+  function renderSecurityAlerts(rows) {
+    const tbody = document.getElementById('auditTableBody');
+    const thead = document.getElementById('auditTableHead');
+    const countEl = document.getElementById('auditCount');
+    if (countEl) countEl.textContent = rows.length ? `${rows.length} alert${rows.length === 1 ? '' : 's'}` : '';
+    const canResolve = can('security:resolve_alerts');
+    // Swap header in (with checkbox column for resolve-able admins).
+    if (thead) {
+      thead.innerHTML = `<tr>
+        ${canResolve ? '<th style="width:34px;"><input type="checkbox" id="alertSelectAll" onchange="_alertSelectAllToggle(this)" title="Select all open alerts" aria-label="Select all open alerts"></th>' : ''}
+        <th>When</th><th>Severity / Kind</th><th>Status</th><th>Summary</th><th>Actions</th>
+      </tr>`;
+    }
+    if (!rows.length) {
+      tbody.innerHTML = `<tr><td colspan="${canResolve ? 6 : 5}" class="empty">No security alerts.</td></tr>`;
+      _alertBulkBarVisible(false);
+      return;
+    }
+    const fmt = (iso) => PC.fmtDateTime(iso);
+    tbody.innerHTML = rows.map(r => {
+      const sev = (r.severity || 'medium').toLowerCase();
+      const sevColor = sev === 'high' ? 'background:var(--err-bg);color:var(--err-fg);' : (sev === 'medium' ? 'background:var(--teal-bg);color:var(--teal-deep);' : 'background:var(--steel-bg);color:var(--ink);');
+      const statusBadge = r.status === 'open'
+        ? '<span class="badge" style="background:var(--err-bg);color:var(--err-fg);">OPEN</span>'
+        : `<span class="badge" style="background:var(--border);color:var(--text);">${escHtml(r.status.toUpperCase())}</span>`;
+      // Checkbox only on open rows the admin can resolve. Closed rows
+      // get an empty cell so the columns line up.
+      const checkCell = canResolve
+        ? (r.status === 'open'
+            ? `<td><input type="checkbox" class="alert-select" value="${r.id}" onchange="_alertSelectionChanged()" aria-label="Select alert #${r.id}"></td>`
+            : '<td></td>')
+        : '';
+      const resolveBtns = (canResolve && r.status === 'open')
+        ? `<button class="btn btn-ghost btn-sm" onclick="resolveAlert(${r.id}, 'resolved')">Resolve</button>
+           <button class="btn btn-ghost btn-sm" onclick="resolveAlert(${r.id}, 'dismissed')">Dismiss</button>`
+        : '';
+      return `<tr>
+        ${checkCell}
+        <td>${escHtml(fmt(r.created_at))}</td>
+        <td><span class="badge" style="${sevColor}">${escHtml(sev.toUpperCase())}</span> ${escHtml(r.kind)}</td>
+        <td>${statusBadge}</td>
+        <td>${escHtml(r.summary || '')}</td>
+        <td>${resolveBtns}</td>
+      </tr>`;
+    }).join('');
+    // Re-derive selection state (none after a fresh load).
+    _alertSelectionChanged();
+  }
+
+  async function resolveAlert(id, status) {
+    const note = prompt(`${status === 'resolved' ? 'Resolution' : 'Dismiss'} note (optional):`, '');
+    if (note === null) return;
+    try {
+      await api('POST', `/api/admin/security/alerts/${id}/resolve`, { note, status });
+      await loadAudit();
+      refreshSecurityBanner();
+      // Backend now sorts open-alerts-first. Scroll the user back to the top
+      // so the next-up open alert is visible without manual scroll. Smooth
+      // so the rotation feels intentional rather than jarring.
+      try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch (_) {
+        window.scrollTo(0, 0);
+      }
+    } catch (e) { alert(e.message); }
+  }
+
+  async function bulkResolveAlerts(status) {
+    if (!_alertSelection.size) return;
+    const ids = [..._alertSelection];
+    const verb = (status === 'resolved') ? 'Resolve' : 'Dismiss';
+    const note = prompt(
+      `${verb} ${ids.length} alert${ids.length === 1 ? '' : 's'}. Shared note (optional, applied to all):`,
+      '',
+    );
+    if (note === null) return;
+    try {
+      const res = await api('POST', '/api/admin/security/alerts/bulk-resolve',
+                            { ids, note, status });
+      // The backend reports the gap if any selections went stale
+      // between fetch and submit (already-closed alerts skipped).
+      let msg = `${res.updated} alert${res.updated === 1 ? '' : 's'} ${status}.`;
+      if (res.skipped_already_closed) {
+        msg += ` ${res.skipped_already_closed} were already closed.`;
+      }
+      try { toast(msg, 'success'); } catch (_) { alert(msg); }
+      clearAlertSelection();
+      await loadAudit();
+      refreshSecurityBanner();
+      try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch (_) {
+        window.scrollTo(0, 0);
+      }
+    } catch (e) {
+      alert(e.message || 'Bulk action failed.');
+    }
+  }
+
+  function renderDormant(data) {
+    const tbody = document.getElementById('auditTableBody');
+    const countEl = document.getElementById('auditCount');
+    const all = [
+      ...(data.admin    || []).map(r => ({...r, kind: 'admin'})),
+      ...(data.tech     || []).map(r => ({...r, kind: 'tech'})),
+      ...(data.customer || []).map(r => ({...r, kind: 'customer'})),
+    ];
+    if (countEl) countEl.textContent = all.length ? `${all.length} dormant account${all.length===1?'':'s'} (≥90d)` : '';
+    if (!all.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">No dormant accounts — everyone has signed in within the last 90 days.</td></tr>';
+      return;
+    }
+    const fmt = (iso) => iso ? PC.fmtDate(iso) : 'never';
+    tbody.innerHTML = all.map(r => {
+      const kindLabel = r.kind === 'admin' ? 'Admin' : r.kind === 'tech' ? 'Tech' : 'Customer';
+      const kindColor = r.kind === 'admin' ? 'background:var(--err-bg);color:var(--err-fg);' : r.kind === 'tech' ? 'background:var(--steel-bg);color:var(--steel);' : 'background:var(--teal-bg);color:var(--teal-deep);';
+      const path = r.kind === 'admin' ? 'users' : r.kind === 'tech' ? 'techs' : 'customers';
+      return `<tr>
+        <td>${escHtml(fmt(r.last_login_at))}</td>
+        <td><span class="badge" style="${kindColor}">${kindLabel}</span></td>
+        <td>${escHtml(r.label || '—')} <span style="color:var(--muted);font-size:11px;">#${r.id}</span></td>
+        <td style="color:var(--muted);font-size:12px;">${r.last_login_at ? 'last login ' + escHtml(fmt(r.last_login_at)) : 'never logged in · created ' + escHtml(fmt(r.created_at))}</td>
+        <td>
+          ${can('audit:view_all') ? `<button class="btn btn-ghost btn-sm" onclick="openOffboard('${r.kind}',${r.id},'${escHtml(r.label||'(no name)').replace(/'/g,"\\'")}')">${r.kind === 'customer' ? 'Close' : 'Offboard'}</button>` : ''}
+        </td>
+      </tr>`;
+    }).join('');
+  }
+
+  function renderAggregateAccess(rows) {
+    const tbody = document.getElementById('auditTableBody');
+    const countEl = document.getElementById('auditCount');
+    if (countEl) countEl.textContent = rows.length ? `${rows.length} actor→target pair${rows.length === 1 ? '' : 's'}` : '';
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">No read activity in this window.</td></tr>';
+      return;
+    }
+    const fmt = (iso) => PC.fmtDateTime(iso);
+    tbody.innerHTML = rows.map(r => {
+      const actor = escHtml(`${r.actor_label || ''} ${r.actor_prid ? '(' + r.actor_prid + ')' : ''}`.trim()) || `#${r.actor_id}`;
+      const target = escHtml(`${r.target_type} #${r.target_id}`);
+      const hot = r.hits >= 20 ? 'background:var(--teal-bg);color:var(--teal-deep);font-weight:600;' : (r.hits >= 5 ? 'color:var(--teal-deep);font-weight:600;' : '');
+      return `<tr>
+        <td>${escHtml(fmt(r.last_seen))}</td>
+        <td>${actor} <span class="badge" style="font-size:10px;">${escHtml(r.actor_type || '')}</span></td>
+        <td><span style="${hot}">${r.hits} view${r.hits === 1 ? '' : 's'}</span></td>
+        <td>${target}</td>
+        <td style="color:var(--muted);font-size:12px;">last seen ${escHtml(fmt(r.last_seen))}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Normalise an access_log row so renderAudit can display it uniformly.
+  function _accessRowToAuditShape(r) {
+    return {
+      created_at:   r.created_at,
+      actor_type:   r.actor_type,
+      actor_id:     r.actor_id,
+      actor_prid:   r.actor_prid,
+      actor_label:  r.actor_label,
+      actor_role:   null,
+      action:       'read.' + (r.method || 'GET'),
+      target_type:  null,
+      target_id:    null,
+      target_label: `${r.method} ${r.path}` + (r.status_code ? ` → ${r.status_code}` : ''),
+      before_value: null,
+      after_value:  r.query || r.ip_address
+        ? JSON.stringify({query: r.query, status: r.status_code, ip: r.ip_address, ua: r.user_agent})
+        : null,
+    };
+  }
+
+  async function verifyAuditChain() {
+    const banner = document.getElementById('auditChainStatus');
+    const btn    = document.getElementById('auditVerifyBtn');
+    banner.style.display = 'block';
+    banner.style.background = 'var(--light)';
+    banner.style.color = 'var(--muted)';
+    banner.innerHTML = 'Verifying audit chain…';
+    btn.disabled = true; btn.textContent = 'Verifying…';
+    try {
+      const res = await api('GET', '/api/admin/audit/verify');
+      if (res.ok) {
+        banner.style.background = 'var(--teal-bg)';
+        banner.style.color      = 'var(--teal-deep)';
+        banner.style.border     = '1px solid var(--teal)';
+        banner.innerHTML = `✓ <strong>Audit chain verified.</strong> All ${res.total} entries match their computed hashes. No tampering detected.`;
+      } else {
+        banner.style.background = 'var(--err-bg)';
+        banner.style.color      = 'var(--err-fg)';
+        banner.style.border     = '1px solid var(--err-border)';
+        banner.innerHTML = `⚠ <strong>Audit chain BROKEN.</strong> Tampering detected at entry #${res.broken_at_id} (position ${res.broken_at_index + 1} of ${res.total}). Investigate immediately and preserve the database for forensics.`;
+      }
+    } catch(e) {
+      banner.style.background = 'var(--err-bg)';
+      banner.style.color      = 'var(--err-fg)';
+      banner.innerHTML = `Error verifying chain: ${escHtml(e.message)}`;
+    } finally {
+      btn.disabled = false; btn.textContent = '🔗 Verify Chain';
+    }
+  }
+
+  function clearAuditFilters() {
+    document.getElementById('auditMode').value = 'mutations';
+    document.getElementById('auditAction').value = '';
+    document.getElementById('auditSince').value = '';
+    document.getElementById('auditUntil').value = '';
+    const mv = document.getElementById('auditMinViews');
+    if (mv) mv.value = '1';
+    const eid = document.getElementById('auditEntityId');
+    if (eid) eid.value = '';
+    loadAudit();
+  }
+
+  function renderAudit(rows) {
+    const tbody = document.getElementById('auditTableBody');
+    document.getElementById('auditCount').textContent = `${rows.length} entries`;
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">No audit entries.</td></tr>';
+      return;
+    }
+    const _gate = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    const _actorTypeMap = {admin:'admin', tech:'technician', technician:'technician', customer:'customer'};
+    tbody.innerHTML = rows.map(r => {
+      // House style: dd/MMM/yyyy + 24-hour time, applied via the global
+      // PC.fmtDateTime helper so audit timestamps match every other
+      // surface in the system (timesheet, payslips, schedule, …).
+      const when = (typeof PC !== 'undefined' && PC.fmtDateTime)
+        ? PC.fmtDateTime(r.created_at)
+        : new Date(r.created_at).toISOString().slice(0,16).replace('T',' ');
+      const actorTargetType = _actorTypeMap[r.actor_type] || r.actor_type;
+      const actorLabelHtml = r.actor_label && r.actor_id && _gate && actorTargetType
+        ? PC.gateLinkHtml(actorTargetType, r.actor_id, r.actor_label, {})
+        : (r.actor_label ? `<strong>${escHtml(r.actor_label)}</strong>` : `<span style="color:var(--muted);">${r.actor_type || '?'}</span>`);
+      const actor = r.actor_label
+        ? `${actorLabelHtml}<br><span style="font-size:10px;color:var(--muted);font-family:'Courier New',monospace;">${r.actor_prid || ''}</span>${r.actor_role ? `<br><span style="font-size:10px;color:var(--muted);">${r.actor_role.replace(/_/g,' ')}</span>` : ''}`
+        : actorLabelHtml;
+      const targetLinkable = r.target_type && r.target_id && _gate;
+      const targetLabelHtml = targetLinkable
+        ? PC.gateLinkHtml(r.target_type, r.target_id, r.target_label || ('#' + r.target_id), {})
+        : (r.target_label ? `<strong>${escHtml(r.target_label)}</strong>` : '');
+      const target = r.target_label
+        ? `${escHtml(r.target_type || '')} ${targetLabelHtml}`
+        : (r.target_type ? `${escHtml(r.target_type)} #${r.target_id || '?'}` : '—');
+      // Sensitive-value gating: target metadata (before/after JSON) only shown if
+      // the viewer can read the target record. Otherwise the row still appears
+      // but the diff details collapse to "—".
+      const _canSeeDetail = targetLinkable
+        ? (typeof PC !== 'undefined' && PC.canRead && PC.canRead(r.target_type, r.target_id))
+        : true;
+      const detail = (r.before_value || r.after_value)
+        ? (_canSeeDetail
+            ? `<details><summary style="cursor:pointer;font-size:11px;color:var(--teal);">view</summary><div style="font-size:11px;font-family:'Courier New',monospace;background:var(--light);padding:8px;border-radius:6px;margin-top:4px;max-width:400px;white-space:pre-wrap;word-break:break-word;">${r.before_value ? 'BEFORE: ' + escHtml(r.before_value) + '\n\n' : ''}${r.after_value ? 'AFTER: ' + escHtml(r.after_value) : ''}</div></details>`
+            : '<span style="color:var(--muted);font-size:11px;">—</span>')
+        : '';
+      return `
+      <tr>
+        <td style="font-size:11px;color:var(--muted);white-space:nowrap;">${when}</td>
+        <td>${actor}</td>
+        <td><span class="badge" style="background:var(--surface-2);color:var(--text);font-family:'Courier New',monospace;text-transform:none;">${escHtml(r.action)}</span></td>
+        <td>${target}</td>
+        <td>${detail}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // ── Technicians ────────────────────────────────────────────────────────────
+  // techFilter: 'active' (default) | 'inactive' | 'all'. Inactive shows
+  // offboarded / terminated techs so historic visit attribution
+  // remains discoverable from the admin UI.
+  let techFilter = 'active';
+
+  function setTechFilter(f, el) {
+    techFilter = f;
+    document.querySelectorAll('[id^="techFilter-"]').forEach(b =>
+      b.classList.toggle('active', b === el));
+    renderTechs();
+  }
+
+  async function loadTechs() {
+    try {
+      allTechs = await api('GET', '/api/admin/techs');
+      renderTechs();
+      populateTechSelect();
+    } catch {}
+  }
+
+  function renderTechs() {
+    const tbody = document.getElementById('techTableBody');
+    if (!allTechs.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty">No technicians yet. Add your first one.</td></tr>';
+      return;
+    }
+    const rows = allTechs.filter(t =>
+      techFilter === 'all'      ? true
+      : techFilter === 'active' ? !!t.active
+                                : !t.active
+    );
+    if (!rows.length) {
+      const msg = techFilter === 'inactive'
+        ? 'No inactive / offboarded technicians.'
+        : 'No active technicians.';
+      tbody.innerHTML = `<tr><td colspan="6" class="empty">${msg}</td></tr>`;
+      return;
+    }
+    const roleLabel = { apprentice: 'Apprentice', tech: 'Technician', senior_tech: 'Senior Technician', lead_tech: 'Journeyman', install_tech: 'Installation Technician', commercial_tech: 'Commercial Technician' };
+    const isSuper = (currentAdmin && currentAdmin.role === 'super_admin');
+    tbody.innerHTML = rows.map(t => {
+      return `
+      <tr data-pc-row-tech="${t.id}" style="${t.active ? '' : 'opacity:0.55;'}">
+        <td><span class="code-pill">${t.tech_code}</span>${t.prid ? `<br><span style="font-size:10px;color:var(--muted);font-family:'Courier New',monospace;">${t.prid}</span>` : ''}</td>
+        <td><strong>${escHtml(t.name)}</strong>${t.email ? `<br><span style="font-size:11px;color:var(--muted);">${escHtml(t.email)}</span>` : ''}<br><span class="badge" style="background:var(--steel-bg);color:var(--steel);margin-top:3px;display:inline-block;">${roleLabel[t.role] || 'Technician'}</span>${t.hourly_rate > 0 ? `<br><span style="font-size:11px;color:var(--muted);margin-top:2px;display:inline-block;">${fmtJMD(t.hourly_rate)}/hr</span>` : '<br><span style="font-size:11px;color:var(--red);margin-top:2px;display:inline-block;">No rate set</span>'}</td>
+        <td>${escHtml(t.phone) || '—'}</td>
+        <td>${t.active_jobs > 0 ? `<span class="badge badge-in_progress">${t.active_jobs} active</span>` : '<span style="color:var(--muted);">0</span>'}</td>
+        <td>${t.active ? '<span class="badge badge-confirmed">Active</span>' : '<span class="badge" style="background:var(--surface-2);color:var(--muted);">Inactive</span>'}</td>
+        <td style="white-space:nowrap;" onclick="event.stopPropagation();">
+          ${isSuper ? `<button class="btn btn-ghost btn-sm pc-stop-prop" onclick="event.stopPropagation();routeTechnicianDetail(${t.id})" aria-label="View technician detail" style="margin-right:6px;">View →</button>` : ''}
+          <button class="btn btn-edit btn-sm pc-stop-prop" onclick="event.stopPropagation();openEditTech(${t.id})">Edit</button>
+          <button class="btn btn-edit btn-sm pc-stop-prop" onclick="event.stopPropagation();openResetPin(${t.id},'${escHtml(t.name)}')" style="margin-left:6px;">Reset PIN</button>
+          ${can('tech:delete') ? (
+            t.active
+              ? `<button class="btn btn-danger btn-sm pc-stop-prop" onclick="event.stopPropagation();openOffboard('tech',${t.id},'${escHtml(t.name)}')" style="margin-left:6px;">🚪 Offboard</button>`
+              : `<button class="btn btn-ghost btn-sm pc-stop-prop" onclick="event.stopPropagation();reinstateAccount('tech',${t.id})" style="margin-left:6px;">Reinstate</button>`
+          ) : ''}
+        </td>
+      </tr>`;
+    }).join('');
+    if (typeof PC !== 'undefined' && PC.gateRow) {
+      tbody.querySelectorAll('tr[data-pc-row-tech]').forEach(function (tr) {
+        const tid = Number(tr.getAttribute('data-pc-row-tech'));
+        PC.gateRow(tr, 'technician', tid, {
+          onClick: function () { routeTechnicianDetail(tid); },
+          ariaLabel: 'View technician #' + tid,
+        });
+      });
+    }
+  }
+
+  function populateTechSelect() {
+    const sel = document.getElementById('v-tech');
+    if (!sel) return;
+    const current = sel.value;
+    sel.innerHTML = '<option value="">— Unassigned —</option>' +
+      allTechs.filter(t => t.active).map(t => `<option value="${t.id}">${escHtml(t.name)} (${t.tech_code})</option>`).join('');
+    if (current) sel.value = current;
+  }
+
+  function openEditTech(id) {
+    const t = allTechs.find(x => x.id === id);
+    if (!t) return;
+    editingTechId = id;
+    document.getElementById('techModalTitle').textContent = 'Edit Technician';
+    document.getElementById('techSubmitBtn').textContent = 'Save Changes';
+    // Hide the onboarding-only fields
+    document.getElementById('t-onboard-row').style.display = 'none';
+    document.getElementById('t-onboard-hint').style.display = 'none';
+    document.getElementById('t-stafftype-row').style.display = 'none';
+    // Show the read-only PRID / tech code banner
+    document.getElementById('t-edit-id-banner').style.display = 'block';
+    document.getElementById('t-edit-prid').textContent = t.prid || '—';
+    document.getElementById('t-edit-tech-code').textContent = t.tech_code;
+    // Pre-fill editable fields
+    document.getElementById('t-name').value  = t.name  || '';
+    document.getElementById('t-phone').value = t.phone || '';
+    document.getElementById('t-email').value = t.email || '';
+    document.getElementById('t-role').value  = t.role  || 'tech';
+    document.getElementById('t-rate').value  = t.hourly_rate || 0;
+    document.getElementById('err-addTech').style.display = 'none';
+    document.getElementById('modal-addTech').classList.add('open');
+  }
+
+  function resetTechForm() {
+    editingTechId = null;
+    document.getElementById('techModalTitle').textContent = 'Onboard Technician';
+    document.getElementById('techSubmitBtn').textContent  = 'Generate PRID & Create';
+    document.getElementById('t-onboard-row').style.display  = 'grid';
+    document.getElementById('t-onboard-hint').style.display = 'block';
+    document.getElementById('t-stafftype-row').style.display = 'grid';
+    document.getElementById('t-edit-id-banner').style.display = 'none';
+    ['t-pin','t-name','t-phone','t-email','t-hire','t-rate','t-dob','t-natid','t-trn'].forEach(id => document.getElementById(id).value = '');
+    document.getElementById('t-role').value = 'tech';
+    document.getElementById('t-stafftype').value = 'tech';
+    document.getElementById('err-addTech').style.display = 'none';
+  }
+
+  async function submitAddTech() {
+    const err = document.getElementById('err-addTech');
+    err.style.display = 'none';
+
+    if (editingTechId) {
+      // Edit path — name + phone + email + role + hourly_rate, keeps active state
+      const t = allTechs.find(x => x.id === editingTechId);
+      const body = {
+        name:        document.getElementById('t-name').value.trim(),
+        phone:       document.getElementById('t-phone').value.trim(),
+        email:       document.getElementById('t-email').value.trim(),
+        role:        document.getElementById('t-role').value || 'tech',
+        hourly_rate: parseFloat(document.getElementById('t-rate').value) || 0,
+        active:      !!(t && t.active),
+      };
+      if (!body.name) { showErr('err-addTech','Name is required.'); return; }
+      try {
+        await api('PUT', `/api/admin/techs/${editingTechId}`, body);
+        closeModal('addTech');
+        resetTechForm();
+        await loadTechs();
+      } catch(e) { showErr('err-addTech', e.message); }
+      return;
+    }
+
+    // Create path
+    const body = {
+      pin:         document.getElementById('t-pin').value.trim(),
+      name:        document.getElementById('t-name').value.trim(),
+      phone:       document.getElementById('t-phone').value.trim(),
+      email:       document.getElementById('t-email').value.trim(),
+      role:        document.getElementById('t-role').value || 'tech',
+      staff_type:  document.getElementById('t-stafftype').value || 'tech',
+      hire_date:   document.getElementById('t-hire').value,
+      hourly_rate: parseFloat(document.getElementById('t-rate').value) || 0,
+      date_of_birth: document.getElementById('t-dob').value || '',
+      national_id:   document.getElementById('t-natid').value.trim(),
+      trn:           document.getElementById('t-trn').value.trim(),
+    };
+    if (!body.pin || !body.name || !body.hire_date) { showErr('err-addTech','Name, PIN, and hire date are required.'); return; }
+    if (!/^\d{6,16}$/.test(body.pin)) { showErr('err-addTech','PIN must be 6–16 digits.'); return; }
+    try {
+      const res = await api('POST', '/api/admin/techs', body);
+      closeModal('addTech');
+      resetTechForm();
+      await loadTechs();
+      showPridModal(res.prid, `${escHtml(body.name)} signs in at <strong>/tech</strong> with their PRID as the code, plus the PIN you set.`,
+        { kind: 'tech', id: res.id });
+    } catch(e) { showErr('err-addTech', e.message); }
+  }
+
+  function openResetPin(id, name) {
+    resetPinTechId = id;
+    document.getElementById('resetPinName').textContent = name;
+    document.getElementById('rp-pin').value = '';
+    document.getElementById('err-resetPin').style.display = 'none';
+    document.getElementById('modal-resetPin').classList.add('open');
+  }
+
+  async function submitResetPin() {
+    const pin = document.getElementById('rp-pin').value.trim();
+    if (!/^\d{6,16}$/.test(pin)) { showErr('err-resetPin','PIN must be 6–16 digits.'); return; }
+    try {
+      await api('PUT', `/api/admin/techs/${resetPinTechId}/pin`, { pin });
+      closeModal('resetPin');
+      alert('PIN reset. Share the new PIN with the technician.');
+    } catch(e) { showErr('err-resetPin', e.message); }
+  }
+
+  async function toggleTechActive(id, active) {
+    const t = allTechs.find(x => x.id === id);
+    try {
+      await api('PUT', `/api/admin/techs/${id}`, {
+        name: t.name, phone: t.phone || '', email: t.email || '',
+        role: t.role || 'tech', hourly_rate: t.hourly_rate || 0,
+        active: !!active,
+      });
+      await loadTechs();
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  async function removeTech(id, name) {
+    if (!confirm(`Delete technician "${name}"? Any assigned jobs will become unassigned.`)) return;
+    try {
+      await api('DELETE', `/api/admin/techs/${id}`);
+      await loadTechs();
+      await loadAllVisits();
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  // ── Modals ─────────────────────────────────────────────────────────────────
+  function closeModal(name) {
+    document.getElementById(`modal-${name}`).classList.remove('open');
+  }
+  document.querySelectorAll('.modal-overlay').forEach(el => {
+    el.addEventListener('click', e => { if (e.target === el) el.classList.remove('open'); });
+  });
+
+  // ── Skeleton loader auto-swap ─────────────────────────────────────────
+  // Replaces any <td class="empty">Loading…</td> with shimmering skeleton
+  // bars sized to the colspan. Idempotent + debounced — runs on every
+  // DOM mutation so newly-rendered tables get the polish too. Once real
+  // data lands, the table's own render function overwrites the tbody and
+  // the skeletons are gone naturally.
+  function pcSwapLoadingSkeletons(root) {
+    root = root || document;
+    root.querySelectorAll('td.empty, .empty').forEach(td => {
+      const txt = (td.textContent || '').trim().toLowerCase();
+      if (txt !== 'loading…' && txt !== 'loading...') return;
+      if (td.dataset.pcSkeleton === '1') return;       // already swapped
+      td.dataset.pcSkeleton = '1';
+      // Make 3 shimmer bars stacked. Width pattern (90/70/85%) mimics
+      // a typical row of unknown column widths.
+      td.innerHTML =
+        '<div class="pc-skeleton-line" style="width:90%;"></div>' +
+        '<div class="pc-skeleton-line" style="width:70%;"></div>' +
+        '<div class="pc-skeleton-line" style="width:85%;"></div>';
+    });
+  }
+  window.pcSwapLoadingSkeletons = pcSwapLoadingSkeletons;
+  let _pcSkeletonDebounce = null;
+  function _pcSkeletonScan() {
+    if (_pcSkeletonDebounce) return;
+    _pcSkeletonDebounce = setTimeout(() => {
+      _pcSkeletonDebounce = null;
+      try { pcSwapLoadingSkeletons(document); } catch(_) {}
+    }, 80);
+  }
+  document.addEventListener('DOMContentLoaded', _pcSkeletonScan);
+  setTimeout(_pcSkeletonScan, 200);
+  const _pcSkeletonObserver = new MutationObserver(_pcSkeletonScan);
+  setTimeout(() => {
+    const root = document.getElementById('app') || document.body;
+    if (root) _pcSkeletonObserver.observe(root, { childList: true, subtree: true });
+  }, 500);
+
+  // ── Sub-field auto-scroll (>7 rows → own scroll wheel) ─────────────────
+  // Walks a root subtree, finds candidate "sub-field" containers
+  // (tables/ULs/OLs that sit inside modals, details.section bodies, or
+  // anything explicitly marked with class="subfield-scroll-host" or
+  // data-pc-subfield="1"), counts their rows, and applies the
+  // .subfield-scroll class to the wrapping element when the count
+  // exceeds 7. Idempotent — calling it twice is safe. Run after any
+  // list render so newly-loaded data is also bounded.
+  const _PC_SUBFIELD_ROW_LIMIT = 7;
+  function pcAutoScrollSubfields(root) {
+    root = root || document;
+    const candidates = [];
+    // Operator directive expanded: EVERY table/list with >7 rows gets
+    // its own scroll wheel, top-level panel tables included (Customers,
+    // All Visits, Invoices, Audit Log, Timesheets, etc.), not just
+    // sub-fields nested inside cards/modals.
+    // Catch EVERY <table> inside the .panel area (5S Audits, etc. write
+    // bare <table>s without .table-wrap and were slipping past). Use
+    // .table-wrap when present, otherwise the immediate parent acts as
+    // the scroll container. The "already capped" + "paginated" skip
+    // rules below still gate this so we don't over-cap.
+    const seenTables = new Set();
+    root.querySelectorAll('.panel table, .modal-body table, [data-pc-subfield="1"] table, .subfield-scroll-host table').forEach(t => {
+      if (seenTables.has(t)) return;
+      seenTables.add(t);
+      const wrap = t.closest('.table-wrap') || t.parentElement;
+      candidates.push({ wrap, table: t, kind: 'table' });
+    });
+    // Same opt-in for non-table lists.
+    root.querySelectorAll('[data-pc-subfield="1"] > ul, [data-pc-subfield="1"] > ol, .subfield-scroll-host > ul, .subfield-scroll-host > ol').forEach(l => candidates.push({ wrap: l, table: l, kind: 'list' }));
+    // ── Phase 1: decide (NO layout writes, NO layout reads here) ──────────
+    // Walk every candidate and work out whether it should be capped, the
+    // current row count, and whether it still needs measuring. Crucially we
+    // do NOT touch style/getBoundingClientRect in this pass: mixing a style
+    // WRITE (style.maxHeight) on one table with a layout READ
+    // (getBoundingClientRect) on the next forces a full-document reflow on
+    // EVERY iteration. With ~40 tables — one of which (All Visits) holds
+    // thousands of rows — that read-after-write thrash balloons a single
+    // scan into multiple seconds and, because the observer re-fires on each
+    // panel render during boot, made the whole page hang ("Page
+    // Unresponsive"). We split into decide → batched-reads → batched-writes
+    // so all reads see one clean layout and all writes happen together.
+    const toMeasure = [];   // tables needing a fresh height measurement
+    const toReset   = [];   // wraps that should drop the cap
+    candidates.forEach(c => {
+      if (!c.wrap) return;
+      // Cheap row count: a live HTMLCollection (tBodies[0].rows / children)
+      // costs O(1) to read, whereas querySelectorAll('tbody tr') rebuilds a
+      // fresh NodeList over the whole table on EVERY scan — ~35ms on the
+      // 2.6k-row All Visits table, multiplied by every observer fire.
+      const rows = c.kind === 'table'
+        ? (c.table.tBodies && c.table.tBodies[0] ? c.table.tBodies[0].rows.length : 0)
+        : c.table.children.length;
+      // Fast path: we already evaluated this wrap at this exact row count,
+      // so the cap decision cannot have changed — skip ALL the expensive
+      // checks below (the ancestor walk, the paginated-card button scan that
+      // can enumerate ~17k per-row buttons across the big panels, and the
+      // getBoundingClientRect measurement). This is what stops the
+      // MutationObserver's repeat fires from re-doing O(rows) work on every
+      // render during boot. Stamp the count now; the decision below is
+      // deterministic for a given row count.
+      if (c.wrap.dataset.pcScanRows === String(rows)) return;
+      c.wrap.dataset.pcScanRows = String(rows);
+      // Skip if an ancestor already has its own scroll cap (we don't
+      // want to double-cap and shrink the operator's deliberate
+      // 560px Parts & Inventory pane down to 324px).
+      let p = c.wrap;
+      let alreadyCapped = false;
+      for (let i = 0; i < 4 && p; i++, p = p.parentElement) {
+        if (p === c.wrap) continue;
+        if (p.classList && (p.classList.contains('scrollbox') || p.classList.contains('subfield-scroll'))) {
+          alreadyCapped = true; break;
+        }
+      }
+      if (alreadyCapped) return;
+      // Skip if this table sits in a paginated card (sibling Prev/Next
+      // controls already bound the row count). Detected via a nearby
+      // button whose text includes "Prev" or "Next".
+      const card = c.wrap.parentElement;
+      if (card) {
+        const paginated = Array.from(card.querySelectorAll('button')).some(b => /Prev|Next/i.test(b.textContent || ''));
+        if (paginated) return;
+      }
+      if (rows > _PC_SUBFIELD_ROW_LIMIT) {
+        toMeasure.push({ c, rows });
+      } else if (c.wrap.classList.contains('subfield-scroll') || c.wrap.style.maxHeight) {
+        toReset.push(c.wrap);
+      }
+    });
+
+    // ── Phase 2: batched READS ───────────────────────────────────────────
+    // All getBoundingClientRect calls happen here, back-to-back, against a
+    // single clean layout → at most ONE reflow for the whole scan instead
+    // of one per table.
+    toMeasure.forEach(m => {
+      const c = m.c;
+      let maxH = '';
+      if (c.kind === 'table') {
+        try {
+          const thead = c.table.querySelector('thead');
+          const firstRow = c.table.querySelector('tbody tr');
+          if (firstRow) {
+            const headH = thead ? thead.getBoundingClientRect().height : 44;
+            const rowH  = firstRow.getBoundingClientRect().height;
+            // Add a couple px so the 7th row doesn't appear half-cut.
+            if (rowH > 0) maxH = Math.round(headH + (_PC_SUBFIELD_ROW_LIMIT * rowH) + 2) + 'px';
+          }
+        } catch (_) {}
+      }
+      m.maxH = maxH;
+    });
+
+    // ── Phase 3: batched WRITES ──────────────────────────────────────────
+    toReset.forEach(wrap => {
+      wrap.classList.remove('subfield-scroll');
+      wrap.style.maxHeight = '';
+    });
+    toMeasure.forEach(m => {
+      m.c.wrap.classList.add('subfield-scroll');
+      if (m.maxH) m.c.wrap.style.maxHeight = m.maxH;
+    });
+  }
+  window.pcAutoScrollSubfields = pcAutoScrollSubfields;
+  // Re-scan on any DOM mutation under .main (cheap because the observer
+  // is debounced and we only touch elements that match selector roots).
+  let _pcSubfieldDebounce = null;
+  function _pcSubfieldScheduleScan() {
+    if (_pcSubfieldDebounce) return;
+    _pcSubfieldDebounce = setTimeout(() => {
+      _pcSubfieldDebounce = null;
+      try { pcAutoScrollSubfields(document); } catch(_) {}
+    }, 120);
+  }
+  // Run once at boot and any time the app's content tree changes.
+  document.addEventListener('DOMContentLoaded', _pcSubfieldScheduleScan);
+  setTimeout(_pcSubfieldScheduleScan, 400);  // catch initial async loads
+  const _pcSubfieldObserver = new MutationObserver(_pcSubfieldScheduleScan);
+  // Defer observer attach until the body is ready.
+  setTimeout(() => {
+    const root = document.getElementById('app') || document.body;
+    if (root) _pcSubfieldObserver.observe(root, { childList: true, subtree: true });
+  }, 600);
+
+  // ── Modal a11y bootstrap ────────────────────────────────────────────────
+  // Watches every .modal-overlay; when one opens we (1) annotate the
+  // inner .modal with role=dialog + aria-modal=true + aria-labelledby
+  // pointing at the first heading inside it, (2) move focus into the
+  // dialog, (3) trap Tab focus inside it, and (4) restore focus to
+  // the previously-focused element on close. Escape closes the modal.
+  // Applies to ALL modals in the app, not just the ones we touched
+  // by hand — no retrofit needed per-modal.
+  const _modalReturnFocus = new WeakMap();
+  function _focusables(root) {
+    return Array.from(root.querySelectorAll(
+      'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )).filter(el => el.offsetParent !== null || el.tagName === 'AREA');
+  }
+  function _wireModalOpen(overlay) {
+    const modal = overlay.querySelector('.modal, .modal-card');
+    if (!modal) return;
+    if (!modal.getAttribute('role'))      modal.setAttribute('role', 'dialog');
+    if (!modal.getAttribute('aria-modal')) modal.setAttribute('aria-modal', 'true');
+    if (!modal.getAttribute('aria-labelledby')) {
+      const heading = modal.querySelector('h1,h2,h3,h4');
+      if (heading) {
+        if (!heading.id) heading.id = 'modalTitle-' + Math.random().toString(36).slice(2, 9);
+        modal.setAttribute('aria-labelledby', heading.id);
+      }
+    }
+    _modalReturnFocus.set(overlay, document.activeElement);
+    // Defer one tick so any modal-specific open handlers (which often
+    // clear inputs) finish first.
+    setTimeout(() => {
+      const focusables = _focusables(modal);
+      const first = focusables.find(el => !el.classList.contains('modal-close')) || focusables[0];
+      if (first) first.focus();
+    }, 20);
+  }
+  function _wireModalClose(overlay) {
+    const ret = _modalReturnFocus.get(overlay);
+    if (ret && typeof ret.focus === 'function') {
+      try { ret.focus(); } catch(_){}
+    }
+    _modalReturnFocus.delete(overlay);
+  }
+  // Observe class changes on every overlay so opens/closes get hooked.
+  const _modalObserver = new MutationObserver((muts) => {
+    muts.forEach(m => {
+      if (m.type !== 'attributes' || m.attributeName !== 'class') return;
+      const el = m.target;
+      if (!el.classList || !el.classList.contains('modal-overlay')) return;
+      const isOpen = el.classList.contains('open');
+      const wasOpen = m.oldValue && m.oldValue.split(/\s+/).includes('open');
+      if (isOpen && !wasOpen) _wireModalOpen(el);
+      else if (!isOpen && wasOpen) _wireModalClose(el);
+    });
+  });
+  document.querySelectorAll('.modal-overlay').forEach(el => {
+    _modalObserver.observe(el, { attributes: true, attributeOldValue: true, attributeFilter: ['class'] });
+  });
+  // Tab-trap + Escape inside any open modal.
+  document.addEventListener('keydown', (e) => {
+    const openOverlay = document.querySelector('.modal-overlay.open');
+    if (!openOverlay) return;
+    if (e.key === 'Escape') {
+      // Find the modal name from the overlay id ("modal-foo" → "foo").
+      const id = openOverlay.id || '';
+      const name = id.startsWith('modal-') ? id.slice(6) : null;
+      if (name) { e.preventDefault(); closeModal(name); }
+      return;
+    }
+    if (e.key !== 'Tab') return;
+    const modal = openOverlay.querySelector('.modal, .modal-card');
+    if (!modal) return;
+    const focusables = _focusables(modal);
+    if (!focusables.length) return;
+    const first = focusables[0], last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault(); last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault(); first.focus();
+    }
+  });
+
+  // Default hire date to today when onboarding modals open
+  function defaultHireDate(id) {
+    const el = document.getElementById(id);
+    if (el && !el.value) el.value = new Date().toISOString().slice(0, 10);
+  }
+  const _origOpen = openModal;
+  openModal = function(name, visitId) {
+    const r = _origOpen.apply(this, arguments);
+    if (name === 'addAdmin') defaultHireDate('au-hire');
+    if (name === 'addTech')  { resetTechForm(); defaultHireDate('t-hire'); }
+    if (name === 'addPart')  resetPartForm();
+    return r;
+  };
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  function clearVisitForm() {
+    ['v-customer','v-type','v-status','v-equipment','v-tech'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el && el.tagName === 'SELECT') el.selectedIndex = 0;
+    });
+    ['v-scheduled-date','v-scheduled-time','v-completed-date','v-technician','v-work-done','v-parts','v-notes',
+     'v-scope','v-duration','v-contact-name','v-contact-phone','v-hazards','v-access','v-work-summary',
+     'v-order-type','v-sla-deadline']
+      .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+    // CMMS #1 — reset classification selects to their defaults
+    const pr = document.getElementById('v-priority'); if (pr) pr.value = 'normal';
+    const sb = document.getElementById('v-sla-basis'); if (sb) sb.value = 'start';
+    // CMMS #6 — reset entity picker (populate fresh for a new WO)
+    vEntityPopulate(null);
+    visitCrewState = [];
+    const chips = document.getElementById('v-crew-chips'); if (chips) chips.innerHTML = '';
+    document.getElementById('err-addVisit').style.display = 'none';
+    // CMMS #4 — History button is edit-only (no history for an unsaved WO).
+    const hb = document.getElementById('v-hist-btn'); if (hb) hb.style.display = 'none';
+  }
+  // CMMS #4 — open the lifecycle/diff timeline for the WO being edited.
+  function visitOpenHistory() {
+    if (!currentVisitId) return;
+    openAuditHistory('visit', currentVisitId, 'Work Order #' + currentVisitId);
+  }
+  window.visitOpenHistory = visitOpenHistory;
+  // CMMS #6 — fill the work-order entity picker. Only shown to admins who can
+  // view entities; otherwise the row stays hidden and WOs keep the default.
+  let _vEntityCache = null;
+  async function vEntityPopulate(selectedId) {
+    const row = document.getElementById('v-entity-row');
+    const sel = document.getElementById('v-entity');
+    if (!row || !sel) return;
+    if (!can('entity:view')) { row.style.display = 'none'; return; }
+    row.style.display = 'flex';
+    if (_vEntityCache === null) {
+      try { _vEntityCache = (await api('GET', '/api/admin/entities?include_inactive=false')).entities || []; }
+      catch (e) { _vEntityCache = []; }
+    }
+    sel.innerHTML = '<option value="">— Default —</option>' +
+      _vEntityCache.map(e => `<option value="${e.id}">${escHtml(e.code)} — ${escHtml(e.name)}</option>`).join('');
+    sel.value = selectedId ? String(selectedId) : '';
+  }
+
+  // CMMS #1 — convert between a stored ISO datetime and the value a
+  // <input type="datetime-local"> expects (local wall-clock, no zone suffix).
+  function _isoToLocalInput(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    const pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+  function _localInputToIso(v) {
+    if (!v) return null;
+    const d = new Date(v);
+    return isNaN(d.getTime()) ? null : d.toISOString();
+  }
+  function clearForm(ids) { ids.forEach(id => { document.getElementById(id).value = ''; }); }
+  function showErr(id, msg) {
+    const el = document.getElementById(id);
+    el.textContent    = msg;
+    el.style.display  = 'block';
+  }
+  function fmtDate(d) {
+    if (!d) return '—';
+    return PC.fmtDate(d);
+  }
+  function fmtTime12(t) {
+    if (!t) return '';
+    const [h, m] = t.split(':').map(Number);
+    if (isNaN(h)) return '';
+    const period = h >= 12 ? 'PM' : 'AM';
+    const h12 = h % 12 || 12;
+    return `${h12}:${String(m).padStart(2,'0')} ${period}`;
+  }
+  function fmtDateTime(d, t) {
+    if (!d) return '—';
+    const date = fmtDate(d);
+    const time = fmtTime12(t);
+    return time ? `${date} · ${time}` : date;
+  }
+  // SECURITY: full HTML-entity escaper. Previously a no-op that only touched
+  // single quotes (and even that was a broken \' replacement), leaving < > " &
+  // unescaped — a stored-XSS hole on every user-supplied string routed through
+  // esc() (equipment/asset names, notes, tech names, leave reasons, KPI notes,
+  // delegation names, flash-report text, …). Now mirrors escHtml so all ~90
+  // esc() call sites escape the same character set.
+  function esc(s) { return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  document.getElementById('adminPw').addEventListener('keydown', e => {
+    if (e.key === 'Enter') doAdminLogin();
+  });
+
+  // ── Payroll ─────────────────────────────────────────────────────────────
+  let _currentPayPeriod = null;
+  const _fmtMoney = (n, cur='JMD') => {
+    const v = Number(n||0);
+    const sym = cur === 'JMD' ? 'J$' : (cur === 'USD' ? '$' : cur + ' ');
+    return sym + v.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+  };
+
+  async function loadPayPeriods() {
+    try {
+      const periods = await api('GET', '/api/admin/payroll/periods');
+      const wrap = document.getElementById('payPeriodsList');
+      if (!periods.length) {
+        wrap.innerHTML = '<div style="color:var(--muted);font-size:13px;">No pay periods yet. Create one to start payroll.</div>';
+        return;
+      }
+      const _gatePP = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+      wrap.innerHTML = periods.map(p => {
+        const sc = p.status === 'paid' ? 'background:var(--teal-bg);color:var(--teal-deep);'
+                 : p.status === 'approved' ? 'background:var(--steel-bg);color:var(--steel);'
+                 : p.status === 'cancelled' ? 'background:var(--err-bg);color:var(--err-fg);'
+                 : 'background:var(--teal-bg);color:var(--teal-deep);';
+        const labelLink = _gatePP
+          ? PC.gateLinkHtml('pay_period', p.id, p.label || '', {onClick: 'function(){ openPayPeriod(' + p.id + '); }'})
+          : `<strong>${escHtml(p.label)}</strong>`;
+        return `<div data-pc-row-payperiod="${p.id}" style="border:1px solid var(--border);border-radius:8px;padding:12px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+            <div>
+              ${labelLink}
+              <span style="color:var(--muted);font-size:12px;margin-left:8px;">
+                ${escHtml(p.period_start)} → ${escHtml(p.period_end)} · ${escHtml(p.currency||'JMD')}
+              </span>
+              <div style="font-size:11px;color:var(--muted);margin-top:4px;">
+                Created by ${escHtml(p.created_by_name||'?')}${p.approved_by_name?' · Approved by '+escHtml(p.approved_by_name):''}
+              </div>
+            </div>
+            <span class="badge pc-stop-prop" style="${sc}">${escHtml(p.status.toUpperCase())}</span>
+          </div>
+          <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;">
+            <button class="btn btn-ghost btn-sm pc-stop-prop" onclick="event.stopPropagation();openPayPeriod(${p.id})">View / edit payslips</button>
+            ${p.status === 'draft' && can('payroll:approve') ? `<button class="btn btn-primary btn-sm pc-stop-prop" onclick="event.stopPropagation();approvePayPeriod(${p.id})">Approve</button>` : ''}
+            ${p.status === 'approved' && can('payroll:mark_paid') ? `<button class="btn btn-ghost btn-sm pc-stop-prop" onclick="event.stopPropagation();markPayPeriodPaid(${p.id})">Mark paid</button>` : ''}
+            ${(currentAdmin && (currentAdmin.role||'').toLowerCase() === 'super_admin') ? `<button class="btn btn-ghost btn-sm pc-stop-prop" style="color:var(--err-fg);border-color:var(--err-border);" onclick="event.stopPropagation();deletePayPeriod(${p.id}, '${escHtml(p.status)}')">Delete</button>` : ''}
+          </div>
+        </div>`;
+      }).join('');
+      // FIXME: Payroll status tiles ("3 runs pending" / "2 unpaid") — no discrete DOM tile element exists for these counts today; gateBadge cannot be wired until those tiles are tagged with [data-tile=payroll-pending] / [data-tile=payroll-unpaid].
+    } catch (e) {
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return;
+      toast(e.message, 'error');
+    }
+  }
+
+  function openModalNewPayPeriod() { openModal('newPayPeriod'); }
+  async function submitNewPayPeriod() {
+    const label = document.getElementById('pp-label').value.trim();
+    const s = document.getElementById('pp-start').value;
+    const e = document.getElementById('pp-end').value;
+    const cur = document.getElementById('pp-currency').value;
+    const err = document.getElementById('err-newPayPeriod');
+    err.style.display = 'none';
+    if (!label || !s || !e) { err.textContent = 'Label, start, and end are required.'; err.style.display='block'; return; }
+    try {
+      await api('POST', '/api/admin/payroll/periods', {label, period_start:s, period_end:e, currency:cur});
+      closeModal('newPayPeriod');
+      ['pp-label','pp-start','pp-end'].forEach(id => document.getElementById(id).value='');
+      loadPayPeriods();
+    } catch (ex) { err.textContent = ex.message; err.style.display='block'; }
+  }
+
+  async function openPayPeriod(id) {
+    try {
+      _currentPayPeriod = await api('GET', `/api/admin/payroll/periods/${id}`);
+      const cur = _currentPayPeriod.currency || 'JMD';
+      const ps = _currentPayPeriod.payslips || [];
+      const _gateOP = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+      // Sensitive-value gating: gross / deductions / net only render if viewer can read payslip records.
+      const _payVis = (typeof PC !== 'undefined' && PC.canRead && PC.canRead('payslip', null));
+      const html = `<div style="border:1px solid var(--border);border-radius:8px;padding:12px;background:var(--card);">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <strong style="color:var(--ink);">${escHtml(_currentPayPeriod.label)} · ${escHtml(_currentPayPeriod.status.toUpperCase())}</strong>
+          <div style="display:flex;gap:6px;">
+            ${_currentPayPeriod.status==='draft' && can('payroll:generate') ? `<button class="btn btn-primary btn-sm pc-stop-prop" onclick="openPayslipForm()">+ Add payslip</button>` : ''}
+            <button class="btn btn-ghost btn-sm pc-stop-prop" onclick="loadPayPeriods()">← Back</button>
+          </div>
+        </div>
+        <table style="width:100%;font-size:13px;">
+          <thead><tr style="background:var(--light);">
+            <th style="text-align:left;padding:6px;">Employee</th>
+            <th style="text-align:right;padding:6px;">Hours</th>
+            <th style="text-align:right;padding:6px;">Gross</th>
+            <th style="text-align:right;padding:6px;">Deductions</th>
+            <th style="text-align:right;padding:6px;">Net</th>
+            <th style="padding:6px;">Viewed</th>
+          </tr></thead>
+          <tbody>${ps.length ? ps.map(p => {
+            // Names render unconditionally; sensitive monetary values collapse to "—" without access.
+            let subjLink = escHtml(p.subject_name || '');
+            if (_gateOP && p.subject_id) {
+              const targetType = (p.subject_type === 'tech') ? 'technician' : 'admin_user';
+              subjLink = PC.gateLinkHtml(targetType, p.subject_id, p.subject_name || '', {});
+            }
+            const psLink = (_gateOP && p.id)
+              ? PC.gateLinkHtml('payslip', p.id, '#'+p.id, {onClick: 'function(){ adminOpenPayslip(' + p.id + '); }'})
+              : '#'+p.id;
+            return `
+            <tr style="border-top:1px solid var(--border);">
+              <td style="padding:6px;">${subjLink} <span style="color:var(--muted);font-size:11px;">(${escHtml(p.subject_type)} · ${escHtml(p.subject_prid||'')} · ${psLink})</span></td>
+              <td style="text-align:right;padding:6px;">${(p.hours_regular||0)+(p.hours_overtime||0)}</td>
+              <td style="text-align:right;padding:6px;">${_payVis ? _fmtMoney(p.gross_pay, cur) : '—'}</td>
+              <td style="text-align:right;padding:6px;color:var(--err-fg);">${_payVis ? _fmtMoney(p.total_deductions, cur) : '—'}</td>
+              <td style="text-align:right;padding:6px;font-weight:700;">${_payVis ? _fmtMoney(p.net_pay, cur) : '—'}</td>
+              <td style="padding:6px;font-size:11px;color:var(--muted);">${p.viewed_by_employee_at ? '✓' : '—'}</td>
+            </tr>`;
+          }).join('') : '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:14px;">No payslips yet.</td></tr>'}
+          </tbody>
+        </table>
+      </div>`;
+      document.getElementById('payPeriodsList').innerHTML = html;
+    } catch (e) {
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return;
+      toast(e.message, 'error');
+    }
+  }
+
+  async function openPayslipForm() {
+    if (!_currentPayPeriod) return;
+    document.getElementById('ps-period-label').textContent = _currentPayPeriod.label;
+    const sel = document.getElementById('ps-employee');
+    sel.innerHTML = '<option value="">Select…</option>';
+    // Load admins (if visible) + techs
+    try {
+      const techs = await api('GET', '/api/admin/techs');
+      techs.forEach(t => {
+        const o = document.createElement('option');
+        o.value = 'tech:' + t.id; o.textContent = `${t.name} (tech · ${t.prid||t.tech_code||t.id})`;
+        sel.appendChild(o);
+      });
+    } catch {}
+    try {
+      const admins = await api('GET', '/api/admin/users');
+      admins.forEach(a => {
+        const o = document.createElement('option');
+        o.value = 'admin:' + a.id; o.textContent = `${a.name} (admin · ${a.prid||a.username||a.id})`;
+        sel.appendChild(o);
+      });
+    } catch {}
+    ['ps-hr','ps-ot','ps-rate','ps-otrate','ps-fixed','ps-bonus','ps-other','ps-notes'].forEach(id => document.getElementById(id).value='');
+    document.getElementById('ps-ppy').value = '26';
+    document.getElementById('ps-preview').style.display = 'none';
+    document.getElementById('err-payslip').style.display = 'none';
+    openModal('payslip');
+  }
+
+  function _payslipBody() {
+    const sel = document.getElementById('ps-employee').value;
+    if (!sel) return null;
+    const [type, id] = sel.split(':');
+    return {
+      subject_type: type, subject_id: parseInt(id),
+      hours_regular:   parseFloat(document.getElementById('ps-hr').value)||0,
+      hours_overtime:  parseFloat(document.getElementById('ps-ot').value)||0,
+      hourly_rate:     parseFloat(document.getElementById('ps-rate').value)||0,
+      overtime_rate:   parseFloat(document.getElementById('ps-otrate').value)||0,
+      fixed_salary:    parseFloat(document.getElementById('ps-fixed').value)||0,
+      bonus:           parseFloat(document.getElementById('ps-bonus').value)||0,
+      other_deductions:parseFloat(document.getElementById('ps-other').value)||0,
+      notes:           document.getElementById('ps-notes').value.trim(),
+      pay_periods_per_year: parseInt(document.getElementById('ps-ppy').value)||26,
+    };
+  }
+
+  function previewPayslip() {
+    const b = _payslipBody();
+    if (!b) { document.getElementById('err-payslip').textContent='Pick an employee first.'; document.getElementById('err-payslip').style.display='block'; return; }
+    // Mirror the Python compute — keep these formulas in sync with database.py
+    const ppy = b.pay_periods_per_year;
+    const gross = b.hours_regular*b.hourly_rate + b.hours_overtime*b.overtime_rate + b.fixed_salary + b.bonus;
+    const annual = gross * ppy;
+    const THRESH=1700000, BAND2=6000000;
+    let paye_annual = 0;
+    if (annual > THRESH) {
+      const at25 = Math.min(annual, BAND2) - THRESH;
+      paye_annual = at25*0.25;
+      if (annual > BAND2) paye_annual += (annual - BAND2)*0.30;
+    }
+    const paye = paye_annual / ppy;
+    const nis = gross*0.03, nht = gross*0.02, edu = gross*0.0225;
+    const total_ded = paye + nis + nht + edu + (b.other_deductions||0);
+    const net = gross - total_ded;
+    const cur = _currentPayPeriod ? _currentPayPeriod.currency : 'JMD';
+    const pre = document.getElementById('ps-preview');
+    pre.style.display = 'block';
+    pre.innerHTML = `
+      <div><strong>Gross:</strong> ${_fmtMoney(gross,cur)}</div>
+      <div style="color:var(--err-fg);">PAYE: ${_fmtMoney(paye,cur)} · NIS: ${_fmtMoney(nis,cur)} · NHT: ${_fmtMoney(nht,cur)} · Education: ${_fmtMoney(edu,cur)} · Other: ${_fmtMoney(b.other_deductions,cur)}</div>
+      <div><strong>Net pay: ${_fmtMoney(net,cur)}</strong></div>`;
+  }
+
+  async function submitPayslip() {
+    if (!_currentPayPeriod) return;
+    const b = _payslipBody();
+    const err = document.getElementById('err-payslip');
+    err.style.display = 'none';
+    if (!b) { err.textContent='Pick an employee first.'; err.style.display='block'; return; }
+    try {
+      await api('POST', `/api/admin/payroll/periods/${_currentPayPeriod.id}/payslips`, b);
+      closeModal('payslip');
+      openPayPeriod(_currentPayPeriod.id);
+    } catch (ex) { err.textContent = ex.message; err.style.display='block'; }
+  }
+
+  async function approvePayPeriod(id) {
+    if (!confirm('Approve this pay period? Once approved, payslips become visible to each employee.')) return;
+    try {
+      await api('PUT', `/api/admin/payroll/periods/${id}/approve`);
+      toast('Pay period approved', 'success');
+      loadPayPeriods();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+  async function deletePayPeriod(id, status) {
+    const nonDraft = status && status !== 'draft';
+    const msg = nonDraft
+      ? `This pay period is ${status.toUpperCase()}. Deleting it removes the period and ALL associated payslips. This cannot be undone. Continue?`
+      : 'Delete this draft pay period? Any payslips inside it will be removed.';
+    if (!confirm(msg)) return;
+    const url = nonDraft
+      ? `/api/admin/payroll/periods/${id}?force=1`
+      : `/api/admin/payroll/periods/${id}`;
+    try {
+      await api('DELETE', url);
+      toast('Pay period deleted', 'success');
+      loadPayPeriods();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+  async function markPayPeriodPaid(id) {
+    if (!confirm('Mark this pay period as paid? This is a record-keeping action.')) return;
+    try {
+      await api('PUT', `/api/admin/payroll/periods/${id}/paid`);
+      toast('Marked paid', 'success');
+      loadPayPeriods();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  // ── My Payslips (visible to every admin) ─────────────────────────────────
+  async function loadMyPayslips() {
+    try {
+      const rows = await api('GET', '/api/admin/me/payslips');
+      const wrap = document.getElementById('myPayslipsList');
+      if (!rows.length) {
+        wrap.innerHTML = '<div style="color:var(--muted);font-size:13px;">No payslips yet.</div>';
+        return;
+      }
+      const _gateMyPs = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+      // "My Payslips" — viewer is always allowed to see their own net (the API
+      //  enforces the self-only scope), so we render the value; the link still
+      //  routes through PC.gateLinkHtml so admins viewing other people's data
+      //  via shared widgets still hit the same code path.
+      wrap.innerHTML = rows.map(p => {
+        const cur = p.currency || 'JMD';
+        const _payVis = (typeof PC === 'undefined' || !PC.canRead) ? true : PC.canRead('payslip', p.id);
+        const periodLink = _gateMyPs
+          ? PC.gateLinkHtml('pay_period', p.period_id || p.id, p.period_label || '', {onClick: 'function(){ openMyPayslip(' + p.id + '); }'})
+          : `<strong>${escHtml(p.period_label)}</strong>`;
+        return `<div data-pc-row-mypayslip="${p.id}" style="border:1px solid var(--border);border-radius:8px;padding:12px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div>
+              ${periodLink}
+              <div style="font-size:11px;color:var(--muted);">${escHtml(p.period_start)} → ${escHtml(p.period_end)}</div>
+            </div>
+            <div style="text-align:right;">
+              <div style="font-size:11px;color:var(--muted);">Net pay</div>
+              <div style="font-weight:700;color:var(--ink);">${_payVis ? _fmtMoney(p.net_pay, cur) : '—'}</div>
+            </div>
+          </div>
+        </div>`;
+      }).join('');
+      if (typeof PC !== 'undefined' && PC.gateRow) {
+        wrap.querySelectorAll('div[data-pc-row-mypayslip]').forEach(function (el) {
+          const pid = Number(el.getAttribute('data-pc-row-mypayslip'));
+          PC.gateRow(el, 'payslip', pid, {
+            onClick: function () { openMyPayslip(pid); },
+            ariaLabel: 'Open payslip #' + pid,
+          });
+        });
+      }
+    } catch (e) {
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return;
+      document.getElementById('myPayslipsList').innerHTML =
+        `<div style="color:var(--muted);font-size:13px;">Could not load: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  async function openMyPayslip(id) {
+    try {
+      const p = await api('GET', `/api/admin/me/payslips/${id}`);
+      const cur = p.currency || 'JMD';
+      const w = window.open('', '_blank', 'width=720,height=900');
+      w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Payslip — ${escHtml(p.period_label)}</title>
+        <style>body{font-family:-apple-system,sans-serif;padding:30px;color:#0B2545;max-width:600px;margin:0 auto;}
+        h1{color:#0B2545;margin:0 0 4px;} h2{color:#22A08A;font-size:14px;text-transform:uppercase;letter-spacing:1px;margin-top:24px;}
+        table{width:100%;border-collapse:collapse;margin-top:8px;}
+        td{padding:6px 0;border-bottom:1px solid #e8ecf0;font-size:14px;}
+        td:last-child{text-align:right;font-weight:600;} .net{background:#0B2545;color:white;padding:14px;border-radius:8px;font-size:18px;font-weight:700;display:flex;justify-content:space-between;margin-top:16px;}
+        .ded td{color:#991b1b;} @media print{button{display:none;}}</style></head><body>
+        <h1>PrimeCool Services — Payslip</h1>
+        <div style="color:#5A6472;font-size:13px;">Period: <strong>${escHtml(p.period_label)}</strong> (${escHtml(p.period_start)} → ${escHtml(p.period_end)})</div>
+        <div style="color:#5A6472;font-size:13px;">Employee: <strong>${escHtml(p.subject_name)}</strong> (${escHtml(p.subject_prid)})</div>
+        <h2>Earnings</h2>
+        <table>
+          <tr><td>Regular hours</td><td>${p.hours_regular} × ${_fmtMoney(p.hourly_rate, cur)}</td></tr>
+          <tr><td>Overtime hours</td><td>${p.hours_overtime} × ${_fmtMoney(p.overtime_rate, cur)}</td></tr>
+          <tr><td>Fixed salary</td><td>${_fmtMoney(p.fixed_salary, cur)}</td></tr>
+          <tr><td>Bonus</td><td>${_fmtMoney(p.bonus, cur)}</td></tr>
+          <tr style="font-weight:700;"><td>Gross pay</td><td>${_fmtMoney(p.gross_pay, cur)}</td></tr>
+        </table>
+        <h2>Deductions</h2>
+        <table class="ded">
+          <tr><td>PAYE income tax</td><td>${_fmtMoney(p.paye_tax, cur)}</td></tr>
+          <tr><td>NIS</td><td>${_fmtMoney(p.nis, cur)}</td></tr>
+          <tr><td>NHT</td><td>${_fmtMoney(p.nht, cur)}</td></tr>
+          <tr><td>Education Tax</td><td>${_fmtMoney(p.education_tax, cur)}</td></tr>
+          <tr><td>Other</td><td>${_fmtMoney(p.other_deductions, cur)}</td></tr>
+          <tr style="font-weight:700;"><td>Total deductions</td><td>${_fmtMoney(p.total_deductions, cur)}</td></tr>
+        </table>
+        <div class="net"><span>Net pay</span><span>${_fmtMoney(p.net_pay, cur)}</span></div>
+        ${p.notes ? `<h2>Notes</h2><p style="font-size:13px;line-height:1.6;">${escHtml(p.notes).replace(/\n/g,'<br>')}</p>` : ''}
+        <div style="margin-top:30px;text-align:center;"><button onclick="window.print()" style="padding:10px 30px;background:#22A08A;color:white;border:none;border-radius:6px;font-weight:600;cursor:pointer;">Print</button></div>
+        </body></html>`);
+      w.document.close();
+    } catch (e) {
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return;
+      toast(e.message, 'error');
+    }
+  }
+
+  // ── Account & security (admin-side) ───────────────────────────────────────
+  // The single "My Profile" surface is now /profile (identity, pay, personal
+  // details all live there). This panel is the admin-only Account & Security
+  // card (change password, manage MFA, sign out) plus the Org tooling that
+  // /profile links out to.
+  async function loadMpProfile() {
+    // Identity + pay now live on the unified /profile page; this panel is the
+    // admin-only Account & security + Org tooling, so we only load the org chart.
+    loadAdminOrgChart();
+  }
+
+  // ── PrimeCool Org chart on My Profile ─────────────────────────────
+  // _adminOrgTrail = breadcrumb path of drilled-into people. Empty = "me".
+  let _adminOrgTrail = [];
+  async function loadAdminOrgChart() {
+    const host = document.getElementById('adminOrgChart');
+    if (!host) return;
+    host.innerHTML = '<div class="empty" style="padding:14px;">Loading…</div>';
+    // Toggle the "View as" search + back button based on permission.
+    if (typeof can === 'function' && can('admin:view_all')) {
+      document.getElementById('adminOrgViewAs').style.display = '';
+      document.getElementById('adminOrgViewMeBtn').style.display = _adminOrgTrail.length ? '' : 'none';
+    }
+    let url = '/api/me/org-chart';
+    const focus = _adminOrgTrail[_adminOrgTrail.length - 1];
+    if (focus) url += `?as_kind=${encodeURIComponent(focus.kind)}&as_id=${focus.id}`;
+    try {
+      const data = await api('GET', url);
+      // Replace with a fresh wrapper so the fade-in animation restarts.
+      host.innerHTML = '';
+      const inner = document.createElement('div');
+      inner.className = 'adm-org-wrap';
+      inner.innerHTML = _renderAdminOrgChart(data);
+      host.appendChild(inner);
+      _renderAdminOrgCrumbs();
+    } catch (e) {
+      host.innerHTML = `<div style="color:var(--danger);font-size:12px;padding:10px;">Could not load: ${escHtml(e.message || 'error')}</div>`;
+    }
+  }
+  function _renderAdminOrgCrumbs() {
+    const c = document.getElementById('adminOrgCrumbs');
+    if (!c) return;
+    if (!_adminOrgTrail.length) { c.style.display = 'none'; return; }
+    c.style.display = 'flex';
+    const parts = [`<button class="adm-org-crumb" onclick="adminOrgViewSelf()">🏠 Me</button>`];
+    _adminOrgTrail.forEach((p, idx) => {
+      const isLast = (idx === _adminOrgTrail.length - 1);
+      parts.push('<span class="adm-org-crumb-sep">›</span>');
+      const cls = isLast ? 'adm-org-crumb is-current' : 'adm-org-crumb';
+      const click = isLast ? '' : `onclick="adminOrgGoToCrumb(${idx})"`;
+      parts.push(`<button class="${cls}" ${click}>${escHtml(p.name)}</button>`);
+    });
+    c.innerHTML = parts.join('');
+  }
+  function adminOrgGoToCrumb(idx) {
+    _adminOrgTrail = _adminOrgTrail.slice(0, idx + 1);
+    loadAdminOrgChart();
+  }
+  function adminOrgDrillInto(kind, id, name) {
+    const last = _adminOrgTrail[_adminOrgTrail.length - 1];
+    if (last && last.kind === kind && last.id === id) return;
+    _adminOrgTrail.push({ kind, id: Number(id), name });
+    loadAdminOrgChart();
+  }
+  window.adminOrgGoToCrumb = adminOrgGoToCrumb;
+  window.adminOrgDrillInto = adminOrgDrillInto;
+  window.loadAdminOrgChart = loadAdminOrgChart;
+  function adminOrgViewSelf() {
+    _adminOrgTrail = [];
+    document.getElementById('adminOrgViewAs').value = '';
+    document.getElementById('adminOrgViewAsResults').innerHTML = '';
+    loadAdminOrgChart();
+  }
+  window.adminOrgViewSelf = adminOrgViewSelf;
+
+  let _adminOrgViewAsTimer = null;
+  async function adminOrgViewAsType(q) {
+    clearTimeout(_adminOrgViewAsTimer);
+    const box = document.getElementById('adminOrgViewAsResults');
+    if (!q || q.length < 2) { box.innerHTML = ''; return; }
+    _adminOrgViewAsTimer = setTimeout(async () => {
+      try {
+        const [admins, techs] = await Promise.all([
+          api('GET', '/api/admin/users').catch(() => []),
+          api('GET', '/api/admin/techs').catch(() => []),
+        ]);
+        const ql = q.toLowerCase();
+        const mA = (admins || []).filter(a =>
+          ((a.name||'').toLowerCase().includes(ql) || (a.prid||'').toLowerCase().includes(ql))
+        ).map(a => ({...a, _kind:'admin'}));
+        const mT = (techs || []).filter(t =>
+          (t.active !== 0) &&
+          ((t.name||'').toLowerCase().includes(ql) || (t.tech_code||'').toLowerCase().includes(ql) || (t.prid||'').toLowerCase().includes(ql))
+        ).map(t => ({...t, _kind:'tech'}));
+        const matches = [...mA, ...mT].slice(0, 10);
+        if (!matches.length) { box.innerHTML = '<div style="padding:6px 10px;color:var(--muted);font-size:12px;">No matches</div>'; return; }
+        box.innerHTML = '<div style="position:absolute;top:0;left:0;right:0;background:var(--card);border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 14px rgba(11,37,69,0.12);z-index:20;max-height:240px;overflow-y:auto;">' +
+          matches.map(m => `<button type="button" onclick="adminOrgPickViewAs(${m.id},'${m._kind}','${escHtml((m.name||'').replace(/'/g,"\\'"))}')"
+              style="display:block;width:100%;text-align:left;padding:8px 10px;border:none;background:none;cursor:pointer;border-bottom:1px solid var(--border);font-size:13px;">
+              <strong style="color:var(--ink);">${escHtml(m.name||'')}</strong>
+              <span style="display:inline-block;font-size:9.5px;font-weight:700;padding:1px 5px;border-radius:6px;margin-left:6px;background:${m._kind==='admin'?'var(--surface-2)':'var(--teal-bg)'};color:${m._kind==='admin'?'var(--steel)':'var(--teal-deep)'};">${m._kind.toUpperCase()}</span>
+              <span style="color:var(--muted);font-size:11.5px;margin-left:6px;">${escHtml(m.role || '')}</span>
+            </button>`).join('') + '</div>';
+      } catch {}
+    }, 200);
+  }
+  function adminOrgPickViewAs(id, kind, name) {
+    // Picker is a hard jump — replace the trail with just this person so
+    // breadcrumbs start fresh from "Me › <picked>".
+    _adminOrgTrail = [{ id: Number(id), kind, name }];
+    document.getElementById('adminOrgViewAs').value = name;
+    document.getElementById('adminOrgViewAsResults').innerHTML = '';
+    loadAdminOrgChart();
+  }
+  window.adminOrgViewAsType   = adminOrgViewAsType;
+  window.adminOrgPickViewAs   = adminOrgPickViewAs;
+  function _orgInitials(name) {
+    const parts = String(name || '').trim().split(/\s+/);
+    if (!parts.length) return '?';
+    return ((parts[0][0] || '') + (parts.length > 1 ? (parts[parts.length-1][0] || '') : '')).toUpperCase();
+  }
+  function _adminOrgCard(p, opts) {
+    if (!p) return '';
+    opts = opts || {};
+    const isMe = !!opts.me;
+    const initials = escHtml(_orgInitials(p.name));
+    const kindChip = `<span class="adm-org-kind adm-org-kind--${escHtml(p.kind || 'admin')}">${escHtml((p.kind||'').toUpperCase())}</span>`;
+    const implicit = p.implicit ? '<span class="adm-org-implicit" title="No explicit supervisor link — showing the top of the org">↑ org top</span>' : '';
+    const avatar = p.avatar_url
+      ? `<span class="adm-org-avatar"><img src="${escHtml(p.avatar_url)}" alt=""></span>`
+      : `<span class="adm-org-avatar adm-org-avatar--ini">${initials}</span>`;
+    // Show the assign button to anyone with admin:update (super_admin +
+    // hr_admin in the default matrix). Implicit (org-top fallback) cards
+    // aren't editable since they aren't this person's real supervisor.
+    // Clickable drill: any card except the current focus (isMe) and the
+    // implicit org-top fallback opens that person's chart. Click the
+    // avatar/body to drill; the ✎ Assign button stops propagation.
+    const drillable = !isMe && !p.implicit && p.id != null;
+    const safeName = (p.name||'').replace(/'/g,"\\'");
+    const drillAttr = drillable
+      ? `onclick="adminOrgDrillInto('${escHtml(p.kind)}', ${p.id}, '${escHtml(safeName)}')"
+         role="button" tabindex="0"
+         onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();adminOrgDrillInto('${escHtml(p.kind)}', ${p.id}, '${escHtml(safeName)}');}"
+         title="See ${escHtml(p.name)}'s team"`
+      : '';
+    const drillHint = drillable ? '<span class="adm-org-drill" aria-hidden="true">› see team</span>' : '';
+    const canAssign = (typeof can === 'function' && can('admin:update')) && !p.implicit;
+    const assignBtnFinal = canAssign
+      ? `<button class="adm-org-assign" title="Assign a supervisor for ${escHtml(p.name)}"
+          onclick="event.stopPropagation();openAssignSup(${p.id},'${escHtml(p.kind)}','${escHtml(safeName)}','${escHtml(p.role_label || '')}')">✎ Assign</button>`
+      : '';
+    return `<div class="adm-org-card ${isMe?'is-me':''} ${drillable?'is-drillable':''}" ${drillAttr}>
+      ${avatar}
+      <div class="adm-org-body">
+        <div class="adm-org-name">${escHtml(p.name)}${isMe?' <span class="adm-org-you">YOU</span>':''}</div>
+        <div class="adm-org-role">${escHtml(p.role_label || p.role || '')} ${kindChip}</div>
+        ${p.prid ? `<div class="adm-org-prid">${escHtml(p.prid)}</div>` : ''}
+        ${implicit}
+        ${drillHint}
+        ${assignBtnFinal}
+      </div>
+    </div>`;
+  }
+
+  // ── Assign-supervisor modal ─────────────────────────────────────────
+  function openAssignSup(personId, personKind, personName, personRole) {
+    document.getElementById('assignSupTargetName').textContent = personName;
+    document.getElementById('assignSupTargetMeta').textContent =
+      `${(personKind||'').toUpperCase()} · ${personRole || ''}`;
+    document.getElementById('assignSupSearch').value = '';
+    document.getElementById('assignSupId').value = '';
+    document.getElementById('assignSupResults').style.display = 'none';
+    document.getElementById('assignSupResults').innerHTML = '';
+    document.getElementById('assignSupChip').style.display = 'none';
+    document.getElementById('assignSupReason').value = '';
+    document.getElementById('assignSupErr').style.display = 'none';
+    // Stash the target person on the modal element.
+    const m = document.getElementById('modal-assignSupervisor');
+    m.dataset.personId = String(personId);
+    m.dataset.personKind = personKind;
+    openModal('assignSupervisor');
+  }
+  window.openAssignSup = openAssignSup;
+
+  let _assignSupTimer = null;
+  async function assignSupTypeahead(q) {
+    clearTimeout(_assignSupTimer);
+    const box = document.getElementById('assignSupResults');
+    if (!q || q.length < 2) { box.style.display = 'none'; return; }
+    _assignSupTimer = setTimeout(async () => {
+      try {
+        const r = await api('GET', '/api/admin/org/eligible-supervisors');
+        const ql = q.toLowerCase();
+        const matches = (r.admins || []).filter(a =>
+          (a.name||'').toLowerCase().includes(ql) ||
+          (a.prid||'').toLowerCase().includes(ql) ||
+          (a.role||'').toLowerCase().includes(ql)
+        ).slice(0, 10);
+        if (!matches.length) { box.style.display = 'none'; return; }
+        box.innerHTML = matches.map(a => `
+          <div style="padding:7px 10px;cursor:pointer;border-bottom:1px solid var(--border);font-size:13px;"
+               onclick="pickAssignSup(${a.id},'${escHtml((a.name||'').replace(/'/g,"\\'"))}','${escHtml(a.role_label || a.role || '')}')">
+            ${escHtml(a.name || '')}
+            <span style="color:var(--muted);font-size:11.5px;">· ${escHtml(a.role_label || a.role || '')}</span>
+          </div>`).join('');
+        box.style.display = 'block';
+      } catch {}
+    }, 200);
+  }
+  window.assignSupTypeahead = assignSupTypeahead;
+
+  function pickAssignSup(id, name, role) {
+    document.getElementById('assignSupId').value = id;
+    document.getElementById('assignSupSearch').value = name;
+    const chip = document.getElementById('assignSupChip');
+    chip.textContent = `Selected supervisor: ${name} · ${role}`;
+    chip.style.display = 'block';
+    document.getElementById('assignSupResults').style.display = 'none';
+  }
+  window.pickAssignSup = pickAssignSup;
+
+  async function submitAssignSup(clear) {
+    const err = document.getElementById('assignSupErr');
+    err.style.display = 'none';
+    const m = document.getElementById('modal-assignSupervisor');
+    const personId   = parseInt(m.dataset.personId, 10);
+    const personKind = m.dataset.personKind;
+    const reason     = document.getElementById('assignSupReason').value || '';
+    let newSupId = null;
+    if (!clear) {
+      newSupId = parseInt(document.getElementById('assignSupId').value, 10);
+      if (!newSupId) {
+        err.textContent = 'Pick a supervisor first (or click "Remove supervisor" to clear).';
+        err.style.display = 'block'; return;
+      }
+    } else {
+      if (!confirm('Remove this person\'s supervisor entirely?')) return;
+    }
+    try {
+      await api('POST', `/api/admin/org/people/${personKind}/${personId}/supervisor`,
+                { supervisor_id: newSupId, reason });
+      toast(clear ? 'Supervisor removed.' : 'Supervisor assigned.', 'success');
+      closeModal('assignSupervisor');
+      loadAdminOrgChart();
+    } catch (e) {
+      err.textContent = (e && e.detail) ? e.detail : (e && e.message) || 'Assignment failed.';
+      err.style.display = 'block';
+    }
+  }
+  window.submitAssignSup = submitAssignSup;
+  function _renderAdminOrgChart(data) {
+    if (!data || !data.me) return '<div class="empty" style="padding:14px;">Org data unavailable.</div>';
+    const m = data.manager, peers = data.peers || [], reports = data.reports || [];
+    let html = '';
+    html += `<div class="adm-org-section">
+      <div class="adm-org-label">Above ${m ? '' : '— top of the chain'}</div>
+      <div class="adm-org-row">${m ? _adminOrgCard(m) : '<div class="adm-org-empty">No-one above you in this view.</div>'}</div>
+    </div>`;
+    if (m) html += '<div class="adm-org-connector"></div>';
+    html += `<div class="adm-org-section">
+      <div class="adm-org-label">You ${peers.length ? '· Peers ('+peers.length+')' : ''}</div>
+      <div class="adm-org-row">
+        ${_adminOrgCard(data.me, {me: true})}
+        ${peers.map(p => _adminOrgCard(p)).join('')}
+      </div>
+    </div>`;
+    if (reports.length) {
+      html += '<div class="adm-org-connector"></div>';
+      html += `<div class="adm-org-section">
+        <div class="adm-org-label">Direct reports (${reports.length})</div>
+        <div class="adm-org-row">${reports.map(p => _adminOrgCard(p)).join('')}</div>
+      </div>`;
+    } else {
+      html += `<div class="adm-org-section">
+        <div class="adm-org-label">Direct reports</div>
+        <div class="adm-org-row"><div class="adm-org-empty">No-one reports to you.</div></div>
+      </div>`;
+    }
+    return html;
+  }
+
+  async function loadMpIdentity() {
+    const wrap = document.getElementById('mp-identity');
+    try {
+      const me = await api('GET', '/api/admin/me');
+      const fields = [
+        ['Name',        me.name || '—'],
+        ['Username',    me.username || '—'],
+        ['PRID',        me.prid || '—'],
+        ['Role',        (me.role || '—').replace(/_/g, ' ')],
+        ['Email',       me.email || '—'],
+        ['Phone',       me.phone || '—'],
+      ];
+      wrap.innerHTML = fields.map(([k, v]) => `
+        <div style="display:flex;justify-content:space-between;gap:14px;padding:6px 0;border-bottom:1px dashed var(--border);font-size:13px;">
+          <span style="color:var(--muted);">${k}</span>
+          <span style="color:var(--ink);font-weight:600;text-align:right;">${escHtml(String(v))}</span>
+        </div>`).join('');
+    } catch (e) {
+      wrap.innerHTML = `<div style="color:var(--danger);font-size:12px;">Could not load: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  async function loadMpPay() {
+    const wrap = document.getElementById('mp-pay');
+    try {
+      const rows = await api('GET', '/api/admin/me/payslips');
+      if (!rows.length) {
+        wrap.innerHTML = '<div class="empty" style="padding:14px;">No payslips yet.</div>';
+        return;
+      }
+      wrap.innerHTML = rows.map(p => {
+        const cur = p.currency || 'JMD';
+        return `<div onclick="apOpenModal(${p.id})" style="cursor:pointer;border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;background:var(--card);" onmouseover="this.style.background='var(--surface-2)'" onmouseout="this.style.background='var(--card)'">
+          <div>
+            <strong style="color:var(--ink);">${escHtml(p.period_label || '')}</strong>
+            <div style="font-size:11px;color:var(--muted);">${escHtml(p.period_start || '')} → ${escHtml(p.period_end || '')}</div>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:11px;color:var(--muted);">Net pay</div>
+            <div style="font-weight:700;color:var(--ink);">${_fmtMoney(p.net_pay, cur)}</div>
+          </div>
+        </div>`;
+      }).join('');
+    } catch (e) {
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return;
+      wrap.innerHTML = `<div style="color:var(--danger);font-size:12px;">Could not load: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  // ── Admin payslip modal (Print + Save as PDF) ─────────────────────────────
+  // Mirrors tech_landing.html's psPrint flow — opens an inline modal with
+  // the breakdown, then offers Print / Save-as-PDF via a popup window so
+  // the browser's native print dialog can route to a printer OR to a PDF.
+  let _apCurrent = null;
+  // adminView=true uses the privileged /api/admin/payslips/{id} endpoint
+  // (Director / payroll:view_all / delegation) so the same modal can show
+  // ANY employee's payslip from the tech-detail payroll list and the pay-
+  // period roster — not just the viewer's own ("My pay") payslips.
+  async function adminOpenPayslip(id) { return apOpenModal(id, true); }
+  async function apOpenModal(id, adminView) {
+    document.getElementById('modal-adminPayslip').classList.add('open');
+    document.getElementById('ap-title').textContent = 'Payslip';
+    document.getElementById('ap-body').innerHTML = '<div class="empty" style="padding:14px;">Loading…</div>';
+    document.getElementById('ap-print-btn').style.display = 'none';
+    document.getElementById('ap-save-btn').style.display  = 'none';
+    try {
+      const p = await api('GET', adminView ? `/api/admin/payslips/${id}` : `/api/admin/me/payslips/${id}`);
+      _apCurrent = p;
+      const cur = p.currency || 'JMD';
+      document.getElementById('ap-title').textContent = `Payslip — ${p.period_label || ''}`;
+      document.getElementById('ap-body').innerHTML = `
+        <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">
+          ${escHtml(p.period_start || '')} → ${escHtml(p.period_end || '')}
+        </div>
+        <h4 style="margin:14px 0 6px;color:var(--teal-dark);font-size:12px;text-transform:uppercase;letter-spacing:1px;">Earnings</h4>
+        <table style="width:100%;font-size:13px;border-collapse:collapse;">
+          <tr><td style="padding:5px 0;border-bottom:1px solid var(--border);">Regular hours</td><td style="text-align:right;padding:5px 0;border-bottom:1px solid var(--border);">${p.hours_regular} × ${_fmtMoney(p.hourly_rate, cur)}</td></tr>
+          <tr><td style="padding:5px 0;border-bottom:1px solid var(--border);">Overtime hours</td><td style="text-align:right;padding:5px 0;border-bottom:1px solid var(--border);">${p.hours_overtime} × ${_fmtMoney(p.overtime_rate, cur)}</td></tr>
+          <tr><td style="padding:5px 0;border-bottom:1px solid var(--border);">Fixed salary</td><td style="text-align:right;padding:5px 0;border-bottom:1px solid var(--border);">${_fmtMoney(p.fixed_salary, cur)}</td></tr>
+          <tr><td style="padding:5px 0;border-bottom:1px solid var(--border);">Bonus</td><td style="text-align:right;padding:5px 0;border-bottom:1px solid var(--border);">${_fmtMoney(p.bonus, cur)}</td></tr>
+          <tr style="font-weight:700;"><td style="padding:7px 0;">Gross pay</td><td style="text-align:right;padding:7px 0;">${_fmtMoney(p.gross_pay, cur)}</td></tr>
+        </table>
+        <h4 style="margin:14px 0 6px;color:var(--err-fg);font-size:12px;text-transform:uppercase;letter-spacing:1px;">Deductions</h4>
+        <table style="width:100%;font-size:13px;border-collapse:collapse;color:var(--err-fg);">
+          <tr><td style="padding:5px 0;border-bottom:1px solid var(--border);">PAYE income tax</td><td style="text-align:right;padding:5px 0;border-bottom:1px solid var(--border);">${_fmtMoney(p.paye_tax, cur)}</td></tr>
+          <tr><td style="padding:5px 0;border-bottom:1px solid var(--border);">NIS</td><td style="text-align:right;padding:5px 0;border-bottom:1px solid var(--border);">${_fmtMoney(p.nis, cur)}</td></tr>
+          <tr><td style="padding:5px 0;border-bottom:1px solid var(--border);">NHT</td><td style="text-align:right;padding:5px 0;border-bottom:1px solid var(--border);">${_fmtMoney(p.nht, cur)}</td></tr>
+          <tr><td style="padding:5px 0;border-bottom:1px solid var(--border);">Education Tax</td><td style="text-align:right;padding:5px 0;border-bottom:1px solid var(--border);">${_fmtMoney(p.education_tax, cur)}</td></tr>
+          <tr><td style="padding:5px 0;border-bottom:1px solid var(--border);">Other</td><td style="text-align:right;padding:5px 0;border-bottom:1px solid var(--border);">${_fmtMoney(p.other_deductions, cur)}</td></tr>
+          <tr style="font-weight:700;"><td style="padding:7px 0;">Total deductions</td><td style="text-align:right;padding:7px 0;">${_fmtMoney(p.total_deductions, cur)}</td></tr>
+        </table>
+        <div style="background:var(--navy);color:#fff;padding:12px 16px;border-radius:8px;font-weight:700;display:flex;justify-content:space-between;margin-top:14px;">
+          <span>Net pay</span><span>${_fmtMoney(p.net_pay, cur)}</span>
+        </div>
+        ${p.notes ? `<h4 style="margin:14px 0 6px;color:var(--ink);font-size:12px;text-transform:uppercase;letter-spacing:1px;">Notes</h4><p style="font-size:13px;line-height:1.6;">${escHtml(p.notes).replace(/\n/g,'<br>')}</p>` : ''}`;
+      document.getElementById('ap-print-btn').style.display = '';
+      document.getElementById('ap-save-btn').style.display  = '';
+    } catch (e) {
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return;
+      document.getElementById('ap-body').innerHTML =
+        `<div style="color:var(--danger);font-size:13px;">Could not load: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  function apPrint(mode) {
+    // Canonical Jamaica-statutory Workday-style payslip — rendered by the ONE
+    // shared template in /static/pc_shared.js (PC.openPayslipPrint) so admin,
+    // tech /home, and the /profile Pay tab all produce an identical document.
+    const p = _apCurrent;
+    if (!p) return;
+    PC.openPayslipPrint(p, { saveMode: (mode === 'save') });
+  }
+
+  // ── Change own password ──────────────────────────────────────────────────
+  function mpOpenChangePw() {
+    document.getElementById('cpw-current').value = '';
+    document.getElementById('cpw-new').value     = '';
+    document.getElementById('cpw-confirm').value = '';
+    const err = document.getElementById('err-changePw');
+    err.style.display = 'none';
+    err.textContent = '';
+    document.getElementById('modal-changePw').classList.add('open');
+    setTimeout(() => document.getElementById('cpw-current').focus(), 60);
+  }
+
+  async function submitChangePw() {
+    const cur = document.getElementById('cpw-current').value;
+    const nw  = document.getElementById('cpw-new').value;
+    const cf  = document.getElementById('cpw-confirm').value;
+    const err = document.getElementById('err-changePw');
+    err.style.display = 'none';
+    if (!cur || !nw || !cf) { showErr('err-changePw', 'All fields are required.'); return; }
+    if (nw.length < 8) { showErr('err-changePw', 'New password must be at least 8 characters.'); return; }
+    if (nw !== cf) { showErr('err-changePw', 'New passwords do not match.'); return; }
+    if (nw === cur) { showErr('err-changePw', 'New password must be different from current.'); return; }
+    const btn = document.getElementById('cpw-submit-btn');
+    btn.disabled = true;
+    try {
+      await api('POST', '/api/admin/me/password', {
+        current_password: cur, new_password: nw, confirm_password: cf,
+      });
+      closeModal('changePw');
+      toast('Password updated. Other devices have been signed out.', 'success');
+    } catch (e) {
+      showErr('err-changePw', e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // ── 5S panel ───────────────────────────────────────────────────────────
+  let fsCurrentTab = 'dashboard';
+  function fsSetTab(name, el) {
+    fsCurrentTab = name;
+    document.querySelectorAll('#fsTabs .filter-btn').forEach(b => b.classList.remove('active'));
+    if (el) el.classList.add('active');
+    fsLoadCurrentTab();
+  }
+  async function fsLoadCurrentTab() {
+    const body = document.getElementById('fsBody');
+    body.innerHTML = 'Loading…';
+    try {
+      if      (fsCurrentTab === 'dashboard')  await fsRenderDashboard(body);
+      else if (fsCurrentTab === 'audits')     await fsRenderAudits(body);
+      else if (fsCurrentTab === 'exceptions') await fsRenderExceptions(body);
+      else if (fsCurrentTab === 'assets')     await fsRenderAssets(body);
+      else if (fsCurrentTab === 'compliance') await fsRenderCompliance(body);
+      else if (fsCurrentTab === 'coaching')   await fsRenderCoaching(body);
+    } catch (e) {
+      body.innerHTML = `<div style="color:var(--danger);">Failed to load: ${esc(String(e.message||e))}</div>`;
+    }
+  }
+  function fsBandColor(b) { return b==='green'?'var(--teal-deep)':b==='amber'?'var(--steel)':'var(--red)'; }
+  async function fsRenderDashboard(body) {
+    const d = await api('GET', '/api/admin/5s/dashboard').catch(function(e){
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return null;
+      throw e;
+    });
+    if (!d) return;
+    const banner = document.getElementById('fsSafetyBanner');
+    if (d.safety_red_count > 0) {
+      // Make the banner an actionable button: clicking ANY part of it
+      // jumps straight into the Exceptions tab pre-filtered to safety
+      // / LOTO, where each row has its Resolve / Escalate buttons.
+      // Previously the banner was plain text with no path forward.
+      banner.style.display = 'flex';
+      banner.style.justifyContent = 'space-between';
+      banner.style.alignItems = 'center';
+      banner.style.gap = '12px';
+      banner.style.cursor = 'pointer';
+      banner.setAttribute('role', 'button');
+      banner.setAttribute('tabindex', '0');
+      banner.setAttribute('aria-label', `Review ${d.safety_red_count} open safety / LOTO exceptions`);
+      banner.onclick = () => fsOpenExceptions({ severity: 'safety_loto', status: 'all' });
+      banner.onkeydown = (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          fsOpenExceptions({ severity: 'safety_loto', status: 'all' });
+        }
+      };
+      banner.innerHTML = `
+        <span>⚠ <strong>${d.safety_red_count} safety / LOTO exception${d.safety_red_count === 1 ? '' : 's'} open</strong> — review immediately.</span>
+        <span style="background:var(--card);color:var(--err-fg);border:1px solid var(--err-border);border-radius:6px;padding:5px 12px;font-size:12px;font-weight:700;white-space:nowrap;">Review &amp; Resolve →</span>`;
+    } else {
+      banner.style.display = 'none';
+      banner.onclick = null;
+      banner.onkeydown = null;
+      banner.removeAttribute('role');
+      banner.removeAttribute('tabindex');
+    }
+    // Sidebar badge — mirrors the KPI flag badge pattern. Total count
+    // is open + escalated + director-tier (anything still actionable).
+    const fsBadge = document.getElementById('fsRedBadge');
+    if (fsBadge) {
+      const n = (d.open_exceptions || 0) + (d.escalated_exceptions || 0) + (d.director_exceptions || 0);
+      if (n > 0) { fsBadge.textContent = String(n); fsBadge.style.display = 'inline-block'; }
+      else        { fsBadge.style.display = 'none'; }
+    }
+    const _gateFS = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    const tilesHtml = (d.compliance || []).map(c => {
+      const nameCell = (_gateFS && c.tech_id)
+        ? PC.gateLinkHtml('technician', c.tech_id, c.name || ('tech '+c.tech_id), {})
+        : esc(c.name || ('tech '+c.tech_id));
+      return `
+      <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:10px;display:flex;align-items:center;gap:10px;">
+        <div style="width:10px;height:40px;background:${fsBandColor(c.band)};border-radius:4px;"></div>
+        <div>
+          <div style="font-weight:700;font-size:13px;">${nameCell}</div>
+          <div style="color:var(--muted);font-size:12px;">${c.pass_audits}/${c.total_audits} pass · ${c.score_pct}%</div>
+        </div>
+      </div>
+    `;
+    }).join('') || '<div style="color:var(--muted);">No tech compliance data yet.</div>';
+    body.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:18px;">
+        <div data-tile="fs-open" tabindex="0" role="button" aria-label="Show open exceptions" onclick="fsOpenExceptions({status:'open'})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();fsOpenExceptions({status:'open'});}" style="background:var(--steel-bg);padding:12px;border-radius:8px;cursor:pointer;"><div style="font-size:11px;color:var(--steel);font-weight:700;">OPEN</div><div data-tile-count="fs-open" style="font-size:22px;font-weight:800;">${d.open_exceptions}</div></div>
+        <div data-tile="fs-escalated" tabindex="0" role="button" aria-label="Show escalated exceptions" onclick="fsOpenExceptions({status:'escalated'})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();fsOpenExceptions({status:'escalated'});}" style="background:var(--teal-bg);padding:12px;border-radius:8px;cursor:pointer;"><div style="font-size:11px;color:var(--teal-deep);font-weight:700;">ESCALATED</div><div data-tile-count="fs-escalated" style="font-size:22px;font-weight:800;">${d.escalated_exceptions}</div></div>
+        <div data-tile="fs-director" tabindex="0" role="button" aria-label="Show exceptions escalated to director" onclick="fsOpenExceptions({status:'escalated_director'})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();fsOpenExceptions({status:'escalated_director'});}" style="background:var(--err-bg);padding:12px;border-radius:8px;cursor:pointer;"><div style="font-size:11px;color:var(--err-fg);font-weight:700;">TO DIRECTOR</div><div data-tile-count="fs-director" style="font-size:22px;font-weight:800;">${d.director_exceptions}</div></div>
+        <div data-tile="fs-safety" tabindex="0" role="button" aria-label="Show open safety / LOTO exceptions" onclick="fsOpenExceptions({severity:'safety_loto',status:'all'})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();fsOpenExceptions({severity:'safety_loto',status:'all'});}" style="background:var(--surface-2);padding:12px;border-radius:8px;cursor:pointer;"><div style="font-size:11px;color:var(--text);font-weight:700;">SAFETY RED</div><div data-tile-count="fs-safety" style="font-size:22px;font-weight:800;">${d.safety_red_count}</div></div>
+      </div>
+      <h3 style="margin-bottom:10px;">Tech compliance (rolling 30 days)</h3>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;">${tilesHtml}</div>
+    `;
+    // PC.gateBadge — 5S dashboard tiles. Filter functions resolve against the
+    //  exceptions list when the user clicks the tile.
+    if (typeof PC !== 'undefined' && PC.gateBadge) {
+      try {
+        const t1 = body.querySelector('[data-tile-count="fs-open"]');
+        if (t1) PC.gateBadge(t1, d.open_exceptions, 'fs_exception', function (e) { return e && e.status === 'open'; });
+        const t2 = body.querySelector('[data-tile-count="fs-escalated"]');
+        if (t2) PC.gateBadge(t2, d.escalated_exceptions, 'fs_exception', function (e) { return e && e.status === 'escalated'; });
+        const t3 = body.querySelector('[data-tile-count="fs-director"]');
+        if (t3) PC.gateBadge(t3, d.director_exceptions, 'fs_exception', function (e) { return e && e.escalated_to_director; });
+        const t4 = body.querySelector('[data-tile-count="fs-safety"]');
+        if (t4) PC.gateBadge(t4, d.safety_red_count, 'fs_exception', function (e) { return e && e.severity === 'safety_loto'; });
+      } catch(_) {}
+    }
+    // 5S+KPI signal hints
+    for (const c of (d.compliance || [])) {
+      if (c.band === 'red') {
+        try {
+          const k = await api('GET', `/api/admin/5s/kpi-correlation/${c.tech_id}`);
+          if (k.kpi_band && k.kpi_band !== 'green') {
+            const note = document.createElement('div');
+            note.style.cssText = 'margin-top:10px;padding:8px 10px;background:var(--steel-bg);border:1px solid var(--steel-bg);border-radius:6px;font-size:13px;';
+            note.textContent = `${c.name}: ${k.diagnostic}`;
+            body.appendChild(note);
+          }
+        } catch (e) {}
+      }
+    }
+  }
+  async function fsRenderAudits(body) {
+    const audits = await api('GET', '/api/admin/5s/audits?limit=100').catch(function(e){
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return null;
+      throw e;
+    });
+    if (!audits) return;
+    if (!audits.length) { body.innerHTML = '<div style="color:var(--muted);">No audits recorded yet.</div>'; return; }
+    const _gateFS = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    body.innerHTML = `
+      <table>
+        <thead><tr><th>ID</th><th>When</th><th>Asset</th><th>Phase</th><th>Auditor</th><th>Result</th></tr></thead>
+        <tbody>${audits.map(a=>{
+          // asset_code → fs_asset (FIXME: fs_asset detail route does not exist
+          //  in current SPA; helper renders text-only fallback link).
+          const assetCell = (_gateFS && a.asset_id)
+            ? PC.gateLinkHtml('fs_asset', a.asset_id, a.asset_code || ('#'+a.asset_id), {})
+            : (a.asset_code || a.asset_id);
+          // Auditor — when auditor_kind is 'tech', link to technician.
+          const auditorCell = (_gateFS && a.auditor_kind === 'tech' && a.auditor_id)
+            ? PC.gateLinkHtml('technician', a.auditor_id, esc(a.auditor_kind)+':'+a.auditor_id, {})
+            : (esc(a.auditor_kind)+':'+a.auditor_id);
+          return `
+          <tr data-pc-row-fsaudit="${a.id}">
+            <td>#${a.id}</td>
+            <td>${esc(PC.fmtDateTime(a.audit_ts))}</td>
+            <td>${assetCell}</td>
+            <td>${esc(a.phase)}</td>
+            <td>${auditorCell}</td>
+            <td>${a.overall_pass ? '<span style="color:var(--teal-deep);font-weight:700;">PASS</span>' : '<span style="color:var(--red);font-weight:700;">FAIL</span>'}</td>
+          </tr>`;
+        }).join('')}
+        </tbody>
+      </table>
+    `;
+    // FIXME: fs_audit detail route exists (fsOpenAudit) but no dedicated SPA
+    //  route — the row click opens the existing audit-detail modal.
+    if (typeof PC !== 'undefined' && PC.gateRow) {
+      body.querySelectorAll('tr[data-pc-row-fsaudit]').forEach(function (tr) {
+        const aid = Number(tr.getAttribute('data-pc-row-fsaudit'));
+        PC.gateRow(tr, 'fs_audit', aid, {
+          onClick: function () { fsOpenAudit(aid); },
+          ariaLabel: 'View 5S audit #' + aid,
+        });
+      });
+    }
+  }
+  async function fsOpenAudit(id) {
+    let d;
+    try { d = await api('GET', `/api/admin/5s/audits/${id}`); }
+    catch (e) { toast('Unable to load audit: ' + e.message, 'error'); return; }
+
+    const title = document.getElementById('fsad-title');
+    const sub   = document.getElementById('fsad-subtitle');
+    const meta  = document.getElementById('fsad-meta');
+    const host  = document.getElementById('fsad-sections');
+
+    // Title: phase + asset code + date (textContent only — user data)
+    const phase = (d.phase || '').toString();
+    const assetCode = d.asset_code || d.asset_id || '—';
+    const when = PC.fmtDateTime(d.audit_ts);
+    title.textContent = 'Audit #' + d.id + ' — ' + phase + ' · ' + assetCode;
+    sub.textContent = when + (d.overall_pass ? ' · PASS' : ' · FAIL');
+
+    // Auditor + timestamp
+    meta.textContent = 'Auditor: ' + (d.auditor_kind || '—') + ':' + (d.auditor_id || '—') + ' · ' + when;
+
+    // Group items by section
+    const sections = ['sort','set','shine','standardize','sustain'];
+    const titles = { sort:'Sort', set:'Set in Order', shine:'Shine',
+                     standardize:'Standardize', sustain:'Sustain' };
+    const items = Array.isArray(d.items) ? d.items : [];
+    const grouped = {};
+    items.forEach(function(it){
+      const s = (it.section || '').toLowerCase();
+      if (!grouped[s]) grouped[s] = [];
+      grouped[s].push(it);
+    });
+
+    host.innerHTML = '';
+    sections.forEach(function(sec){
+      const list = grouped[sec] || [];
+      const block = document.createElement('div');
+      block.style.cssText = 'border:1px solid var(--border);border-radius:6px;padding:10px 12px;background:var(--card);';
+      const h = document.createElement('div');
+      h.style.cssText = 'font-weight:700;color:var(--ink);font-size:13px;margin-bottom:6px;';
+      h.textContent = titles[sec] + ' (' + list.length + ')';
+      block.appendChild(h);
+      if (!list.length) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'color:var(--muted);font-size:12px;font-style:italic;';
+        empty.textContent = 'No items in this section.';
+        block.appendChild(empty);
+      } else {
+        list.forEach(function(it){
+          const row = document.createElement('div');
+          row.style.cssText = 'display:grid;grid-template-columns:80px 1fr;gap:8px;align-items:start;padding:5px 0;border-top:1px solid var(--surface-2);font-size:12px;';
+          const badge = document.createElement('span');
+          const st = (it.status || '').toLowerCase();
+          let bg = 'var(--surface-2)', fg = 'var(--text)';
+          if (st === 'pass') { bg = 'var(--teal-bg)'; fg = 'var(--teal-deep)'; }
+          else if (st === 'fail') { bg = 'var(--err-bg)'; fg = 'var(--err-fg)'; }
+          else if (st === 'na' || st === 'n/a') { bg = 'var(--surface-2)'; fg = 'var(--muted)'; }
+          badge.style.cssText = 'background:' + bg + ';color:' + fg + ';padding:2px 6px;border-radius:6px;font-weight:700;font-size:10px;text-transform:uppercase;justify-self:start;';
+          badge.textContent = st || '—';
+          const body = document.createElement('div');
+          const label = document.createElement('div');
+          label.style.cssText = 'font-weight:600;color:var(--text);';
+          label.textContent = it.item_label || '—';
+          body.appendChild(label);
+          if (it.note) {
+            const note = document.createElement('div');
+            note.style.cssText = 'color:var(--muted);font-size:11px;margin-top:2px;';
+            note.textContent = it.note;
+            body.appendChild(note);
+          }
+          row.appendChild(badge);
+          row.appendChild(body);
+          block.appendChild(row);
+        });
+      }
+      host.appendChild(block);
+    });
+
+    document.getElementById('modal-fsAuditDetail').classList.add('open');
+  }
+  // Filter state for the Exceptions sub-tab. Default to open exceptions
+  // (matches the original behaviour); the four dashboard tiles overwrite
+  // this via fsOpenExceptions() before switching tabs.
+  let fsExFilter = { status: 'open', severity: null };
+  let _fsExShowAll = false;
+  const FS_EX_COLLAPSED_ROWS = 7;
+  function fsOpenExceptions(filter) {
+    fsExFilter = Object.assign({ status: 'open', severity: null }, filter || {});
+    _fsExShowAll = false;
+    const exBtn = document.querySelector('#fsTabs .filter-btn:nth-child(3)');
+    fsSetTab('exceptions', exBtn);
+  }
+  window.fsOpenExceptions = fsOpenExceptions;
+  function fsExToggleAll() {
+    _fsExShowAll = !_fsExShowAll;
+    fsLoadCurrentTab();
+  }
+  window.fsExToggleAll = fsExToggleAll;
+
+  async function fsRenderExceptions(body) {
+    const qs = new URLSearchParams();
+    if (fsExFilter.status)   qs.set('status', fsExFilter.status);
+    if (fsExFilter.severity) qs.set('severity', fsExFilter.severity);
+    let rows = await api('GET', '/api/admin/5s/exceptions?' + qs.toString()).catch(function(e){
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return null;
+      throw e;
+    });
+    if (!rows) return;
+    // Sort: unresolved on top (safety→escalated_director→escalated→open),
+    // resolved at the bottom. Within each bucket, newest first so the
+    // freshest alarm sits above older ones.
+    function _bucket(e) {
+      if (e.status === 'resolved') return 5;
+      if (e.severity === 'safety_loto') return 0;
+      if (e.status === 'escalated_director') return 1;
+      if (e.status === 'escalated')          return 2;
+      if (e.status === 'open')               return 3;
+      return 4;
+    }
+    rows = rows.slice().sort((a,b) => {
+      const ba=_bucket(a), bb=_bucket(b);
+      if (ba !== bb) return ba - bb;
+      const ta = (a.status==='resolved' ? (a.resolved_at||a.opened_at) : a.opened_at) || '';
+      const tb = (b.status==='resolved' ? (b.resolved_at||b.opened_at) : b.opened_at) || '';
+      return tb.localeCompare(ta);
+    });
+    // Surface what filter is currently active so the user understands
+    // why the count differs from the dashboard tile (e.g. they clicked
+    // "TO DIRECTOR" and now see only those rows).
+    const filterLabel = fsExFilter.severity === 'safety_loto'
+      ? 'Showing <strong>Safety / LOTO</strong> exceptions'
+      : (fsExFilter.status === 'open'                  ? 'Showing <strong>Open</strong> exceptions'
+       : fsExFilter.status === 'escalated'             ? 'Showing <strong>Escalated</strong> exceptions'
+       : fsExFilter.status === 'escalated_director'    ? 'Showing exceptions <strong>escalated to Director</strong>'
+       : fsExFilter.status === 'all'                   ? 'Showing <strong>all</strong> exceptions'
+       : `Showing <strong>${esc(fsExFilter.status || '')}</strong> exceptions`);
+    const filterBar = `<div style="display:flex;justify-content:space-between;align-items:center;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:12px;color:var(--text);">
+      <div>${filterLabel} <span style="color:var(--muted);">· ${rows.length} ${rows.length === 1 ? 'row' : 'rows'}</span></div>
+      ${(fsExFilter.status !== 'open' || fsExFilter.severity) ? `<button class="btn btn-ghost btn-sm" onclick="fsOpenExceptions({status:'open'})">Reset to Open</button>` : ''}
+    </div>`;
+    const totalRows = rows.length;
+    const visibleRows = _fsExShowAll ? rows : rows.slice(0, FS_EX_COLLAPSED_ROWS);
+    const hiddenCount = Math.max(0, totalRows - visibleRows.length);
+    const _gateFS = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    const esc2 = visibleRows.length ? visibleRows.map(e=>{
+      // Sensitive-value gating: description (and any resolution/override
+      //  detail) collapses to "—" when viewer cannot read exception record.
+      //  Kind/status badges remain.
+      const _exVis = (typeof PC === 'undefined' || !PC.canRead) ? true : PC.canRead('fs_exception', e.id);
+      const auditCell = (_gateFS && e.audit_id)
+        ? PC.gateLinkHtml('fs_audit', e.audit_id, '#'+e.audit_id, {onClick: 'function(){ fsOpenAudit(' + e.audit_id + '); }'})
+        : (e.audit_id ? '#'+e.audit_id : '—');
+      const assetCell = (_gateFS && e.asset_id)
+        ? PC.gateLinkHtml('fs_asset', e.asset_id, e.asset_code || ('#'+e.asset_id), {})
+        : (e.asset_code || e.asset_id || '—');
+      const techCell = (_gateFS && e.tech_id)
+        ? PC.gateLinkHtml('technician', e.tech_id, e.tech_name || ('tech '+e.tech_id), {})
+        : (e.tech_name || (e.tech_id ? 'tech '+e.tech_id : ''));
+      // Resolution column — the resolution_note + who + when. Lives on
+      // fs_exceptions.resolution_note (encrypted at rest, decrypted by
+      // _enc_dict in database.py). Was previously invisible in the UI
+      // even though the API returned it.
+      const resolvedAt = PC.fmtDateTime(e.resolved_at);
+      const resolverLabel = e.resolved_by_kind && e.resolved_by_id
+        ? `${esc(e.resolved_by_kind)}:${e.resolved_by_id}` : '';
+      const resolutionCell = e.status === 'resolved'
+        ? (_exVis
+            ? `<div style="font-size:12px;">${esc(e.resolution_note || '(no note)')}</div>
+               <div style="font-size:10px;color:var(--muted);margin-top:2px;">${resolvedAt}${resolverLabel ? ' · by ' + resolverLabel : ''}</div>`
+            : '<span style="color:var(--muted);">—</span>')
+        : '<span style="color:var(--muted);">—</span>';
+      return `
+      <tr data-pc-row-fsex="${e.id}">
+        <td>#${e.id} <span style="font-size:10px;color:var(--muted);">audit ${auditCell} · ${assetCell}${techCell?' · '+techCell:''}</span></td>
+        <td>${esc(PC.fmtDateTime(e.opened_at))}</td>
+        <td>${esc(e.category)}</td>
+        <td>${e.severity==='safety_loto'?'<span class="pc-stop-prop" style="background:var(--err-bg);color:var(--err-fg);padding:2px 6px;border-radius:8px;font-size:11px;font-weight:700;">SAFETY</span>':'normal'}</td>
+        <td>${esc(e.status)}</td>
+        <td>${_exVis ? esc((e.description||'').slice(0,80)) : '<span style="color:var(--muted);">—</span>'}</td>
+        <td>${resolutionCell}</td>
+        <td style="white-space:nowrap;">
+          <button class="btn btn-ghost btn-sm pc-stop-prop" onclick="event.stopPropagation();fsViewExPhotos(${e.id})">Photos</button>
+          ${e.status !== 'resolved' && can('fs:exception_resolve') ? `<button class="btn btn-edit btn-sm pc-stop-prop" style="margin-left:4px;" onclick="event.stopPropagation();fsResolve(${e.id})">Resolve</button>` : ''}
+          ${e.status !== 'resolved' && can('fs:exception_escalate_director') ? `<button class="btn btn-danger btn-sm pc-stop-prop" style="margin-left:4px;" onclick="event.stopPropagation();fsEscalate(${e.id})">Escalate</button>` : ''}
+        </td>
+      </tr>`;
+    }).join('') : '<tr><td colspan="8" class="empty">No exceptions match the current filter.</td></tr>';
+    const moreBar = (totalRows > FS_EX_COLLAPSED_ROWS) ? `
+      <div style="display:flex;justify-content:center;align-items:center;padding:10px;background:var(--surface-2);border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;">
+        ${_fsExShowAll
+          ? `<button class="btn btn-ghost btn-sm" onclick="fsExToggleAll()">↑ Show fewer (top ${FS_EX_COLLAPSED_ROWS})</button>`
+          : `<button class="btn btn-ghost btn-sm" onclick="fsExToggleAll()">↓ Show all ${totalRows} (${hiddenCount} hidden)</button>`}
+      </div>` : '';
+    body.innerHTML = filterBar + `<table>
+      <thead><tr><th>ID</th><th>Opened</th><th>Category</th><th>Severity</th><th>Status</th><th>Description</th><th>Resolution</th><th>Actions</th></tr></thead>
+      <tbody>${esc2}</tbody></table>` + moreBar;
+  }
+  async function fsResolve(id) {
+    const note = prompt('Resolution note (required):', '');
+    if (note === null) return;
+    try {
+      await api('POST', `/api/admin/5s/exceptions/${id}/resolve`, { resolution_note: note || '' });
+      toast('Resolved','success');
+      _fsExShowAll = false;  // snap back so next-most-urgent appears
+      fsLoadCurrentTab();
+    }
+    catch (e) { toast(e.message,'error'); }
+  }
+  async function fsEscalate(id) {
+    if (!confirm('Escalate to director?')) return;
+    try {
+      await api('POST', `/api/admin/5s/exceptions/${id}/escalate`, {});
+      toast('Escalated','success');
+      _fsExShowAll = false;
+      fsLoadCurrentTab();
+    }
+    catch (e) { toast(e.message,'error'); }
+  }
+  async function fsRenderAssets(body) {
+    const assets = await api('GET', '/api/admin/5s/assets?active_only=false').catch(function(e){
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return null;
+      throw e;
+    });
+    if (!assets) return;
+    _fsAssetsCache = {};
+    assets.forEach(a => { _fsAssetsCache[a.id] = a; });
+    const _gateFS = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    const canManage = can('fs:asset_manage');
+    body.innerHTML = `
+      ${canManage ? '<button class="btn btn-primary btn-sm pc-stop-prop" onclick="fsAddAsset()" style="margin-bottom:10px;">+ Add Asset</button>' : ''}
+      <table>
+        <thead><tr><th>Code</th><th>Type</th><th>Label</th><th>Tech</th><th>Active</th><th>Actions</th></tr></thead>
+        <tbody>${assets.length ? assets.map(a => {
+          const codeCell = (_gateFS)
+            ? PC.gateLinkHtml('fs_asset', a.id, a.asset_code || ('#'+a.id), {})
+            : `<span class="code-pill">${esc(a.asset_code)}</span>`;
+          const techCell = (_gateFS && a.assigned_tech_id)
+            ? PC.gateLinkHtml('technician', a.assigned_tech_id, a.assigned_tech_name || ('tech '+a.assigned_tech_id), {})
+            : (a.assigned_tech_id || '—');
+          return `
+          <tr style="${a.active?'':'opacity:0.5;'}">
+            <td>${codeCell}</td>
+            <td>${esc(a.asset_type)}</td>
+            <td>${esc(a.label)}</td>
+            <td>${techCell}</td>
+            <td>${a.active ? 'yes' : 'no'}</td>
+            <td style="white-space:nowrap;">
+              <button class="btn btn-ghost btn-sm pc-stop-prop" onclick="fsManageItems(${a.id})">Items</button>
+              ${canManage ? `<button class="btn btn-edit btn-sm pc-stop-prop" style="margin-left:4px;" onclick="fsEditAsset(${a.id})">Edit</button>` : ''}
+            </td>
+          </tr>`;
+        }).join('') : '<tr><td colspan="6" class="empty">No assets.</td></tr>'}
+        </tbody>
+      </table>
+    `;
+  }
+  async function fsAddAsset() {
+    const code  = prompt('Asset code (e.g. VAN-KIN-02):');
+    if (!code) return;
+    const type  = prompt('Type — vehicle, toolkit, or storage:', 'vehicle');
+    if (!type) return;
+    const label = prompt('Display label:');
+    if (!label) return;
+    try { await api('POST', '/api/admin/5s/assets', { asset_code: code, asset_type: type, label, hub_id: 1 });
+          toast('Asset created','success'); fsLoadCurrentTab(); }
+    catch (e) { toast(e.message,'error'); }
+  }
+
+  // ── 5S Asset Items (tools/parts/consumables on an asset) ──
+  let _fsAssetsCache = {};
+  let _fsItemsAssetId = null;
+  function _fsTechOptions(selectedId) {
+    const opts = (allTechs || []).filter(t => t.active).map(t =>
+      `<option value="${t.id}"${String(t.id)===String(selectedId)?' selected':''}>${escHtml(t.name)} (${escHtml(t.tech_code||'')})</option>`).join('');
+    return opts;
+  }
+  async function fsManageItems(assetId) {
+    _fsItemsAssetId = assetId;
+    const a = _fsAssetsCache[assetId] || {};
+    document.getElementById('fsItemsTitle').textContent = (a.asset_code || ('#'+assetId)) + (a.label ? ' · ' + a.label : '');
+    // Only managers can add items — hide the add box otherwise.
+    document.getElementById('fsItemsAddBox').style.display = can('fs:asset_manage') ? '' : 'none';
+    document.getElementById('fsItemsErr').style.display = 'none';
+    document.getElementById('fsItemLabel').value = '';
+    document.getElementById('fsItemLoc').value = '';
+    document.getElementById('fsItemExpiry').value = '';
+    document.getElementById('fsItemSop').checked = true;
+    openModal('fsItems');
+    await fsLoadItems();
+  }
+  async function fsLoadItems() {
+    const tb = document.getElementById('fsItemsList');
+    tb.innerHTML = '<tr><td colspan="6" class="empty">Loading…</td></tr>';
+    try {
+      const items = await api('GET', `/api/admin/5s/assets/${_fsItemsAssetId}/items`);
+      const canManage = can('fs:asset_manage');
+      tb.innerHTML = (items && items.length) ? items.map(it => `
+        <tr>
+          <td>${escHtml(it.item_type||'')}</td>
+          <td>${escHtml(it.item_label||'')}</td>
+          <td>${it.sop_required ? 'yes' : 'no'}</td>
+          <td>${escHtml(it.location_code||'—')}</td>
+          <td>${it.expiry_date ? escHtml(it.expiry_date) : '—'}</td>
+          <td style="white-space:nowrap;">${canManage ? `<button class="btn btn-danger btn-sm" onclick="fsRemoveItem(${it.id})">Remove</button>` : ''}</td>
+        </tr>`).join('') : '<tr><td colspan="6" class="empty">No items on this asset.</td></tr>';
+    } catch (e) {
+      tb.innerHTML = `<tr><td colspan="6" class="empty" style="color:var(--danger);">${escHtml(String(e.message||e))}</td></tr>`;
+    }
+  }
+  async function fsAddItem() {
+    const err = document.getElementById('fsItemsErr');
+    err.style.display = 'none';
+    const label = document.getElementById('fsItemLabel').value.trim();
+    if (!label) { err.textContent = 'Item label is required.'; err.style.display = 'block'; return; }
+    const body = {
+      item_type: document.getElementById('fsItemType').value,
+      item_label: label,
+      sop_required: document.getElementById('fsItemSop').checked,
+      location_code: document.getElementById('fsItemLoc').value.trim() || null,
+      expiry_date: document.getElementById('fsItemExpiry').value || null
+    };
+    try {
+      await api('POST', `/api/admin/5s/assets/${_fsItemsAssetId}/items`, body);
+      toast('Item added','success');
+      document.getElementById('fsItemLabel').value = '';
+      document.getElementById('fsItemLoc').value = '';
+      document.getElementById('fsItemExpiry').value = '';
+      document.getElementById('fsItemSop').checked = true;
+      await fsLoadItems();
+    } catch (e) { err.textContent = String(e.message||e); err.style.display = 'block'; }
+  }
+  async function fsRemoveItem(itemId) {
+    if (!confirm('Remove this item from the asset?')) return;
+    try {
+      await api('DELETE', `/api/admin/5s/assets/${_fsItemsAssetId}/items/${itemId}`);
+      toast('Item removed','success');
+      await fsLoadItems();
+    } catch (e) { toast(e.message,'error'); }
+  }
+
+  // ── 5S Asset Edit ──
+  let _fsEditAssetId = null;
+  function fsEditAsset(assetId) {
+    const a = _fsAssetsCache[assetId];
+    if (!a) { toast('Asset not loaded','error'); return; }
+    _fsEditAssetId = assetId;
+    document.getElementById('fsAssetEditTitle').textContent = a.asset_code || ('#'+assetId);
+    document.getElementById('fsAeLabel').value = a.label || '';
+    document.getElementById('fsAeTech').innerHTML = '<option value="">— none —</option>' + _fsTechOptions(a.assigned_tech_id);
+    document.getElementById('fsAeLoc').value = a.static_location || '';
+    document.getElementById('fsAeNotes').value = a.notes || '';
+    document.getElementById('fsAeActive').checked = !!a.active;
+    document.getElementById('fsAssetEditErr').style.display = 'none';
+    openModal('fsAssetEdit');
+  }
+  async function fsSaveAssetEdit() {
+    const err = document.getElementById('fsAssetEditErr');
+    err.style.display = 'none';
+    const techVal = document.getElementById('fsAeTech').value;
+    const body = {
+      label: document.getElementById('fsAeLabel').value.trim(),
+      assigned_tech_id: techVal ? parseInt(techVal, 10) : null,
+      static_location: document.getElementById('fsAeLoc').value.trim() || null,
+      notes: document.getElementById('fsAeNotes').value.trim() || null,
+      active: document.getElementById('fsAeActive').checked
+    };
+    try {
+      await api('PATCH', `/api/admin/5s/assets/${_fsEditAssetId}`, body);
+      toast('Asset updated','success');
+      closeModal('fsAssetEdit');
+      fsLoadCurrentTab();
+    } catch (e) { err.textContent = String(e.message||e); err.style.display = 'block'; }
+  }
+
+  // ── 5S Exception Photos ──
+  async function fsViewExPhotos(excId) {
+    document.getElementById('fsExPhotosTitle').textContent = excId;
+    const box = document.getElementById('fsExPhotosBody');
+    box.innerHTML = 'Loading…';
+    openModal('fsExPhotos');
+    try {
+      const photos = await api('GET', `/api/admin/5s/exceptions/${excId}/photos`);
+      if (!photos || !photos.length) { box.innerHTML = '<div style="color:var(--muted);grid-column:1/-1;">No photos attached to this exception.</div>'; return; }
+      box.innerHTML = photos.map(p => {
+        const src = p.signed_url || p.url || '';
+        return `<a href="${escHtml(src)}" target="_blank" rel="noopener noreferrer" style="display:block;border:1px solid var(--border);border-radius:8px;overflow:hidden;">
+          <img src="${escHtml(src)}" alt="exception photo" style="width:100%;height:130px;object-fit:cover;display:block;">
+        </a>`;
+      }).join('');
+    } catch (e) {
+      box.innerHTML = `<div style="color:var(--danger);grid-column:1/-1;">${escHtml(String(e.message||e))}</div>`;
+    }
+  }
+
+  // ── 5S Coaching ──
+  async function fsRenderCoaching(body) {
+    const list = await api('GET', '/api/admin/5s/coaching').catch(function(e){
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return null;
+      throw e;
+    });
+    if (!list) return;
+    const canManage = can('fs:coaching_manage');
+    const addBtn = canManage ? '<button class="btn btn-primary btn-sm" onclick="fsOpenCoachingModal()" style="margin-bottom:10px;">+ Open Coaching</button>' : '';
+    const _gateFS = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    const rowsHtml = (list && list.length) ? list.map(c => {
+      const techCell = (_gateFS && c.tech_id)
+        ? PC.gateLinkHtml('technician', c.tech_id, c.tech_name || ('tech '+c.tech_id), {})
+        : (c.tech_name || ('tech '+c.tech_id));
+      const bandDot = c.band_at_open
+        ? `<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${fsBandColor(c.band_at_open)};margin-right:5px;vertical-align:middle;"></span>${escHtml(c.band_at_open)}`
+        : '—';
+      const isOpen = c.status === 'open';
+      return `
+      <tr style="${isOpen?'':'opacity:0.65;'}">
+        <td>#${c.id}</td>
+        <td>${techCell}</td>
+        <td>${escHtml(PC.fmtDateTime(c.opened_at))}</td>
+        <td>${bandDot}</td>
+        <td>${escHtml((c.plan_text||'').slice(0,80) || '—')}</td>
+        <td><span class="badge ${isOpen?'badge-in_progress':'badge-completed'}">${escHtml(c.status)}</span></td>
+        <td style="white-space:nowrap;">
+          ${isOpen && canManage ? `<button class="btn btn-edit btn-sm" onclick="fsCloseCoaching(${c.id})">Close</button>` : ''}
+        </td>
+      </tr>`;
+    }).join('') : '<tr><td colspan="7" class="empty">No coaching records.</td></tr>';
+    body.innerHTML = addBtn + `<table>
+      <thead><tr><th>ID</th><th>Tech</th><th>Opened</th><th>Band</th><th>Plan</th><th>Status</th><th>Actions</th></tr></thead>
+      <tbody>${rowsHtml}</tbody></table>`;
+  }
+  function fsOpenCoachingModal() {
+    document.getElementById('fsCoachTech').innerHTML = '<option value="">Select…</option>' + _fsTechOptions(null);
+    document.getElementById('fsCoachPlan').value = '';
+    document.getElementById('fsCoachingErr').style.display = 'none';
+    openModal('fsCoaching');
+  }
+  async function fsSaveCoaching() {
+    const err = document.getElementById('fsCoachingErr');
+    err.style.display = 'none';
+    const techVal = document.getElementById('fsCoachTech').value;
+    if (!techVal) { err.textContent = 'Select a technician.'; err.style.display = 'block'; return; }
+    try {
+      await api('POST', '/api/admin/5s/coaching', {
+        tech_id: parseInt(techVal, 10),
+        plan_text: document.getElementById('fsCoachPlan').value.trim()
+      });
+      toast('Coaching opened','success');
+      closeModal('fsCoaching');
+      if (fsCurrentTab === 'coaching') fsLoadCurrentTab();
+    } catch (e) { err.textContent = String(e.message||e); err.style.display = 'block'; }
+  }
+  async function fsCloseCoaching(id) {
+    const note = prompt('Close note (optional):', '');
+    if (note === null) return;
+    try {
+      await api('POST', `/api/admin/5s/coaching/${id}/close`, { close_note: note || '' });
+      toast('Coaching closed','success');
+      fsLoadCurrentTab();
+    } catch (e) { toast(e.message,'error'); }
+  }
+
+  async function fsRenderCompliance(body) {
+    const list = await api('GET', '/api/admin/5s/compliance').catch(function(e){
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return null;
+      throw e;
+    });
+    if (!list) return;
+    if (!list.length) { body.innerHTML = '<div style="color:var(--muted);">No technicians or no audits yet.</div>'; return; }
+    const _gateFS = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    body.innerHTML = `
+      <table>
+        <thead><tr><th>Tech</th><th>Band</th><th>Score</th><th>Audits</th><th>Safety</th><th>4-wk trend</th></tr></thead>
+        <tbody>${list.map(c=>`
+          <tr>
+            <td>${(_gateFS && c.tech_id) ? PC.gateLinkHtml('technician', c.tech_id, c.name||('tech '+c.tech_id), {}) : `<strong>${esc(c.name||('tech '+c.tech_id))}</strong>`}</td>
+            <td><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${fsBandColor(c.band)};margin-right:6px;"></span>${c.band.toUpperCase()}</td>
+            <td>${c.score_pct}%</td>
+            <td>${c.pass_audits}/${c.total_audits}</td>
+            <td>${c.safety_red ? '<span style="color:var(--red);font-weight:700;">SAFETY RED</span>' : '—'}</td>
+            <td>${(c.trend||[]).map(t=>`<span title="${t.week_start}: ${t.pct}% (${t.audits})" style="display:inline-block;width:8px;height:${Math.max(4,Math.round((t.pct||0)/5))}px;background:${fsBandColor(t.pct>=90?'green':t.pct>=75?'amber':'red')};margin-right:2px;vertical-align:bottom;"></span>`).join('')}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    `;
+  }
+  async function fsExportCsv() {
+    try {
+      const res = await fetch('/api/admin/5s/export?format=csv', { headers: { 'Authorization': `Bearer ${adminToken}` }});
+      if (!res.ok) throw new Error('Export failed');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = 'fs_export.csv'; document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) { toast(e.message,'error'); }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // PrimeCool Invoicing Module — Edit View, Payment Modal, FX, Parts Search
+  // Spec doctrine:
+  //   • GCT default 15% (per-invoice override)
+  //   • FX processing fee default 2% (per-invoice override)
+  //   • Base currency JMD; display currency JMD/USD/GBP
+  //   • Inventory deduction lives at visit parts-used flow, not here.
+  // ═══════════════════════════════════════════════════════════════════════
+  const INV_DEFAULT_GCT     = 15.0;
+  const INV_DEFAULT_FX_FEE  = 2.0;
+  const INV_CURRENCY_SYMBOLS = {JMD:'J$', USD:'US$', GBP:'£'};
+  let _invEditState = null;   // {id, data, lines}
+  let _invFxCache   = {USD:null, GBP:null};
+
+  function _invFmt(amount, currency) {
+    const sym = INV_CURRENCY_SYMBOLS[currency || 'JMD'] || 'J$';
+    return sym + Number(amount || 0).toLocaleString(undefined,
+      {minimumFractionDigits:2, maximumFractionDigits:2});
+  }
+
+  // ── Metric tiles (server-computed via /metrics) ───────────────────────
+  async function loadInvoiceMetricsTiles() {
+    try {
+      const m = await api('GET', '/api/admin/invoices/metrics');
+      const host = document.getElementById('inv-totals');
+      if (!host) return;
+      host.innerHTML = `
+        ${summaryCard('Outstanding',         _invFmt(m.outstanding,'JMD'),         m.outstanding>0?'var(--teal-deep)':'var(--muted-2)')}
+        ${summaryCard('Overdue',             _invFmt(m.overdue,'JMD'),             m.overdue>0?'var(--red)':'var(--muted-2)')}
+        ${summaryCard('Invoiced This Month', _invFmt(m.invoiced_this_month,'JMD'), 'var(--ink)')}
+        ${summaryCard('Collected This Month',_invFmt(m.collected_this_month,'JMD'),'var(--teal-deep)')}
+        ${summaryCard('GCT Output (Accrued)', _invFmt(m.gct_output_this_month,'JMD'), 'var(--steel)')}`;
+    } catch(e) { /* fallback to client-side computation in renderInvoices */ }
+  }
+
+  // ── GCT output-tax report ─────────────────────────────────────────────
+  // Accrual-basis gross output tax (the GCT charged on issued invoices), per
+  // calendar month + billing currency. Read-only; mirrors the labelling on the
+  // server (`get_gct_liability_report`). NOT a net GCT-payable figure.
+  function openGctReport() {
+    openModal('gctReport');
+    const from = document.getElementById('gct-from');
+    const to   = document.getElementById('gct-to');
+    const today = new Date();
+    if (from && !from.value) from.value = today.getFullYear() + '-01-01';
+    if (to && !to.value)     to.value   = today.toISOString().slice(0,10);
+    loadGctReport();
+  }
+
+  async function loadGctReport() {
+    const host = document.getElementById('gctReportContent');
+    if (!host) return;
+    host.innerHTML = 'Loading…';
+    const from = (document.getElementById('gct-from')||{}).value || '';
+    const to   = (document.getElementById('gct-to')||{}).value || '';
+    const qs = [];
+    if (from) qs.push('from=' + encodeURIComponent(from));
+    if (to)   qs.push('to='   + encodeURIComponent(to));
+    let rep;
+    try {
+      rep = await api('GET', '/api/admin/invoices/gct-report' + (qs.length ? ('?' + qs.join('&')) : ''));
+    } catch(e) {
+      host.innerHTML = `<div style="color:var(--red);font-size:13px;">Failed to load report: ${escHtml(e.message||'error')}</div>`;
+      return;
+    }
+    const periods = rep.periods || [];
+    const totals  = rep.totals_by_currency || {};
+    if (!periods.length) {
+      host.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:8px 0;">No invoices issued between ${escHtml(rep.from)} and ${escHtml(rep.to)}.</div>`;
+      return;
+    }
+    // Amounts are JMD (the filing currency); `currency` is the billing
+    // currency shown only as a grouping label. Always format money as JMD.
+    const amtCur = rep.amounts_currency || 'JMD';
+    const rows = periods.map(p => `
+      <tr>
+        <td>${escHtml(p.month)}</td>
+        <td>${escHtml(p.currency)}</td>
+        <td style="text-align:right;">${p.invoice_count}</td>
+        <td style="text-align:right;">${_invFmt(p.net, amtCur)}</td>
+        <td style="text-align:right;font-weight:700;">${_invFmt(p.output_gct, amtCur)}</td>
+        <td style="text-align:right;">${_invFmt(p.gross, amtCur)}</td>
+      </tr>`).join('');
+    const totalRows = Object.keys(totals).sort().map(cur => {
+      const t = totals[cur];
+      return `
+      <tr style="border-top:2px solid var(--border);font-weight:700;">
+        <td colspan="2">Total (billed in ${escHtml(cur)})</td>
+        <td style="text-align:right;">${t.invoice_count}</td>
+        <td style="text-align:right;">${_invFmt(t.net, amtCur)}</td>
+        <td style="text-align:right;color:var(--steel-deep,var(--steel));">${_invFmt(t.output_gct, amtCur)}</td>
+        <td style="text-align:right;">${_invFmt(t.gross, amtCur)}</td>
+      </tr>`; }).join('');
+    host.innerHTML = `
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">
+        Period ${escHtml(rep.from)} → ${escHtml(rep.to)} · basis: ${escHtml(rep.basis)} · gross output tax only · amounts in ${escHtml(amtCur)} (filing currency)
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Month</th><th>Billed in</th>
+            <th style="text-align:right;">Invoices</th>
+            <th style="text-align:right;">Net ex-GCT (${escHtml(amtCur)})</th>
+            <th style="text-align:right;">Output GCT (${escHtml(amtCur)})</th>
+            <th style="text-align:right;">Gross (${escHtml(amtCur)})</th>
+          </tr></thead>
+          <tbody>${rows}${totalRows}</tbody>
+        </table>
+      </div>`;
+  }
+
+  // ── Hash-routed Edit View ─────────────────────────────────────────────
+  function _invHashRouter() {
+    const h = (location.hash || '').replace(/^#/, '');
+    const m = h.match(/^invoice\/(new|(\d+)\/edit)/);
+    if (!m) {
+      // hide any open edit view
+      const ev = document.getElementById('inv-edit-view');
+      if (ev) ev.remove();
+      return;
+    }
+    const id = m[2] ? parseInt(m[2], 10) : null;
+    openInvoiceEditView(id);
+  }
+  window.addEventListener('hashchange', _invHashRouter);
+
+  async function openInvoiceEditView(invoiceId) {
+    // BUG FIX (R1): the gate used to be isSuperAdmin() which mismatched
+    // the button visibility (gated on invoice:create) AND the server's
+    // permission gate (also invoice:create / :update). supervisor_admin
+    // could see the button, click it, hash would change, and the modal
+    // would silently fail to open with a tiny toast.
+    // Real gate: invoice:create for new, invoice:update for edit — the
+    // same perms the server checks.
+    const needed = invoiceId ? 'invoice:update' : 'invoice:create';
+    if (typeof can === 'function' && !can(needed)) {
+      toast(`Invoice ${invoiceId ? 'editing' : 'creation'} requires the "${needed}" permission.`, 'error');
+      location.hash = '';
+      return;
+    }
+    showPanel('invoices');
+    let data = {
+      customer_id: null, visit_id: null,
+      issue_date: new Date().toISOString().slice(0,10),
+      due_date: new Date(Date.now()+30*86400000).toISOString().slice(0,10),
+      tax_rate: INV_DEFAULT_GCT, fx_fee_pct: INV_DEFAULT_FX_FEE,
+      display_currency: 'JMD', fx_rate_used: null, fx_rate_source: null,
+      fx_rate_fetched_at: null, status: 'draft', line_items: [],
+      total: 0, subtotal: 0, amount_paid: 0,
+    };
+    if (invoiceId) {
+      try {
+        data = await api('GET', `/api/admin/invoices/${invoiceId}/full`);
+        data.line_items = data.line_items || [];
+        // Storage keeps tax_rate as a FRACTION (e.g. 0.15); this editor works
+        // in PERCENT (the "GCT Rate (%)" input + the /100 preview math), and
+        // the server divides by 100 again on save. Convert fraction→percent on
+        // load so the round-trip is lossless.
+        data.tax_rate = Math.round((Number(data.tax_rate) || 0) * 10000) / 100;
+      } catch(e) {
+        toast('Failed to load invoice: ' + e.message, 'error');
+        location.hash = '';
+        return;
+      }
+    }
+    _invEditState = {id: invoiceId, data};
+    _invRenderEditView();
+  }
+
+  function isSuperAdmin() {
+    try { return !!(currentAdmin && currentAdmin.role === 'super_admin'); }
+    catch(e) { return false; }
+  }
+
+  function _invRenderEditView() {
+    const panel = document.getElementById('panel-invoices');
+    if (!panel) return;
+    let host = document.getElementById('inv-edit-view');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'inv-edit-view';
+      host.style.cssText = 'background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px;margin-top:14px;';
+      panel.appendChild(host);
+    }
+    const d   = _invEditState.data;
+    const dc  = (d.display_currency || 'JMD').toUpperCase();
+    const sym = INV_CURRENCY_SYMBOLS[dc] || 'J$';
+    const subtotal = (d.line_items || []).reduce(
+      (s,li)=>s + (parseFloat(li.quantity||0)*parseFloat(li.unit_price||0)), 0);
+    const taxRate = parseFloat(d.tax_rate || 0);
+    const tax  = subtotal * taxRate / 100;
+    const totalJmd = subtotal + tax;
+    const feePct = parseFloat(d.fx_fee_pct || 0);
+    const rate   = parseFloat(d.fx_rate_used || 0);
+    const effRate = rate * (1 + feePct/100);
+    const foreignTotal = (effRate > 0 && dc !== 'JMD') ? (totalJmd / effRate) : 0;
+    const jmdFee = totalJmd * feePct/100;
+
+    host.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+        <h2 style="margin:0;color:var(--ink);">${_invEditState.id ? ('Edit Invoice ' + escHtml(d.invoice_number||'')) : 'New Invoice'}</h2>
+        <button class="btn btn-ghost" onclick="location.hash=''">← Back to Invoices</button>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:12px;">
+        <div>
+          <label for="inv-customer" style="display:block;font-size:12px;font-weight:600;color:var(--ink);margin-bottom:4px;">Customer</label>
+          <input id="inv-customer-search" type="search" placeholder="Search customer…" value="${escHtml(d.customer_name||'')}" oninput="_invCustomerSearch(this.value)" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+          <div id="inv-customer-results" style="position:relative;"></div>
+          <input id="inv-customer-id" type="hidden" value="${d.customer_id||''}">
+          ${d.customer_id ? `<div style="margin-top:6px;"><span style="display:inline-block;padding:3px 10px;background:var(--teal-bg);border-radius:12px;font-size:12px;"><a href="#customer/${d.customer_id}" class="pc-link" aria-label="View customer ${escHtml(d.customer_name||'')}">${escHtml(d.customer_name||('Customer #' + d.customer_id))} →</a></span></div>` : ''}
+        </div>
+        <div>
+          <label for="inv-visit" style="display:block;font-size:12px;font-weight:600;color:var(--ink);margin-bottom:4px;">Related Visit (optional)</label>
+          <input id="inv-visit" type="number" placeholder="Visit ID" value="${d.visit_id||''}" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+          ${d.visit_id ? `<div style="margin-top:6px;"><span style="display:inline-block;padding:3px 10px;background:var(--teal-bg);border-radius:12px;font-size:12px;"><a href="#visit/${d.visit_id}" class="pc-link" aria-label="View visit #${d.visit_id}">Visit #${d.visit_id} →</a></span></div>` : ''}
+        </div>
+        <div>
+          <label for="inv-issue" style="display:block;font-size:12px;font-weight:600;color:var(--ink);margin-bottom:4px;">Issue Date</label>
+          <input id="inv-issue" type="date" value="${escHtml(d.issue_date||'')}" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+        </div>
+        <div>
+          <label for="inv-due" style="display:block;font-size:12px;font-weight:600;color:var(--ink);margin-bottom:4px;">Due Date</label>
+          <input id="inv-due" type="date" value="${escHtml(d.due_date||'')}" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+        </div>
+        <div>
+          <label for="inv-gct" style="display:block;font-size:12px;font-weight:600;color:var(--ink);margin-bottom:4px;">GCT Rate (%)</label>
+          <input id="inv-gct" type="number" min="0" max="100" step="0.01" value="${d.tax_rate}" onchange="_invSetField('tax_rate',this.value)" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+        </div>
+        <div>
+          <label for="inv-currency" style="display:block;font-size:12px;font-weight:600;color:var(--ink);margin-bottom:4px;">Display Currency</label>
+          <select id="inv-currency" onchange="_invSetCurrency(this.value)" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+            <option value="JMD" ${dc==='JMD'?'selected':''}>JMD (base)</option>
+            <option value="USD" ${dc==='USD'?'selected':''}>USD</option>
+            <option value="GBP" ${dc==='GBP'?'selected':''}>GBP</option>
+          </select>
+        </div>
+      </div>
+
+      ${dc !== 'JMD' ? `
+        <div style="background:var(--steel-bg);border:1px solid var(--steel-bg);border-radius:8px;padding:10px;margin-bottom:14px;display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:10px;align-items:end;">
+          <div>
+            <label style="display:block;font-size:11px;font-weight:600;color:var(--ink);margin-bottom:4px;">FX Buy Rate (JMD per 1 ${dc})</label>
+            <input id="inv-fxrate" type="number" step="0.0001" value="${d.fx_rate_used||''}" onchange="_invSetField('fx_rate_used',this.value)" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;">
+          </div>
+          <div>
+            <label style="display:block;font-size:11px;font-weight:600;color:var(--ink);margin-bottom:4px;">FX Fee (%)</label>
+            <input id="inv-fxfee" type="number" step="0.01" min="0" max="50" value="${d.fx_fee_pct}" onchange="_invSetField('fx_fee_pct',this.value)" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;">
+          </div>
+          <div style="font-size:12px;color:var(--muted);">
+            <div>Source: <strong>${escHtml(d.fx_rate_source||'—')}</strong></div>
+            <div>Fetched: <strong>${escHtml(PC.fmtDateTime(d.fx_rate_fetched_at))||'—'}</strong></div>
+          </div>
+          <button class="btn btn-ghost" onclick="openFxRateModal('${dc}')">✎ Edit FX</button>
+        </div>` : ''}
+
+      <h3 style="color:var(--ink);margin:14px 0 8px;">Line Items</h3>
+      <p style="font-size:11px;color:var(--muted);margin:0 0 8px;">Stock is tracked at visit parts-used. Adding a part line here does not deduct inventory.</p>
+      <div id="inv-lines"></div>
+
+      <div style="margin-top:8px;display:flex;gap:8px;">
+        <button class="btn btn-ghost" onclick="_invAddLine('labor')">+ Add Labor</button>
+        <button class="btn btn-ghost" onclick="_invAddLine('part')">+ Add Part</button>
+        <button class="btn btn-ghost" onclick="_invAddLine('other')">+ Add Other</button>
+      </div>
+
+      <div style="margin-top:18px;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:14px;max-width:420px;margin-left:auto;">
+        <div style="display:flex;justify-content:space-between;font-size:14px;"><span>Subtotal</span><strong>${_invFmt(subtotal,'JMD')}</strong></div>
+        <div style="display:flex;justify-content:space-between;font-size:14px;"><span>GCT (${taxRate}%)</span><strong>${_invFmt(tax,'JMD')}</strong></div>
+        <div style="display:flex;justify-content:space-between;font-size:16px;border-top:1px solid var(--border);padding-top:6px;margin-top:6px;"><span>Total Due (JMD)</span><strong>${_invFmt(totalJmd,'JMD')}</strong></div>
+        ${dc !== 'JMD' && rate > 0 ? `
+          <hr>
+          <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);"><span>Effective Rate (w/ FX fee)</span><strong>${effRate.toFixed(4)} JMD/${dc}</strong></div>
+          <div style="display:flex;justify-content:space-between;font-size:14px;"><span>Total Due (${dc})</span><strong>${_invFmt(foreignTotal,dc)}</strong></div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--teal-deep);"><span>FX Fee earned (JMD)</span><strong>${_invFmt(jmdFee,'JMD')}</strong></div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px;">Foreign payment converts to ${_invFmt(totalJmd,'JMD')} at bank rate ${rate} JMD/${dc}</div>
+        ` : ''}
+      </div>
+
+      <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-primary" onclick="_invSave('draft')" style="background:var(--navy);color:white;">Save Draft</button>
+        <button class="btn btn-primary" onclick="_invSave('sent')"  style="background:var(--teal-solid);color:white;">Save &amp; Send</button>
+        ${_invEditState.id && d.status !== 'draft' && d.status !== 'cancelled' ? `
+          <button class="btn btn-danger" onclick="_invCancel()" style="background:var(--danger-solid);color:white;">Cancel Invoice</button>
+        ` : ''}
+        ${_invEditState.id ? `
+          <button class="btn btn-ghost" onclick="openPaymentModal(${_invEditState.id})">Record Payment</button>
+        ` : ''}
+      </div>
+    `;
+    _invRenderLines();
+  }
+
+  function _invSetField(k, v) {
+    if (!_invEditState) return;
+    _invEditState.data[k] = (k === 'tax_rate' || k === 'fx_fee_pct' || k === 'fx_rate_used') ? parseFloat(v) : v;
+    _invRenderEditView();
+  }
+
+  async function _invSetCurrency(cur) {
+    if (!_invEditState) return;
+    _invEditState.data.display_currency = cur;
+    if (cur !== 'JMD') {
+      try {
+        const r = await api('GET', `/api/admin/fx-rates?currency=${cur}`);
+        if (r && r.buy_rate) {
+          _invEditState.data.fx_rate_used        = r.buy_rate;
+          _invEditState.data.fx_rate_source      = r.source;
+          _invEditState.data.fx_rate_fetched_at  = r.fetched_at;
+        }
+      } catch(e) {}
+    }
+    _invRenderEditView();
+  }
+
+  function _invRenderLines() {
+    const host = document.getElementById('inv-lines');
+    if (!host || !_invEditState) return;
+    const lines = _invEditState.data.line_items || [];
+    if (!lines.length) {
+      host.innerHTML = '<div style="color:var(--muted);padding:14px;text-align:center;border:1px dashed var(--border);border-radius:8px;">No line items yet. Use the buttons below to add labor, parts, or other charges.</div>';
+      return;
+    }
+    const dc = (_invEditState.data.display_currency || 'JMD');
+    const sym = 'J$'; // unit prices are stored in JMD
+    host.innerHTML = lines.map((li, idx) => {
+      const total = (parseFloat(li.quantity||0) * parseFloat(li.unit_price||0)).toFixed(2);
+      const typeBadge = `<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:var(--steel-bg);color:var(--ink);text-transform:uppercase;font-weight:700;">${li.line_type}</span>`;
+      if (li.line_type === 'part') {
+        return `
+          <div style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;display:grid;grid-template-columns:1fr 100px 140px 100px auto;gap:8px;align-items:end;">
+            <div>
+              <label style="display:block;font-size:11px;font-weight:600;color:var(--ink);margin-bottom:2px;">${typeBadge} Description</label>
+              <input type="text" placeholder="Search part by SKU or name…" value="${escHtml(li.description||'')}" oninput="_invPartsSearch(${idx}, this.value)" onkeydown="_invPartsKey(event, ${idx})" onblur="setTimeout(function(){_invPartsClose(${idx});},150);" onchange="_invLineSet(${idx},'description',this.value)" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="inv-parts-results-${idx}" aria-label="Search part by SKU or name" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;">
+              <div id="inv-parts-results-${idx}" style="position:relative;"></div>
+              ${li.part_sku ? `<div style="font-size:10px;color:var(--muted);margin-top:2px;">SKU: ${escHtml(li.part_sku)}</div>` : ''}
+            </div>
+            <div>
+              <label style="display:block;font-size:11px;font-weight:600;color:var(--ink);margin-bottom:2px;">Quantity</label>
+              <input type="number" step="0.01" value="${li.quantity||1}" onchange="_invLineSet(${idx},'quantity',this.value)" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;">
+            </div>
+            <div>
+              <label style="display:block;font-size:11px;font-weight:600;color:var(--ink);margin-bottom:2px;">Unit Price (${sym})</label>
+              <div style="position:relative;"><span style="position:absolute;left:8px;top:50%;transform:translateY(-50%);font-size:12px;color:var(--muted);">${sym}</span>
+                <input type="number" step="0.01" value="${li.unit_price||0}" onchange="_invLineSet(${idx},'unit_price',this.value)" style="width:100%;padding:6px 6px 6px 28px;border:1px solid var(--border);border-radius:6px;">
+              </div>
+            </div>
+            <div style="font-weight:700;color:var(--ink);text-align:right;padding-bottom:6px;">${_invFmt(total,'JMD')}</div>
+            <button class="btn btn-ghost" onclick="_invRemoveLine(${idx})" title="Remove">✕</button>
+          </div>`;
+      }
+      if (li.line_type === 'labor') {
+        return `
+          <div style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;display:grid;grid-template-columns:1fr 100px 140px 100px auto;gap:8px;align-items:end;">
+            <div>
+              <label style="display:block;font-size:11px;font-weight:600;color:var(--ink);margin-bottom:2px;">${typeBadge} Description</label>
+              <input type="text" value="${escHtml(li.description||'Labor')}" onchange="_invLineSet(${idx},'description',this.value)" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;">
+            </div>
+            <div>
+              <label style="display:block;font-size:11px;font-weight:600;color:var(--ink);margin-bottom:2px;">Hours</label>
+              <input type="number" step="0.25" value="${li.hours||li.quantity||1}" onchange="_invLineSet(${idx},'hours',this.value);_invLineSet(${idx},'quantity',this.value)" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;">
+            </div>
+            <div>
+              <label style="display:block;font-size:11px;font-weight:600;color:var(--ink);margin-bottom:2px;">Hourly Rate (${sym})</label>
+              <div style="position:relative;"><span style="position:absolute;left:8px;top:50%;transform:translateY(-50%);font-size:12px;color:var(--muted);">${sym}</span>
+                <input type="number" step="0.01" value="${li.hourly_rate||li.unit_price||0}" onchange="_invLineSet(${idx},'hourly_rate',this.value);_invLineSet(${idx},'unit_price',this.value)" style="width:100%;padding:6px 6px 6px 28px;border:1px solid var(--border);border-radius:6px;">
+              </div>
+            </div>
+            <div style="font-weight:700;color:var(--ink);text-align:right;padding-bottom:6px;">${_invFmt(total,'JMD')}</div>
+            <button class="btn btn-ghost" onclick="_invRemoveLine(${idx})">✕</button>
+          </div>`;
+      }
+      return `
+        <div style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;display:grid;grid-template-columns:1fr 100px 140px 100px auto;gap:8px;align-items:end;">
+          <div>
+            <label style="display:block;font-size:11px;font-weight:600;color:var(--ink);margin-bottom:2px;">${typeBadge} Description</label>
+            <input type="text" value="${escHtml(li.description||'')}" onchange="_invLineSet(${idx},'description',this.value)" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;">
+          </div>
+          <div>
+            <label style="display:block;font-size:11px;font-weight:600;color:var(--ink);margin-bottom:2px;">Quantity</label>
+            <input type="number" step="0.01" value="${li.quantity||1}" onchange="_invLineSet(${idx},'quantity',this.value)" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;">
+          </div>
+          <div>
+            <label style="display:block;font-size:11px;font-weight:600;color:var(--ink);margin-bottom:2px;">Unit Price (${sym})</label>
+            <div style="position:relative;"><span style="position:absolute;left:8px;top:50%;transform:translateY(-50%);font-size:12px;color:var(--muted);">${sym}</span>
+              <input type="number" step="0.01" value="${li.unit_price||0}" onchange="_invLineSet(${idx},'unit_price',this.value)" style="width:100%;padding:6px 6px 6px 28px;border:1px solid var(--border);border-radius:6px;">
+            </div>
+          </div>
+          <div style="font-weight:700;color:var(--ink);text-align:right;padding-bottom:6px;">${_invFmt(total,'JMD')}</div>
+          <button class="btn btn-ghost" onclick="_invRemoveLine(${idx})">✕</button>
+        </div>`;
+    }).join('');
+  }
+
+  function _invAddLine(t) {
+    if (!_invEditState) return;
+    _invEditState.data.line_items = _invEditState.data.line_items || [];
+    _invEditState.data.line_items.push({
+      line_type: t, description: '', quantity: 1, unit_price: 0,
+      hours: (t==='labor'?1:null), hourly_rate: (t==='labor'?0:null),
+      part_id: null, part_sku: null,
+    });
+    _invRenderEditView();
+  }
+  function _invRemoveLine(idx) {
+    _invEditState.data.line_items.splice(idx,1);
+    _invRenderEditView();
+  }
+  function _invLineSet(idx, k, v) {
+    const li = _invEditState.data.line_items[idx];
+    li[k] = (k==='quantity'||k==='unit_price'||k==='hours'||k==='hourly_rate') ? parseFloat(v||0) : v;
+    _invRenderEditView();
+  }
+
+  // ── Parts search typeahead ────────────────────────────────────────────
+  let _invPartsSearchTimer = null;
+  // Per-row dropdown state: { rows: [...], active: int }
+  const _invPartsState = {};
+  async function _invPartsSearch(idx, q) {
+    clearTimeout(_invPartsSearchTimer);
+    _invPartsSearchTimer = setTimeout(async () => {
+      const host = document.getElementById('inv-parts-results-'+idx);
+      if (!host) return;
+      try {
+        const rows = await api('GET', '/api/admin/parts/search?q='+encodeURIComponent(q||'')+'&limit=20');
+        if (!rows.length) { _invPartsState[idx] = {rows:[], active:-1}; host.innerHTML=''; _invPartsSetExpanded(idx, false); return; }
+        _invPartsState[idx] = { rows: rows, active: 0 };
+        _invPartsRenderDropdown(idx);
+        _invPartsSetExpanded(idx, true);
+      } catch(e) {}
+    }, 200);
+  }
+  function _invPartsRenderDropdown(idx) {
+    const host = document.getElementById('inv-parts-results-'+idx);
+    if (!host) return;
+    const st = _invPartsState[idx];
+    if (!st || !st.rows.length) { host.innerHTML = ''; return; }
+    const listId = 'inv-parts-listbox-'+idx;
+    host.innerHTML = `<div id="${listId}" role="listbox" aria-label="Part suggestions" style="position:absolute;top:0;left:0;right:0;z-index:50;background:var(--card);border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,0.1);max-height:240px;overflow:auto;">
+      ${st.rows.map((r,i)=>`<div id="inv-parts-opt-${idx}-${i}" role="option" aria-selected="${i===st.active?'true':'false'}" tabindex="-1" data-row-idx="${i}" onmousedown="event.preventDefault();_invSelectPartByIndex(${idx}, ${i})" onmouseover="_invPartsSetActive(${idx}, ${i})" style="padding:8px;border-bottom:1px solid var(--border);cursor:pointer;font-size:13px;${i===st.active?'background:var(--steel-bg);':''}">
+        <div style="font-weight:600;color:var(--ink);">${escHtml(r.name)} <span style="font-size:11px;color:var(--muted);">${escHtml(r.sku)}</span></div>
+        <div style="font-size:11px;color:var(--muted);">J$${r.unit_price.toFixed(2)} · on hand: ${r.on_hand_qty}</div>
+      </div>`).join('')}
+    </div>`;
+  }
+  function _invPartsSetExpanded(idx, exp) {
+    const inp = document.querySelector(`#inv-parts-results-${idx}`);
+    if (!inp) return;
+    // The combobox input is the previous sibling of the results host
+    const combo = inp.previousElementSibling;
+    if (combo) combo.setAttribute('aria-expanded', exp ? 'true' : 'false');
+  }
+  function _invPartsSetActive(idx, i) {
+    const st = _invPartsState[idx];
+    if (!st) return;
+    st.active = i;
+    _invPartsRenderDropdown(idx);
+  }
+  function _invPartsClose(idx) {
+    const host = document.getElementById('inv-parts-results-'+idx);
+    if (host) host.innerHTML = '';
+    _invPartsState[idx] = null;
+    _invPartsSetExpanded(idx, false);
+  }
+  function _invSelectPartByIndex(idx, i) {
+    const st = _invPartsState[idx];
+    if (!st || !st.rows[i]) return;
+    _invSelectPart(idx, st.rows[i]);
+  }
+  function _invPartsKey(ev, idx) {
+    const st = _invPartsState[idx];
+    const open = st && st.rows && st.rows.length;
+    if (ev.key === 'Escape') {
+      if (open) { ev.preventDefault(); _invPartsClose(idx); }
+      return;
+    }
+    if (ev.key === 'Tab') {
+      if (open) _invPartsClose(idx);
+      return;
+    }
+    if (!open) return;
+    if (ev.key === 'ArrowDown') {
+      ev.preventDefault();
+      st.active = (st.active + 1) % st.rows.length;
+      _invPartsRenderDropdown(idx);
+    } else if (ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      st.active = (st.active - 1 + st.rows.length) % st.rows.length;
+      _invPartsRenderDropdown(idx);
+    } else if (ev.key === 'Enter') {
+      if (st.active >= 0 && st.active < st.rows.length) {
+        ev.preventDefault();
+        _invSelectPart(idx, st.rows[st.active]);
+      }
+    }
+  }
+  function _invSelectPart(idx, row) {
+    const li = _invEditState.data.line_items[idx];
+    li.part_id = row.id;
+    li.part_sku = row.sku;
+    li.description = row.name + (row.description? ' — '+row.description:'');
+    li.unit_price = row.unit_price;
+    _invPartsClose(idx);
+    _invRenderEditView();
+  }
+
+  // ── Customer typeahead (reuses /api/admin/customers list) ─────────────
+  let _invCustSearchTimer = null;
+  async function _invCustomerSearch(q) {
+    clearTimeout(_invCustSearchTimer);
+    _invCustSearchTimer = setTimeout(async () => {
+      const host = document.getElementById('inv-customer-results');
+      if (!host) return;
+      try {
+        const rows = await api('GET', '/api/admin/customers');
+        const ql = (q||'').toLowerCase();
+        const matches = rows.filter(r =>
+          (r.name||'').toLowerCase().includes(ql) ||
+          (r.company||'').toLowerCase().includes(ql) ||
+          (r.customer_code||'').toLowerCase().includes(ql)
+        ).slice(0,10);
+        if (!matches.length) { host.innerHTML=''; return; }
+        host.innerHTML = `<div role="listbox" style="position:absolute;top:0;left:0;right:0;z-index:50;background:var(--card);border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,0.1);max-height:240px;overflow:auto;">
+          ${matches.map(r=>`<div role="option" onclick="_invSelectCustomer(${r.id}, ${JSON.stringify((r.name||'')+' — '+(r.company||r.customer_code||'')).replace(/"/g,'&quot;')})" style="padding:8px;border-bottom:1px solid var(--border);cursor:pointer;font-size:13px;">
+            <div style="font-weight:600;color:var(--ink);">${escHtml(r.name||'')}</div>
+            <div style="font-size:11px;color:var(--muted);">${escHtml(r.company||'')} · ${escHtml(r.customer_code||'')}</div>
+          </div>`).join('')}
+        </div>`;
+      } catch(e) {}
+    }, 250);
+  }
+  function _invSelectCustomer(id, label) {
+    _invEditState.data.customer_id = id;
+    _invEditState.data.customer_name = label;
+    const inp = document.getElementById('inv-customer-search'); if (inp) inp.value = label;
+    const hid = document.getElementById('inv-customer-id');     if (hid) hid.value = id;
+    const host = document.getElementById('inv-customer-results'); if (host) host.innerHTML = '';
+  }
+
+  // ── Save / Send / Cancel ──────────────────────────────────────────────
+  function _invCollectFromUI() {
+    const d = _invEditState.data;
+    d.customer_id = parseInt(document.getElementById('inv-customer-id').value || d.customer_id || 0, 10) || null;
+    const v = document.getElementById('inv-visit').value;
+    d.visit_id   = v ? parseInt(v,10) : null;
+    d.issue_date = document.getElementById('inv-issue').value;
+    d.due_date   = document.getElementById('inv-due').value;
+    d.tax_rate   = parseFloat(document.getElementById('inv-gct').value || 0);
+    d.display_currency = document.getElementById('inv-currency').value;
+    const fxr = document.getElementById('inv-fxrate');
+    const fxf = document.getElementById('inv-fxfee');
+    if (fxr) d.fx_rate_used = parseFloat(fxr.value||0);
+    if (fxf) d.fx_fee_pct   = parseFloat(fxf.value||INV_DEFAULT_FX_FEE);
+    return d;
+  }
+
+  async function _invSave(targetStatus) {
+    const d = _invCollectFromUI();
+    if (!d.customer_id) { toast('Customer is required','error'); return; }
+    if (!d.line_items || !d.line_items.length) { toast('At least one line item is required','error'); return; }
+    try {
+      let invoiceId = _invEditState.id;
+      if (invoiceId) {
+        await api('PATCH', `/api/admin/invoices/${invoiceId}`, d);
+      } else {
+        const created = await api('POST', '/api/admin/invoices/v2', d);
+        invoiceId = created.id;
+      }
+      if (targetStatus === 'sent') {
+        await api('POST', `/api/admin/invoices/${invoiceId}/send`, {});
+      }
+      toast('Invoice saved','success');
+      location.hash = '';
+      loadInvoices();
+    } catch(e) {
+      toast('Save failed: ' + e.message, 'error');
+    }
+  }
+
+  async function _invCancel() {
+    if (!_invEditState.id) return;
+    const reason = prompt('Cancellation reason (required):');
+    if (!reason || !reason.trim()) return;
+    try {
+      await api('POST', `/api/admin/invoices/${_invEditState.id}/cancel`, {reason: reason.trim()});
+      toast('Invoice cancelled','success');
+      location.hash = '';
+      loadInvoices();
+    } catch(e) { toast('Cancel failed: ' + e.message, 'error'); }
+  }
+
+  // ── Payment Modal ─────────────────────────────────────────────────────
+  // _invPayOutstandingJmd is the JMD-equivalent outstanding balance at the
+  // moment the modal opens. _paySubmit reads it to detect overpayment
+  // BEFORE posting, so the operator gets a credit-vs-refund prompt rather
+  // than a server 400.
+  let _invPayOutstandingJmd = null;
+  async function openPaymentModal(invoiceId) {
+    if (!isSuperAdmin()) { toast('Payment recording requires super_admin','error'); return; }
+    let inv;
+    try { inv = await api('GET', `/api/admin/invoices/${invoiceId}/full`); }
+    catch(e) { toast('Failed to load invoice: '+e.message,'error'); return; }
+    const balance = (inv.total||0) - (inv.amount_paid||0);
+    _invPayOutstandingJmd = balance;
+    const dc = inv.display_currency || 'JMD';
+    let host = document.getElementById('inv-payment-modal');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'inv-payment-modal';
+      host.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;';
+      document.body.appendChild(host);
+    }
+    host.innerHTML = `
+      <div style="background:var(--card);border-radius:10px;padding:20px;max-width:480px;width:100%;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <h3 style="margin:0;color:var(--ink);">Record Payment — ${escHtml(inv.invoice_number||'')}</h3>
+          <button class="btn btn-ghost" onclick="document.getElementById('inv-payment-modal').remove()">✕</button>
+        </div>
+        <div style="font-size:13px;color:var(--muted);margin-bottom:12px;">Outstanding balance: <strong>${_invFmt(balance,'JMD')}</strong></div>
+        <div style="display:grid;gap:10px;">
+          <div>
+            <label for="inv-pay-currency" style="display:block;font-size:12px;font-weight:600;color:var(--ink);margin-bottom:4px;">Payment Currency</label>
+            <select id="inv-pay-currency" onchange="_payRecalc()" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+              <option value="JMD" ${dc==='JMD'?'selected':''}>JMD</option>
+              <option value="USD" ${dc==='USD'?'selected':''}>USD</option>
+              <option value="GBP" ${dc==='GBP'?'selected':''}>GBP</option>
+            </select>
+          </div>
+          <div>
+            <!-- IDs prefixed inv-pay-* to avoid collision with the v1 modal
+                 at line ~1511 which also uses pay-amount / pay-method etc.
+                 Pre-fix: document.getElementById('pay-amount') returned the
+                 v1 hidden field, not v2's visible one — every payment
+                 submission failed with "Amount must be > 0". -->
+            <label for="inv-pay-amount" style="display:block;font-size:12px;font-weight:600;color:var(--ink);margin-bottom:4px;">Amount Paid</label>
+            <input id="inv-pay-amount" type="number" step="0.01" min="0.01" oninput="_payRecalc()" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+          </div>
+          <div id="inv-pay-fx-row" style="display:${dc!=='JMD'?'grid':'none'};grid-template-columns:1fr 1fr;gap:8px;">
+            <div><label style="display:block;font-size:12px;font-weight:600;color:var(--ink);margin-bottom:4px;">FX Rate (JMD per 1)</label>
+              <input id="inv-pay-fxrate" type="number" step="0.0001" value="${inv.fx_rate_used||''}" oninput="_payRecalc()" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;"></div>
+            <div><label style="display:block;font-size:12px;font-weight:600;color:var(--ink);margin-bottom:4px;">FX Fee (%)</label>
+              <input id="inv-pay-fxfee" type="number" step="0.01" min="0" max="50" value="${inv.fx_fee_pct||INV_DEFAULT_FX_FEE}" oninput="_payRecalc()" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;"></div>
+          </div>
+          <div id="inv-pay-jmd-equiv" style="font-size:13px;color:var(--teal-deep);font-weight:600;"></div>
+          <div>
+            <label for="inv-pay-method" style="display:block;font-size:12px;font-weight:600;color:var(--ink);margin-bottom:4px;">Payment Method</label>
+            <select id="inv-pay-method" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+              <option value="cash">Cash</option>
+              <option value="bank_transfer">Bank Transfer</option>
+              <option value="cheque">Cheque</option>
+              <option value="card">Card</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+          <div>
+            <label for="inv-pay-date" style="display:block;font-size:12px;font-weight:600;color:var(--ink);margin-bottom:4px;">Payment Date</label>
+            <input id="inv-pay-date" type="date" value="${new Date().toISOString().slice(0,10)}" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+          </div>
+          <div>
+            <label for="inv-pay-notes" style="display:block;font-size:12px;font-weight:600;color:var(--ink);margin-bottom:4px;">Notes (optional)</label>
+            <textarea id="inv-pay-notes" maxlength="1000" rows="2" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;"></textarea>
+          </div>
+        </div>
+        <div style="margin-top:14px;display:flex;justify-content:flex-end;gap:8px;">
+          <button class="btn btn-ghost" onclick="document.getElementById('inv-payment-modal').remove()">Cancel</button>
+          <button class="btn btn-primary" onclick="_paySubmit(${invoiceId})" style="background:var(--teal-solid);color:white;">Record Payment</button>
+        </div>
+      </div>`;
+    _payRecalc();
+  }
+
+  function _payRecalc() {
+    const cur = document.getElementById('inv-pay-currency').value;
+    const fxRow = document.getElementById('inv-pay-fx-row');
+    fxRow.style.display = (cur === 'JMD') ? 'none' : 'grid';
+    const equiv = document.getElementById('inv-pay-jmd-equiv');
+    const amt = parseFloat((document.getElementById('inv-pay-amount')||{}).value || 0);
+    if (cur === 'JMD') { equiv.textContent = ''; return; }
+    const r = parseFloat((document.getElementById('inv-pay-fxrate')||{}).value || 0);
+    const f = parseFloat((document.getElementById('inv-pay-fxfee')||{}).value || 0);
+    const eff = r * (1 + f/100);
+    const jmd = amt * eff;
+    equiv.textContent = `JMD equivalent: ${_invFmt(jmd,'JMD')} (effective ${eff.toFixed(4)} JMD/${cur})`;
+  }
+
+  async function _paySubmit(invoiceId) {
+    // One idempotency key per submit; reused on retry so a double-tap or
+    // network blip can't double-credit the invoice (parity with the v1
+    // record-payment flow + Audit M3).
+    const _idem = (window.crypto && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : ('idem-' + Date.now() + '-' + Math.random().toString(36).slice(2,10));
+    const body = {
+      amount: parseFloat(document.getElementById('inv-pay-amount').value || 0),
+      payment_currency: document.getElementById('inv-pay-currency').value,
+      payment_method:   document.getElementById('inv-pay-method').value,
+      payment_date:     document.getElementById('inv-pay-date').value,
+      notes:            document.getElementById('inv-pay-notes').value,
+      idempotency_key:  _idem,
+    };
+    if (body.payment_currency !== 'JMD') {
+      body.fx_rate_used    = parseFloat(document.getElementById('inv-pay-fxrate').value || 0);
+      body.fx_fee_pct_used = parseFloat(document.getElementById('inv-pay-fxfee').value || INV_DEFAULT_FX_FEE);
+    }
+    if (!body.amount || body.amount <= 0) { toast('Amount must be > 0','error'); return; }
+    // ── Overpayment detection ────────────────────────────────────────────
+    // _invPayOutstandingJmd is stashed by openPaymentModal so we can compare
+    // the entered amount against the live outstanding without re-fetching.
+    // If we don't know the outstanding (defensive null), skip the check and
+    // let the server's overpay-action gate enforce the policy.
+    const outstandingJmd = (typeof _invPayOutstandingJmd === 'number') ? _invPayOutstandingJmd : null;
+    let amountJmd = body.amount;
+    if (body.payment_currency !== 'JMD' && body.fx_rate_used > 0) {
+      const eff = body.fx_rate_used * (1 + (body.fx_fee_pct_used || 0) / 100);
+      amountJmd = body.amount * eff;
+    }
+    if (outstandingJmd !== null && amountJmd > outstandingJmd + 0.005) {
+      const excess = (amountJmd - outstandingJmd).toFixed(2);
+      const choice = window.prompt(
+        'This payment exceeds the outstanding balance by J$' + excess + '.\n\n' +
+        'Type "credit" to apply the excess as account credit (default), or ' +
+        '"refund" to record the excess as money owed back to the customer.',
+        'credit'
+      );
+      if (choice === null) return;  // cancelled
+      const action = String(choice).trim().toLowerCase();
+      if (action !== 'credit' && action !== 'refund') {
+        toast('Overpayment action must be "credit" or "refund".', 'warning');
+        return;
+      }
+      body.overpay_action = action;
+    }
+    try {
+      const r = await api('POST', `/api/admin/invoices/${invoiceId}/payments/v2`, body);
+      let msg = r.duplicate ? 'Duplicate suppressed' : 'Payment recorded';
+      const excess = Number(r.overpayment_excess || 0);
+      if (excess > 0.005) {
+        msg += (r.overpay_action === 'refund')
+          ? ' · J$' + excess.toFixed(2) + ' refund owed to customer'
+          : ' · J$' + excess.toFixed(2) + ' credited to account';
+      }
+      toast(msg, 'success');
+      document.getElementById('inv-payment-modal').remove();
+      loadInvoices();
+      if (_invEditState && _invEditState.id === invoiceId) openInvoiceEditView(invoiceId);
+    } catch(e) { toast('Payment failed: '+e.message,'error'); }
+  }
+
+  // ── FX Rate Modal ─────────────────────────────────────────────────────
+  async function openFxRateModal(currency) {
+    if (!isSuperAdmin()) { toast('FX overrides require super_admin','error'); return; }
+    let host = document.getElementById('inv-fx-modal');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'inv-fx-modal';
+      host.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;';
+      document.body.appendChild(host);
+    }
+    host.innerHTML = `
+      <div style="background:var(--card);border-radius:10px;padding:20px;max-width:420px;width:100%;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <h3 style="margin:0;color:var(--ink);">Manual FX Rate — ${currency} → JMD</h3>
+          <button class="btn btn-ghost" onclick="document.getElementById('inv-fx-modal').remove()">✕</button>
+        </div>
+        <div style="display:grid;gap:10px;">
+          <div>
+            <label for="fx-rate" style="display:block;font-size:12px;font-weight:600;color:var(--ink);margin-bottom:4px;">Buy Rate (JMD per 1 ${currency})</label>
+            <input id="fx-rate" type="number" step="0.0001" min="0" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+          </div>
+          <div>
+            <label for="fx-date" style="display:block;font-size:12px;font-weight:600;color:var(--ink);margin-bottom:4px;">Effective Date</label>
+            <input id="fx-date" type="date" value="${new Date().toISOString().slice(0,10)}" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+          </div>
+          <div>
+            <label for="fx-notes" style="display:block;font-size:12px;font-weight:600;color:var(--ink);margin-bottom:4px;">Notes (optional)</label>
+            <textarea id="fx-notes" maxlength="500" rows="2" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;"></textarea>
+          </div>
+        </div>
+        <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px;">
+          <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Recent rates (${currency} → JMD)</div>
+          <div id="fx-history" style="font-size:12px;color:var(--muted);">Loading…</div>
+        </div>
+        <div style="margin-top:14px;display:flex;justify-content:flex-end;gap:8px;">
+          <button class="btn btn-ghost" onclick="document.getElementById('inv-fx-modal').remove()">Cancel</button>
+          <button class="btn btn-primary" onclick="_fxSubmit('${currency}')" style="background:var(--navy);color:white;">Save Rate</button>
+        </div>
+      </div>`;
+    _fxLoadHistory(currency);
+  }
+  // Recent manual/auto FX rates so the operator can sanity-check the rate
+  // they're about to enter against what was used before (GET fx-rates/history).
+  async function _fxLoadHistory(currency) {
+    const host = document.getElementById('fx-history');
+    if (!host) return;
+    try {
+      const rows = await api('GET', `/api/admin/fx-rates/history?currency=${encodeURIComponent(currency)}&limit=10`);
+      if (!rows || !rows.length) { host.textContent = 'No rate history recorded yet.'; return; }
+      host.innerHTML = '<table style="width:100%;border-collapse:collapse;">' +
+        '<thead><tr style="text-align:left;color:var(--muted);"><th style="padding:3px 4px;">Effective</th><th style="padding:3px 4px;">Buy rate</th><th style="padding:3px 4px;">Source</th></tr></thead><tbody>' +
+        rows.map(r => `<tr style="border-top:1px solid var(--border);">
+          <td style="padding:3px 4px;">${escHtml(PC.fmtDate(r.effective_date || r.fetched_at) || '—')}</td>
+          <td style="padding:3px 4px;">${escHtml(String(r.buy_rate != null ? r.buy_rate : '—'))}</td>
+          <td style="padding:3px 4px;">${escHtml(r.source || '—')}</td>
+        </tr>`).join('') + '</tbody></table>';
+    } catch (e) {
+      host.textContent = 'Could not load history: ' + e.message;
+    }
+  }
+  async function _fxSubmit(currency) {
+    const rate = parseFloat(document.getElementById('fx-rate').value||0);
+    const date = document.getElementById('fx-date').value;
+    const notes= document.getElementById('fx-notes').value;
+    if (!rate || rate <= 0) { toast('Rate must be > 0','error'); return; }
+    try {
+      const r = await api('POST', '/api/admin/fx-rates',
+                {from_currency: currency, buy_rate: rate, effective_date: date, notes});
+      toast('FX rate saved','success');
+      document.getElementById('inv-fx-modal').remove();
+      if (_invEditState) {
+        _invEditState.data.fx_rate_used = rate;
+        _invEditState.data.fx_rate_source = 'manual';
+        _invEditState.data.fx_rate_fetched_at = new Date().toISOString();
+        _invRenderEditView();
+      }
+    } catch(e) { toast('Save failed: '+e.message,'error'); }
+  }
+
+  // Hook into existing tab open
+  const _origLoadInvoices = loadInvoices;
+  loadInvoices = async function() {
+    await _origLoadInvoices.apply(this, arguments);
+    loadInvoiceMetricsTiles();
+    if (location.hash.startsWith('#invoice/')) _invHashRouter();
+  };
+
+  // wire up the existing "+ New Invoice" button if super_admin
+  document.addEventListener('DOMContentLoaded', function() {
+    const btn = document.getElementById('addInvoiceBtn');
+    if (btn) btn.setAttribute('onclick', "location.hash='invoice/new'");
+  });
+  // Also run on first hash load (in case page loads at #invoice/123/edit)
+  if (location.hash.startsWith('#invoice/')) {
+    setTimeout(_invHashRouter, 500);
+  }
+
+  // ═════════════════════════════════════════════════════════════════════
+  // Delegations module
+  // ═════════════════════════════════════════════════════════════════════
+  let _delegState = { tab: 'all', mineCache: null };
+
+  function setDelegTab(tab, btnEl) {
+    _delegState.tab = tab;
+    document.querySelectorAll('#delegTabsBar .filter-btn').forEach(b => b.classList.remove('active'));
+    if (btnEl) btnEl.classList.add('active');
+    loadDelegationsPanel();
+  }
+
+  // ── Manage Time Off (admin) ─────────────────────────────────────────
+  async function loadPtoQueue() {
+    const tbody  = document.getElementById('ptoQueueBody');
+    if (!tbody) return;
+    const status = document.getElementById('ptoStatusFilter').value || 'pending';
+    tbody.innerHTML = '<tr><td colspan="8" class="empty" style="padding:24px;">Loading…</td></tr>';
+    try {
+      const r = await api('GET', '/api/admin/pto-requests?status=' + encodeURIComponent(status));
+      const items = (r && r.requests) || [];
+      if (status === 'pending') updatePtoPendingBadge(items.length);
+      else refreshPtoPendingBadge();
+      if (!items.length) {
+        tbody.innerHTML = `<tr><td colspan="8" class="empty" style="padding:24px;">No ${esc(status)} requests.</td></tr>`;
+        return;
+      }
+      const colorFor = (s) => ({pending:'var(--teal-deep)',approved:'var(--teal-deep)',denied:'var(--err-fg)',cancelled:'var(--muted)'}[s] || 'var(--muted)');
+      const bgFor    = (s) => ({pending:'var(--teal-bg)',approved:'var(--teal-bg)',denied:'var(--err-bg)',cancelled:'var(--surface-2)'}[s] || 'var(--surface-2)');
+      tbody.innerHTML = items.map(rq => {
+        const isPending = rq.status === 'pending';
+        const actions = isPending
+          ? `<button class="btn btn-primary btn-sm" style="padding:4px 10px;" onclick="decidePto(${rq.id},'approve')">Approve</button>
+             <button class="btn btn-danger btn-sm"  style="padding:4px 10px;" onclick="decidePto(${rq.id},'deny')">Deny</button>`
+          : `<span style="color:var(--muted);font-size:11.5px;">${esc(rq.decided_at ? PC.fmtDate(rq.decided_at) : '')}</span>`;
+        const employee = esc(rq.tech_name || '') + ' <span style="color:var(--muted);font-size:11px;">(' + esc(rq.tech_prid || rq.tech_code || '') + ')</span>';
+        const dates = esc(rq.start_date) + (rq.end_date && rq.end_date !== rq.start_date ? ' → ' + esc(rq.end_date) : '');
+        const kindLabel = rq.kind === 'floating' ? 'Floating' : (rq.kind === 'sick' ? 'Sick/Family' : 'Vacation');
+        return `<tr style="border-top:1px solid var(--border);">
+          <td style="padding:11px 14px;">${(typeof PC!=='undefined'&&PC.fmtDate)?esc(PC.fmtDate(rq.requested_at||'')):esc(PC.fmtDate(rq.requested_at))}</td>
+          <td style="padding:11px 14px;">${employee}</td>
+          <td style="padding:11px 14px;">${esc(kindLabel)}</td>
+          <td style="padding:11px 14px;">${dates}</td>
+          <td style="padding:11px 14px;text-align:right;font-family:var(--font-mono);">${Number(rq.hours).toFixed(2)}</td>
+          <td style="padding:11px 14px;max-width:240px;color:var(--muted);">${esc(rq.reason || '')}</td>
+          <td style="padding:11px 14px;"><span style="display:inline-block;font-size:10.5px;font-weight:700;padding:2px 9px;border-radius:10px;background:${bgFor(rq.status)};color:${colorFor(rq.status)};text-transform:uppercase;letter-spacing:0.4px;">${esc(rq.status)}</span></td>
+          <td style="padding:11px 14px;display:flex;gap:6px;flex-wrap:wrap;">${actions}</td>
+        </tr>`;
+      }).join('');
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="8" class="empty" style="padding:18px;color:var(--danger);">${esc((e && e.detail) || e.message || 'Failed to load.')}</td></tr>`;
+    }
+  }
+  window.loadPtoQueue = loadPtoQueue;
+  async function decidePto(id, action) {
+    let note = '';
+    if (action === 'deny') {
+      note = prompt('Reason for denying (optional, visible to the employee):') || '';
+    }
+    try {
+      await api('POST', `/api/admin/pto-requests/${id}/${action}`, { note });
+      toast(`Request ${action === 'approve' ? 'approved' : 'denied'}.`);
+      loadPtoQueue();
+    } catch (e) {
+      const msg = (e && e.detail) ? e.detail : (e && e.message) || 'Action failed.';
+      alert(msg);
+    }
+  }
+  window.decidePto = decidePto;
+  function updatePtoPendingBadge(n) {
+    const badge = document.getElementById('ptoPendingBadge');
+    if (!badge) return;
+    if (n > 0) { badge.textContent = String(n); badge.style.display = ''; }
+    else       { badge.style.display = 'none'; }
+  }
+  async function refreshPtoPendingBadge() {
+    try {
+      const r = await api('GET', '/api/admin/pto-requests?status=pending');
+      updatePtoPendingBadge(((r && r.requests) || []).length);
+    } catch (_) {}
+  }
+  setTimeout(refreshPtoPendingBadge, 1500);
+
+  async function loadDelegationsPanel() {
+    const tbody = document.getElementById('delegTableBody');
+    tbody.innerHTML = '<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--muted);">Loading…</td></tr>';
+    let url = '/api/admin/delegations';
+    const tab = _delegState.tab;
+    const params = [];
+    if (tab === 'all')      params.push('status=active');
+    if (tab === 'expired')  params.push('status=expired');
+    if (tab === 'revoked')  params.push('status=revoked');
+    if (tab === 'mine')     params.push('as=recipient');
+    if (params.length) url += '?' + params.join('&');
+    try {
+      const res = await api('GET', url);
+      const rows = res.rows || [];
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--muted);">No delegations.</td></tr>';
+      } else {
+        const _gateDg = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+        tbody.innerHTML = rows.map(r => {
+          // Sensitive-value gating: grantor_notes / scope detail collapse to
+          //  "—" when viewer cannot read the delegation record. Recipient name
+          //  + status badge always render.
+          const _dgVis = (typeof PC === 'undefined' || !PC.canRead) ? true : PC.canRead('delegation', r.id);
+          // Grantor — always admin_user (FIXME: admin_user has no detail route)
+          const grantorCell = _gateDg
+            ? PC.gateLinkHtml('admin_user', r.grantor_id, r.grantor_name || ('#'+r.grantor_id), {})
+            : ('#'+r.grantor_id);
+          // Recipient — kind-dependent
+          let recipientCell = '#'+r.recipient_id;
+          if (_gateDg && r.recipient_id) {
+            const rkind = (r.recipient_kind === 'tech' || r.recipient_kind === 'technician') ? 'technician' : 'admin_user';
+            recipientCell = PC.gateLinkHtml(rkind, r.recipient_id, r.recipient_name || ('#'+r.recipient_id), {});
+          }
+          let scope;
+          if (r.delegation_type === 'power') {
+            scope = 'ALL (Power)';
+          } else if (r.delegation_type === 'record_type') {
+            scope = esc(r.scope_record_type || '');
+          } else {
+            // record-scoped — link the underlying scope record where possible
+            if (_gateDg && r.scope_record_type && r.scope_record_id && _dgVis) {
+              scope = esc(r.scope_record_type) + ' ' + PC.gateLinkHtml(r.scope_record_type, r.scope_record_id, '#'+r.scope_record_id, {});
+            } else if (_dgVis) {
+              scope = `${esc(r.scope_record_type || '')} #${r.scope_record_id}`;
+            } else {
+              scope = '<span style="color:var(--muted);">—</span>';
+            }
+          }
+          const status = r.revoked_at ? `Revoked (${esc(r.revoke_kind || '')})` : 'Active';
+          const canRevoke = !r.revoked_at && (currentAdmin && (currentAdmin.role === 'super_admin' || currentAdmin.id === r.grantor_id));
+          const actions = canRevoke
+            ? `<button class="btn btn-danger btn-sm pc-stop-prop" onclick="event.stopPropagation();revokeDelegation(${r.id})">Revoke</button>`
+            : '';
+          return `<tr>
+            <td>${grantorCell}</td>
+            <td>${recipientCell}</td>
+            <td>${esc(r.delegation_type)}</td>
+            <td>${scope}</td>
+            <td>${_dgVis ? esc(r.permission_level || '—') : '<span style="color:var(--muted);">—</span>'}</td>
+            <td>${esc(r.valid_until || 'Permanent')}</td>
+            <td>${status}</td>
+            <td>${actions}</td>
+          </tr>`;
+        }).join('');
+      }
+    } catch (e) {
+      if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) return;
+      tbody.innerHTML = '<tr><td colspan="8" style="padding:14px;color:var(--danger);">Failed to load.</td></tr>';
+    }
+    // Re-grant queue — super_admin only
+    if (currentAdmin && currentAdmin.role === 'super_admin') {
+      document.getElementById('delegRegrantBox').style.display = 'block';
+      try {
+        const rr = await api('GET', '/api/admin/delegations/regrant-requests?status=open');
+        const body = document.getElementById('delegRegrantBody');
+        const reqs = rr.rows || [];
+        if (!reqs.length) {
+          body.innerHTML = '<tr><td colspan="5" style="padding:14px;text-align:center;color:var(--muted);">No open requests.</td></tr>';
+        } else {
+          body.innerHTML = reqs.map(r => `<tr>
+            <td>#${r.requester_id}</td>
+            <td>Delegation #${r.original_delegation_id}</td>
+            <td>${esc(r.requested_at || '')}</td>
+            <td>${esc(r.status)}</td>
+            <td>
+              <button class="btn btn-primary btn-sm" onclick="approveRegrant(${r.id})">Approve</button>
+              <button class="btn btn-danger btn-sm" style="margin-left:6px;" onclick="denyRegrant(${r.id})">Deny</button>
+            </td>
+          </tr>`).join('');
+        }
+      } catch {}
+    }
+  }
+
+  async function revokeDelegation(id) {
+    if (!confirm('Revoke this delegation?')) return;
+    try {
+      await api('POST', `/api/admin/delegations/${id}/revoke`, { reason: 'manual revoke from UI' });
+      toast('Delegation revoked.');
+      loadDelegationsPanel();
+    } catch (e) { toast('Failed to revoke.', 'error'); }
+  }
+
+  async function approveRegrant(id) {
+    if (!confirm('Approve this re-grant request? A new delegation row will be created.')) return;
+    try {
+      await api('POST', `/api/admin/delegations/regrant-requests/${id}/approve`, { review_notes: 'approved via UI' });
+      toast('Approved.');
+      loadDelegationsPanel();
+    } catch { toast('Approval failed.', 'error'); }
+  }
+  async function denyRegrant(id) {
+    if (!confirm('Deny this re-grant request?')) return;
+    try {
+      await api('POST', `/api/admin/delegations/regrant-requests/${id}/deny`, { review_notes: 'denied via UI' });
+      toast('Denied.');
+      loadDelegationsPanel();
+    } catch { toast('Deny failed.', 'error'); }
+  }
+
+  function openDelegGrantModal(prefill) {
+    document.getElementById('dg-recipient-id').value = '';
+    document.getElementById('dg-recipient-search').value = '';
+    document.getElementById('dg-recipient-chip').style.display = 'none';
+    document.getElementById('dg-recipient-results').style.display = 'none';
+    document.getElementById('dg-notes').value = '';
+    document.getElementById('dg-validuntil').value = '';
+    document.getElementById('dg-permanent').checked = false;
+    document.getElementById('dg-validuntil').disabled = false;
+    document.getElementById('dg-scope-id').value = '';
+    document.getElementById('dg-perm').value = 'read_write';
+    document.querySelector('input[name="dg-type"][value="record"]').checked = true;
+    // Power radio only visible if super_admin
+    document.getElementById('dg-type-power-label').style.display =
+      (currentAdmin && currentAdmin.role === 'super_admin') ? '' : 'none';
+    if (prefill && prefill.scope_record_type) {
+      document.getElementById('dg-scope-type').value = prefill.scope_record_type;
+      document.getElementById('dg-scope-id').value = prefill.scope_record_id || '';
+    }
+    onDelegTypeChange();
+    openModal('delegGrant');
+  }
+
+  function onDelegTypeChange() {
+    const t = (document.querySelector('input[name="dg-type"]:checked') || {}).value || 'record';
+    document.getElementById('dg-scope-type-wrap').style.display = (t === 'power') ? 'none' : '';
+    document.getElementById('dg-scope-id-wrap').style.display = (t === 'record') ? '' : 'none';
+    document.getElementById('dg-perm-wrap').style.display = (t === 'power') ? 'none' : '';
+  }
+
+  let _delegRecipientTimer = null;
+  async function delegRecipientTypeahead(q) {
+    clearTimeout(_delegRecipientTimer);
+    const box = document.getElementById('dg-recipient-results');
+    if (!q || q.length < 2) { box.style.display = 'none'; return; }
+    _delegRecipientTimer = setTimeout(async () => {
+      try {
+        const rows = await api('GET', '/api/admin/users');
+        // Filter client-side: exclude self, exclude techs (admin list only)
+        const ql = q.toLowerCase();
+        const matches = (rows || []).filter(a =>
+          a.id !== (currentAdmin && currentAdmin.id) &&
+          ((a.name || '').toLowerCase().includes(ql) ||
+           (a.username || '').toLowerCase().includes(ql) ||
+           (a.prid || '').toLowerCase().includes(ql))
+        ).slice(0, 10);
+        if (!matches.length) { box.style.display = 'none'; return; }
+        box.innerHTML = matches.map(a =>
+          `<div style="padding:7px 10px;cursor:pointer;border-bottom:1px solid var(--border);" onclick="pickDelegRecipient(${a.id}, '${esc((a.name||'').replace(/'/g,"\\'"))}', '${esc(a.role||'')}')">${esc(a.name || '')} <span style="color:var(--muted);font-size:12px;">(${esc(a.role||'')})</span></div>`
+        ).join('');
+        box.style.display = 'block';
+      } catch {}
+    }, 200);
+  }
+  function pickDelegRecipient(id, name, role) {
+    document.getElementById('dg-recipient-id').value = id;
+    document.getElementById('dg-recipient-search').value = name;
+    const chip = document.getElementById('dg-recipient-chip');
+    chip.textContent = `Selected: ${name} (${role})`;
+    chip.style.display = 'block';
+    document.getElementById('dg-recipient-results').style.display = 'none';
+  }
+
+  async function submitDelegGrant() {
+    const err = document.getElementById('dg-err');
+    err.style.display = 'none';
+    const rid = parseInt(document.getElementById('dg-recipient-id').value, 10);
+    if (!rid) { err.textContent = 'Pick a recipient.'; err.style.display = 'block'; return; }
+    const type = (document.querySelector('input[name="dg-type"]:checked') || {}).value;
+    const body = { recipient_id: rid, delegation_type: type };
+    if (type !== 'power') {
+      body.scope_record_type = document.getElementById('dg-scope-type').value;
+      body.permission_level = document.getElementById('dg-perm').value;
+      if (type === 'record') {
+        const sid = parseInt(document.getElementById('dg-scope-id').value, 10);
+        if (!sid) { err.textContent = 'Enter a scope record id.'; err.style.display = 'block'; return; }
+        body.scope_record_id = sid;
+      }
+    }
+    if (!document.getElementById('dg-permanent').checked) {
+      const v = document.getElementById('dg-validuntil').value;
+      if (v) body.valid_until = v;
+    }
+    body.grantor_notes = document.getElementById('dg-notes').value || '';
+    try {
+      await api('POST', '/api/admin/delegations', body);
+      toast('Delegation granted.');
+      closeModal('delegGrant');
+      loadDelegationsPanel();
+    } catch (e) {
+      err.textContent = (e && e.detail) ? e.detail : 'Grant failed.';
+      err.style.display = 'block';
+    }
+  }
+
+  function openRegrantModal(origId, summary) {
+    document.getElementById('dg-regrant-orig-id').value = origId;
+    document.getElementById('dg-regrant-summary').textContent = summary || `Re-grant for delegation #${origId}`;
+    document.getElementById('dg-regrant-notes').value = '';
+    openModal('delegRegrant');
+  }
+  async function submitDelegRegrant() {
+    const orig = parseInt(document.getElementById('dg-regrant-orig-id').value, 10);
+    const notes = document.getElementById('dg-regrant-notes').value || '';
+    try {
+      await api('POST', '/api/admin/delegations/regrant-requests', { original_delegation_id: orig, notes });
+      toast('Re-grant request submitted.');
+      closeModal('delegRegrant');
+      refreshDelegationBanners();
+    } catch { toast('Failed to submit request.', 'error'); }
+  }
+
+  function dismissDelegBanner() {
+    try {
+      const sid = (currentAdmin && currentAdmin.session_id) || 'anon';
+      localStorage.setItem(`pc.deleg.banner.dismissed.${sid}`, '1');
+    } catch {}
+    document.getElementById('delegRecipientBanner').style.display = 'none';
+  }
+
+  async function refreshDelegationBanners() {
+    if (!currentAdmin) return;
+    try {
+      const data = await api('GET', '/api/admin/delegations/my-active');
+      const banner = document.getElementById('delegRecipientBanner');
+      const txt = document.getElementById('delegRecipientBannerText');
+      const sid = currentAdmin.session_id || 'anon';
+      const dismissed = (function(){ try { return localStorage.getItem(`pc.deleg.banner.dismissed.${sid}`) === '1'; } catch { return false; } })();
+      if ((data.count || 0) > 0 && !dismissed) {
+        txt.textContent = `You have ${data.count} delegated record(s) available.`;
+        banner.style.display = 'flex';
+      } else {
+        banner.style.display = 'none';
+      }
+      // Cascade re-grant banners
+      const stack = document.getElementById('delegCascadeBannerStack');
+      const cas = data.cascade_revoked_recent || [];
+      if (cas.length) {
+        stack.innerHTML = cas.map(c => {
+          const scope = (c.delegation_type === 'power') ? 'Power'
+                      : (c.delegation_type === 'record_type') ? `${esc(c.scope_record_type || '')}`
+                      : `${esc(c.scope_record_type || '')} #${c.scope_record_id}`;
+          return `<div style="margin-bottom:10px;padding:10px 14px;border-radius:8px;background:var(--teal-bg);color:var(--teal-deep);border:1px solid var(--teal);font-size:14px;display:flex;gap:10px;align-items:center;">
+            <span style="flex:1;">Delegation revoked by power cascade: ${scope}.</span>
+            <button class="btn btn-primary" style="padding:4px 10px;" onclick="openRegrantModal(${c.id}, 'Re-grant for ${scope}')">Request re-grant</button>
+          </div>`;
+        }).join('');
+      } else { stack.innerHTML = ''; }
+    } catch {}
+  }
+
+  init();
+
+  // ════════════════════════════════════════════════════════════════════════
+  // Performance KPI module (Phase 4) — UI controller
+  // ════════════════════════════════════════════════════════════════════════
+  const KPI_KEYS_ORDER = [
+    'callback_rate','documentation_quality','pm_completion','utilization',
+    'sla_adherence','safety_compliance','first_time_fix','revenue_per_tech'
+  ];
+  const KPI_KEY_LABELS = {
+    callback_rate: 'Callback',
+    documentation_quality: 'Docs',
+    pm_completion: 'PM',
+    utilization: 'Util',
+    sla_adherence: 'SLA',
+    safety_compliance: 'Safety',
+    first_time_fix: 'FTF',
+    revenue_per_tech: 'Rev/Tech',
+  };
+  const KPI_SEV_LABELS = {
+    coaching_suggested: 'Coaching Suggested',
+    coaching_required: 'Coaching Required',
+    written_warning_recommended: 'Written Warning',
+    immediate_escalation: 'Immediate Escalation',
+  };
+  const KPI_SEV_COLORS = {
+    coaching_suggested: 'var(--teal-deep)',
+    coaching_required:  'var(--steel)',
+    written_warning_recommended: 'var(--err-fg)',
+    immediate_escalation: 'var(--err-fg)',
+  };
+  let kpiCurrentPeriod = null;
+  let kpiAllPeriods = [];
+  let kpiScoreboardRows = [];
+  let kpiSubtab = 'dashboard';
+  let kpiFlagsCache = [];
+  let kpiAllTechs = [];
+  let kpiThresholdDefs = [];
+
+  function kpiBandPill(band) {
+    if (!band) return '<span class="badge" style="background:var(--surface-2);color:var(--muted);" aria-label="No data">—</span>';
+    // A11y: color is no longer the sole signal. Each band carries
+    // BOTH a textual label (GREEN / AMBER / RED / N/A) AND a leading
+    // shape glyph (● / ▲ / ■ / —) so color-blind users can still
+    // tell the bands apart. Also adds aria-label so screen readers
+    // announce the band semantically.
+    const map = {
+      green: { bg:'var(--teal-bg)', fg:'var(--teal-deep)', glyph:'●', label:'GREEN', aria:'Green band' },
+      amber: { bg:'var(--steel-bg)', fg:'var(--steel)', glyph:'▲', label:'AMBER', aria:'Amber band' },
+      red:   { bg:'var(--err-bg)', fg:'var(--err-fg)', glyph:'■', label:'RED',   aria:'Red band' },
+      insufficient_data: { bg:'var(--surface-2)', fg:'var(--muted)', glyph:'—', label:'N/A', aria:'Insufficient data' },
+    };
+    const m = map[band] || map.insufficient_data;
+    return `<span class="badge" style="background:${m.bg};color:${m.fg};font-weight:700;" aria-label="${m.aria}"><span aria-hidden="true" style="margin-right:4px;">${m.glyph}</span>${m.label}</span>`;
+  }
+
+  function kpiSetSubtab(name, btn) {
+    kpiSubtab = name;
+    document.querySelectorAll('#panel-kpi .filter-btn').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    ['dashboard','flags','scorecard','thresholds','flash'].forEach(s => {
+      const el = document.getElementById('kpiSubpanel-' + s);
+      if (el) el.style.display = (s === name ? '' : 'none');
+    });
+    kpiLoadCurrentSubtab();
+  }
+
+  function kpiLoadCurrentSubtab() {
+    if (kpiSubtab === 'dashboard')  kpiLoadDashboard();
+    else if (kpiSubtab === 'flags') kpiLoadFlagQueue();
+    else if (kpiSubtab === 'scorecard') kpiLoadScorecardPicker();
+    else if (kpiSubtab === 'thresholds') kpiLoadThresholds();
+    else if (kpiSubtab === 'flash') { /* idle — generated on click */ }
+  }
+
+  // Lightweight standalone refresher for the 5S sidebar badge.
+  // Same pattern as refreshKpiFlagBadge so the user sees pending
+  // exceptions before opening the 5S panel.
+  async function refreshFsBadge() {
+    if (typeof can === 'function' && !can('fs:report_view')) return;
+    try {
+      const d = await api('GET', '/api/admin/5s/dashboard');
+      const fsBadge = document.getElementById('fsRedBadge');
+      if (!fsBadge || !d) return;
+      const n = (d.open_exceptions || 0) + (d.escalated_exceptions || 0) + (d.director_exceptions || 0);
+      if (n > 0) { fsBadge.textContent = String(n); fsBadge.style.display = 'inline-block'; }
+      else        { fsBadge.style.display = 'none'; }
+    } catch (_) { /* silent — page works without the badge */ }
+  }
+  window.refreshFsBadge = refreshFsBadge;
+
+  async function refreshKpiFlagBadge() {
+    if (!can('kpi:flag_view')) return;
+    try {
+      const s = await api('GET', '/api/admin/kpi/flags/summary');
+      const total = (s.counts && Object.values(s.counts).reduce((a,b)=>a+b,0)) || 0;
+      const badge = document.getElementById('kpiFlagBadge');
+      if (total > 0) { badge.textContent = total; badge.style.display = ''; }
+      else { badge.style.display = 'none'; }
+    } catch {}
+  }
+
+  async function kpiInitPanel() {
+    if (kpiAllPeriods.length === 0) {
+      try {
+        const r = await api('GET', '/api/admin/kpi/periods?limit=12');
+        kpiAllPeriods = r.periods || [];
+        const sel = document.getElementById('kpiPeriodSelect');
+        sel.innerHTML = kpiAllPeriods.map(p =>
+          `<option value="${p.period_key}">${p.period_key}${p.status === 'closed' ? ' (closed)' : ''}</option>`
+        ).join('');
+        kpiCurrentPeriod = kpiAllPeriods[0]?.period_key || null;
+      } catch {}
+    }
+    if (can('kpi:recompute')) document.getElementById('kpiRecomputeBtn').style.display = '';
+    if (can('kpi:edit_thresholds')) document.getElementById('kpiSubThresholds').style.display = '';
+    // KPI add-on entry points — each gated by the permission its backend
+    // endpoint enforces, so a viewer never sees a button that would 403.
+    const _show = (id, perm) => { if (can(perm)) { const b = document.getElementById(id); if (b) b.style.display = ''; } };
+    _show('kpiBtnTeamNote',  'kpi:note_write_team_period');
+    _show('kpiBtnGoals',     'kpi:goal_view');
+    _show('kpiBtnPipQueue',  'kpi:pip_acknowledge');
+    _show('kpiBtnManual',    'kpi:manual_value_set');
+    _show('kpiBtnCustomKpi', 'kpi:def_create');
+    _show('kpiBtnClosePeriod', 'kpi:close_period');
+    kpiSyncClosePeriodBtn();
+  }
+
+  // Disable/relabel the Close-Period button when the selected period is
+  // already closed (the backend 409s on a double-close).
+  function kpiSyncClosePeriodBtn() {
+    const btn = document.getElementById('kpiBtnClosePeriod');
+    if (!btn || btn.style.display === 'none') return;
+    const key = document.getElementById('kpiPeriodSelect').value;
+    const p = kpiAllPeriods.find(x => x.period_key === key);
+    const closed = p && p.status === 'closed';
+    btn.disabled = !!closed;
+    btn.textContent = closed ? 'Period Closed' : 'Close Period';
+    btn.style.opacity = closed ? '0.55' : '';
+  }
+
+  async function kpiClosePeriod(periodKey) {
+    if (!periodKey) return;
+    if (!confirm(`Close period ${periodKey}? Closed periods become immutable and can no longer be recomputed.`)) return;
+    try {
+      await api('POST', `/api/admin/kpi/periods/${encodeURIComponent(periodKey)}/close`, {});
+      toast(`Period ${periodKey} closed.`);
+      // Refresh the cached period list so the dropdown + button reflect it.
+      const r = await api('GET', '/api/admin/kpi/periods?limit=12');
+      kpiAllPeriods = r.periods || [];
+      const sel = document.getElementById('kpiPeriodSelect');
+      const cur = sel.value;
+      sel.innerHTML = kpiAllPeriods.map(p =>
+        `<option value="${p.period_key}">${p.period_key}${p.status === 'closed' ? ' (closed)' : ''}</option>`
+      ).join('');
+      sel.value = cur;
+      kpiSyncClosePeriodBtn();
+    } catch (e) {
+      toast('Failed to close period: ' + e.message, 'error');
+    }
+  }
+
+  function kpiOnPeriodChange() {
+    kpiCurrentPeriod = document.getElementById('kpiPeriodSelect').value;
+    kpiSyncClosePeriodBtn();
+    kpiLoadCurrentSubtab();
+  }
+
+  // ── Dashboard ─────────────────────────────────────────────────────────────
+  async function kpiLoadDashboard() {
+    if (!kpiCurrentPeriod) await kpiInitPanel();
+    if (!kpiCurrentPeriod) return;
+    try {
+      const s = await api('GET', '/api/admin/kpi/flags/summary');
+      const c = s.counts || {};
+      // Wire KPI severity tiles via PC.gateBadge so the count cells gain
+      // role/tabindex when the viewer can read kpi_flag records, otherwise the
+      // existing onclick still works but the badge has no extra a11y wrapper.
+      if (typeof PC !== 'undefined' && PC.gateBadge) {
+        PC.gateBadge(document.getElementById('kpiTileCS'), c.coaching_suggested || 0,             'kpi_flag', function(){ kpiSetSubtab('flags', document.getElementById('kpiSubFlags')); kpiFilterFlags({severity:'coaching_suggested'}); });
+        PC.gateBadge(document.getElementById('kpiTileCR'), c.coaching_required || 0,              'kpi_flag', function(){ kpiSetSubtab('flags', document.getElementById('kpiSubFlags')); kpiFilterFlags({severity:'coaching_required'}); });
+        PC.gateBadge(document.getElementById('kpiTileWW'), c.written_warning_recommended || 0,    'kpi_flag', function(){ kpiSetSubtab('flags', document.getElementById('kpiSubFlags')); kpiFilterFlags({severity:'written_warning_recommended'}); });
+        PC.gateBadge(document.getElementById('kpiTileIE'), c.immediate_escalation || 0,           'kpi_flag', function(){ kpiSetSubtab('flags', document.getElementById('kpiSubFlags')); kpiFilterFlags({severity:'immediate_escalation'}); });
+      } else {
+        document.getElementById('kpiTileCS').textContent = c.coaching_suggested || 0;
+        document.getElementById('kpiTileCR').textContent = c.coaching_required || 0;
+        document.getElementById('kpiTileWW').textContent = c.written_warning_recommended || 0;
+        document.getElementById('kpiTileIE').textContent = c.immediate_escalation || 0;
+      }
+      document.getElementById('kpiSafetyBanner').style.display =
+        (c.immediate_escalation && c.immediate_escalation > 0) ? '' : 'none';
+    } catch {}
+    kpiLoadScoreboard();
+  }
+
+  async function kpiLoadScoreboard() {
+    try {
+      const tier = document.getElementById('kpiTierFilter').value;
+      const q = new URLSearchParams({period_key: kpiCurrentPeriod});
+      if (tier) q.set('tier', tier);
+      const r = await api('GET', '/api/admin/kpi/team-scoreboard?' + q.toString());
+      kpiScoreboardRows = r.rows || [];
+      kpiRenderScoreboard();
+    } catch {
+      document.getElementById('kpiScoreboardBody').innerHTML =
+        '<tr><td colspan="12" style="padding:20px;text-align:center;color:var(--red);">Failed to load scoreboard.</td></tr>';
+    }
+  }
+
+  function kpiRenderScoreboard() {
+    const tbody = document.getElementById('kpiScoreboardBody');
+    const filt = (document.getElementById('kpiTechFilter').value || '').toLowerCase();
+    const rows = kpiScoreboardRows.filter(r => !filt || (r.name||'').toLowerCase().includes(filt));
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="12" style="padding:20px;text-align:center;color:var(--muted);">No techs with sufficient data for this period.</td></tr>';
+      return;
+    }
+    const _gate = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    tbody.innerHTML = rows.map(r => {
+      const pct = r.composite_pct == null ? '—' : r.composite_pct + '%';
+      const kpis = r.kpis || {};
+      const cell = k => kpiBandPill(kpis[k]?.band);
+      const nameCell = _gate
+        ? PC.gateLinkHtml('technician', r.tech_id, r.name || '', {onClick: 'function(){ kpiOpenScorecard(' + r.tech_id + '); }'})
+        : `<strong>${esc(r.name || '')}</strong>`;
+      return `<tr data-pc-row-kpitech="${r.tech_id}">
+        <td>${nameCell}</td>
+        <td>${esc(r.role || '')}</td>
+        <td>${esc(r.tier || '')}</td>
+        <td>${kpiBandPill(r.composite_band)}</td>
+        <td>${pct}</td>
+        <td>${cell('callback_rate')}</td>
+        <td>${cell('documentation_quality')}</td>
+        <td>${cell('pm_completion')}</td>
+        <td>${cell('utilization')}</td>
+        <td>${cell('sla_adherence')}</td>
+        <td>${cell('safety_compliance')}</td>
+        <td><button class="btn btn-edit btn-sm pc-stop-prop"
+                    onclick="event.stopPropagation();kpiOpenScorecard(${r.tech_id})"
+                    title="Open full KPI scorecard for ${esc(r.name || '')}">View →</button></td>
+      </tr>`;
+    }).join('');
+    if (typeof PC !== 'undefined' && PC.gateRow) {
+      tbody.querySelectorAll('tr[data-pc-row-kpitech]').forEach(function (tr) {
+        const tid = Number(tr.getAttribute('data-pc-row-kpitech'));
+        PC.gateRow(tr, 'technician', tid, {
+          onClick: function () { kpiOpenScorecard(tid); },
+          ariaLabel: 'Open KPI scorecard for technician #' + tid,
+        });
+      });
+    }
+  }
+
+  async function kpiRecomputeAll() {
+    // Audit recommendation: be explicit that this is a heavy, write
+    // operation — same destructive-confirm pattern as Offboard.
+    if (!confirm('Recompute KPIs for ALL technicians across every open period?\n\nThis can take a minute and will overwrite the current scoreboard. Continue?')) return;
+    try {
+      await api('POST', '/api/admin/kpi/recompute', {});
+      toast('Recompute triggered.');
+      kpiLoadCurrentSubtab();
+      refreshKpiFlagBadge();
+    } catch (e) { toast('Recompute failed: ' + e.message, 'error'); }
+  }
+
+  // ── Flag Queue ────────────────────────────────────────────────────────────
+  function kpiFilterFlags(filters) {
+    if (filters.severity) document.getElementById('kpiFlagSevFilter').value = filters.severity;
+    if (filters.status)   document.getElementById('kpiFlagStatusFilter').value = filters.status;
+    kpiLoadFlagQueue();
+  }
+
+  async function kpiLoadFlagQueue() {
+    const status = document.getElementById('kpiFlagStatusFilter').value;
+    const severity = document.getElementById('kpiFlagSevFilter').value;
+    const df = document.getElementById('kpiFlagDateFrom').value;
+    const dt = document.getElementById('kpiFlagDateTo').value;
+    const q = new URLSearchParams();
+    if (status) q.set('status', status);
+    if (severity) q.set('severity', severity);
+    if (df) q.set('date_from', df);
+    if (dt) q.set('date_to', dt);
+    q.set('limit', '200');
+    try {
+      const r = await api('GET', '/api/admin/kpi/flags?' + q.toString());
+      kpiFlagsCache = r.flags || [];
+      kpiRenderFlagQueue();
+    } catch (e) {
+      document.getElementById('kpiFlagQueueBody').innerHTML =
+        '<div style="padding:20px;color:var(--red);">Failed to load flags: ' + esc(e.message) + '</div>';
+    }
+  }
+
+  function kpiFlagCard(f) {
+    const created = PC.fmtDateTime(f.created_at);
+    let daysOpen = '';
+    try {
+      const d = new Date(f.created_at);
+      daysOpen = Math.floor((Date.now() - d.getTime()) / 86400000) + 'd';
+    } catch {}
+    const sevColor = KPI_SEV_COLORS[f.severity] || 'var(--muted)';
+    const isOverridden = f.status === 'overridden';
+    const isResolved   = f.status === 'resolved';
+    const terminal = isOverridden || isResolved;
+    // Group non-destructive actions (Acknowledge / Start / Resolve)
+    // together and push the destructive Override into its own group
+    // separated by a visible spacer + thin divider so the red button
+    // can't be mis-clicked when reaching for the green Resolve.
+    const actions = terminal ? '' : `
+      <span style="display:inline-flex;gap:6px;">
+        <button class="btn btn-ghost btn-sm" onclick="kpiActionAcknowledge(${f.id})">Acknowledge</button>
+        <button class="btn btn-edit btn-sm" onclick="kpiActionStart(${f.id})">Start Coaching</button>
+        <button class="btn btn-primary btn-sm" onclick="kpiActionResolve(${f.id})">Resolve</button>
+      </span>
+      ${can('kpi:flag_override') ? `<span style="display:inline-flex;align-items:center;gap:6px;margin-left:14px;padding-left:14px;border-left:1px solid var(--border);"><button class="btn btn-danger btn-sm" onclick="kpiActionOverride(${f.id})" title="Override the flag — requires a reason. Logged in audit trail.">⚠ Override</button></span>` : ''}
+    `;
+    // Score annotation applies to the underlying score regardless of flag
+    // status (you can annotate a resolved/overridden score too), so it lives
+    // outside the non-terminal action group.
+    const annotateBtn = (f.score_id && can('kpi:note_write_score_annotation'))
+      ? `<button class="btn btn-ghost btn-sm" onclick="kpiOpenScoreAnnotation(${f.score_id}, ${f.tech_id})" title="Add an annotation to this KPI score">Annotate</button>`
+      : '';
+    const detailBtn = `<button class="btn btn-ghost btn-sm" onclick="kpiOpenFlagDetail(${f.id})" title="View the full flag detail and audit trail">Details</button>`;
+    const _gate = (typeof PC !== 'undefined' && PC.gateLinkHtml);
+    const techRef = _gate
+      ? PC.gateLinkHtml('technician', f.tech_id, f.tech_name || ('tech #' + f.tech_id), {onClick: 'function(){ kpiOpenScorecard(' + f.tech_id + '); }'})
+      : `<strong>${esc(f.tech_name || ('tech #' + f.tech_id))}</strong>`;
+    const kpiRef = (_gate && f.score_id)
+      ? PC.gateLinkHtml('kpi_score', f.score_id, KPI_KEY_LABELS[f.kpi_key] || f.kpi_key || '', {})
+      : esc(KPI_KEY_LABELS[f.kpi_key] || f.kpi_key || '');
+    return `<div class="kpi-flag-card" style="padding:14px;border-radius:8px;border-left:5px solid ${sevColor};background:var(--card);box-shadow:0 1px 3px rgba(0,0,0,0.05);margin-bottom:10px;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+        <div style="flex:1;">
+          <div style="font-weight:700;color:${sevColor};font-size:13px;text-transform:uppercase;letter-spacing:.3px;">${KPI_SEV_LABELS[f.severity] || f.severity}</div>
+          <div style="margin-top:4px;font-size:15px;">${techRef} <span style="color:var(--muted);">— ${kpiRef}</span></div>
+          <div style="margin-top:4px;color:var(--muted);font-size:13px;">${esc(f.reason || '')}</div>
+          <div style="margin-top:8px;font-size:12px;color:var(--muted);">Period: ${esc(f.period_key)} · Created ${created} · ${daysOpen} open · Status: <strong>${esc(f.status)}</strong></div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;max-width:340px;">
+          ${detailBtn}${annotateBtn}${actions}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function kpiRenderFlagQueue() {
+    const body = document.getElementById('kpiFlagQueueBody');
+    if (!kpiFlagsCache.length) {
+      body.innerHTML = '<div style="padding:20px;color:var(--muted);">No flags match the current filters.</div>';
+      return;
+    }
+    // Group by severity (immediate first). Sort each bucket so OPEN flags
+    // sit at the top and resolved/overridden sink to the bottom, then
+    // dim the resolved cards so they can't be misread as still-actionable.
+    const order = ['immediate_escalation','written_warning_recommended','coaching_required','coaching_suggested'];
+    const buckets = {};
+    kpiFlagsCache.forEach(f => { (buckets[f.severity] = buckets[f.severity] || []).push(f); });
+    const isTerminal = (f) => f.status === 'resolved' || f.status === 'overridden';
+    body.innerHTML = order.filter(s => (buckets[s] || []).length).map(s => {
+      const all  = buckets[s];
+      const open = all.filter(f => !isTerminal(f));
+      const term = all.filter(isTerminal);
+      // Header reconciles with the Dashboard tile: open count headlines,
+      // resolved count appears as a secondary muted suffix so the two
+      // figures can never disagree at a glance.
+      const countLabel = term.length
+        ? `<span style="color:var(--text);font-weight:600;font-size:13px;">${open.length} open</span><span style="color:var(--muted-2);font-weight:400;font-size:13px;">  ·  ${term.length} resolved</span>`
+        : `<span style="color:var(--text);font-weight:600;font-size:13px;">${open.length} open</span>`;
+      const sorted = open.concat(term);
+      return `
+        <h3 style="margin:14px 0 8px 0;color:${KPI_SEV_COLORS[s]};display:flex;align-items:baseline;gap:8px;">${KPI_SEV_LABELS[s]}
+          <span style="font-weight:400;font-size:13px;">(${countLabel})</span>
+        </h3>
+        ${sorted.map(f => {
+          const card = kpiFlagCard(f);
+          // De-emphasize terminal flags so they don't look actionable.
+          return isTerminal(f)
+            ? `<div style="opacity:.55;filter:grayscale(0.4);">${card}</div>`
+            : card;
+        }).join('')}`;
+    }).join('');
+  }
+
+  function kpiPromptNotes(title, label) {
+    return prompt(title + '\n\n' + label + ':');
+  }
+
+  async function kpiActionAcknowledge(flagId) {
+    if (!confirm('Acknowledge this flag?')) return;
+    try {
+      await api('POST', '/api/admin/kpi/flags/' + flagId + '/acknowledge', {});
+      toast('Acknowledged.');
+      kpiLoadFlagQueue(); refreshKpiFlagBadge();
+    } catch (e) { toast('Failed: ' + e.message, 'error'); }
+  }
+  async function kpiActionStart(flagId) {
+    const notes = kpiPromptNotes('Start coaching', 'Coaching notes (required)');
+    if (!notes || !notes.trim()) return;
+    try {
+      await api('POST', '/api/admin/kpi/flags/' + flagId + '/start', {notes: notes.trim()});
+      toast('Coaching started.');
+      kpiLoadFlagQueue();
+    } catch (e) { toast('Failed: ' + e.message, 'error'); }
+  }
+  async function kpiActionResolve(flagId) {
+    const rn = kpiPromptNotes('Resolve flag', 'Resolution notes (required)');
+    if (!rn || !rn.trim()) return;
+    try {
+      await api('POST', '/api/admin/kpi/flags/' + flagId + '/resolve', {resolution_notes: rn.trim()});
+      toast('Resolved.');
+      kpiLoadFlagQueue(); refreshKpiFlagBadge();
+    } catch (e) { toast('Failed: ' + e.message, 'error'); }
+  }
+  async function kpiActionOverride(flagId) {
+    const reason = kpiPromptNotes('Override flag', 'Override reason (REQUIRED, ≤1000 chars). The original flag is preserved; only the status changes.');
+    if (!reason || !reason.trim()) { toast('Override requires a reason.', 'error'); return; }
+    try {
+      await api('POST', '/api/admin/kpi/flags/' + flagId + '/override', {override_reason: reason.trim()});
+      toast('Overridden (audit logged).');
+      kpiLoadFlagQueue(); refreshKpiFlagBadge();
+    } catch (e) { toast('Failed: ' + e.message, 'error'); }
+  }
+
+  // Full flag detail + chain-hashed audit trail (GET /kpi/flags/{id}).
+  async function kpiOpenFlagDetail(flagId) {
+    kpiAddonOpen('Flag #' + flagId, '<div style="color:var(--muted);">Loading…</div>');
+    try {
+      const d = await api('GET', '/api/admin/kpi/flags/' + flagId);
+      const sevColor = KPI_SEV_COLORS[d.severity] || 'var(--muted)';
+      const row = (lbl, val) => val == null || val === ''
+        ? '' : `<div style="display:flex;gap:10px;padding:4px 0;border-bottom:1px solid var(--border-light,var(--border));">
+            <div style="min-width:140px;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.4px;">${lbl}</div>
+            <div style="flex:1;">${val}</div></div>`;
+      const audit = (d.audit || []).map(a => `
+        <div style="padding:6px 0;border-bottom:1px solid var(--border-light,var(--border));font-size:13px;">
+          <div><strong>${esc(a.action || '')}</strong> <span style="color:var(--muted);">— ${esc(a.actor_label || '')}${a.actor_role ? ' ('+esc(a.actor_role)+')' : ''}</span></div>
+          <div style="color:var(--muted);font-size:12px;">${PC.fmtDateTime(a.created_at)}</div>
+        </div>`).join('') || '<div style="color:var(--muted);">No audit entries.</div>';
+      const html = `
+        <div style="margin-bottom:10px;">
+          <span style="font-weight:700;color:${sevColor};text-transform:uppercase;font-size:12px;letter-spacing:.3px;">${KPI_SEV_LABELS[d.severity] || esc(d.severity || '')}</span>
+        </div>
+        ${row('Technician', esc(d.tech_name || ('tech #' + d.tech_id)) + (d.tech_role ? ' <span style="color:var(--muted);">('+esc(d.tech_role)+')</span>' : ''))}
+        ${row('KPI', esc(KPI_KEY_LABELS[d.kpi_key] || d.kpi_key || ''))}
+        ${row('Period', esc(d.period_key || ''))}
+        ${row('Status', '<strong>'+esc(d.status || '')+'</strong>')}
+        ${row('Reason', esc(d.reason || ''))}
+        ${row('Override reason', esc(d.override_reason || ''))}
+        ${row('Resolution notes', esc(d.resolution_notes || ''))}
+        ${row('Acknowledged', d.acknowledged_at ? PC.fmtDateTime(d.acknowledged_at) : '')}
+        ${row('Resolved', d.resolved_at ? PC.fmtDateTime(d.resolved_at) : '')}
+        ${row('Created', PC.fmtDateTime(d.created_at))}
+        <h4 style="margin:16px 0 6px 0;">Audit trail</h4>
+        ${audit}`;
+      kpiAddonOpen('Flag #' + flagId, html);
+    } catch (e) {
+      kpiAddonOpen('Flag #' + flagId, '<div style="color:var(--red);">Failed to load: ' + esc(e.message) + '</div>');
+    }
+  }
+
+  // ── Scorecard ────────────────────────────────────────────────────────────
+  async function kpiLoadScorecardPicker() {
+    if (!kpiAllTechs.length) {
+      try { kpiAllTechs = await api('GET', '/api/admin/techs'); } catch { kpiAllTechs = []; }
+    }
+    _kpiRenderScorecardOptions(kpiAllTechs);
+  }
+  function _kpiRenderScorecardOptions(list) {
+    const sel = document.getElementById('kpiScorecardSelect');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">— pick a technician —</option>' +
+      (list || []).map(t => `<option value="${t.id}">${esc(t.name || '')}${t.tech_code ? ' (' + esc(t.tech_code) + ')' : ''}</option>`).join('');
+  }
+  function kpiOnScorecardSelect() {
+    const v = document.getElementById('kpiScorecardSelect').value;
+    if (!v) return;
+    kpiOpenScorecard(parseInt(v, 10));
+  }
+  function kpiOnScorecardTypeahead() {
+    const q = (document.getElementById('kpiScorecardPicker').value || '').toLowerCase().trim();
+    const filtered = !q ? kpiAllTechs : kpiAllTechs.filter(t =>
+      (t.name || '').toLowerCase().includes(q) ||
+      (t.tech_code || '').toLowerCase().includes(q)
+    );
+    _kpiRenderScorecardOptions(filtered);
+    // Auto-open the dropdown if there's exactly one match.
+    if (filtered.length === 1) {
+      const sel = document.getElementById('kpiScorecardSelect');
+      sel.value = String(filtered[0].id);
+    }
+  }
+  // Back-compat: old onclick handlers in some sub-tabs still call this.
+  function kpiOnScorecardPick() { kpiOnScorecardSelect(); }
+
+  async function kpiOpenScorecard(techId) {
+    document.getElementById('kpiSubScorecard').click();
+    const body = document.getElementById('kpiScorecardBody');
+    body.innerHTML = '<div style="padding:20px;color:var(--muted);">Loading…</div>';
+    try {
+      const url = '/api/admin/kpi/technician/' + techId + '/scorecard' +
+                  (kpiCurrentPeriod ? '?period_key=' + encodeURIComponent(kpiCurrentPeriod) : '');
+      const sc = await api('GET', url);
+      const flagsResp = await api('GET', '/api/admin/kpi/flags?tech_id=' + techId + '&limit=50');
+      kpiRenderScorecard(body, sc, flagsResp.flags || []);
+    } catch (e) {
+      body.innerHTML = '<div style="padding:20px;color:var(--red);">Failed: ' + esc(e.message) + '</div>';
+    }
+  }
+
+  function kpiCompositeGauge(pct, band) {
+    const value = pct == null ? 0 : Math.max(0, Math.min(100, pct));
+    const stroke = band === 'green' ? 'var(--teal)' : band === 'amber' ? 'var(--steel)' : band === 'red' ? 'var(--red)' : 'var(--muted-2)';
+    const R = 52, C = 2 * Math.PI * R;
+    const dash = (value/100) * C;
+    return `<svg viewBox="0 0 120 120" width="140" height="140">
+      <circle cx="60" cy="60" r="${R}" stroke="var(--border)" stroke-width="10" fill="none"/>
+      <circle cx="60" cy="60" r="${R}" stroke="${stroke}" stroke-width="10" fill="none"
+              stroke-dasharray="${dash} ${C}" stroke-linecap="round"
+              transform="rotate(-90 60 60)"/>
+      <text x="60" y="58" text-anchor="middle" font-size="22" font-weight="700" fill="var(--text)">${pct == null ? '—' : pct + '%'}</text>
+      <text x="60" y="78" text-anchor="middle" font-size="11" fill="var(--muted)" text-transform="uppercase">${(band||'').toUpperCase()}</text>
+    </svg>`;
+  }
+
+  function kpiRenderScorecard(container, sc, flags) {
+    const t = sc.tech || {};
+    const tid = t.id || sc.tech_id;
+    const comp = (sc.current && sc.current.composite) || {};
+    const kpis = (sc.current && sc.current.kpis) || {};
+    const trend = sc.trend || [];
+    const overrides = (flags || []).filter(f => f.status === 'overridden');
+    const openFlags = (flags || []).filter(f => ['open','acknowledged','in_progress'].includes(f.status));
+    const trendStrip = trend.slice().reverse().map(t => {
+      const b = t.band || 'insufficient_data';
+      const c = b === 'green' ? 'var(--teal)' : b === 'amber' ? 'var(--teal)' : b === 'red' ? 'var(--red)' : 'var(--muted-2)';
+      return `<div title="${esc(t.period_key)} ${t.composite_pct ?? '-'}%"
+        style="flex:1;height:34px;border-radius:6px;background:${c};display:flex;align-items:center;justify-content:center;color:white;font-size:11px;font-weight:600;">
+        ${t.composite_pct == null ? '—' : t.composite_pct + '%'}
+      </div>`;
+    }).join('');
+
+    const kpiCards = KPI_KEYS_ORDER.map(k => {
+      const r = kpis[k] || {};
+      const flagsForKpi = (flags || []).filter(f => f.kpi_key === k);
+      return `<div style="border:1px solid var(--border);border-radius:8px;padding:12px;background:var(--card);">
+        <div style="font-weight:600;color:var(--text);">${KPI_KEY_LABELS[k] || k}</div>
+        <div style="margin-top:6px;display:flex;gap:8px;align-items:center;">
+          ${kpiBandPill(r.band)}
+          <span style="color:var(--muted);font-size:13px;">raw: ${r.raw_value == null ? '—' : r.raw_value}</span>
+          <span style="color:var(--muted);font-size:12px;">(n=${r.sample_size ?? '—'})</span>
+        </div>
+        ${flagsForKpi.length ? `<details style="margin-top:8px;font-size:12px;">
+          <summary style="cursor:pointer;color:var(--steel);">Coaching log (${flagsForKpi.length})</summary>
+          ${flagsForKpi.map(f => `<div style="margin:6px 0;padding:6px;background:var(--surface-2);border-radius:4px;">
+            <strong>${KPI_SEV_LABELS[f.severity]}</strong> · ${esc(f.status)} · ${PC.fmtDate(f.created_at)}
+          </div>`).join('')}
+        </details>` : ''}
+      </div>`;
+    }).join('');
+
+    container.innerHTML = `
+      <div style="display:flex;gap:24px;align-items:center;border-bottom:1px solid var(--border);padding-bottom:18px;margin-bottom:18px;">
+        <div>${kpiCompositeGauge(comp.composite_pct, comp.band)}</div>
+        <div style="flex:1;">
+          <h3 style="margin:0;">${(typeof PC !== 'undefined' && PC.gateLinkHtml) ? PC.gateLinkHtml('technician', t.id || sc.tech_id, t.name || sc.tech_id, {onClick: 'function(){ routeTechnicianDetail(' + (t.id || sc.tech_id) + '); }'}) : esc(t.name || sc.tech_id)}</h3>
+          <div style="color:var(--muted);">${esc(t.role || '')} · ${esc(comp.tier_at_computation || '')}</div>
+          <div style="margin-top:10px;color:var(--text);">Period: <strong>${esc(sc.period_key || '')}</strong>${comp.forced_red_reason ? ' · <span style="color:var(--err-fg);">Forced RED: ' + esc(comp.forced_red_reason) + '</span>' : ''}</div>
+          <div style="margin-top:14px;">
+            <div style="font-size:11px;color:var(--muted);text-transform:uppercase;margin-bottom:6px;">Recent trend</div>
+            <div style="display:flex;gap:6px;">${trendStrip || '<span style="color:var(--muted);">No trend data.</span>'}</div>
+          </div>
+        </div>
+      </div>
+      ${(can('kpi:note_write_coaching') || can('kpi:note_write_recognition') || can('kpi:goal_view')) ? `
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
+        ${can('kpi:note_write_coaching')    ? `<button class="btn btn-edit btn-sm"  onclick="kpiOpenCoachingLog(${tid})"   title="View and add coaching notes for this tech">Coaching Log</button>` : ''}
+        ${can('kpi:note_write_recognition') ? `<button class="btn btn-ghost btn-sm" onclick="kpiOpenRecognitionAdd(${tid})" title="Record recognition for this tech">+ Recognition</button>` : ''}
+        ${can('kpi:goal_view')              ? `<button class="btn btn-ghost btn-sm" onclick="kpiOpenGoalsPanel(${tid})"    title="Development goals &amp; PIPs for this tech">Goals &amp; PIPs</button>` : ''}
+      </div>` : ''}
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-bottom:18px;">
+        ${kpiCards}
+      </div>
+      ${openFlags.length ? `
+        <h4 style="margin:18px 0 8px 0;">Open Flags (${openFlags.length})</h4>
+        ${openFlags.map(kpiFlagCard).join('')}
+      ` : ''}
+      <div style="margin-top:18px;padding:10px;background:var(--surface-2);border-radius:6px;font-size:12px;color:var(--muted);">
+        Recent overrides on file: <strong>${overrides.length}</strong>
+        ${overrides.length ? ' — text redacted (PII).' : ''}
+      </div>
+    `;
+  }
+
+  // ── Thresholds editor ────────────────────────────────────────────────────
+  async function kpiLoadThresholds() {
+    try {
+      const r = await api('GET', '/api/admin/kpi/definitions');
+      kpiThresholdDefs = r.definitions || r || [];
+      const tiers = ['level_1','level_2','level_3'];
+      const grid = document.getElementById('kpiThresholdsGrid');
+      grid.innerHTML = `<div class="table-wrap"><table>
+        <thead><tr><th>KPI</th>${tiers.map(t => `<th>${t}</th>`).join('')}<th>Actions</th></tr></thead>
+        <tbody>${kpiThresholdDefs.map(d => `
+          <tr>
+            <td><strong>${esc(d.display_name || d.kpi_key)}</strong><div style="color:var(--muted);font-size:11px;">${esc(d.direction || '')}${d.compute_kind === 'manual' ? ' · manual' : ''}</div></td>
+            ${tiers.map(t => {
+              const thr = (d.thresholds || {})[t] || {};
+              const g = thr.green_threshold ?? '—';
+              const a = thr.amber_threshold ?? '—';
+              const rd = thr.red_threshold ?? '—';
+              // Render as colored chips with explicit Green/Amber/Red
+              // labels — auditor flagged the cryptic "G 8 · A — · R —"
+              // copy and the em-dash meaning "unset" as undiscoverable.
+              const chip = (label, val, bg, fg) =>
+                val === '—'
+                  ? `<span title="No ${label} band set" style="display:inline-block;padding:2px 8px;border-radius:10px;background:var(--surface-2);color:var(--muted-2);font-size:11px;font-weight:600;margin-right:4px;">${label}: —</span>`
+                  : `<span title="${label} band threshold" style="display:inline-block;padding:2px 8px;border-radius:10px;background:${bg};color:${fg};font-size:11px;font-weight:700;margin-right:4px;">${label}: ${val}</span>`;
+              return `<td style="cursor:pointer;" onclick="kpiEditThreshold('${d.kpi_key}','${t}',${JSON.stringify(thr).replace(/"/g,'&quot;')})" title="Click to edit thresholds">
+                <div style="display:flex;flex-wrap:wrap;align-items:center;gap:2px;">
+                  ${chip('Green', g, 'var(--teal-bg)', 'var(--teal-deep)')}
+                  ${chip('Amber', a, 'var(--steel-bg)', 'var(--steel)')}
+                  ${chip('Red',   rd, 'var(--err-bg)', 'var(--err-fg)')}
+                </div>
+              </td>`;
+            }).join('')}
+            <td>
+              ${d.compute_kind === 'manual' ? `<button class="btn btn-ghost btn-sm" onclick="kpiOpenManualHistory('${d.kpi_key}','${esc(d.display_name||d.kpi_key)}')" title="Manual value entry history">History</button>` : ''}
+              ${(d.compute_kind === 'manual' && can('kpi:def_archive')) ? `<button class="btn btn-danger btn-sm" onclick="kpiArchiveDefinition('${d.kpi_key}','${esc(d.display_name||d.kpi_key)}')" title="Archive this custom KPI">Archive</button>` : ''}
+              ${d.compute_kind !== 'manual' ? '<span style="color:var(--muted-2);font-size:11px;">built-in</span>' : ''}
+            </td>
+          </tr>`).join('')}
+        </tbody></table></div>`;
+    } catch (e) {
+      document.getElementById('kpiThresholdsGrid').innerHTML =
+        '<div style="color:var(--red);">Failed: ' + esc(e.message) + '</div>';
+    }
+  }
+
+  async function kpiEditThreshold(kpiKey, tier, current) {
+    if (!can('kpi:edit_thresholds')) { toast('Read-only', 'error'); return; }
+    const g = prompt('Green threshold for ' + kpiKey + '/' + tier + ':', current.green_threshold ?? '');
+    if (g === null) return;
+    const a = prompt('Amber band:', current.amber_threshold ?? '');
+    if (a === null) return;
+    const rd = prompt('Red floor:', current.red_threshold ?? '');
+    if (rd === null) return;
+    const eff = prompt('Effective from (YYYY-MM-DD):', new Date().toISOString().slice(0,10));
+    if (!eff) return;
+    try {
+      await api('POST', '/api/admin/kpi/thresholds', {
+        kpi_key: kpiKey, tier: tier,
+        green: parseFloat(g), amber_band: parseFloat(a),
+        red_floor: parseFloat(rd), effective_from: eff,
+      });
+      toast('Threshold updated.');
+      kpiLoadThresholds();
+    } catch (e) { toast('Failed: ' + e.message, 'error'); }
+  }
+
+  function kpiThresholdResetConfirm() {
+    toast('Defaults reset is a manual ops task — contact the DBA.', 'info');
+  }
+
+  // Manual value entry history for a manually-scored KPI.
+  async function kpiOpenManualHistory(kpiKey, label) {
+    kpiAddonOpen('Manual history · ' + (label || kpiKey), '<div style="color:var(--muted);">Loading…</div>');
+    try {
+      const r = await api('GET', `/api/admin/kpi/definitions/${encodeURIComponent(kpiKey)}/manual-history?limit=200`);
+      const hist = r.history || [];
+      if (!hist.length) {
+        kpiAddonOpen('Manual history · ' + (label || kpiKey), '<div style="color:var(--muted);">No manual values recorded for this KPI.</div>');
+        return;
+      }
+      const rows = hist.map(h => `
+        <tr>
+          <td style="padding:4px 10px 4px 0;">${esc(h.period_key || '')}</td>
+          <td style="padding:4px 10px;">${esc(h.tech_name || ('tech #' + (h.tech_id||'')))}</td>
+          <td style="padding:4px 10px;text-align:right;">${esc(String(h.raw_value ?? ''))}</td>
+          <td style="padding:4px 10px;text-align:right;">${esc(String(h.sample_size ?? ''))}</td>
+          <td style="padding:4px 10px;">${h.band ? `<span style="color:${KPI_SEV_COLORS[h.band]||'var(--muted)'};">${esc(h.band)}</span>` : ''}</td>
+          <td style="padding:4px 0 4px 10px;color:var(--muted);font-size:12px;">${PC.fmtDateTime(h.computed_at)}</td>
+        </tr>`).join('');
+      const html = `<table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead><tr style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.4px;">
+          <th style="text-align:left;padding:0 10px 4px 0;">Period</th>
+          <th style="text-align:left;padding:0 10px 4px;">Technician</th>
+          <th style="text-align:right;padding:0 10px 4px;">Value</th>
+          <th style="text-align:right;padding:0 10px 4px;">Sample</th>
+          <th style="text-align:left;padding:0 10px 4px;">Band</th>
+          <th style="text-align:left;padding:0 0 4px 10px;">Computed</th>
+        </tr></thead><tbody>${rows}</tbody></table>`;
+      kpiAddonOpen('Manual history · ' + (label || kpiKey), html);
+    } catch (e) {
+      kpiAddonOpen('Manual history · ' + (label || kpiKey), '<div style="color:var(--red);">Failed: ' + esc(e.message) + '</div>');
+    }
+  }
+
+  async function kpiArchiveDefinition(kpiKey, label) {
+    if (!confirm(`Archive the custom KPI "${label || kpiKey}"? It will no longer be scored or appear in scorecards.`)) return;
+    try {
+      await api('POST', `/api/admin/kpi/definitions/${encodeURIComponent(kpiKey)}/archive`, {});
+      toast('KPI archived.');
+      kpiThresholdDefs = [];
+      kpiLoadThresholds();
+    } catch (e) {
+      toast('Failed to archive: ' + e.message, 'error');
+    }
+  }
+
+  // ── Weekly Flash Report ──────────────────────────────────────────────────
+  async function kpiGenerateFlashReport() {
+    const body = document.getElementById('kpiFlashReportBody');
+    body.innerHTML = '<div style="padding:20px;color:var(--muted);">Generating…</div>';
+    try {
+      if (!kpiCurrentPeriod) await kpiInitPanel();
+      const cur = await api('GET', '/api/admin/kpi/team-scoreboard?period_key=' + encodeURIComponent(kpiCurrentPeriod));
+      const priorPk = (kpiAllPeriods.find((_,i) => i === 1) || {}).period_key;
+      let prior = { rows: [] };
+      if (priorPk) {
+        try { prior = await api('GET', '/api/admin/kpi/team-scoreboard?period_key=' + encodeURIComponent(priorPk)); } catch {}
+      }
+      const flags = (await api('GET', '/api/admin/kpi/flags?period_key=' + encodeURIComponent(kpiCurrentPeriod) + '&limit=500')).flags || [];
+      const priorByTech = {};
+      (prior.rows || []).forEach(r => { priorByTech[r.tech_id] = r; });
+      const reds = (cur.rows || []).filter(r => r.composite_band === 'red');
+      const ambers = (cur.rows || []).filter(r => r.composite_band === 'amber');
+      const newWW = flags.filter(f => f.severity === 'written_warning_recommended');
+
+      const employeeBlocks = (cur.rows || []).map(r => {
+        const p = priorByTech[r.tech_id] || {};
+        const arrow = (p.composite_pct == null || r.composite_pct == null) ? '→'
+          : r.composite_pct > p.composite_pct ? '↑'
+          : r.composite_pct < p.composite_pct ? '↓' : '→';
+        const myFlags = flags.filter(f => f.tech_id === r.tech_id);
+        return `<div class="kpi-flash-emp" style="page-break-inside:avoid;border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:12px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div>
+              <h3 style="margin:0;">${esc(r.name)}</h3>
+              <div style="color:var(--muted);font-size:12px;">${esc(r.role || '')} · ${esc(r.tier || '')}</div>
+            </div>
+            <div style="text-align:right;">
+              ${kpiBandPill(r.composite_band)}
+              <div style="font-size:20px;font-weight:700;margin-top:4px;">${r.composite_pct ?? '—'}% ${arrow}</div>
+              <div style="font-size:11px;color:var(--muted);">prior: ${p.composite_pct ?? '—'}%</div>
+            </div>
+          </div>
+          <table style="width:100%;margin-top:10px;font-size:12px;">
+            <thead><tr><th style="text-align:left;">KPI</th><th>Current</th><th>Prior</th></tr></thead>
+            <tbody>${KPI_KEYS_ORDER.map(k => {
+              const cb = (r.kpis || {})[k] || {};
+              const pb = (p.kpis || {})[k] || {};
+              return `<tr><td>${KPI_KEY_LABELS[k] || k}</td>
+                <td>${kpiBandPill(cb.band)} ${cb.raw_value ?? ''}</td>
+                <td>${kpiBandPill(pb.band)} ${pb.raw_value ?? ''}</td></tr>`;
+            }).join('')}</tbody>
+          </table>
+          ${myFlags.length ? `<div style="margin-top:8px;font-size:12px;color:var(--text);">
+            Recent flags: ${myFlags.map(f => `<span class="badge" style="background:var(--err-bg);color:var(--err-fg);margin-right:4px;">${KPI_SEV_LABELS[f.severity]}</span>`).join('')}
+          </div>` : ''}
+        </div>`;
+      }).join('');
+
+      body.innerHTML = `
+        <h2 style="margin:0 0 6px 0;">Weekly Flash Report — ${esc(kpiCurrentPeriod)}</h2>
+        <div style="color:var(--muted);margin-bottom:16px;font-size:13px;">Generated ${PC.fmtDateTime(new Date())}</div>
+        ${employeeBlocks || '<div style="color:var(--muted);">No employees with sufficient data.</div>'}
+        <hr style="margin:18px 0;">
+        <h3>Team Rollup</h3>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;">
+          <div style="padding:10px;background:var(--err-bg);border-radius:6px;">
+            <div style="font-weight:700;color:var(--err-fg);">RED (${reds.length})</div>
+            <div style="font-size:12px;">${reds.map(r => esc(r.name)).join(', ') || '—'}</div>
+          </div>
+          <div style="padding:10px;background:var(--steel-bg);border-radius:6px;">
+            <div style="font-weight:700;color:var(--steel);">AMBER (${ambers.length})</div>
+            <div style="font-size:12px;">${ambers.map(r => esc(r.name)).join(', ') || '—'}</div>
+          </div>
+          <div style="padding:10px;background:var(--err-bg);border-radius:6px;">
+            <div style="font-weight:700;color:var(--err-fg);">New written-warning flags (${newWW.length})</div>
+            <div style="font-size:12px;">${newWW.map(f => esc(f.tech_name || '')).join(', ') || '—'}</div>
+          </div>
+        </div>
+      `;
+      document.getElementById('kpiFlashPrintBtn').style.display = '';
+      if (can('kpi:flag_override')) document.getElementById('kpiFlashEmailBtn').style.display = '';
+    } catch (e) {
+      body.innerHTML = '<div style="color:var(--red);">Failed to generate: ' + esc(e.message) + '</div>';
+    }
+  }
+
+  async function kpiEmailFlashReport() {
+    if (!confirm('Email the weekly flash report to the Ops team?')) return;
+    try {
+      const r = await api('POST', '/api/admin/kpi/flash-report/email',
+                            {period_key: kpiCurrentPeriod});
+      if (r.skipped) toast('Email not configured; report rendered to screen only.', 'info');
+      else toast('Flash report emailed.');
+    } catch (e) { toast('Failed: ' + e.message, 'error'); }
+  }
+
+  // Hook into showPanel — lazy init when KPI tab is opened.
+  (function patchKpiShowPanel() {
+    const orig = window.showPanel;
+    window.showPanel = function(name) {
+      try { orig.apply(this, arguments); }
+      catch (e) { console.error('[showPanel] orig threw:', e); }
+      if (name === 'kpi') {
+        try {
+          kpiInitPanel()
+            .then(() => kpiLoadCurrentSubtab())
+            .catch(e => {
+              console.error('[kpiPanel] init/load failed:', e);
+              const slot = document.getElementById('kpiSubpanel-dashboard') ||
+                           document.getElementById('panel-kpi');
+              if (slot) slot.innerHTML =
+                '<div style="padding:18px;background:var(--err-bg);color:var(--err-fg);border-radius:8px;font-size:13px;border:1px solid var(--err-border);margin:14px 0;">'
+                + 'KPI panel failed to load: <strong>' + (e.message || e) + '</strong>'
+                + '<br><small style="color:var(--err-fg);">Open DevTools console for the stack trace.</small></div>';
+            });
+        } catch (e) {
+          console.error('[kpiPanel] sync throw:', e);
+        }
+      }
+    };
+  })();
