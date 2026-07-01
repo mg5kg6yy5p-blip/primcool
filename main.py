@@ -262,6 +262,8 @@ ADMIN_PERMS = {
         "inventory:adjust", "inventory:delete",
         "invoice:view", "invoice:create", "invoice:update", "invoice:delete",
         "invoice:record_payment",
+        # Multi-entity / cost centres (CMMS #6) — org structure + per-entity P&L.
+        "entity:view", "entity:manage",
         "documents:upload", "documents:view", "documents:view_highly_sensitive",
         "documents:delete", "documents:delete_highly_sensitive",
         # 5S workplace-discipline
@@ -538,6 +540,8 @@ ADMIN_PERMS["accountant"] = {
     "invoice:record_payment", "invoice:export",
     "inventory:view", "inventory:export",
     "payroll:generate", "payroll:view_all",
+    # Finance owns per-entity P&L reporting (view only; structure = super_admin).
+    "entity:view",
     "documents:upload", "documents:view", "documents:view_highly_sensitive",
     "audit:view_self",
     "company:read_messages",
@@ -1616,7 +1620,19 @@ def _audit_anon(action: str, request: Request, *,
 
 def _audit_from(admin: dict, action: str, request: Request,
                 target_type: str = None, target_id: int = None,
-                target_label: str = None, before=None, after=None):
+                target_label: str = None, before=None, after=None,
+                reason: str = None):
+    # The "why" behind a change (CMMS #4). Callers may pass an explicit
+    # reason; otherwise we read it uniformly from the X-Change-Reason
+    # request header so every mutating endpoint captures justification
+    # without per-model plumbing. Header is best-effort and length-capped.
+    if reason is None and request is not None:
+        try:
+            hdr = request.headers.get("X-Change-Reason")
+            if hdr:
+                reason = hdr.strip()[:500]
+        except Exception:
+            reason = None
     log_audit(
         actor_type="admin",
         actor_id=admin["id"],
@@ -1630,6 +1646,7 @@ def _audit_from(admin: dict, action: str, request: Request,
         before_value=before,
         after_value=after,
         ip_address=request.client.host if request.client else None,
+        reason=reason,
     )
 
 
@@ -2755,6 +2772,66 @@ class EquipmentRemoveBody(BaseModel):
     remove_note: Optional[str] = None
 
 
+# CMMS #2 — meter reading + usage/condition PM trigger models.
+class MeterReadingCreate(BaseModel):
+    meter_name:    str
+    reading_value: float
+    unit:          Optional[str] = None
+    reading_at:    Optional[str] = None
+    notes:         str = ""
+
+
+class MeterTriggerCreate(BaseModel):
+    meter_name:      str
+    mode:            str = "usage"          # 'usage' | 'condition'
+    interval_value:  Optional[float] = None  # usage: every N units
+    comparator:      Optional[str] = ">="    # condition: >=,<=,>,<
+    threshold_value: Optional[float] = None  # condition limit
+    title:           Optional[str] = None
+    active:          bool = True
+
+
+_METER_TRIGGER_MODES = ("usage", "condition")
+_METER_COMPARATORS = (">=", "<=", ">", "<")
+
+
+# ── Workforce planning (CMMS area #5) ─────────────────────────────────────────
+class TechSkillCreate(BaseModel):
+    skill:       str
+    proficiency: str = "qualified"   # trainee | qualified | expert
+
+
+class TechCapacityUpdate(BaseModel):
+    daily_capacity_hours: float
+
+
+_PROFICIENCY_LEVELS = ("trainee", "qualified", "expert")
+
+
+# ── Multi-entity / cost centres (CMMS area #6) ──────────────────────────────
+class EntityCreate(BaseModel):
+    code:      str
+    name:      str
+    kind:      str = "cost_center"      # legal_entity | cost_center
+    parent_id: Optional[int] = None
+    currency:  str = "TTD"
+
+
+class EntityUpdate(BaseModel):
+    name:      Optional[str] = None
+    kind:      Optional[str] = None
+    parent_id: Optional[int] = None
+    currency:  Optional[str] = None
+    active:    Optional[bool] = None
+
+
+class AdminEntityScope(BaseModel):
+    entity_ids: List[int] = []
+
+
+_ENTITY_KINDS = ("legal_entity", "cost_center")
+
+
 class PMContractCreate(BaseModel):
     customer_id:    int
     equipment_id:   Optional[int] = None
@@ -2804,6 +2881,15 @@ class VisitCreate(BaseModel):
     contact_person_phone:    str = ""
     hazards:                 str = ""
     access_codes:            str = ""
+    # CMMS #1 — work-order classification, priority and SLA target.
+    order_type:              Optional[str] = None   # reactive|preventive|predictive
+    priority:                str = "normal"          # low|normal|high|urgent
+    sla_deadline:            Optional[str] = None    # ISO datetime
+    sla_basis:               str = "start"           # start|resolve
+    # CMMS #5 — dispatchable skill this WO needs (drives skill matching).
+    required_skill:          Optional[str] = None
+    # CMMS #6 — business entity / cost centre this WO books to.
+    entity_id:               Optional[int] = None
     # Multi-tech crew (extras beyond the lead in assigned_tech_id). Empty list
     # = no extras. The lead is filtered out of this list server-side if it
     # accidentally sneaks in.
@@ -2828,10 +2914,74 @@ class VisitUpdate(BaseModel):
     contact_person_phone:    str = ""
     hazards:                 str = ""
     access_codes:            str = ""
+    # CMMS #1 — order_type/priority/SLA. None = leave the stored value as-is so
+    # the legacy edit modal (which omits these) doesn't clobber them.
+    order_type:              Optional[str] = None
+    priority:                Optional[str] = None
+    sla_deadline:            Optional[str] = None
+    sla_basis:               Optional[str] = None
+    # CMMS #5 — dispatchable skill this WO needs. None = leave as-is; "" clears.
+    required_skill:          Optional[str] = None
+    # CMMS #6 — business entity / cost centre. None = leave as-is.
+    entity_id:               Optional[int] = None
     # None = "don't touch the crew"; [] = "replace crew with empty list".
     # This split lets the existing edit modal (which doesn't yet send a
     # crew array) keep working without wiping prior assignments.
     crew_tech_ids:    Optional[List[int]] = None
+
+
+# CMMS #1 — work-order classification vocabularies. Validated at the route so a
+# bad value returns 422 instead of silently persisting.
+WO_ORDER_TYPES = ("reactive", "preventive", "predictive")
+WO_PRIORITIES = ("low", "normal", "high", "urgent")
+WO_SLA_BASES = ("start", "resolve")
+
+
+def _validate_wo_class(order_type, priority, sla_basis):
+    """Raise 422 if any supplied work-order classifier is outside its vocabulary.
+    None means 'not supplied' (leave as-is) and passes."""
+    if order_type is not None and order_type not in WO_ORDER_TYPES:
+        raise HTTPException(422, f"order_type must be one of {WO_ORDER_TYPES}")
+    if priority is not None and priority not in WO_PRIORITIES:
+        raise HTTPException(422, f"priority must be one of {WO_PRIORITIES}")
+    if sla_basis is not None and sla_basis not in WO_SLA_BASES:
+        raise HTTPException(422, f"sla_basis must be one of {WO_SLA_BASES}")
+
+
+def _wo_sla_status(sla_deadline, status):
+    """Derive an SLA badge for a work order from its deadline + lifecycle state.
+    Returns one of: none (no deadline), met (finished in time), breached
+    (finished late or open past deadline), due_soon (<8h left), on_track."""
+    if not sla_deadline:
+        return "none"
+    from datetime import datetime as _dt, timezone as _tz
+    try:
+        dl = _dt.fromisoformat(sla_deadline.replace("Z", "+00:00"))
+        if dl.tzinfo is None:
+            dl = dl.replace(tzinfo=_tz.utc)
+    except (ValueError, AttributeError):
+        return "none"
+    now = _dt.now(_tz.utc)
+    from database import normalize_visit_status as _nvs
+    done = _nvs(status or "") in ("completed", "closed")
+    if done:
+        return "met" if now <= dl else "breached"
+    if now > dl:
+        return "breached"
+    if (dl - now).total_seconds() <= 8 * 3600:
+        return "due_soon"
+    return "on_track"
+
+
+# CMMS #3 — work-order labor entry (time tracking → WO job-costing).
+class VisitLaborCreate(BaseModel):
+    hours:     float
+    tech_id:   Optional[int] = None
+    work_date: Optional[str] = None
+    billable:  bool = True
+    cost_rate: Optional[float] = None   # None → snapshot tech.hourly_rate
+    bill_rate: Optional[float] = None
+    notes:     str = ""
 
 
 class VisitUserStatus(BaseModel):
@@ -8092,6 +8242,59 @@ def admin_visit_parts(request: Request, visit_id: int):
     return get_visit_parts(visit_id)
 
 
+# ── CMMS #3 — work-order labor entries + job costing ─────────────────────────
+@app.get("/api/admin/visits/{visit_id}/labor", response_model=Dict[str, Any])
+def admin_visit_labor_list(request: Request, visit_id: int):
+    """Labor entries booked against a WO + the job-costing rollup.
+    Read gated by record access (same as visit detail)."""
+    _require_record_access(request, "visit", visit_id, write=False)
+    from database import list_visit_labor as _lvl, visit_job_costing as _vjc
+    if not get_visit_by_id(visit_id):
+        raise HTTPException(404, "Visit not found")
+    return {"entries": _lvl(visit_id), "job_costing": _vjc(visit_id)}
+
+
+@app.post("/api/admin/visits/{visit_id}/labor", response_model=Dict[str, Any])
+def admin_visit_labor_add(request: Request, visit_id: int, body: VisitLaborCreate):
+    """Book labor against a WO. Write gated by record access + visit:update."""
+    admin = _require_record_access(request, "visit", visit_id, write=True)
+    _require_perm(request, "visit:update")
+    if not get_visit_by_id(visit_id):
+        raise HTTPException(404, "Visit not found")
+    if body.hours is None or body.hours < 0:
+        raise HTTPException(422, "hours must be >= 0")
+    from database import add_visit_labor as _avl, visit_job_costing as _vjc, \
+        list_visit_labor as _lvl
+    entry_id = _avl(
+        visit_id, hours=body.hours, tech_id=body.tech_id,
+        work_date=body.work_date, billable=body.billable,
+        cost_rate=body.cost_rate, bill_rate=body.bill_rate, notes=body.notes,
+        created_by_kind="admin", created_by_id=admin["id"])
+    _audit_from(admin, "visit.labor_add", request, target_type="visit",
+                target_id=visit_id, target_label=f"Visit #{visit_id}",
+                after={"entry_id": entry_id, "hours": body.hours,
+                       "tech_id": body.tech_id, "billable": body.billable})
+    return {"id": entry_id, "entries": _lvl(visit_id),
+            "job_costing": _vjc(visit_id)}
+
+
+@app.delete("/api/admin/visits/{visit_id}/labor/{entry_id}",
+            response_model=Dict[str, Any])
+def admin_visit_labor_delete(request: Request, visit_id: int, entry_id: int):
+    """Remove a labor entry from a WO. Write gated by record access + visit:update."""
+    admin = _require_record_access(request, "visit", visit_id, write=True)
+    _require_perm(request, "visit:update")
+    from database import delete_visit_labor as _dvl, visit_job_costing as _vjc, \
+        list_visit_labor as _lvl
+    if not _dvl(entry_id, visit_id=visit_id):
+        raise HTTPException(404, "Labor entry not found")
+    _audit_from(admin, "visit.labor_delete", request, target_type="visit",
+                target_id=visit_id, target_label=f"Visit #{visit_id}",
+                after={"entry_id": entry_id})
+    return {"ok": True, "entries": _lvl(visit_id),
+            "job_costing": _vjc(visit_id)}
+
+
 @app.get("/api/admin/visits/cm-margin")
 def admin_cm_margin(request: Request, start_date: Optional[str] = None,
                      end_date: Optional[str] = None):
@@ -10760,6 +10963,13 @@ def admin_visit_detail(request: Request, visit_id: int):
     detail = get_visit_full_detail(visit_id)
     if not detail:
         raise HTTPException(404, "Visit not found")
+    # CMMS #1 — derive the live SLA badge from deadline + lifecycle state.
+    detail["sla_status"] = _wo_sla_status(
+        detail.get("sla_deadline"), detail.get("status"))
+    # CMMS #3 — job-costing rollup (labor entries + parts) for this WO.
+    from database import visit_job_costing as _vjc, list_visit_labor as _lvl
+    detail["job_costing"] = _vjc(visit_id)
+    detail["labor_entries"] = _lvl(visit_id)
     _audit_from(admin, "visit.detail_view", request,
                 target_type="visit", target_id=visit_id,
                 target_label=f"Visit #{visit_id}")
@@ -12514,6 +12724,308 @@ def admin_equipment_remove_bom(request: Request, equipment_id: int, part_id: int
     return {"equipment_id": equipment_id, "count": len(items), "items": items}
 
 
+# ── CMMS #2 — equipment meters + usage/condition PM triggers ─────────────────
+@app.get("/api/admin/equipment/{equipment_id}/meters")
+def admin_equipment_meters(request: Request, equipment_id: int,
+                           meter_name: Optional[str] = None):
+    """Meter reading log + the equipment's PM triggers."""
+    admin = _require_admin(request)
+    if not _admin_can(admin["role"], "customer:view"):
+        raise HTTPException(403, "Forbidden")
+    if not get_equipment_by_id(equipment_id):
+        raise HTTPException(404, "Equipment not found")
+    from database import list_meter_readings as _lmr, list_meter_triggers as _lmt
+    return {"equipment_id": equipment_id,
+            "readings": _lmr(equipment_id, meter_name=meter_name),
+            "triggers": _lmt(equipment_id=equipment_id)}
+
+
+@app.post("/api/admin/equipment/{equipment_id}/meters")
+def admin_equipment_add_reading(request: Request, equipment_id: int,
+                                body: MeterReadingCreate):
+    """Record a meter reading. Immediately evaluates this equipment's triggers
+    so a usage/condition predictive WO is raised on the spot when due."""
+    admin = _require_perm(request, "customer:update")
+    eq = get_equipment_by_id(equipment_id)
+    if not eq:
+        raise HTTPException(404, "Equipment not found")
+    if not (body.meter_name or "").strip():
+        raise HTTPException(422, "meter_name is required")
+    from database import add_meter_reading as _amr, list_meter_readings as _lmr, \
+        list_meter_triggers as _lmt
+    res = _amr(equipment_id, body.meter_name.strip(), body.reading_value,
+               unit=body.unit, reading_at=body.reading_at, notes=body.notes,
+               recorded_by_kind="admin", recorded_by_id=admin["id"])
+    _audit_from(admin, "equipment.meter_reading", request,
+                target_type="equipment", target_id=equipment_id,
+                target_label=eq.get("name"),
+                after={"meter_name": body.meter_name,
+                       "reading_value": body.reading_value,
+                       "generated_visits": res["generated"]})
+    return {"equipment_id": equipment_id, "reading_id": res["reading_id"],
+            "generated_visits": res["generated"],
+            "readings": _lmr(equipment_id, meter_name=body.meter_name.strip()),
+            "triggers": _lmt(equipment_id=equipment_id)}
+
+
+@app.post("/api/admin/equipment/{equipment_id}/meter-triggers")
+def admin_equipment_add_trigger(request: Request, equipment_id: int,
+                                body: MeterTriggerCreate):
+    """Create a usage or condition PM trigger on an asset meter."""
+    admin = _require_perm(request, "customer:update")
+    eq = get_equipment_by_id(equipment_id)
+    if not eq:
+        raise HTTPException(404, "Equipment not found")
+    if body.mode not in _METER_TRIGGER_MODES:
+        raise HTTPException(422, f"mode must be one of {_METER_TRIGGER_MODES}")
+    if not (body.meter_name or "").strip():
+        raise HTTPException(422, "meter_name is required")
+    if body.mode == "usage":
+        if not body.interval_value or body.interval_value <= 0:
+            raise HTTPException(422, "usage trigger requires a positive interval_value")
+    else:  # condition
+        if body.comparator not in _METER_COMPARATORS:
+            raise HTTPException(422, f"comparator must be one of {_METER_COMPARATORS}")
+        if body.threshold_value is None:
+            raise HTTPException(422, "condition trigger requires a threshold_value")
+    from database import create_meter_trigger as _cmt, list_meter_triggers as _lmt
+    tid = _cmt({
+        "equipment_id": equipment_id, "customer_id": eq["customer_id"],
+        "hub_id": eq.get("hub_id", 1), "meter_name": body.meter_name.strip(),
+        "mode": body.mode, "interval_value": body.interval_value,
+        "comparator": body.comparator, "threshold_value": body.threshold_value,
+        "title": body.title, "active": body.active,
+        "created_by_kind": "admin", "created_by_id": admin["id"]})
+    _audit_from(admin, "equipment.meter_trigger_created", request,
+                target_type="equipment", target_id=equipment_id,
+                target_label=eq.get("name"),
+                after={"trigger_id": tid, "mode": body.mode,
+                       "meter_name": body.meter_name})
+    return {"id": tid, "triggers": _lmt(equipment_id=equipment_id)}
+
+
+@app.post("/api/admin/meter-triggers/{trigger_id}/toggle")
+def admin_toggle_meter_trigger(request: Request, trigger_id: int,
+                               active: bool = True):
+    """Activate or deactivate a meter trigger."""
+    admin = _require_perm(request, "customer:update")
+    from database import set_meter_trigger_active as _smta
+    if not _smta(trigger_id, active):
+        raise HTTPException(404, "Trigger not found")
+    _audit_from(admin, "equipment.meter_trigger_toggled", request,
+                target_type="pm_meter_triggers", target_id=trigger_id,
+                after={"active": active})
+    return {"ok": True, "trigger_id": trigger_id, "active": active}
+
+
+# ── Workforce planning (CMMS area #5) ─────────────────────────────────────────
+#
+# Three planning lenses over the existing work-order + technician data:
+#   forecast    — per-day labour DEMAND (estimated hours on active WOs) vs
+#                 CAPACITY (active field-tech daily capacity); over-capacity days
+#   allocation  — per-tech assigned hours vs capacity, with over-allocated days
+#   skill-match — for one WO, rank dispatchable techs by skill fit + free capacity
+# Plus a small per-tech skills registry and a capacity setter. Reads need
+# tech:view; writes need tech:update. All additive over existing tables.
+
+@app.get("/api/admin/workforce/forecast")
+def admin_workforce_forecast(request: Request, start: str, end: str,
+                             hub_id: Optional[int] = None):
+    """Per-day labour demand vs capacity across [start, end] (ISO dates)."""
+    _require_perm(request, "tech:view")
+    from database import workforce_forecast as _wf
+    try:
+        return _wf(start, end, hub_id)
+    except ValueError:
+        raise HTTPException(422, "start/end must be ISO dates (YYYY-MM-DD)")
+
+
+@app.get("/api/admin/workforce/allocation")
+def admin_workforce_allocation(request: Request, start: str, end: str,
+                               hub_id: Optional[int] = None):
+    """Per-technician assigned hours vs capacity, with over-allocation alerts."""
+    _require_perm(request, "tech:view")
+    from database import workforce_allocation as _wa
+    try:
+        return _wa(start, end, hub_id)
+    except ValueError:
+        raise HTTPException(422, "start/end must be ISO dates (YYYY-MM-DD)")
+
+
+@app.get("/api/admin/visits/{visit_id}/skill-match")
+def admin_visit_skill_match(request: Request, visit_id: int):
+    """Rank dispatchable technicians for a work order by skill + free capacity."""
+    _require_perm(request, "visit:view")
+    from database import visit_skill_match as _vsm
+    res = _vsm(visit_id)
+    if res is None:
+        raise HTTPException(404, "Visit not found")
+    return res
+
+
+@app.get("/api/admin/technicians/{tech_id}/skills")
+def admin_list_tech_skills(request: Request, tech_id: int):
+    """List a technician's dispatchable skills."""
+    _require_perm(request, "tech:view")
+    from database import get_tech_by_id, list_tech_skills as _lts
+    if not get_tech_by_id(tech_id):
+        raise HTTPException(404, "Technician not found")
+    return {"tech_id": tech_id, "skills": _lts(tech_id)}
+
+
+@app.post("/api/admin/technicians/{tech_id}/skills")
+def admin_add_tech_skill(request: Request, tech_id: int, body: TechSkillCreate):
+    """Add/update a dispatchable skill on a technician."""
+    admin = _require_perm(request, "tech:update")
+    from database import get_tech_by_id, add_tech_skill as _ats, \
+        list_tech_skills as _lts
+    if not get_tech_by_id(tech_id):
+        raise HTTPException(404, "Technician not found")
+    if body.proficiency not in _PROFICIENCY_LEVELS:
+        raise HTTPException(422, f"proficiency must be one of {_PROFICIENCY_LEVELS}")
+    if not (body.skill or "").strip():
+        raise HTTPException(422, "skill is required")
+    try:
+        row = _ats(tech_id, body.skill, body.proficiency)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    _audit_from(admin, "tech.skill_added", request,
+                target_type="technician", target_id=tech_id,
+                after={"skill": row["skill"], "proficiency": row["proficiency"]})
+    return {"ok": True, "skill": row, "skills": _lts(tech_id)}
+
+
+@app.delete("/api/admin/technicians/{tech_id}/skills/{skill}")
+def admin_remove_tech_skill(request: Request, tech_id: int, skill: str):
+    """Remove a dispatchable skill from a technician."""
+    admin = _require_perm(request, "tech:update")
+    from database import get_tech_by_id, remove_tech_skill as _rts, \
+        list_tech_skills as _lts
+    if not get_tech_by_id(tech_id):
+        raise HTTPException(404, "Technician not found")
+    if not _rts(tech_id, skill):
+        raise HTTPException(404, "Skill not found on this technician")
+    _audit_from(admin, "tech.skill_removed", request,
+                target_type="technician", target_id=tech_id,
+                before={"skill": skill})
+    return {"ok": True, "skills": _lts(tech_id)}
+
+
+@app.post("/api/admin/technicians/{tech_id}/capacity")
+def admin_set_tech_capacity(request: Request, tech_id: int,
+                            body: TechCapacityUpdate):
+    """Set a technician's daily labour capacity (hours/day)."""
+    admin = _require_perm(request, "tech:update")
+    from database import get_tech_by_id, set_tech_capacity as _stc
+    if not get_tech_by_id(tech_id):
+        raise HTTPException(404, "Technician not found")
+    if body.daily_capacity_hours < 0:
+        raise HTTPException(422, "daily_capacity_hours must be >= 0")
+    _stc(tech_id, body.daily_capacity_hours)
+    _audit_from(admin, "tech.capacity_set", request,
+                target_type="technician", target_id=tech_id,
+                after={"daily_capacity_hours": body.daily_capacity_hours})
+    return {"ok": True, "tech_id": tech_id,
+            "daily_capacity_hours": body.daily_capacity_hours}
+
+
+# ── Multi-entity / cost centres (CMMS area #6) ──────────────────────────────
+# The org as a tree of business entities (legal entities + cost centres). Work
+# orders book to an entity; entity_pnl rolls revenue/labour/parts up per entity.
+# Reads need entity:view; structural writes need entity:manage. Reporting is
+# scoped to the admin's allowed entities (admin_entity_scope) when set — an
+# admin with no scope rows sees all entities (DATA scope, never a feature gate).
+
+@app.get("/api/admin/entities")
+def admin_list_entities(request: Request, include_inactive: bool = True):
+    """List business entities (legal entities + cost centres)."""
+    admin = _require_perm(request, "entity:view")
+    from database import list_entities as _le, admin_allowed_entity_ids as _aei
+    rows = _le(include_inactive=include_inactive)
+    allowed = _aei(admin["id"])
+    if allowed is not None:
+        rows = [r for r in rows if r["id"] in allowed]
+    return {"entities": rows, "scoped": allowed is not None}
+
+
+@app.post("/api/admin/entities")
+def admin_create_entity(request: Request, body: EntityCreate):
+    """Create a business entity (legal entity or cost centre)."""
+    admin = _require_perm(request, "entity:manage")
+    if body.kind not in _ENTITY_KINDS:
+        raise HTTPException(422, f"kind must be one of {_ENTITY_KINDS}")
+    from database import create_entity as _ce, get_entity as _ge
+    try:
+        eid = _ce(body.code, body.name, body.kind, body.parent_id, body.currency)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    _audit_from(admin, "entity.create", request,
+                target_type="entity", target_id=eid,
+                target_label=body.code, after=body.model_dump())
+    return {"id": eid, "entity": _ge(eid)}
+
+
+@app.put("/api/admin/entities/{entity_id}")
+def admin_update_entity(request: Request, entity_id: int, body: EntityUpdate):
+    """Update a business entity's name/kind/parent/currency/active flag."""
+    admin = _require_perm(request, "entity:manage")
+    from database import get_entity as _ge, update_entity as _ue
+    before = _ge(entity_id)
+    if not before:
+        raise HTTPException(404, "Entity not found")
+    try:
+        _ue(entity_id, **body.model_dump(exclude_none=True))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    after = _ge(entity_id)
+    _audit_from(admin, "entity.update", request,
+                target_type="entity", target_id=entity_id,
+                target_label=after["code"], before=before, after=after)
+    return {"ok": True, "entity": after}
+
+
+@app.get("/api/admin/admins/{admin_id}/entity-scope")
+def admin_get_admin_entity_scope(request: Request, admin_id: int):
+    """Read an admin's entity reporting scope (empty list = unrestricted)."""
+    _require_perm(request, "entity:manage")
+    from database import get_admin_entity_scope as _gs
+    return {"admin_id": admin_id, "entity_ids": _gs(admin_id)}
+
+
+@app.put("/api/admin/admins/{admin_id}/entity-scope")
+def admin_set_admin_entity_scope(request: Request, admin_id: int,
+                                 body: AdminEntityScope):
+    """Replace an admin's entity reporting scope. Empty = unrestricted."""
+    admin = _require_perm(request, "entity:manage")
+    from database import set_admin_entity_scope as _ss
+    stored = _ss(admin_id, body.entity_ids)
+    _audit_from(admin, "entity.scope_set", request,
+                target_type="admin", target_id=admin_id,
+                after={"entity_ids": stored})
+    return {"ok": True, "admin_id": admin_id, "entity_ids": stored}
+
+
+@app.get("/api/admin/entities/pnl")
+def admin_entity_pnl(request: Request, start: str, end: str,
+                     entity_ids: Optional[str] = None):
+    """Per-entity P&L (revenue/labour/parts/profit) over [start, end].
+    entity_ids = optional comma-separated filter. Results are intersected with
+    the caller's entity scope (admin_entity_scope) when one is set."""
+    admin = _require_perm(request, "entity:view")
+    from database import entity_pnl as _pnl, admin_allowed_entity_ids as _aei
+    want = None
+    if entity_ids:
+        try:
+            want = [int(x) for x in entity_ids.split(",") if x.strip()]
+        except ValueError:
+            raise HTTPException(422, "entity_ids must be comma-separated integers")
+    allowed = _aei(admin["id"])
+    try:
+        return _pnl(start, end, entity_ids=want, allowed_ids=allowed)
+    except ValueError:
+        raise HTTPException(422, "start/end must be ISO dates (YYYY-MM-DD)")
+
+
 @app.get("/api/admin/parts/{part_id}/where-used")
 def admin_part_where_used(request: Request, part_id: int):
     """Reverse lookup: which assets list this part on their BOM."""
@@ -13039,13 +13551,19 @@ def tech_update_equipment(request: Request, equipment_id: int, body: EquipmentUp
 @app.get("/api/admin/visits")
 def admin_list_visits(request: Request):
     _require_perm(request, "visit:view")
-    return get_all_visits()
+    rows = get_all_visits()
+    # CMMS #1 — attach the live SLA badge so the schedule/list views can flag
+    # breached / due-soon work orders without a second round trip.
+    for r in rows:
+        r["sla_status"] = _wo_sla_status(r.get("sla_deadline"), r.get("status"))
+    return rows
 
 
 @app.post("/api/admin/visits")
 def admin_create_visit(request: Request, body: VisitCreate):
     admin = _require_perm(request, "visit:create")
     from database import set_visit_crew
+    _validate_wo_class(body.order_type, body.priority, body.sla_basis)
     payload = body.model_dump()
     # crew_tech_ids isn't a column on maintenance_visits — it's handled
     # separately via the visit_techs table after the visit row is inserted.
@@ -13065,6 +13583,7 @@ def admin_create_visit(request: Request, body: VisitCreate):
 def admin_update_visit(request: Request, visit_id: int, body: VisitUpdate):
     admin = _require_record_access(request, "visit", visit_id, write=True)
     from database import set_visit_crew
+    _validate_wo_class(body.order_type, body.priority, body.sla_basis)
     before = get_visit_by_id(visit_id)
     payload = body.model_dump()
     # `crew_tech_ids` is None when the caller doesn't want to touch the
@@ -13110,7 +13629,38 @@ def admin_transition_visit(request: Request, visit_id: int, body: VisitTransitio
                 target_label=f"{result['old']} → {result['new']}",
                 before={"status": result["old"]},
                 after={"status": result["new"], "reason": body.reason or None})
-    return {"ok": True, **result}
+    # CMMS #7 — data-model coherence. Completing a WO cascades the downstream
+    # effects (materialise the next contract PM, settle the job-costing rollup)
+    # so dependent state stays coherent without a separate manual step. Only on
+    # a real move into `completed` (not a no-op re-complete).
+    cascade = None
+    if result.get("new") == "completed" and not result.get("noop"):
+        from database import visit_completion_cascade as _vcc
+        cascade = _vcc(visit_id)
+        if cascade.get("next_pm_created"):
+            _audit_from(admin, "visit.pm_next_generated", request,
+                        target_type="visit", target_id=visit_id,
+                        target_label=f"contract {cascade.get('pm_contract_id')}",
+                        after={"next_pm_created": cascade["next_pm_created"],
+                               "pm_contract_id": cascade.get("pm_contract_id")})
+    out = {"ok": True, **result}
+    if cascade is not None:
+        out["cascade"] = cascade
+    return out
+
+
+@app.get("/api/admin/visits/{visit_id}/coherence")
+def admin_visit_coherence(request: Request, visit_id: int):
+    """CMMS #7 — one authoritative dependent view of a work order: its settled
+    cost rollup, its position in the PM schedule (contract + sibling PMs), and
+    its entity tag, assembled from the canonical tables so the UI never stitches
+    several endpoints together and risks drift."""
+    _require_record_access(request, "visit", visit_id, write=False)
+    from database import visit_coherence as _vco
+    data = _vco(visit_id)
+    if data is None:
+        raise HTTPException(404, "Visit not found")
+    return data
 
 
 @app.get("/api/admin/visits/{visit_id}/crew")
@@ -16421,6 +16971,23 @@ async def _pm_contract_gen_loop():
                             f"{len(res['expired'])} contract(s) expired")
         except Exception as _e:
             logger.error(f"pm generate cron error: {_e}")
+        # CMMS #2 — usage/condition meter triggers run on the same daily cadence
+        # (readings also evaluate on submit; this is the safety-net sweep).
+        try:
+            from database import evaluate_meter_triggers as _emt
+            mres = _emt()
+            if mres["created"]:
+                try:
+                    log_audit(actor_type="system", action="pm_meter.cron_generate",
+                              target_type="pm_meter_triggers",
+                              after_value={"created": len(mres["created"]),
+                                           "evaluated": mres["evaluated"]})
+                except Exception as _e:
+                    logger.warning(f"[pm-meter] audit-write failed: {_e}")
+                logger.info(f"pm meter cron: {len(mres['created'])} visit(s) created "
+                            f"from {mres['evaluated']} trigger(s)")
+        except Exception as _e:
+            logger.error(f"pm meter cron error: {_e}")
         await _asyncio.sleep(24 * 60 * 60)
 
 

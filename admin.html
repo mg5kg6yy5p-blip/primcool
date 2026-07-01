@@ -1432,6 +1432,14 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
         Schedule
       </div>
+      <div class="nav-item" onclick="showPanel('workforce')" id="nav-workforce" style="display:none;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        Workforce
+      </div>
+      <div class="nav-item" onclick="showPanel('entities')" id="nav-entities" style="display:none;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V7l8-4v18"/><path d="M19 21V11l-6-4"/><path d="M9 9v.01"/><path d="M9 12v.01"/><path d="M9 15v.01"/><path d="M9 18v.01"/></svg>
+        Entities
+      </div>
       <div class="nav-item" onclick="showPanel('timesheets')" id="nav-timesheets" style="display:none;">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
         Timesheets
@@ -2213,6 +2221,142 @@
         </p>
       </div>
 
+      <!-- ── Workforce planning panel (CMMS #5) ── -->
+      <div class="panel" id="panel-workforce">
+        <div class="top-bar">
+          <h2>Workforce Planning</h2>
+        </div>
+        <div class="filter-bar" style="gap:10px;align-items:center;flex-wrap:wrap;">
+          <label style="font-size:12px;color:var(--muted);font-weight:600;">From
+            <input type="date" id="wf-start" onchange="wfLoad()" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;margin-left:4px;">
+          </label>
+          <label style="font-size:12px;color:var(--muted);font-weight:600;">To
+            <input type="date" id="wf-end" onchange="wfLoad()" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;margin-left:4px;">
+          </label>
+          <button class="filter-btn" onclick="wfThisWeek()">This Week</button>
+          <button class="filter-btn" onclick="wfNextWeek()">Next Week</button>
+          <button class="filter-btn" onclick="wfLoad()">↻ Refresh</button>
+          <span id="wf-stats" style="margin-left:auto;font-size:12px;color:var(--muted);align-self:center;"></span>
+        </div>
+
+        <div id="wf-alerts" style="margin-top:8px;"></div>
+
+        <div style="display:grid;grid-template-columns:1fr;gap:18px;margin-top:14px;">
+          <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px 18px;">
+            <h3 style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.8px;margin:0 0 12px;">Demand vs Capacity</h3>
+            <div id="wf-forecast"><p style="color:var(--muted);font-size:13px;">Pick a date range to load the forecast.</p></div>
+          </div>
+          <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px 18px;">
+            <h3 style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.8px;margin:0 0 12px;">Technician Allocation</h3>
+            <div id="wf-allocation"></div>
+          </div>
+        </div>
+        <p style="font-size:12px;color:var(--muted);margin-top:14px;line-height:1.5;">
+          Demand is the estimated labour hours on active work orders scheduled each day (a WO with no estimate counts as 2h). Capacity is the sum of active field technicians' daily capacity. Set a technician's capacity and dispatchable skills from their detail page.
+        </p>
+      </div>
+
+      <!-- ── Entities & P&L panel (CMMS #6 — multi-entity) ── -->
+      <div class="panel" id="panel-entities">
+        <div class="top-bar">
+          <h2>Entities &amp; P&amp;L</h2>
+          <button class="btn btn-primary" id="ent-new-btn" onclick="entOpenCreate()" style="display:none;">+ New Entity</button>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr;gap:18px;margin-top:6px;">
+          <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px 18px;">
+            <h3 style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.8px;margin:0 0 12px;">Business Entities</h3>
+            <div id="ent-list"><p style="color:var(--muted);font-size:13px;">Loading…</p></div>
+            <p id="ent-scope-note" style="font-size:12px;color:var(--muted);margin-top:10px;display:none;"></p>
+          </div>
+
+          <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px 18px;">
+            <h3 style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.8px;margin:0 0 12px;">Per-Entity P&amp;L</h3>
+            <div class="filter-bar" style="gap:10px;align-items:center;flex-wrap:wrap;padding:0;border:none;background:none;">
+              <label style="font-size:12px;color:var(--muted);font-weight:600;">From
+                <input type="date" id="ent-start" onchange="entLoadPnl()" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;margin-left:4px;">
+              </label>
+              <label style="font-size:12px;color:var(--muted);font-weight:600;">To
+                <input type="date" id="ent-end" onchange="entLoadPnl()" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;margin-left:4px;">
+              </label>
+              <button class="filter-btn" onclick="entThisMonth()">This Month</button>
+              <button class="filter-btn" onclick="entThisYear()">This Year</button>
+              <button class="filter-btn" onclick="entLoadPnl()">↻ Refresh</button>
+              <span id="ent-pnl-stats" style="margin-left:auto;font-size:12px;color:var(--muted);align-self:center;"></span>
+            </div>
+            <div id="ent-pnl" style="margin-top:12px;"><p style="color:var(--muted);font-size:13px;">Pick a date range to load the P&amp;L.</p></div>
+          </div>
+        </div>
+        <p style="font-size:12px;color:var(--muted);margin-top:14px;line-height:1.5;">
+          A work order books to one business entity (legal entity or cost centre). Revenue (invoices), labour cost (time entries) and parts cost roll up per entity. Untagged work orders count under the default entity. Reporting is limited to the entities in your scope when one is assigned.
+        </p>
+      </div>
+
+      <!-- ── Entity create/edit modal ── -->
+      <div class="modal-overlay" id="ent-modal" style="display:none;">
+        <div class="modal" style="max-width:480px;">
+          <div class="modal-header">
+            <h3 id="ent-modal-title">New Entity</h3>
+            <button class="modal-close" onclick="entCloseModal()">&times;</button>
+          </div>
+          <div class="modal-body">
+            <input type="hidden" id="ent-f-id">
+            <div class="form-group">
+              <label>Code</label>
+              <input type="text" id="ent-f-code" placeholder="e.g. KIN-CC" style="text-transform:uppercase;">
+            </div>
+            <div class="form-group">
+              <label>Name</label>
+              <input type="text" id="ent-f-name" placeholder="e.g. Kingston Service Centre">
+            </div>
+            <div class="form-group">
+              <label>Kind</label>
+              <select id="ent-f-kind">
+                <option value="cost_center">Cost Centre</option>
+                <option value="legal_entity">Legal Entity</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Parent (optional)</label>
+              <select id="ent-f-parent"><option value="">— none —</option></select>
+            </div>
+            <div class="form-group">
+              <label>Currency</label>
+              <input type="text" id="ent-f-currency" value="TTD" style="text-transform:uppercase;max-width:120px;">
+            </div>
+            <div class="form-group" id="ent-f-active-wrap" style="display:none;">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                <input type="checkbox" id="ent-f-active" style="width:auto;"> Active
+              </label>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-ghost" id="ent-hist-btn" onclick="entOpenHistory()" style="display:none;margin-right:auto;">🕑 History</button>
+            <button class="btn btn-ghost" onclick="entCloseModal()">Cancel</button>
+            <button class="btn btn-primary" onclick="entSave()">Save</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Audit history / lifecycle viewer (CMMS #4) ── -->
+      <!-- Generic: openAuditHistory(targetType, targetId, label) renders the
+           merged mutation+read timeline with field-level old→new diffs and the
+           captured "why" (reason). Wired into the WO and entity edit modals. -->
+      <div class="modal-overlay" id="aud-hist-modal" style="display:none;">
+        <div class="modal" style="max-width:760px;">
+          <div class="modal-header">
+            <h3 id="aud-hist-title">History</h3>
+            <button class="modal-close" onclick="auditHistClose()">&times;</button>
+          </div>
+          <div class="modal-body" style="max-height:65vh;overflow:auto;">
+            <div id="aud-hist-body"><p style="color:var(--muted);font-size:13px;">Loading…</p></div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-ghost" onclick="auditHistClose()">Close</button>
+          </div>
+        </div>
+      </div>
+
       <!-- ── Timesheets panel ── -->
       <div class="panel" id="panel-timesheets">
         <div class="top-bar">
@@ -2670,6 +2814,29 @@
               </div>
             </div>
             <div id="tdf-cv-requests"><div class="empty" style="padding:14px;">Loading…</div></div>
+          </div>
+
+          <!-- Skills & dispatch capacity (CMMS #5 — workforce planning) -->
+          <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:18px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+              <h3 style="margin:0;color:var(--ink);font-size:16px;">Dispatch Skills &amp; Capacity</h3>
+              <div id="tdf-cap-wrap" style="display:none;align-items:center;gap:6px;">
+                <label style="font-size:12px;color:var(--muted);">Daily capacity (h)
+                  <input id="tdf-cap-input" type="number" min="0" step="0.5" style="width:80px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;margin-left:4px;">
+                </label>
+                <button class="btn btn-ghost btn-sm" onclick="tdfSaveCapacity()">Save</button>
+              </div>
+            </div>
+            <div id="tdf-skills-body" style="font-size:13px;color:var(--muted);">Loading…</div>
+            <div id="tdf-skill-add" style="display:none;margin-top:12px;gap:6px;align-items:center;flex-wrap:wrap;">
+              <input id="tdf-skill-name" type="text" placeholder="Skill (e.g. refrigeration)" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;">
+              <select id="tdf-skill-prof" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;">
+                <option value="trainee">Trainee</option>
+                <option value="qualified" selected>Qualified</option>
+                <option value="expert">Expert</option>
+              </select>
+              <button class="btn btn-ghost btn-sm" onclick="tdfAddSkill()">+ Add skill</button>
+            </div>
           </div>
 
           <!-- Bonus & Payroll -->
@@ -4674,6 +4841,8 @@
       <div id="eqd-timeline" style="margin-top:16px;"></div>
       <!-- CMMS Phase 6: asset bill of materials (spares list) -->
       <div id="eqd-bom" style="margin-top:16px;"></div>
+      <!-- CMMS #2: meters + usage/condition PM triggers -->
+      <div id="eqd-meters" style="margin-top:16px;"></div>
     </div>
     <div class="modal-footer" style="justify-content:flex-end;">
       <button class="btn btn-ghost" onclick="closeModal('equipmentDetail')">Close</button>
@@ -4768,6 +4937,15 @@
         <div id="vdf-lifecycle-error" style="display:none;margin-top:8px;color:var(--danger,#c0392b);font-size:12px;"></div>
       </div>
 
+      <!-- Coherence (CMMS #7 — one authoritative dependent view) -->
+      <div id="vdf-coherence-card" style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:14px;">
+        <h4 style="margin:0 0 8px;color:var(--ink);font-size:14px;">Coherence — cost &amp; PM chain</h4>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:10px;">
+          Settled job cost and this work order's place in its preventive-maintenance schedule, from the single source of truth.
+        </div>
+        <div id="vdf-coherence-body" style="font-size:13px;color:var(--text);">Loading…</div>
+      </div>
+
       <!-- Billing (CMMS Gap #2) -->
       <div id="vdf-billing-card" style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:14px;">
         <h4 style="margin:0 0 8px;color:var(--ink);font-size:14px;">Billing</h4>
@@ -4813,6 +4991,39 @@
           <thead><tr><th>SKU</th><th>Part Name</th><th>Qty</th><th>Unit Cost</th><th>Line Total</th><th>Notes</th></tr></thead>
           <tbody id="vdf-parts-body"><tr><td colspan="6" class="empty">—</td></tr></tbody>
           <tfoot id="vdf-parts-foot"></tfoot>
+        </table></div>
+      </div>
+
+      <!-- Labor & Job Costing (CMMS #3) -->
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:14px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <h4 style="margin:0;color:var(--ink);font-size:14px;">Labor &amp; Job Costing</h4>
+          <button class="btn btn-ghost btn-sm" id="vdf-labor-add-btn" onclick="vdfToggleLaborForm()">+ Add labor</button>
+        </div>
+        <div id="vdf-labor-form" style="display:none;background:var(--bg,#f7f9fb);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:10px;">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;align-items:end;">
+            <label style="font-size:11px;color:var(--muted);">Technician
+              <select id="vdf-labor-tech" style="width:100%;"></select></label>
+            <label style="font-size:11px;color:var(--muted);">Hours
+              <input id="vdf-labor-hours" type="number" min="0" step="0.25" style="width:100%;"></label>
+            <label style="font-size:11px;color:var(--muted);">Work date
+              <input id="vdf-labor-date" type="date" style="width:100%;"></label>
+            <label style="font-size:11px;color:var(--muted);">Cost rate ($/h)
+              <input id="vdf-labor-cost" type="number" min="0" step="0.01" placeholder="auto" style="width:100%;"></label>
+            <label style="font-size:11px;color:var(--muted);">Bill rate ($/h)
+              <input id="vdf-labor-bill" type="number" min="0" step="0.01" style="width:100%;"></label>
+            <label style="font-size:11px;color:var(--muted);display:flex;align-items:center;gap:5px;margin-top:14px;">
+              <input id="vdf-labor-billable" type="checkbox" checked> Billable</label>
+          </div>
+          <div style="margin-top:8px;display:flex;gap:8px;">
+            <button class="btn btn-primary btn-sm" onclick="vdfSubmitLabor()">Save labor</button>
+            <button class="btn btn-ghost btn-sm" onclick="vdfToggleLaborForm()">Cancel</button>
+          </div>
+        </div>
+        <div class="table-wrap"><table style="font-size:12px;">
+          <thead><tr><th>Date</th><th>Technician</th><th>Hours</th><th>Billable</th><th>Cost $/h</th><th>Bill $/h</th><th>Notes</th><th></th></tr></thead>
+          <tbody id="vdf-labor-body"><tr><td colspan="8" class="empty">—</td></tr></tbody>
+          <tfoot id="vdf-labor-foot"></tfoot>
         </table></div>
       </div>
 
@@ -5238,7 +5449,10 @@
   <div class="modal">
     <div class="modal-header">
       <h3 id="visitModalTitle">Schedule Visit</h3>
-      <button class="modal-close" onclick="closeModal('addVisit')">×</button>
+      <div style="margin-left:auto;display:flex;gap:8px;align-items:center;">
+        <button class="btn btn-ghost" id="v-hist-btn" onclick="visitOpenHistory()" style="display:none;font-size:13px;padding:4px 10px;">🕑 History</button>
+        <button class="modal-close" onclick="closeModal('addVisit')">×</button>
+      </div>
     </div>
     <div class="modal-body">
       <div class="field" id="visitCustomerField">
@@ -5288,6 +5502,48 @@
         <div class="field"><label>Contact person — phone</label><input id="v-contact-phone" placeholder="876…"></div>
         <div class="field"><label>Site hazards (rendered in red banner)</label><textarea id="v-hazards" placeholder="E.g. roof access, electrical risks, dogs on premises…"></textarea></div>
         <div class="field"><label>Access codes (gate/door)</label><input id="v-access" placeholder="Code or note for the tech"></div>
+      </fieldset>
+
+      <fieldset style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:14px;">
+        <legend style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:0.6px;text-transform:uppercase;padding:0 6px;">Classification &amp; SLA</legend>
+        <div class="field-row">
+          <div class="field">
+            <label>Order type</label>
+            <select id="v-order-type">
+              <option value="">— Auto (reactive / preventive) —</option>
+              <option value="reactive">Reactive (corrective)</option>
+              <option value="preventive">Preventive (planned)</option>
+              <option value="predictive">Predictive (condition/meter)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Priority</label>
+            <select id="v-priority">
+              <option value="low">Low</option>
+              <option value="normal" selected>Normal</option>
+              <option value="high">High</option>
+              <option value="urgent">Urgent</option>
+            </select>
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field"><label>SLA deadline</label><input id="v-sla-deadline" type="datetime-local"></div>
+          <div class="field">
+            <label>SLA basis</label>
+            <select id="v-sla-basis">
+              <option value="start">Must start by</option>
+              <option value="resolve">Must resolve by</option>
+            </select>
+          </div>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px;">Leave the deadline blank for no SLA. Breached / due-soon work orders are flagged on the schedule.</div>
+        <div class="field-row" id="v-entity-row" style="display:none;">
+          <div class="field">
+            <label>Business entity / cost centre</label>
+            <select id="v-entity"><option value="">— Default —</option></select>
+            <div style="font-size:11px;color:var(--muted);margin-top:2px;">Revenue and costs for this work order roll up to this entity's P&amp;L.</div>
+          </div>
+        </div>
       </fieldset>
 
       <div class="field"><label>Work Performed</label><textarea id="v-work-done" placeholder="Describe work carried out…"></textarea></div>
@@ -5382,6 +5638,7 @@
     { key:'customer',   label:'Customer',       always:true  },
     { key:'type',       label:'Type',           always:false },
     { key:'status',     label:'Status',         always:false },
+    { key:'priosla',    label:'Priority / SLA', always:false },
     { key:'userstatus', label:'User Status',    always:false },
     { key:'scheduled',  label:'Scheduled',      always:false },
     { key:'completed',  label:'Completed',      always:false },
@@ -5672,6 +5929,8 @@
     }
     if (can('timesheet:view_all')) document.getElementById('nav-timesheets').style.display = 'flex';
     if (can('schedule:view')) document.getElementById('nav-schedule').style.display = 'flex';
+    if (can('tech:view')) { const _nw = document.getElementById('nav-workforce'); if (_nw) _nw.style.display = 'flex'; }
+    if (can('entity:view')) { const _ne = document.getElementById('nav-entities'); if (_ne) _ne.style.display = 'flex'; }
     if (can('inventory:view')) document.getElementById('nav-inventory').style.display = 'flex';
     if (can('inventory:create')) document.getElementById('addPartBtn').style.display = '';
     if (can('invoice:view')) document.getElementById('nav-invoices').style.display = 'flex';
@@ -6132,11 +6391,21 @@
   });
 
   // ── API helper ─────────────────────────────────────────────────────────────
-  async function api(method, url, body) {
+  async function api(method, url, body, extraHeaders) {
     const opts = {
       method,
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${adminToken}` },
     };
+    // Optional per-call headers (e.g. X-Change-Reason for the audit "why").
+    // Skipped if blank so we never send an empty header.
+    if (extraHeaders) {
+      for (const k in extraHeaders) {
+        const v = extraHeaders[k];
+        if (v !== undefined && v !== null && String(v).trim() !== '') {
+          opts.headers[k] = String(v);
+        }
+      }
+    }
     if (body) opts.body = JSON.stringify(body);
     const res = await fetch(url, opts);
     if (res.status === 401) { adminLogout(); throw new Error('Unauthorized'); }
@@ -6207,7 +6476,9 @@
     customers: 'Customers', visits: 'All Visits', techs: 'Technicians',
     employees: 'Employees',
     invoices: 'Invoices',   documents: 'Documents', inventory: 'Warehouse',
-    warehouse: 'Warehouse Ops', schedule: 'Schedule', timesheets: 'Timesheets',
+    warehouse: 'Warehouse Ops', schedule: 'Schedule', workforce: 'Workforce',
+    entities: 'Entities & P&L',
+    timesheets: 'Timesheets',
     payroll: 'Payroll', mypay: 'My Payslips', admins: 'Admins',
     onboarding: 'Onboarding',
     audit: 'Audit Log', reviews: 'Reviews', fs: '5S',
@@ -6989,6 +7260,8 @@
     if (name === 'pto') { _safeLoad('loadPtoQueue', loadPtoQueue); }
     if (name === 'delegations') { _safeLoad('loadDelegationsPanel', loadDelegationsPanel); }
     if (name === 'contracts') { _safeLoad('loadPmContracts', loadPmContracts); }
+    if (name === 'workforce') { _safeLoad('wfLoad', wfLoad); }
+    if (name === 'entities') { _safeLoad('entLoad', entLoad); }
     if (name === 'employees') { _safeLoad('hrLoadEmployees', hrLoadEmployees); }
     if (name === 'companymsg') { _safeLoad('cmLoad', cmLoad); }
     if (name === 'svcreq') { _safeLoad('svcReqLoad', svcReqLoad); }
@@ -7504,6 +7777,165 @@
     eqdLoadTimeline(eq.id);
     // CMMS Phase 6: load the asset's bill of materials (spares list).
     eqdLoadBom(eq.id, eq.customer_id);
+    // CMMS #2: load meters + usage/condition PM triggers.
+    eqdLoadMeters(eq.id);
+  }
+
+  // ── CMMS #2: equipment meters + usage/condition PM triggers ─────────────
+  async function eqdLoadMeters(equipmentId) {
+    const host = document.getElementById('eqd-meters');
+    if (!host) return;
+    host.innerHTML = '<div style="color:var(--muted);font-size:12px;">Loading meters…</div>';
+    try {
+      const data = await api('GET', `/api/admin/equipment/${equipmentId}/meters`);
+      eqdRenderMeters(equipmentId, data);
+    } catch (e) {
+      host.innerHTML = '<div style="color:var(--muted);font-size:12px;">Unable to load meters.</div>';
+    }
+  }
+
+  function _eqdTriggerLabel(t) {
+    if (t.mode === 'usage') {
+      return `every ${t.interval_value} ${escHtml(t.meter_name)} (last @ ${t.last_triggered_value ?? 0})`;
+    }
+    return `${escHtml(t.meter_name)} ${escHtml(t.comparator || '>=')} ${t.threshold_value}${t.armed ? '' : ' (fired — awaiting reset)'}`;
+  }
+
+  function eqdRenderMeters(equipmentId, data) {
+    const host = document.getElementById('eqd-meters');
+    if (!host) return;
+    const canEdit = can('customer:update');
+    const readings = (data && data.readings) || [];
+    const triggers = (data && data.triggers) || [];
+    const trigRows = triggers.length
+      ? triggers.map(t => `<tr>
+          <td style="padding:3px 8px 3px 0;"><span class="badge badge-${t.mode === 'condition' ? 'cm' : 'pm'}">${t.mode}</span></td>
+          <td style="padding:3px 8px;">${_eqdTriggerLabel(t)}</td>
+          <td style="padding:3px 8px;">${t.active ? '<span style="color:var(--teal-deep,#1a7f43);">active</span>' : '<span style="color:var(--muted);">off</span>'}</td>
+          <td style="padding:3px 0 3px 8px;text-align:right;">${canEdit ? `<button class="btn btn-ghost btn-sm" onclick="eqdToggleTrigger(${equipmentId},${t.id},${t.active ? 'false' : 'true'})">${t.active ? 'Disable' : 'Enable'}</button>` : ''}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="4" style="color:var(--muted);padding:4px 0;">No PM triggers on this asset.</td></tr>';
+    const readRows = readings.length
+      ? readings.slice(0, 8).map(r => `<tr>
+          <td style="padding:3px 8px 3px 0;">${escHtml(String(r.reading_at || '').slice(0,16).replace('T',' '))}</td>
+          <td style="padding:3px 8px;">${escHtml(r.meter_name)}</td>
+          <td style="padding:3px 0 3px 8px;text-align:right;">${r.reading_value}${r.unit ? ' ' + escHtml(r.unit) : ''}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="3" style="color:var(--muted);padding:4px 0;">No readings logged.</td></tr>';
+
+    host.innerHTML = `
+      <h4 style="margin:0 0 8px;color:var(--ink);font-size:13px;text-transform:uppercase;letter-spacing:0.4px;">Meters &amp; Predictive PM</h4>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px;">
+        <thead><tr style="color:var(--muted);font-size:11px;text-transform:uppercase;">
+          <th style="text-align:left;">Type</th><th style="text-align:left;">Rule</th><th style="text-align:left;">State</th><th></th></tr></thead>
+        <tbody>${trigRows}</tbody>
+      </table>
+      ${canEdit ? `<div style="margin-bottom:10px;display:flex;gap:6px;flex-wrap:wrap;">
+        <button class="btn btn-ghost btn-sm" onclick="eqdShowTriggerForm(${equipmentId})">+ Add PM trigger</button>
+        <button class="btn btn-ghost btn-sm" onclick="eqdShowReadingForm(${equipmentId})">+ Log reading</button>
+      </div>
+      <div id="eqd-meter-forms-${equipmentId}"></div>` : ''}
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead><tr style="color:var(--muted);font-size:11px;text-transform:uppercase;">
+          <th style="text-align:left;">When</th><th style="text-align:left;">Meter</th><th style="text-align:right;">Reading</th></tr></thead>
+        <tbody>${readRows}</tbody>
+      </table>`;
+  }
+
+  function eqdShowReadingForm(equipmentId) {
+    const host = document.getElementById('eqd-meter-forms-' + equipmentId);
+    if (!host) return;
+    host.innerHTML = `<div style="background:var(--bg,#f7f9fb);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:10px;">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;">
+        <label style="font-size:11px;color:var(--muted);">Meter<br><input id="eqd-rd-name" type="text" placeholder="run_hours"></label>
+        <label style="font-size:11px;color:var(--muted);">Value<br><input id="eqd-rd-val" type="number" step="any"></label>
+        <label style="font-size:11px;color:var(--muted);">Unit<br><input id="eqd-rd-unit" type="text" placeholder="h" style="width:70px;"></label>
+        <button class="btn btn-primary btn-sm" onclick="eqdSubmitReading(${equipmentId})">Save</button>
+        <button class="btn btn-ghost btn-sm" onclick="document.getElementById('eqd-meter-forms-${equipmentId}').innerHTML=''">Cancel</button>
+      </div></div>`;
+  }
+
+  async function eqdSubmitReading(equipmentId) {
+    const name = document.getElementById('eqd-rd-name').value.trim();
+    const val = parseFloat(document.getElementById('eqd-rd-val').value);
+    if (!name) { toast('Enter a meter name', 'error'); return; }
+    if (isNaN(val)) { toast('Enter a numeric reading', 'error'); return; }
+    try {
+      const res = await api('POST', `/api/admin/equipment/${equipmentId}/meters`,
+        { meter_name: name, reading_value: val,
+          unit: document.getElementById('eqd-rd-unit').value.trim() || null });
+      if (res.generated_visits && res.generated_visits.length) {
+        toast(`Reading logged — ${res.generated_visits.length} predictive PM work order(s) raised`, 'success');
+      } else {
+        toast('Reading logged', 'success');
+      }
+      eqdLoadMeters(equipmentId);
+    } catch (e) {
+      toast('Unable to save reading: ' + e.message, 'error');
+    }
+  }
+
+  function eqdShowTriggerForm(equipmentId) {
+    const host = document.getElementById('eqd-meter-forms-' + equipmentId);
+    if (!host) return;
+    host.innerHTML = `<div style="background:var(--bg,#f7f9fb);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:10px;">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;">
+        <label style="font-size:11px;color:var(--muted);">Mode<br>
+          <select id="eqd-tg-mode" onchange="eqdTriggerModeChange(${equipmentId})">
+            <option value="usage">Usage (every N units)</option>
+            <option value="condition">Condition (crosses limit)</option>
+          </select></label>
+        <label style="font-size:11px;color:var(--muted);">Meter<br><input id="eqd-tg-name" type="text" placeholder="run_hours"></label>
+        <span id="eqd-tg-usage-fields">
+          <label style="font-size:11px;color:var(--muted);">Every<br><input id="eqd-tg-interval" type="number" step="any" style="width:90px;"></label>
+        </span>
+        <span id="eqd-tg-cond-fields" style="display:none;">
+          <label style="font-size:11px;color:var(--muted);">When<br>
+            <select id="eqd-tg-cmp"><option value=">=">&ge;</option><option value="<=">&le;</option><option value=">">&gt;</option><option value="<">&lt;</option></select></label>
+          <label style="font-size:11px;color:var(--muted);">Limit<br><input id="eqd-tg-threshold" type="number" step="any" style="width:90px;"></label>
+        </span>
+        <button class="btn btn-primary btn-sm" onclick="eqdSubmitTrigger(${equipmentId})">Save</button>
+        <button class="btn btn-ghost btn-sm" onclick="document.getElementById('eqd-meter-forms-${equipmentId}').innerHTML=''">Cancel</button>
+      </div></div>`;
+  }
+
+  function eqdTriggerModeChange(equipmentId) {
+    const mode = document.getElementById('eqd-tg-mode').value;
+    document.getElementById('eqd-tg-usage-fields').style.display = mode === 'usage' ? '' : 'none';
+    document.getElementById('eqd-tg-cond-fields').style.display = mode === 'condition' ? '' : 'none';
+  }
+
+  async function eqdSubmitTrigger(equipmentId) {
+    const mode = document.getElementById('eqd-tg-mode').value;
+    const name = document.getElementById('eqd-tg-name').value.trim();
+    if (!name) { toast('Enter a meter name', 'error'); return; }
+    const body = { meter_name: name, mode: mode };
+    if (mode === 'usage') {
+      const iv = parseFloat(document.getElementById('eqd-tg-interval').value);
+      if (isNaN(iv) || iv <= 0) { toast('Enter a positive interval', 'error'); return; }
+      body.interval_value = iv;
+    } else {
+      body.comparator = document.getElementById('eqd-tg-cmp').value;
+      const th = parseFloat(document.getElementById('eqd-tg-threshold').value);
+      if (isNaN(th)) { toast('Enter a threshold value', 'error'); return; }
+      body.threshold_value = th;
+    }
+    try {
+      await api('POST', `/api/admin/equipment/${equipmentId}/meter-triggers`, body);
+      toast('PM trigger created', 'success');
+      eqdLoadMeters(equipmentId);
+    } catch (e) {
+      toast('Unable to create trigger: ' + e.message, 'error');
+    }
+  }
+
+  async function eqdToggleTrigger(equipmentId, triggerId, active) {
+    try {
+      await api('POST', `/api/admin/meter-triggers/${triggerId}/toggle?active=${active}`);
+      eqdLoadMeters(equipmentId);
+    } catch (e) {
+      toast('Unable to toggle trigger: ' + e.message, 'error');
+    }
   }
 
   // ── CMMS Gap #1: equipment lifecycle (status / install / timeline) ──
@@ -8147,8 +8579,10 @@
       renderVdfScope();
       renderVdfReadings();
       renderVdfParts();
+      renderVdfLabor();
       renderVdfInvoice();
       renderVdfCallbacks();
+      loadVdfCoherence(visit_id);
       loadVdfPhotos();
     } catch (e) {
       if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) {
@@ -8168,6 +8602,49 @@
     document.getElementById('modal-visitDetailFull').classList.remove('open');
     if (location.hash.indexOf('#visit/') === 0) {
       history.replaceState(null, '', location.pathname + location.search);
+    }
+  }
+
+  // CMMS #7 — one authoritative dependent view: settled cost + PM schedule chain.
+  async function loadVdfCoherence(visit_id) {
+    const el = document.getElementById('vdf-coherence-body');
+    if (!el) return;
+    el.innerHTML = 'Loading…';
+    try {
+      const c = await api('GET', `/api/admin/visits/${visit_id}/coherence`);
+      const jc = c.job_costing || {};
+      const money = n => '$' + (Number(n || 0)).toFixed(2);
+      let html =
+        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px 16px;margin-bottom:10px;">' +
+          '<div><div style="color:var(--muted);font-size:11px;">Labour</div><div>' + money(jc.labor_cost) +
+            ' <span style="color:var(--muted);font-size:11px;">(' + (jc.labor_hours || 0) + 'h)</span></div></div>' +
+          '<div><div style="color:var(--muted);font-size:11px;">Parts</div><div>' + money(jc.parts_cost) + '</div></div>' +
+          '<div><div style="color:var(--muted);font-size:11px;">Total cost</div><div style="font-weight:700;">' + money(jc.total_cost) + '</div></div>' +
+          '<div><div style="color:var(--muted);font-size:11px;">Billable</div><div>' + money(jc.billable_amount) + '</div></div>' +
+        '</div>';
+      if (c.pm_contract) {
+        const pc = c.pm_contract;
+        html += '<div style="font-size:11px;color:var(--muted);margin:8px 0 4px;">PM schedule — contract ' +
+                escHtml(pc.contract_code || ('#' + pc.id)) +
+                (pc.frequency ? ' · ' + escHtml(pc.frequency) : '') + '</div>';
+        const sibs = c.pm_siblings || [];
+        if (sibs.length) {
+          html += '<div style="display:flex;flex-direction:column;gap:2px;">';
+          sibs.forEach(s => {
+            const isSelf = s.id === c.visit_id;
+            const dot = s.status === 'completed' ? '✅' : (s.status === 'cancelled' ? '✖' : '○');
+            html += '<div style="font-size:12px;' + (isSelf ? 'font-weight:700;' : 'color:var(--muted);') + '">' +
+                    dot + ' ' + escHtml(s.scheduled_date || '—') + ' · ' + escHtml(s.status || '') +
+                    (isSelf ? ' · this WO' : '') + '</div>';
+          });
+          html += '</div>';
+        }
+      } else {
+        html += '<div style="font-size:12px;color:var(--muted);">Not part of a PM contract schedule.</div>';
+      }
+      el.innerHTML = html;
+    } catch (e) {
+      el.innerHTML = '<span style="color:var(--muted);">Coherence view unavailable.</span>';
     }
   }
 
@@ -8292,8 +8769,21 @@
     }
     const errEl = document.getElementById('vdf-lifecycle-error');
     try {
-      await api('POST', `/api/admin/visits/${v.id}/transition`,
+      const res = await api('POST', `/api/admin/visits/${v.id}/transition`,
                 { status: target, reason: reason });
+      // CMMS #7 — surface the completion cascade so the coherence effect is
+      // visible: the next contract PM was auto-scheduled and the cost settled.
+      const casc = res && res.cascade;
+      if (casc) {
+        const n = (casc.next_pm_created || []).length;
+        if (n > 0) {
+          toast(`Completed — next PM auto-scheduled (${n} visit${n > 1 ? 's' : ''})`, 'success');
+        }
+        if (casc.job_costing) {
+          const jc = casc.job_costing;
+          toast(`Cost settled: labour $${(jc.labor_cost||0).toFixed(2)} + parts $${(jc.parts_cost||0).toFixed(2)} = $${(jc.total_cost||0).toFixed(2)}`, 'info');
+        }
+      }
       await openVisitDetailFull(v.id);
       try { if (typeof renderVisitTable === 'function') renderVisitTable(); } catch(_) {}
     } catch (e) {
@@ -8462,6 +8952,106 @@
         <td>${escHtml(p.notes || '')}</td>
       </tr>`).join('');
     tfoot.innerHTML = `<tr><td colspan="4" style="text-align:right;font-weight:600;">Total Parts Cost:</td><td colspan="2"><strong>${_vdfFmtJ(v.parts_total)}</strong></td></tr>`;
+  }
+
+  // ── CMMS #3 — labor & job costing in the visit-detail view ────────────────
+  function renderVdfLabor() {
+    const v = vdfState.visit;
+    const tbody = document.getElementById('vdf-labor-body');
+    const tfoot = document.getElementById('vdf-labor-foot');
+    if (!tbody) return;
+    const entries = (v && v.labor_entries) || [];
+    const jc = (v && v.job_costing) || {};
+    const canEdit = can('visit:update');
+    const addBtn = document.getElementById('vdf-labor-add-btn');
+    if (addBtn) addBtn.style.display = canEdit ? '' : 'none';
+    if (!entries.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="empty">No labor booked against this work order.</td></tr>';
+    } else {
+      tbody.innerHTML = entries.map(e => `
+        <tr>
+          <td>${escHtml(e.work_date || '—')}</td>
+          <td>${escHtml(e.tech_name || '—')}${e.tech_code ? ' <span class="code-pill">' + escHtml(e.tech_code) + '</span>' : ''}</td>
+          <td style="text-align:right;">${Number(e.hours || 0).toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+          <td>${e.billable ? '<span style="color:var(--teal-deep,#1a7f43);">Billable</span>' : '<span style="color:var(--muted);">Non-billable</span>'}</td>
+          <td style="text-align:right;">${_vdfFmtJ(e.cost_rate)}</td>
+          <td style="text-align:right;">${e.bill_rate != null ? _vdfFmtJ(e.bill_rate) : '—'}</td>
+          <td>${escHtml(e.notes || '')}</td>
+          <td>${canEdit ? `<button class="btn btn-danger btn-sm" onclick="vdfDeleteLabor(${e.id})">Remove</button>` : ''}</td>
+        </tr>`).join('');
+    }
+    if (tfoot) {
+      tfoot.innerHTML = `<tr>
+        <td colspan="2" style="text-align:right;font-weight:600;">Totals:</td>
+        <td style="text-align:right;font-weight:600;">${Number(jc.labor_hours || 0).toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+        <td style="font-size:11px;color:var(--muted);">${Number(jc.billable_hours || 0)} bill / ${Number(jc.nonbillable_hours || 0)} non</td>
+        <td colspan="2" style="text-align:right;font-weight:600;">Labor cost: ${_vdfFmtJ(jc.labor_cost)}</td>
+        <td colspan="2" style="font-size:11px;color:var(--muted);">Billable amt: ${_vdfFmtJ(jc.billable_amount)} · Total job: ${_vdfFmtJ(jc.total_cost)}</td>
+      </tr>`;
+    }
+  }
+
+  function vdfToggleLaborForm() {
+    const f = document.getElementById('vdf-labor-form');
+    if (!f) return;
+    const showing = f.style.display !== 'none';
+    f.style.display = showing ? 'none' : 'block';
+    if (!showing) {
+      // populate tech dropdown + default date
+      const sel = document.getElementById('vdf-labor-tech');
+      if (sel) {
+        sel.innerHTML = '<option value="">— select —</option>' +
+          (allTechs || []).filter(t => t.active)
+            .map(t => `<option value="${t.id}">${escHtml(t.name)} (${escHtml(t.tech_code)})</option>`).join('');
+        const v = vdfState.visit;
+        if (v && v.assigned_tech_id) sel.value = String(v.assigned_tech_id);
+      }
+      const d = document.getElementById('vdf-labor-date');
+      if (d && !d.value) d.value = new Date().toISOString().slice(0, 10);
+      const h = document.getElementById('vdf-labor-hours');
+      if (h) { h.value = ''; h.focus(); }
+    }
+  }
+
+  async function vdfSubmitLabor() {
+    const v = vdfState.visit; if (!v) return;
+    const hours = parseFloat(document.getElementById('vdf-labor-hours').value);
+    if (isNaN(hours) || hours < 0) { toast('Enter a valid number of hours', 'error'); return; }
+    const techVal = document.getElementById('vdf-labor-tech').value;
+    const costVal = document.getElementById('vdf-labor-cost').value;
+    const billVal = document.getElementById('vdf-labor-bill').value;
+    const body = {
+      hours: hours,
+      tech_id: techVal ? Number(techVal) : null,
+      work_date: document.getElementById('vdf-labor-date').value || null,
+      billable: document.getElementById('vdf-labor-billable').checked,
+      cost_rate: costVal !== '' ? Number(costVal) : null,
+      bill_rate: billVal !== '' ? Number(billVal) : null,
+    };
+    try {
+      const res = await api('POST', `/api/admin/visits/${v.id}/labor`, body);
+      vdfState.visit.labor_entries = res.entries;
+      vdfState.visit.job_costing = res.job_costing;
+      renderVdfLabor();
+      vdfToggleLaborForm();
+      toast('Labor booked', 'success');
+    } catch (e) {
+      toast('Unable to save labor: ' + e.message, 'error');
+    }
+  }
+
+  async function vdfDeleteLabor(entryId) {
+    const v = vdfState.visit; if (!v) return;
+    if (!confirm('Remove this labor entry?')) return;
+    try {
+      const res = await api('DELETE', `/api/admin/visits/${v.id}/labor/${entryId}`);
+      vdfState.visit.labor_entries = res.entries;
+      vdfState.visit.job_costing = res.job_costing;
+      renderVdfLabor();
+      toast('Labor entry removed', 'success');
+    } catch (e) {
+      toast('Unable to remove: ' + e.message, 'error');
+    }
   }
 
   function renderVdfInvoice() {
@@ -8896,6 +9486,7 @@
       loadTdfPayroll();
       loadTdfSchedule();
       loadTdfCvRequests();
+      loadTdfSkills();
     } catch (e) {
       if (typeof PC !== 'undefined' && PC.handleAccessDenied && PC.handleAccessDenied(e)) {
         showTechList();
@@ -8908,6 +9499,81 @@
 
   function _tdfBadge(text, bg, fg) {
     return `<span class="badge" style="background:${bg};color:${fg};">${escHtml(text)}</span>`;
+  }
+
+  // ── Dispatch skills & capacity (CMMS #5) ────────────────────────────────────
+  const _PROF_LABEL = { trainee: 'Trainee', qualified: 'Qualified', expert: 'Expert' };
+  async function loadTdfSkills() {
+    const t = tdfState.tech; if (!t) return;
+    const body = document.getElementById('tdf-skills-body');
+    const canEdit = can('tech:update');
+    // Capacity editor + add-skill form visibility
+    const capWrap = document.getElementById('tdf-cap-wrap');
+    const addWrap = document.getElementById('tdf-skill-add');
+    if (capWrap) capWrap.style.display = canEdit ? 'flex' : 'none';
+    if (addWrap) addWrap.style.display = canEdit ? 'flex' : 'none';
+    const capInput = document.getElementById('tdf-cap-input');
+    if (capInput && t.daily_capacity_hours != null) capInput.value = t.daily_capacity_hours;
+    try {
+      const res = await api('GET', `/api/admin/technicians/${t.id}/skills`);
+      tdfRenderSkills(res.skills || []);
+    } catch (e) {
+      body.innerHTML = `<span style="color:var(--err-fg);">Unable to load skills: ${escHtml(e.message || String(e))}</span>`;
+    }
+  }
+  function tdfRenderSkills(skills) {
+    const body = document.getElementById('tdf-skills-body');
+    const canEdit = can('tech:update');
+    const cap = (tdfState.tech && tdfState.tech.daily_capacity_hours != null)
+      ? tdfState.tech.daily_capacity_hours : 8;
+    let html = `<div style="margin-bottom:10px;">Daily capacity: <strong>${cap}h</strong></div>`;
+    if (!skills.length) {
+      html += '<div style="color:var(--muted);">No dispatchable skills recorded.</div>';
+    } else {
+      html += '<div style="display:flex;flex-wrap:wrap;gap:8px;">' + skills.map(s => {
+        const rm = canEdit
+          ? `<button onclick="tdfRemoveSkill('${escHtml(s.skill).replace(/'/g, "\\'")}')" title="Remove" style="border:none;background:none;color:var(--muted);cursor:pointer;font-weight:700;margin-left:6px;">×</button>`
+          : '';
+        return `<span style="background:var(--surface-2);border:1px solid var(--border);border-radius:14px;padding:4px 10px;font-size:12px;">
+          ${escHtml(s.skill)} <span style="color:var(--muted);">· ${escHtml(_PROF_LABEL[s.proficiency] || s.proficiency)}</span>${rm}</span>`;
+      }).join('') + '</div>';
+    }
+    body.innerHTML = html;
+  }
+  async function tdfAddSkill() {
+    const t = tdfState.tech; if (!t) return;
+    const name = (document.getElementById('tdf-skill-name').value || '').trim();
+    const prof = document.getElementById('tdf-skill-prof').value;
+    if (!name) { toast('Enter a skill name', 'error'); return; }
+    try {
+      const res = await api('POST', `/api/admin/technicians/${t.id}/skills`,
+                            { skill: name, proficiency: prof });
+      document.getElementById('tdf-skill-name').value = '';
+      tdfRenderSkills(res.skills || []);
+      toast('Skill added', 'success');
+    } catch (e) { toast('Add failed: ' + (e.message || e), 'error'); }
+  }
+  async function tdfRemoveSkill(skill) {
+    const t = tdfState.tech; if (!t) return;
+    try {
+      const res = await api('DELETE',
+        `/api/admin/technicians/${t.id}/skills/${encodeURIComponent(skill)}`);
+      tdfRenderSkills(res.skills || []);
+      toast('Skill removed', 'success');
+    } catch (e) { toast('Remove failed: ' + (e.message || e), 'error'); }
+  }
+  async function tdfSaveCapacity() {
+    const t = tdfState.tech; if (!t) return;
+    const v = parseFloat(document.getElementById('tdf-cap-input').value);
+    if (isNaN(v) || v < 0) { toast('Capacity must be ≥ 0', 'error'); return; }
+    try {
+      await api('POST', `/api/admin/technicians/${t.id}/capacity`,
+                { daily_capacity_hours: v });
+      t.daily_capacity_hours = v;
+      tdfRenderSkills([]);            // refresh capacity line
+      loadTdfSkills();               // reload chips
+      toast('Capacity updated', 'success');
+    } catch (e) { toast('Save failed: ' + (e.message || e), 'error'); }
   }
 
   function renderTdfHeader() {
@@ -11008,6 +11674,32 @@
   // Show more / Show all pager). Any other caller (filter/view/column change,
   // data reload) leaves it falsy so the cap resets to the default — a fresh
   // filter should never inherit a huge prior cap.
+  // Priority pill colours mirror the SAP-style WO priority ramp.
+  function _vlPriorityHtml(prio) {
+    const p = (prio || 'normal');
+    if (p === 'normal') return '<span style="color:var(--muted);">normal</span>';
+    const styles = {
+      low:    'background:#eef2f7;color:#5b6b7d;border:1px solid #d4dde6;',
+      high:   'background:#fff4e5;color:#a85b00;border:1px solid #ffd9a8;',
+      urgent: 'background:#fdecec;color:#b42318;border:1px solid #f6c2bd;',
+    };
+    return `<span style="display:inline-block;padding:1px 7px;border-radius:10px;font-size:11px;font-weight:600;${styles[p] || ''}">${escHtml(p)}</span>`;
+  }
+  // SLA badge keyed off the server-computed sla_status
+  // (none/met/breached/due_soon/on_track).
+  function _vlSlaHtml(st) {
+    if (!st || st === 'none') return '';
+    const map = {
+      breached: ['SLA breached', 'background:#fdecec;color:#b42318;border:1px solid #f6c2bd;'],
+      due_soon: ['Due soon',     'background:#fff4e5;color:#a85b00;border:1px solid #ffd9a8;'],
+      on_track: ['On track',     'background:#eaf7ef;color:#1a7f43;border:1px solid #bfe6cd;'],
+      met:      ['SLA met',      'background:#eaf7ef;color:#1a7f43;border:1px solid #bfe6cd;'],
+    };
+    const m = map[st];
+    if (!m) return '';
+    return `<span style="display:inline-block;margin-top:3px;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:600;${m[1]}">${m[0]}</span>`;
+  }
+
   function renderVisitTable(_keepCap) {
     const tbody = document.getElementById('visitTableBody');
     if (!tbody) return;
@@ -11059,6 +11751,7 @@
         customer:   `<td>${custLinked}</td>`,
         type:       `<td><span class="badge badge-${v.visit_type.toLowerCase()}">${v.visit_type}</span></td>`,
         status:     `<td><span class="badge badge-${v.status}">${v.status.replace('_',' ')}</span></td>`,
+        priosla:    `<td>${_vlPriorityHtml(v.priority)}${(() => { const s = _vlSlaHtml(v.sla_status); return s ? '<br>' + s : ''; })()}</td>`,
         userstatus: `<td>${userStatusCell}</td>`,
         scheduled:  `<td>${fmtDateTime(v.scheduled_date, v.scheduled_time)}</td>`,
         completed:  `<td>${fmtDate(v.completed_date)}</td>`,
@@ -11795,6 +12488,8 @@
     document.getElementById('visitModalTitle').textContent   = 'Edit Visit';
     document.getElementById('visitSubmitBtn').textContent    = 'Update Visit';
     document.getElementById('visitCustomerField').style.display = 'block';
+    const _vhb = document.getElementById('v-hist-btn');
+    if (_vhb) _vhb.style.display = (can('audit:view_self') || can('audit:view_all')) ? 'inline-flex' : 'none';
     await populateCustomerSelect(v.customer_id);
     await loadEquipmentForVisit(v.equipment_id);
     populateTechSelect();
@@ -11815,6 +12510,13 @@
     document.getElementById('v-hazards').value        = v.hazards        || '';
     document.getElementById('v-access').value         = v.access_codes   || '';
     document.getElementById('v-work-summary').value   = v.work_done_summary || '';
+    // CMMS #1 — order classification / priority / SLA
+    document.getElementById('v-order-type').value     = v.order_type     || '';
+    document.getElementById('v-priority').value       = v.priority       || 'normal';
+    document.getElementById('v-sla-deadline').value   = _isoToLocalInput(v.sla_deadline);
+    document.getElementById('v-sla-basis').value      = v.sla_basis       || 'start';
+    // CMMS #6 — entity tag
+    await vEntityPopulate(v.entity_id);
     // Crew picker is edit-only (incremental endpoints need a visit id).
     document.getElementById('visitCrewSection').style.display = 'block';
     // Seed from the cached list, then refresh from the canonical crew endpoint
@@ -11863,7 +12565,16 @@
       contact_person_phone:   document.getElementById('v-contact-phone').value.trim(),
       hazards:                document.getElementById('v-hazards').value.trim(),
       access_codes:           document.getElementById('v-access').value.trim(),
+      // CMMS #1 — classification / priority / SLA. order_type '' → null so the
+      // server applies its auto default (reactive vs preventive).
+      order_type:   document.getElementById('v-order-type').value || null,
+      priority:     document.getElementById('v-priority').value || 'normal',
+      sla_deadline: _localInputToIso(document.getElementById('v-sla-deadline').value),
+      sla_basis:    document.getElementById('v-sla-basis').value || 'start',
     };
+    // CMMS #6 — entity tag (only when the picker is shown / has a value)
+    const _vEnt = document.getElementById('v-entity');
+    if (_vEnt && _vEnt.value) body.entity_id = parseInt(_vEnt.value, 10);
     try {
       if (currentVisitId) {
         await api('PUT', `/api/admin/visits/${currentVisitId}`, body);
@@ -14153,6 +14864,397 @@
   function initScheduleWeek() {
     document.getElementById('sch-week-start').value = isoDate(mondayOf(new Date()));
   }
+  // ── Workforce planning (CMMS #5) ───────────────────────────────────────────
+  function wfThisWeek() {
+    const mon = mondayOf(new Date());
+    document.getElementById('wf-start').value = isoDate(mon);
+    document.getElementById('wf-end').value = isoDate(addDays(mon, 6));
+    wfLoad();
+  }
+  function wfNextWeek() {
+    const mon = addDays(mondayOf(new Date()), 7);
+    document.getElementById('wf-start').value = isoDate(mon);
+    document.getElementById('wf-end').value = isoDate(addDays(mon, 6));
+    wfLoad();
+  }
+  function _wfBar(pct) {
+    const p = Math.max(0, Math.min(100, pct == null ? 0 : pct));
+    const over = pct != null && pct > 100;
+    const col = over ? 'var(--danger-solid)' : (p > 85 ? '#d9822b' : 'var(--accent, #2f9e44)');
+    return `<div style="background:var(--border);border-radius:5px;height:8px;width:120px;overflow:hidden;display:inline-block;vertical-align:middle;">
+      <div style="background:${col};height:8px;width:${Math.min(100, p)}%;"></div></div>`;
+  }
+  async function wfLoad() {
+    if (!can('tech:view')) return;
+    const s = document.getElementById('wf-start');
+    const e = document.getElementById('wf-end');
+    if (!s.value || !e.value) {
+      const mon = mondayOf(new Date());
+      if (!s.value) s.value = isoDate(mon);
+      if (!e.value) e.value = isoDate(addDays(mon, 6));
+    }
+    const start = s.value, end = e.value;
+    const fc = document.getElementById('wf-forecast');
+    const al = document.getElementById('wf-allocation');
+    fc.innerHTML = '<p style="color:var(--muted);font-size:13px;">Loading…</p>';
+    al.innerHTML = '';
+    try {
+      const [forecast, alloc] = await Promise.all([
+        api('GET', `/api/admin/workforce/forecast?start=${start}&end=${end}`),
+        api('GET', `/api/admin/workforce/allocation?start=${start}&end=${end}`),
+      ]);
+      wfRenderForecast(forecast);
+      wfRenderAllocation(alloc);
+      wfRenderAlerts(forecast, alloc);
+      const stat = document.getElementById('wf-stats');
+      if (stat) stat.textContent =
+        `${forecast.tech_count} field tech${forecast.tech_count === 1 ? '' : 's'} · ${forecast.capacity_hours}h/day capacity`;
+    } catch (err) {
+      fc.innerHTML = `<p style="color:var(--err-fg);font-size:13px;">Failed to load: ${escHtml(err.message || String(err))}</p>`;
+    }
+  }
+  function wfRenderForecast(f) {
+    const fc = document.getElementById('wf-forecast');
+    if (!f.days || !f.days.length) {
+      fc.innerHTML = '<p style="color:var(--muted);font-size:13px;">No days in range.</p>';
+      return;
+    }
+    const rows = f.days.map(d => {
+      const util = d.utilization_pct == null ? '—' : d.utilization_pct + '%';
+      const badge = d.over_capacity
+        ? '<span style="background:var(--err-bg);color:var(--err-fg);font-size:11px;font-weight:700;padding:1px 8px;border-radius:10px;">Over</span>'
+        : '';
+      return `<tr>
+        <td style="white-space:nowrap;">${escHtml(d.date)}</td>
+        <td style="text-align:right;">${d.demand_hours}h</td>
+        <td style="text-align:right;">${d.capacity_hours}h</td>
+        <td style="text-align:center;">${d.work_orders}</td>
+        <td>${_wfBar(d.utilization_pct)} <span style="font-size:12px;color:var(--muted);">${util}</span> ${badge}</td>
+      </tr>`;
+    }).join('');
+    fc.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead><tr style="color:var(--muted);text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">
+        <th>Date</th><th style="text-align:right;">Demand</th><th style="text-align:right;">Capacity</th>
+        <th style="text-align:center;">WOs</th><th>Utilisation</th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
+  }
+  function wfRenderAllocation(a) {
+    const al = document.getElementById('wf-allocation');
+    if (!a.technicians || !a.technicians.length) {
+      al.innerHTML = '<p style="color:var(--muted);font-size:13px;">No active field technicians in scope.</p>';
+      return;
+    }
+    const rows = a.technicians.map(t => {
+      const util = t.utilization_pct == null ? '—' : t.utilization_pct + '%';
+      const over = (t.over_allocated_days || []).length;
+      const badge = over
+        ? `<span style="background:var(--err-bg);color:var(--err-fg);font-size:11px;font-weight:700;padding:1px 8px;border-radius:10px;" title="${over} over-allocated day(s)">${over} over-day${over === 1 ? '' : 's'}</span>`
+        : '';
+      return `<tr>
+        <td>${escHtml(t.name)}</td>
+        <td style="text-align:right;">${t.assigned_hours}h</td>
+        <td style="text-align:right;">${t.window_capacity_hours}h</td>
+        <td style="text-align:center;">${t.work_orders}</td>
+        <td>${_wfBar(t.utilization_pct)} <span style="font-size:12px;color:var(--muted);">${util}</span> ${badge}</td>
+      </tr>`;
+    }).join('');
+    al.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead><tr style="color:var(--muted);text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">
+        <th>Technician</th><th style="text-align:right;">Assigned</th><th style="text-align:right;">Capacity</th>
+        <th style="text-align:center;">WOs</th><th>Utilisation</th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
+  }
+  function wfRenderAlerts(f, a) {
+    const box = document.getElementById('wf-alerts');
+    const items = [];
+    (f.alerts || []).forEach(x => items.push(
+      `<strong>${escHtml(x.date)}</strong>: demand ${x.demand_hours}h exceeds capacity ${x.capacity_hours}h`));
+    (a.alerts || []).forEach(x => items.push(
+      `<strong>${escHtml(x.name)}</strong> over-allocated on ${escHtml(x.date)} (${x.assigned_hours}h vs ${x.capacity_hours}h)`));
+    if (!items.length) { box.innerHTML = ''; return; }
+    box.innerHTML = `<div style="background:var(--err-bg);border:1px solid var(--err-border);color:var(--err-fg);border-radius:8px;padding:10px 14px;font-size:13px;">
+      <strong>${items.length} capacity alert${items.length === 1 ? '' : 's'}</strong>
+      <ul style="margin:6px 0 0;padding-left:18px;">${items.map(i => '<li>' + i + '</li>').join('')}</ul></div>`;
+  }
+
+  // ── Entities & per-entity P&L (CMMS #6 — multi-entity) ───────────────────
+  let _entCache = [];
+  const _ENT_KIND_LABEL = { legal_entity: 'Legal Entity', cost_center: 'Cost Centre' };
+
+  async function entLoad() {
+    if (!can('entity:view')) return;
+    const nb = document.getElementById('ent-new-btn');
+    if (nb) nb.style.display = can('entity:manage') ? 'inline-flex' : 'none';
+    await entLoadList();
+    // default the P&L range to the current month on first open
+    const s = document.getElementById('ent-start');
+    if (s && !s.value) entThisMonth(); else entLoadPnl();
+  }
+
+  async function entLoadList() {
+    const box = document.getElementById('ent-list');
+    try {
+      const r = await api('GET', '/api/admin/entities');
+      _entCache = r.entities || [];
+      const note = document.getElementById('ent-scope-note');
+      if (note) {
+        if (r.scoped) { note.style.display = 'block';
+          note.textContent = 'Your view is scoped to ' + _entCache.length + ' entit' + (_entCache.length === 1 ? 'y' : 'ies') + '.'; }
+        else note.style.display = 'none';
+      }
+      entRenderList();
+      entFillParentSelect();
+    } catch (e) { box.innerHTML = '<p style="color:var(--err-fg);font-size:13px;">' + escHtml(e.message || 'Failed to load') + '</p>'; }
+  }
+
+  function entRenderList() {
+    const box = document.getElementById('ent-list');
+    if (!_entCache.length) { box.innerHTML = '<p style="color:var(--muted);font-size:13px;">No entities yet.</p>'; return; }
+    const byId = {}; _entCache.forEach(e => byId[e.id] = e);
+    const manage = can('entity:manage');
+    const rows = _entCache.map(e => {
+      const parent = e.parent_id && byId[e.parent_id] ? byId[e.parent_id].code : '—';
+      const active = e.active ? '' : ' <span style="color:var(--muted);">(inactive)</span>';
+      return `<tr>
+        <td style="font-weight:600;">${escHtml(e.code)}</td>
+        <td>${escHtml(e.name)}${active}</td>
+        <td>${escHtml(_ENT_KIND_LABEL[e.kind] || e.kind)}</td>
+        <td>${escHtml(parent)}</td>
+        <td>${escHtml(e.currency || '')}</td>
+        <td style="text-align:right;">${manage ? '<button class="btn btn-ghost btn-sm" onclick="entOpenEdit(' + e.id + ')">Edit</button>' : ''}</td>
+      </tr>`;
+    }).join('');
+    box.innerHTML = `<table class="data-table" style="width:100%;font-size:13px;">
+      <thead><tr><th>Code</th><th>Name</th><th>Kind</th><th>Parent</th><th>Currency</th><th></th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
+  }
+
+  function entFillParentSelect() {
+    const sel = document.getElementById('ent-f-parent');
+    if (!sel) return;
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">— none —</option>' +
+      _entCache.map(e => `<option value="${e.id}">${escHtml(e.code)} — ${escHtml(e.name)}</option>`).join('');
+    sel.value = cur;
+  }
+
+  function entThisMonth() {
+    const now = new Date();
+    const first = new Date(now.getFullYear(), now.getMonth(), 1);
+    const last = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    document.getElementById('ent-start').value = isoDate(first);
+    document.getElementById('ent-end').value = isoDate(last);
+    entLoadPnl();
+  }
+  function entThisYear() {
+    const y = new Date().getFullYear();
+    document.getElementById('ent-start').value = y + '-01-01';
+    document.getElementById('ent-end').value = y + '-12-31';
+    entLoadPnl();
+  }
+
+  async function entLoadPnl() {
+    if (!can('entity:view')) return;
+    const start = document.getElementById('ent-start').value;
+    const end = document.getElementById('ent-end').value;
+    const box = document.getElementById('ent-pnl');
+    if (!start || !end) { box.innerHTML = '<p style="color:var(--muted);font-size:13px;">Pick a date range to load the P&amp;L.</p>'; return; }
+    box.innerHTML = '<p style="color:var(--muted);font-size:13px;">Loading…</p>';
+    try {
+      const r = await api('GET', `/api/admin/entities/pnl?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`);
+      entRenderPnl(r);
+    } catch (e) { box.innerHTML = '<p style="color:var(--err-fg);font-size:13px;">' + escHtml(e.message || 'Failed to load') + '</p>'; }
+  }
+
+  function _entMoney(n) { return (n < 0 ? '-' : '') + Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+
+  function entRenderPnl(r) {
+    const box = document.getElementById('ent-pnl');
+    const stats = document.getElementById('ent-pnl-stats');
+    const ents = r.entities || [];
+    if (!ents.length) { box.innerHTML = '<p style="color:var(--muted);font-size:13px;">No activity in this range.</p>'; if (stats) stats.textContent = ''; return; }
+    const t = r.totals || {};
+    if (stats) stats.textContent = `${ents.length} entit${ents.length === 1 ? 'y' : 'ies'} · profit ${_entMoney(t.gross_profit || 0)} (${t.margin_pct || 0}%)`;
+    const rows = ents.map(e => {
+      const pos = (e.gross_profit || 0) >= 0;
+      return `<tr>
+        <td style="font-weight:600;">${escHtml(e.code || ('#' + e.entity_id))}</td>
+        <td>${escHtml(e.name || '')}</td>
+        <td style="text-align:right;">${e.work_orders}</td>
+        <td style="text-align:right;">${_entMoney(e.revenue)}</td>
+        <td style="text-align:right;">${_entMoney(e.labor_cost)}</td>
+        <td style="text-align:right;">${_entMoney(e.parts_cost)}</td>
+        <td style="text-align:right;color:${pos ? 'var(--ok-fg, #137333)' : 'var(--err-fg)'};font-weight:600;">${_entMoney(e.gross_profit)}</td>
+        <td style="text-align:right;">${e.margin_pct}%</td>
+      </tr>`;
+    }).join('');
+    box.innerHTML = `<table class="data-table" style="width:100%;font-size:13px;">
+      <thead><tr><th>Code</th><th>Entity</th><th style="text-align:right;">WOs</th><th style="text-align:right;">Revenue</th><th style="text-align:right;">Labour</th><th style="text-align:right;">Parts</th><th style="text-align:right;">Gross Profit</th><th style="text-align:right;">Margin</th></tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr style="border-top:2px solid var(--border);font-weight:700;">
+        <td colspan="2">Total</td>
+        <td style="text-align:right;">${t.work_orders || 0}</td>
+        <td style="text-align:right;">${_entMoney(t.revenue || 0)}</td>
+        <td style="text-align:right;">${_entMoney(t.labor_cost || 0)}</td>
+        <td style="text-align:right;">${_entMoney(t.parts_cost || 0)}</td>
+        <td style="text-align:right;">${_entMoney(t.gross_profit || 0)}</td>
+        <td style="text-align:right;">${t.margin_pct || 0}%</td>
+      </tr></tfoot></table>`;
+  }
+
+  function entOpenCreate() {
+    if (!can('entity:manage')) return;
+    document.getElementById('ent-modal-title').textContent = 'New Entity';
+    document.getElementById('ent-f-id').value = '';
+    document.getElementById('ent-f-code').value = '';
+    document.getElementById('ent-f-code').disabled = false;
+    document.getElementById('ent-f-name').value = '';
+    document.getElementById('ent-f-kind').value = 'cost_center';
+    document.getElementById('ent-f-parent').value = '';
+    document.getElementById('ent-f-currency').value = 'TTD';
+    document.getElementById('ent-f-active-wrap').style.display = 'none';
+    document.getElementById('ent-hist-btn').style.display = 'none';
+    entFillParentSelect();
+    document.getElementById('ent-modal').style.display = 'flex';
+  }
+
+  function entOpenEdit(id) {
+    if (!can('entity:manage')) return;
+    const e = _entCache.find(x => x.id === id);
+    if (!e) return;
+    document.getElementById('ent-modal-title').textContent = 'Edit ' + e.code;
+    document.getElementById('ent-f-id').value = e.id;
+    document.getElementById('ent-f-code').value = e.code;
+    document.getElementById('ent-f-code').disabled = true;   // code is immutable
+    document.getElementById('ent-f-name').value = e.name || '';
+    document.getElementById('ent-f-kind').value = e.kind || 'cost_center';
+    entFillParentSelect();
+    document.getElementById('ent-f-parent').value = e.parent_id || '';
+    document.getElementById('ent-f-currency').value = e.currency || 'TTD';
+    document.getElementById('ent-f-active-wrap').style.display = 'block';
+    document.getElementById('ent-f-active').checked = !!e.active;
+    const hb = document.getElementById('ent-hist-btn');
+    hb.style.display = can('audit:view_self') || can('audit:view_all') ? 'inline-flex' : 'none';
+    document.getElementById('ent-modal').style.display = 'flex';
+  }
+
+  function entOpenHistory() {
+    const id = document.getElementById('ent-f-id').value;
+    if (!id) return;
+    const e = _entCache.find(x => x.id === parseInt(id, 10));
+    openAuditHistory('entity', id, e ? (e.code + ' — ' + (e.name || '')) : ('entity #' + id));
+  }
+  window.entOpenHistory = entOpenHistory;
+
+  function entCloseModal() { document.getElementById('ent-modal').style.display = 'none'; }
+
+  async function entSave() {
+    const id = document.getElementById('ent-f-id').value;
+    const parentRaw = document.getElementById('ent-f-parent').value;
+    const body = {
+      name: document.getElementById('ent-f-name').value.trim(),
+      kind: document.getElementById('ent-f-kind').value,
+      parent_id: parentRaw ? parseInt(parentRaw, 10) : null,
+      currency: (document.getElementById('ent-f-currency').value || 'TTD').trim().toUpperCase(),
+    };
+    if (!body.name) { toast('Name is required', 'error'); return; }
+    try {
+      if (id) {
+        body.active = document.getElementById('ent-f-active').checked;
+        await api('PUT', '/api/admin/entities/' + id, body);
+        toast('Entity updated', 'success');
+      } else {
+        body.code = document.getElementById('ent-f-code').value.trim().toUpperCase();
+        if (!body.code) { toast('Code is required', 'error'); return; }
+        await api('POST', '/api/admin/entities', body);
+        toast('Entity created', 'success');
+      }
+      entCloseModal();
+      await entLoadList();
+      entLoadPnl();
+    } catch (e) { toast(e.message || 'Save failed', 'error'); }
+  }
+
+  // ── Audit history / lifecycle viewer (CMMS #4) ──────────────────────────────
+  // Pulls GET /api/admin/history/{type}/{id} and renders the merged
+  // mutation+read timeline. Each mutation shows its field-level old→new diff
+  // (changed_fields) and the captured reason (the "why").
+  function auditHistClose() { document.getElementById('aud-hist-modal').style.display = 'none'; }
+
+  function _auditFmtVal(v) {
+    if (v === null || v === undefined || v === '') return '<span style="color:var(--muted);">∅</span>';
+    let s = (typeof v === 'object') ? JSON.stringify(v) : String(v);
+    if (s.length > 80) s = s.slice(0, 77) + '…';
+    return escHtml(s);
+  }
+
+  function _auditWhen(iso) {
+    if (!iso) return '';
+    try {
+      const d = new Date(iso.indexOf('Z') < 0 && iso.indexOf('+') < 0 ? iso + 'Z' : iso);
+      return d.toLocaleString();
+    } catch (e) { return escHtml(iso); }
+  }
+
+  function _auditRenderRow(r) {
+    const isRead = r.event_kind === 'read';
+    const who = escHtml(r.actor_label || r.actor_prid || (r.actor_type ? r.actor_type : 'system') || '—');
+    const role = r.actor_role ? ' · ' + escHtml(r.actor_role) : '';
+    const action = escHtml(r.action || (isRead ? 'read' : 'change'));
+    const when = _auditWhen(r.created_at);
+    const dotColor = isRead ? 'var(--muted)' : 'var(--accent, #2563eb)';
+    let diffHtml = '';
+    const cf = r.changed_fields;
+    if (Array.isArray(cf) && cf.length) {
+      const lines = cf.map(c =>
+        '<tr><td style="padding:2px 10px 2px 0;font-weight:600;white-space:nowrap;">' + escHtml(c.field) + '</td>' +
+        '<td style="padding:2px 6px;color:#b91c1c;">' + _auditFmtVal(c.old) + '</td>' +
+        '<td style="padding:2px 6px;color:var(--muted);">→</td>' +
+        '<td style="padding:2px 6px;color:#15803d;">' + _auditFmtVal(c.new) + '</td></tr>'
+      ).join('');
+      diffHtml = '<table style="margin-top:4px;font-size:12px;border-collapse:collapse;">' + lines + '</table>';
+    }
+    let reasonHtml = '';
+    if (r.reason) {
+      reasonHtml = '<div style="margin-top:4px;font-size:12px;font-style:italic;color:var(--muted);">“' + escHtml(r.reason) + '”</div>';
+    }
+    return (
+      '<div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);">' +
+        '<div style="width:9px;height:9px;border-radius:50%;background:' + dotColor + ';margin-top:5px;flex:none;"></div>' +
+        '<div style="flex:1;min-width:0;">' +
+          '<div style="font-size:13px;"><strong>' + who + '</strong>' + role +
+            ' <span style="color:var(--muted);">' + action + '</span></div>' +
+          '<div style="font-size:11px;color:var(--muted);">' + when +
+            (r.ip_address ? ' · ' + escHtml(r.ip_address) : '') + '</div>' +
+          diffHtml + reasonHtml +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  async function openAuditHistory(targetType, targetId, label) {
+    document.getElementById('aud-hist-title').textContent =
+      'History — ' + (label || (targetType + ' #' + targetId));
+    document.getElementById('aud-hist-body').innerHTML =
+      '<p style="color:var(--muted);font-size:13px;">Loading…</p>';
+    document.getElementById('aud-hist-modal').style.display = 'flex';
+    try {
+      const rows = await api('GET', '/api/admin/history/' + encodeURIComponent(targetType) +
+                             '/' + encodeURIComponent(targetId) + '?limit=200');
+      if (!rows || !rows.length) {
+        document.getElementById('aud-hist-body').innerHTML =
+          '<p style="color:var(--muted);font-size:13px;">No recorded history for this record.</p>';
+        return;
+      }
+      document.getElementById('aud-hist-body').innerHTML = rows.map(_auditRenderRow).join('');
+    } catch (e) {
+      document.getElementById('aud-hist-body').innerHTML =
+        '<p style="color:#b91c1c;font-size:13px;">' + escHtml(e.message || 'Failed to load history') + '</p>';
+    }
+  }
+  window.openAuditHistory = openAuditHistory;
+  window.auditHistClose = auditHistClose;
+
   function setScheduleThisWeek() {
     document.getElementById('sch-week-start').value = isoDate(mondayOf(new Date()));
     loadSchedule();
@@ -15694,11 +16796,57 @@
       if (el && el.tagName === 'SELECT') el.selectedIndex = 0;
     });
     ['v-scheduled-date','v-scheduled-time','v-completed-date','v-technician','v-work-done','v-parts','v-notes',
-     'v-scope','v-duration','v-contact-name','v-contact-phone','v-hazards','v-access','v-work-summary']
+     'v-scope','v-duration','v-contact-name','v-contact-phone','v-hazards','v-access','v-work-summary',
+     'v-order-type','v-sla-deadline']
       .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+    // CMMS #1 — reset classification selects to their defaults
+    const pr = document.getElementById('v-priority'); if (pr) pr.value = 'normal';
+    const sb = document.getElementById('v-sla-basis'); if (sb) sb.value = 'start';
+    // CMMS #6 — reset entity picker (populate fresh for a new WO)
+    vEntityPopulate(null);
     visitCrewState = [];
     const chips = document.getElementById('v-crew-chips'); if (chips) chips.innerHTML = '';
     document.getElementById('err-addVisit').style.display = 'none';
+    // CMMS #4 — History button is edit-only (no history for an unsaved WO).
+    const hb = document.getElementById('v-hist-btn'); if (hb) hb.style.display = 'none';
+  }
+  // CMMS #4 — open the lifecycle/diff timeline for the WO being edited.
+  function visitOpenHistory() {
+    if (!currentVisitId) return;
+    openAuditHistory('visit', currentVisitId, 'Work Order #' + currentVisitId);
+  }
+  window.visitOpenHistory = visitOpenHistory;
+  // CMMS #6 — fill the work-order entity picker. Only shown to admins who can
+  // view entities; otherwise the row stays hidden and WOs keep the default.
+  let _vEntityCache = null;
+  async function vEntityPopulate(selectedId) {
+    const row = document.getElementById('v-entity-row');
+    const sel = document.getElementById('v-entity');
+    if (!row || !sel) return;
+    if (!can('entity:view')) { row.style.display = 'none'; return; }
+    row.style.display = 'flex';
+    if (_vEntityCache === null) {
+      try { _vEntityCache = (await api('GET', '/api/admin/entities?include_inactive=false')).entities || []; }
+      catch (e) { _vEntityCache = []; }
+    }
+    sel.innerHTML = '<option value="">— Default —</option>' +
+      _vEntityCache.map(e => `<option value="${e.id}">${escHtml(e.code)} — ${escHtml(e.name)}</option>`).join('');
+    sel.value = selectedId ? String(selectedId) : '';
+  }
+
+  // CMMS #1 — convert between a stored ISO datetime and the value a
+  // <input type="datetime-local"> expects (local wall-clock, no zone suffix).
+  function _isoToLocalInput(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    const pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+  function _localInputToIso(v) {
+    if (!v) return null;
+    const d = new Date(v);
+    return isNaN(d.getTime()) ? null : d.toISOString();
   }
   function clearForm(ids) { ids.forEach(id => { document.getElementById(id).value = ''; }); }
   function showErr(id, msg) {

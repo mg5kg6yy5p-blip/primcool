@@ -1117,6 +1117,19 @@ def init_db():
     if "retention_class" not in audit_cols:
         try: con.execute("ALTER TABLE audit_log ADD COLUMN retention_class TEXT NOT NULL DEFAULT 'operational'")
         except sqlite3.OperationalError: pass
+    # CMMS #4 — audit trail depth: capture the WHY (reason/justification) and a
+    # precomputed field-level old→new diff so a record's history reads as
+    # discrete changes, not opaque JSON blobs. Both are immutable via the same
+    # append-only triggers as the rest of the row. They are intentionally NOT
+    # part of the chain-hash canonical payload (which already covers the full
+    # before/after the diff is derived from), so adding them leaves every
+    # existing row's chain_hash valid — no rebuild needed.
+    if "reason" not in audit_cols:
+        try: con.execute("ALTER TABLE audit_log ADD COLUMN reason TEXT")
+        except sqlite3.OperationalError: pass
+    if "changed_fields" not in audit_cols:
+        try: con.execute("ALTER TABLE audit_log ADD COLUMN changed_fields TEXT")
+        except sqlite3.OperationalError: pass
     con.execute("CREATE INDEX IF NOT EXISTS idx_audit_retention ON audit_log(retention_class, created_at)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_audit_actor   ON audit_log(actor_id, created_at)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_audit_action  ON audit_log(action, created_at)")
@@ -1434,11 +1447,57 @@ def init_db():
         ("billing_class_set_at",     "ALTER TABLE maintenance_visits ADD COLUMN billing_class_set_at TEXT"),
         ("billing_class_set_by_kind","ALTER TABLE maintenance_visits ADD COLUMN billing_class_set_by_kind TEXT"),
         ("billing_class_set_by_id",  "ALTER TABLE maintenance_visits ADD COLUMN billing_class_set_by_id INTEGER"),
+        # CMMS #1 — order classification, priority and SLA target on the WO.
+        # order_type: reactive | preventive | predictive. priority:
+        # low | normal | high | urgent. sla_deadline: ISO datetime the job must
+        # start (or be resolved) by; sla_basis records what the deadline means.
+        ("order_type",               "ALTER TABLE maintenance_visits ADD COLUMN order_type TEXT"),
+        ("priority",                 "ALTER TABLE maintenance_visits ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'"),
+        ("sla_deadline",             "ALTER TABLE maintenance_visits ADD COLUMN sla_deadline TEXT"),
+        ("sla_basis",                "ALTER TABLE maintenance_visits ADD COLUMN sla_basis TEXT NOT NULL DEFAULT 'start'"),
     ):
         if col_sql[0] not in existing_cols:
             try: con.execute(col_sql[1])
             except sqlite3.OperationalError: pass
     con.execute("CREATE INDEX IF NOT EXISTS idx_visits_pm_contract ON maintenance_visits(pm_contract_id, scheduled_date)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_visits_sla ON maintenance_visits(sla_deadline, status)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_visits_priority ON maintenance_visits(priority, status)")
+    # Backfill order_type once: PM-generated visits are preventive, the rest
+    # reactive. Predictive is opt-in (set explicitly when meter/condition rules
+    # raise the order). Only touches rows still NULL so it's idempotent.
+    if "order_type" not in existing_cols:
+        con.execute(
+            "UPDATE maintenance_visits SET order_type = "
+            "CASE WHEN pm_contract_id IS NOT NULL THEN 'preventive' ELSE 'reactive' END "
+            "WHERE order_type IS NULL")
+
+    # ── Work-order labor entries (CMMS area #3 — time tracking → WO) ──────────
+    # Per-technician labor booked against a work order. Unlike the immutable,
+    # shift-level tech_clock_events (hash-chained, never edited), these are the
+    # job-costing grain: how many hours a tech spent ON THIS WO, whether those
+    # hours are billable, and the cost rate captured at entry time (so a later
+    # raise to the tech's hourly_rate doesn't silently restate historical job
+    # cost). Feeds job-costing (labor cost per WO), invoicing (billable hours),
+    # and utilization. `cost_rate` defaults from technicians.hourly_rate at
+    # insert; `bill_rate` is the charge-out rate (optional).
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS visit_labor_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            visit_id  INTEGER NOT NULL REFERENCES maintenance_visits(id) ON DELETE CASCADE,
+            tech_id   INTEGER REFERENCES technicians(id),
+            work_date TEXT,
+            hours     REAL NOT NULL DEFAULT 0 CHECK (hours >= 0),
+            billable  INTEGER NOT NULL DEFAULT 1,
+            cost_rate REAL NOT NULL DEFAULT 0,
+            bill_rate REAL,
+            notes     TEXT,
+            created_by_kind TEXT,
+            created_by_id   INTEGER,
+            created_at TEXT NOT NULL
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_vlabor_visit ON visit_labor_entries(visit_id)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_vlabor_tech_date ON visit_labor_entries(tech_id, work_date)")
 
     # ── Preventive-maintenance contracts ──────────────────────────────────
     # A standing agreement to perform PM visits for a customer at a regular
@@ -1482,6 +1541,153 @@ def init_db():
         if c not in _pmc_cols:
             try: con.execute(sql)
             except sqlite3.OperationalError: pass
+
+    # ── CMMS area #2 — usage/condition-based PM (meters + triggers) ───────────
+    # The calendar generator (generate_due_pm_visits) covers time-based PM. These
+    # two tables add the other two CMMS PM triggers: USAGE (every N meter units —
+    # e.g. run-hours) and CONDITION (a reading crosses a limit — e.g. discharge
+    # pressure ≥ threshold). Readings are an append-only log per equipment+meter;
+    # triggers evaluate the latest reading and materialise a predictive WO.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS equipment_meter_readings (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            equipment_id  INTEGER NOT NULL REFERENCES equipment(id),
+            meter_name    TEXT NOT NULL,
+            reading_value REAL NOT NULL,
+            unit          TEXT,
+            reading_at    TEXT NOT NULL,
+            notes         TEXT,
+            recorded_by_kind TEXT,
+            recorded_by_id   INTEGER,
+            created_at    TEXT NOT NULL
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_meter_read_eq "
+                "ON equipment_meter_readings(equipment_id, meter_name, reading_at)")
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS pm_meter_triggers (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            equipment_id  INTEGER NOT NULL REFERENCES equipment(id),
+            customer_id   INTEGER NOT NULL REFERENCES customers(id),
+            hub_id        INTEGER NOT NULL DEFAULT 1,
+            meter_name    TEXT NOT NULL,
+            mode          TEXT NOT NULL DEFAULT 'usage'
+                          CHECK (mode IN ('usage','condition')),
+            -- usage: fire every `interval_value` units past last_triggered_value
+            interval_value      REAL,
+            last_triggered_value REAL,
+            -- condition: fire when reading `comparator` threshold_value
+            comparator    TEXT DEFAULT '>='
+                          CHECK (comparator IN ('>=','<=','>','<')),
+            threshold_value REAL,
+            -- condition debounce: don't re-fire while still over the line; reset
+            -- once a reading comes back across it.
+            armed         INTEGER NOT NULL DEFAULT 1,
+            title         TEXT,
+            active        INTEGER NOT NULL DEFAULT 1,
+            last_generated_at TEXT,
+            created_at    TEXT NOT NULL,
+            updated_at    TEXT,
+            created_by_kind TEXT,
+            created_by_id   INTEGER
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_pm_meter_trig_eq "
+                "ON pm_meter_triggers(equipment_id, active)")
+
+    # ── Workforce planning (CMMS area #5) ────────────────────────────────────
+    # Planning-grade skills registry: which competencies a tech can be
+    # dispatched on. This is the *dispatchable* skill list (drives skill/
+    # availability matching for work orders); it is deliberately separate from
+    # the HR self-reported `staff_profile_items` 'skills' collection, which is a
+    # free-form career/development record. UNIQUE(tech_id, skill) keeps it a set.
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS tech_skills (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            tech_id     INTEGER NOT NULL REFERENCES technicians(id) ON DELETE CASCADE,
+            skill       TEXT NOT NULL,
+            proficiency TEXT NOT NULL DEFAULT 'qualified'
+                        CHECK (proficiency IN ('trainee','qualified','expert')),
+            created_at  TEXT NOT NULL,
+            UNIQUE(tech_id, skill)
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_tech_skills_skill "
+                "ON tech_skills(skill)")
+    # Per-tech daily labour capacity (hours/day) — the denominator for
+    # utilisation and the over-allocation threshold. Default 8h. CHECK is not
+    # enforceable via ALTER (SQLite), so the helper layer clamps to >= 0.
+    _tech_cols2 = {row[1] for row in con.execute("PRAGMA table_info(technicians)")}
+    if "daily_capacity_hours" not in _tech_cols2:
+        try:
+            con.execute("ALTER TABLE technicians ADD COLUMN daily_capacity_hours "
+                        "REAL NOT NULL DEFAULT 8")
+        except sqlite3.OperationalError:
+            pass
+    # Required skill on a work order — drives skill matching. NULL = any tech.
+    _mv_cols2 = {row[1] for row in con.execute("PRAGMA table_info(maintenance_visits)")}
+    if "required_skill" not in _mv_cols2:
+        try:
+            con.execute("ALTER TABLE maintenance_visits ADD COLUMN required_skill TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+    # ── Multi-entity / cost centres (CMMS area #6) ───────────────────────────
+    # The organisation as a tree of *business entities*: legal entities (book
+    # revenue, file taxes) and cost centres (internal P&L buckets). A work order
+    # is tagged to exactly one entity (entity_id below); its revenue (invoices),
+    # labour cost (visit_labor_entries) and parts cost (visit_parts) all roll up
+    # to that entity for a per-entity P&L. parent_id gives the org hierarchy so a
+    # legal entity can aggregate its child cost centres. This is the single
+    # source of truth for "which books does this job belong to".
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS business_entities (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            code        TEXT NOT NULL UNIQUE,
+            name        TEXT NOT NULL,
+            kind        TEXT NOT NULL DEFAULT 'cost_center'
+                        CHECK (kind IN ('legal_entity','cost_center')),
+            parent_id   INTEGER REFERENCES business_entities(id),
+            currency    TEXT NOT NULL DEFAULT 'TTD',
+            active      INTEGER NOT NULL DEFAULT 1,
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_entities_parent "
+                "ON business_entities(parent_id)")
+    # Seed a default top-level legal entity so every legacy work order has a
+    # home. id=1 mirrors the seeded Kingston hub convention.
+    con.execute(
+        "INSERT OR IGNORE INTO business_entities "
+        "(id, code, name, kind, parent_id, currency, active, created_at) "
+        "VALUES (1, 'PRIMECOOL', 'PrimeCool', 'legal_entity', NULL, 'TTD', 1, ?)",
+        (datetime.now(timezone.utc).isoformat(),),
+    )
+    # Entity-scoped authorisation: which entities an admin may see/report on.
+    # An admin with NO rows here is unrestricted (sees all entities); adding any
+    # row narrows them to exactly that set. Used as a reporting filter, not a
+    # feature gate (features stay available to all; only DATA is scoped).
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS admin_entity_scope (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id    INTEGER NOT NULL REFERENCES admin_users(id) ON DELETE CASCADE,
+            entity_id   INTEGER NOT NULL REFERENCES business_entities(id) ON DELETE CASCADE,
+            created_at  TEXT NOT NULL,
+            UNIQUE(admin_id, entity_id)
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_entity_scope_admin "
+                "ON admin_entity_scope(admin_id)")
+    # Tag work orders to an entity. NULL = unassigned (rolls up to default id=1
+    # in the P&L). Additive column so legacy DBs upgrade in place.
+    _mv_cols3 = {row[1] for row in con.execute("PRAGMA table_info(maintenance_visits)")}
+    if "entity_id" not in _mv_cols3:
+        try:
+            con.execute("ALTER TABLE maintenance_visits ADD COLUMN entity_id INTEGER "
+                        "REFERENCES business_entities(id)")
+        except sqlite3.OperationalError:
+            pass
 
     # Parts: image + location for tech in-field visual confirmation
     part_cols = {row[1] for row in con.execute("PRAGMA table_info(parts)")}
@@ -5240,11 +5446,22 @@ def create_visit(data: dict) -> int:
     visit_id = cur.lastrowid
     # Optional links not in the base INSERT column list (additive columns).
     # Wrapped per-column so older DBs without the column still create the visit.
-    for col in ("pm_contract_id", "callback_of_visit_id", "hub_id"):
+    for col in ("pm_contract_id", "callback_of_visit_id", "hub_id",
+                "order_type", "priority", "sla_deadline", "sla_basis",
+                "required_skill", "entity_id"):
         if data.get(col) is not None:
             try: con.execute(f"UPDATE maintenance_visits SET {col}=? WHERE id=?",
                              (data[col], visit_id))
             except sqlite3.OperationalError: pass
+    # Default order_type from origin when the caller didn't classify it:
+    # a PM-contract visit is preventive, everything else reactive.
+    if not data.get("order_type"):
+        try:
+            con.execute(
+                "UPDATE maintenance_visits SET order_type = "
+                "CASE WHEN pm_contract_id IS NOT NULL THEN 'preventive' ELSE 'reactive' END "
+                "WHERE id=? AND order_type IS NULL", (visit_id,))
+        except sqlite3.OperationalError: pass
     con.commit()
     con.close()
     return visit_id
@@ -5314,6 +5531,15 @@ def update_visit(visit_id: int, data: dict):
             visit_id,
         ),
     )
+    # CMMS #1 — order_type/priority/SLA are optional on edit: only overwrite a
+    # column when the caller actually sent a value (None = leave as-is), so the
+    # legacy edit modal that omits these doesn't wipe them.
+    for col in ("order_type", "priority", "sla_deadline", "sla_basis",
+                "required_skill", "entity_id"):
+        if data.get(col) is not None:
+            try: con.execute(f"UPDATE maintenance_visits SET {col}=? WHERE id=?",
+                             (data[col], visit_id))
+            except sqlite3.OperationalError: pass
     con.commit()
     con.close()
 
@@ -5570,6 +5796,661 @@ def list_scheduled_visits_on(date_iso: str) -> list:
     ).fetchall()
     con.close()
     return [dict(r) for r in rows]
+
+
+# ── CMMS area #2 — meters + usage/condition PM triggers ──────────────────────
+
+def add_meter_reading(equipment_id: int, meter_name: str, reading_value: float,
+                      unit: str = None, reading_at: str = None, notes: str = "",
+                      recorded_by_kind: str = None, recorded_by_id: int = None,
+                      auto_generate: bool = True) -> dict:
+    """Append a meter reading, then (optionally) evaluate this equipment's
+    triggers so a usage/condition WO is raised immediately. Returns
+    {reading_id, generated:[visit_ids]}."""
+    from datetime import datetime as _dt, timezone as _tz
+    reading_at = reading_at or _dt.now(_tz.utc).isoformat()
+    con = _con()
+    cur = con.execute(
+        "INSERT INTO equipment_meter_readings "
+        "(equipment_id, meter_name, reading_value, unit, reading_at, notes, "
+        " recorded_by_kind, recorded_by_id, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        (equipment_id, meter_name, float(reading_value), unit, reading_at,
+         notes or "", recorded_by_kind, recorded_by_id,
+         _dt.now(_tz.utc).isoformat()))
+    reading_id = cur.lastrowid
+    con.commit()
+    con.close()
+    generated = []
+    if auto_generate:
+        generated = evaluate_meter_triggers(equipment_id=equipment_id,
+                                            meter_name=meter_name).get("created", [])
+    return {"reading_id": reading_id, "generated": generated}
+
+
+def list_meter_readings(equipment_id: int, meter_name: str = None, limit: int = 100):
+    con = _con()
+    if meter_name:
+        rows = con.execute(
+            "SELECT * FROM equipment_meter_readings WHERE equipment_id = ? "
+            "AND meter_name = ? ORDER BY reading_at DESC, id DESC LIMIT ?",
+            (equipment_id, meter_name, int(limit))).fetchall()
+    else:
+        rows = con.execute(
+            "SELECT * FROM equipment_meter_readings WHERE equipment_id = ? "
+            "ORDER BY reading_at DESC, id DESC LIMIT ?",
+            (equipment_id, int(limit))).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def _latest_meter_value(con, equipment_id: int, meter_name: str):
+    r = con.execute(
+        "SELECT reading_value FROM equipment_meter_readings "
+        "WHERE equipment_id = ? AND meter_name = ? "
+        "ORDER BY reading_at DESC, id DESC LIMIT 1",
+        (equipment_id, meter_name)).fetchone()
+    return float(r["reading_value"]) if r else None
+
+
+def create_meter_trigger(data: dict) -> int:
+    """Insert a usage/condition PM trigger. Caller validates the enums."""
+    from datetime import datetime as _dt, timezone as _tz
+    con = _con()
+    # Seed usage baseline from the latest reading so the first interval is
+    # measured from "now", not from zero.
+    last_val = data.get("last_triggered_value")
+    if data.get("mode", "usage") == "usage" and last_val is None:
+        last_val = _latest_meter_value(con, data["equipment_id"], data["meter_name"]) or 0.0
+    cur = con.execute(
+        "INSERT INTO pm_meter_triggers "
+        "(equipment_id, customer_id, hub_id, meter_name, mode, interval_value, "
+        " last_triggered_value, comparator, threshold_value, armed, title, "
+        " active, created_at, created_by_kind, created_by_id) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (data["equipment_id"], data["customer_id"], int(data.get("hub_id", 1)),
+         data["meter_name"], data.get("mode", "usage"),
+         data.get("interval_value"), last_val,
+         data.get("comparator", ">="), data.get("threshold_value"),
+         1, data.get("title"), 1 if data.get("active", True) else 0,
+         _dt.now(_tz.utc).isoformat(), data.get("created_by_kind"),
+         data.get("created_by_id")))
+    new_id = cur.lastrowid
+    con.commit()
+    con.close()
+    return new_id
+
+
+def list_meter_triggers(equipment_id: int = None, active_only: bool = False):
+    con = _con()
+    q = ("SELECT mt.*, e.name AS equipment_name, c.name AS customer_name "
+         "FROM pm_meter_triggers mt "
+         "JOIN equipment e ON mt.equipment_id = e.id "
+         "JOIN customers c ON mt.customer_id = c.id")
+    conds, params = [], []
+    if equipment_id is not None:
+        conds.append("mt.equipment_id = ?"); params.append(equipment_id)
+    if active_only:
+        conds.append("mt.active = 1")
+    if conds:
+        q += " WHERE " + " AND ".join(conds)
+    q += " ORDER BY mt.id DESC"
+    rows = con.execute(q, params).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def set_meter_trigger_active(trigger_id: int, active: bool) -> bool:
+    from datetime import datetime as _dt, timezone as _tz
+    con = _con()
+    cur = con.execute(
+        "UPDATE pm_meter_triggers SET active = ?, updated_at = ? WHERE id = ?",
+        (1 if active else 0, _dt.now(_tz.utc).isoformat(), trigger_id))
+    con.commit()
+    changed = cur.rowcount > 0
+    con.close()
+    return changed
+
+
+def _compare(value: float, comparator: str, threshold: float) -> bool:
+    if threshold is None:
+        return False
+    if comparator == ">=":  return value >= threshold
+    if comparator == "<=":  return value <= threshold
+    if comparator == ">":   return value > threshold
+    if comparator == "<":   return value < threshold
+    return False
+
+
+def evaluate_meter_triggers(now=None, equipment_id: int = None,
+                            meter_name: str = None) -> dict:
+    """Evaluate active meter triggers against their latest reading and raise a
+    predictive PM work order when due. Idempotent for usage (advances
+    last_triggered_value by whole intervals) and debounced for condition
+    (re-arms only once a reading returns across the line). Returns
+    {created:[visit_ids], evaluated:n}."""
+    from datetime import datetime as _dt, timezone as _tz
+    now = now or _dt.now(_tz.utc)
+    con = _con()
+    q = "SELECT * FROM pm_meter_triggers WHERE active = 1"
+    params = []
+    if equipment_id is not None:
+        q += " AND equipment_id = ?"; params.append(equipment_id)
+    if meter_name is not None:
+        q += " AND meter_name = ?"; params.append(meter_name)
+    triggers = con.execute(q, params).fetchall()
+    created = []
+    for t in triggers:
+        t = dict(t)
+        latest = _latest_meter_value(con, t["equipment_id"], t["meter_name"])
+        if latest is None:
+            continue
+        fire = False
+        if t["mode"] == "usage":
+            iv = t["interval_value"]
+            base = t["last_triggered_value"] if t["last_triggered_value"] is not None else 0.0
+            if iv and iv > 0 and (latest - base) >= iv:
+                fire = True
+                # advance the baseline by whole intervals consumed
+                steps = int((latest - base) // iv)
+                new_base = base + steps * iv
+                con.execute("UPDATE pm_meter_triggers SET last_triggered_value = ?, "
+                            "last_generated_at = ?, updated_at = ? WHERE id = ?",
+                            (new_base, now.isoformat(), now.isoformat(), t["id"]))
+        else:  # condition
+            over = _compare(latest, t["comparator"] or ">=", t["threshold_value"])
+            if over and t["armed"]:
+                fire = True
+                con.execute("UPDATE pm_meter_triggers SET armed = 0, "
+                            "last_generated_at = ?, updated_at = ? WHERE id = ?",
+                            (now.isoformat(), now.isoformat(), t["id"]))
+            elif not over and not t["armed"]:
+                # reading came back across the line → re-arm for next crossing
+                con.execute("UPDATE pm_meter_triggers SET armed = 1, "
+                            "updated_at = ? WHERE id = ?",
+                            (now.isoformat(), t["id"]))
+        if fire:
+            title = t.get("title") or (
+                f"Meter PM — {t['meter_name']} "
+                f"({'usage' if t['mode']=='usage' else 'condition'}) @ {latest}")
+            cur = con.execute(
+                "INSERT INTO maintenance_visits "
+                "(customer_id, equipment_id, visit_type, status, scheduled_date, "
+                " created_at, scope_of_work, hub_id, order_type, priority) "
+                "VALUES (?, ?, 'PM', 'scheduled', ?, ?, ?, ?, 'predictive', ?)",
+                (t["customer_id"], t["equipment_id"], now.date().isoformat(),
+                 now.isoformat(), title, int(t.get("hub_id", 1)),
+                 'high' if t["mode"] == 'condition' else 'normal'))
+            created.append(cur.lastrowid)
+    con.commit()
+    con.close()
+    return {"created": created, "evaluated": len(triggers)}
+
+
+# ── Workforce planning (CMMS area #5) ─────────────────────────────────────────
+# Demand = estimated labour hours on active work orders, bucketed by the day
+# they're scheduled. Capacity = sum of active field techs' daily_capacity_hours.
+# Allocation looks at the same demand but bucketed per ASSIGNED tech so we can
+# flag over-allocated individuals. Skill matching ranks dispatchable techs for a
+# specific WO by skill fit and remaining capacity on its scheduled day.
+_WF_ACTIVE_STATUSES = ("created", "scheduled", "in_progress")
+_DEFAULT_VISIT_HOURS = 2.0   # fallback when a WO has no estimated_duration_min
+_PROFICIENCY_RANK = {"expert": 3, "qualified": 2, "trainee": 1}
+
+
+def _visit_demand_hours(estimated_duration_min) -> float:
+    if estimated_duration_min is None:
+        return _DEFAULT_VISIT_HOURS
+    try:
+        m = float(estimated_duration_min)
+    except (TypeError, ValueError):
+        return _DEFAULT_VISIT_HOURS
+    return round(m / 60.0, 2) if m > 0 else _DEFAULT_VISIT_HOURS
+
+
+def _wf_date_range(start_date: str, end_date: str):
+    from datetime import date, timedelta
+    s = date.fromisoformat(str(start_date)[:10])
+    e = date.fromisoformat(str(end_date)[:10])
+    days, d = [], s
+    while d <= e:
+        days.append(d.isoformat())
+        d += timedelta(days=1)
+    return days
+
+
+def _active_field_techs(con, hub_id=None):
+    q = ("SELECT id, name, hub_id, daily_capacity_hours FROM technicians "
+         "WHERE active = 1 AND staff_type = 'tech' "
+         "AND employment_status != 'terminated'")
+    params = []
+    if hub_id is not None:
+        q += " AND hub_id = ?"
+        params.append(int(hub_id))
+    return con.execute(q, params).fetchall()
+
+
+def list_tech_skills(tech_id: int):
+    con = _con()
+    rows = con.execute(
+        "SELECT * FROM tech_skills WHERE tech_id = ? ORDER BY skill",
+        (int(tech_id),)).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def add_tech_skill(tech_id: int, skill: str, proficiency: str = "qualified"):
+    from datetime import datetime as _dt, timezone as _tz
+    skill = (skill or "").strip()
+    if not skill:
+        raise ValueError("skill required")
+    if proficiency not in ("trainee", "qualified", "expert"):
+        raise ValueError("bad proficiency")
+    con = _con()
+    con.execute(
+        "INSERT OR IGNORE INTO tech_skills (tech_id, skill, proficiency, created_at) "
+        "VALUES (?,?,?,?)",
+        (int(tech_id), skill, proficiency, _dt.now(_tz.utc).isoformat()))
+    con.execute(
+        "UPDATE tech_skills SET proficiency = ? WHERE tech_id = ? AND skill = ?",
+        (proficiency, int(tech_id), skill))
+    con.commit()
+    row = con.execute(
+        "SELECT * FROM tech_skills WHERE tech_id = ? AND skill = ?",
+        (int(tech_id), skill)).fetchone()
+    con.close()
+    return dict(row)
+
+
+def remove_tech_skill(tech_id: int, skill: str) -> bool:
+    con = _con()
+    cur = con.execute(
+        "DELETE FROM tech_skills WHERE tech_id = ? AND skill = ?",
+        (int(tech_id), (skill or "").strip()))
+    con.commit()
+    changed = cur.rowcount > 0
+    con.close()
+    return changed
+
+
+def set_tech_capacity(tech_id: int, daily_capacity_hours: float) -> bool:
+    h = max(0.0, float(daily_capacity_hours))
+    con = _con()
+    cur = con.execute(
+        "UPDATE technicians SET daily_capacity_hours = ? WHERE id = ?",
+        (h, int(tech_id)))
+    con.commit()
+    changed = cur.rowcount > 0
+    con.close()
+    return changed
+
+
+def workforce_forecast(start_date: str, end_date: str, hub_id=None) -> dict:
+    """Per-day labour demand (active WOs scheduled that day) vs capacity (active
+    field-tech daily capacity). Flags over-capacity days."""
+    days = _wf_date_range(start_date, end_date)
+    if not days:
+        return {"days": [], "alerts": [], "capacity_hours": 0, "tech_count": 0}
+    con = _con()
+    techs = _active_field_techs(con, hub_id)
+    daily_capacity = round(sum((t["daily_capacity_hours"] or 0) for t in techs), 2)
+    tech_count = len(techs)
+    q = ("SELECT substr(scheduled_date,1,10) AS d, estimated_duration_min AS edm "
+         "FROM maintenance_visits "
+         "WHERE scheduled_date IS NOT NULL "
+         "AND substr(scheduled_date,1,10) BETWEEN ? AND ? "
+         "AND status IN ('created','scheduled','in_progress')")
+    params = [days[0], days[-1]]
+    if hub_id is not None:
+        q += " AND hub_id = ?"
+        params.append(int(hub_id))
+    demand, counts = {}, {}
+    for r in con.execute(q, params).fetchall():
+        d = r["d"]
+        demand[d] = round(demand.get(d, 0.0) + _visit_demand_hours(r["edm"]), 2)
+        counts[d] = counts.get(d, 0) + 1
+    con.close()
+    out_days, alerts = [], []
+    for d in days:
+        dem = round(demand.get(d, 0.0), 2)
+        util = round(dem / daily_capacity * 100, 1) if daily_capacity > 0 else None
+        over = daily_capacity > 0 and dem > daily_capacity
+        out_days.append({"date": d, "demand_hours": dem,
+                         "capacity_hours": daily_capacity,
+                         "work_orders": counts.get(d, 0),
+                         "tech_count": tech_count,
+                         "utilization_pct": util, "over_capacity": over})
+        if over:
+            alerts.append({"date": d, "type": "over_capacity",
+                           "demand_hours": dem, "capacity_hours": daily_capacity})
+    return {"days": out_days, "capacity_hours": daily_capacity,
+            "tech_count": tech_count, "alerts": alerts}
+
+
+def workforce_allocation(start_date: str, end_date: str, hub_id=None) -> dict:
+    """Per technician: assigned hours vs capacity over the window, with per-day
+    over-allocation flags (a day where assigned hours exceed daily capacity)."""
+    days = _wf_date_range(start_date, end_date)
+    if not days:
+        return {"technicians": [], "alerts": [], "days": []}
+    con = _con()
+    techs = _active_field_techs(con, hub_id)
+    by_id = {}
+    for t in techs:
+        by_id[t["id"]] = {"tech_id": t["id"], "name": t["name"],
+                          "daily_capacity_hours": t["daily_capacity_hours"] or 0,
+                          "_days": {}, "assigned_hours": 0.0, "work_orders": 0}
+    q = ("SELECT assigned_tech_id AS tid, substr(scheduled_date,1,10) AS d, "
+         "estimated_duration_min AS edm FROM maintenance_visits "
+         "WHERE assigned_tech_id IS NOT NULL AND scheduled_date IS NOT NULL "
+         "AND substr(scheduled_date,1,10) BETWEEN ? AND ? "
+         "AND status IN ('created','scheduled','in_progress')")
+    params = [days[0], days[-1]]
+    if hub_id is not None:
+        q += " AND hub_id = ?"
+        params.append(int(hub_id))
+    for r in con.execute(q, params).fetchall():
+        rec = by_id.get(r["tid"])
+        if not rec:
+            continue
+        h = _visit_demand_hours(r["edm"])
+        rec["_days"][r["d"]] = round(rec["_days"].get(r["d"], 0.0) + h, 2)
+        rec["assigned_hours"] = round(rec["assigned_hours"] + h, 2)
+        rec["work_orders"] += 1
+    con.close()
+    alerts, techs_out = [], []
+    for rec in by_id.values():
+        cap = rec["daily_capacity_hours"]
+        over_days = []
+        for d in sorted(rec["_days"]):
+            h = rec["_days"][d]
+            if cap > 0 and h > cap:
+                over_days.append({"date": d, "assigned_hours": h,
+                                  "capacity_hours": cap})
+                alerts.append({"tech_id": rec["tech_id"], "name": rec["name"],
+                               "date": d, "type": "over_allocated",
+                               "assigned_hours": h, "capacity_hours": cap})
+        window_cap = round(cap * len(days), 2)
+        rec["window_capacity_hours"] = window_cap
+        rec["utilization_pct"] = (round(rec["assigned_hours"] / window_cap * 100, 1)
+                                  if window_cap > 0 else None)
+        rec["over_allocated_days"] = over_days
+        rec["daily"] = [{"date": d, "assigned_hours": rec["_days"][d]}
+                        for d in sorted(rec["_days"])]
+        del rec["_days"]
+        techs_out.append(rec)
+    techs_out.sort(key=lambda r: (r["utilization_pct"] or 0), reverse=True)
+    return {"technicians": techs_out, "alerts": alerts, "days": days}
+
+
+def visit_skill_match(visit_id: int):
+    """Rank dispatchable techs for a WO by skill fit then remaining capacity on
+    its scheduled day. Returns None if the visit doesn't exist."""
+    con = _con()
+    v = con.execute(
+        "SELECT id, scheduled_date, required_skill, hub_id, assigned_tech_id "
+        "FROM maintenance_visits WHERE id = ?", (int(visit_id),)).fetchone()
+    if not v:
+        con.close()
+        return None
+    v = dict(v)
+    day = (v["scheduled_date"] or "")[:10] or None
+    req = (v["required_skill"] or "").strip()
+    techs = _active_field_techs(con, v["hub_id"])
+    skilled = {}
+    if req:
+        for r in con.execute(
+                "SELECT tech_id, proficiency FROM tech_skills WHERE skill = ?",
+                (req,)).fetchall():
+            skilled[r["tech_id"]] = r["proficiency"]
+    load = {}
+    if day:
+        for r in con.execute(
+                "SELECT assigned_tech_id AS tid, estimated_duration_min AS edm "
+                "FROM maintenance_visits WHERE assigned_tech_id IS NOT NULL "
+                "AND substr(scheduled_date,1,10) = ? "
+                "AND status IN ('created','scheduled','in_progress') "
+                "AND id != ?", (day, int(visit_id))).fetchall():
+            load[r["tid"]] = round(load.get(r["tid"], 0.0) +
+                                   _visit_demand_hours(r["edm"]), 2)
+    con.close()
+    cands = []
+    for t in techs:
+        cap = t["daily_capacity_hours"] or 0
+        used = load.get(t["id"], 0.0)
+        prof = skilled.get(t["id"])
+        cands.append({
+            "tech_id": t["id"], "name": t["name"],
+            "has_skill": bool((not req) or (t["id"] in skilled)),
+            "proficiency": prof,
+            "capacity_hours": cap, "assigned_hours": used,
+            "available_hours": round(cap - used, 2),
+            "is_assigned": t["id"] == v["assigned_tech_id"],
+        })
+    cands.sort(key=lambda c: (
+        1 if c["has_skill"] else 0,
+        _PROFICIENCY_RANK.get(c["proficiency"], 0),
+        c["available_hours"]), reverse=True)
+    return {"visit_id": v["id"], "required_skill": req or None,
+            "scheduled_date": day, "candidates": cands}
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Multi-entity / cost centres (CMMS area #6)
+# A work order is tagged to one business entity; its revenue, labour cost and
+# parts cost all roll up there for a per-entity P&L. admin_entity_scope gives
+# entity-scoped reporting (an admin with scope rows only sees those entities).
+# ─────────────────────────────────────────────────────────────────────────
+def list_entities(include_inactive: bool = True):
+    con = _con()
+    q = "SELECT * FROM business_entities"
+    if not include_inactive:
+        q += " WHERE active = 1"
+    q += " ORDER BY (parent_id IS NOT NULL), COALESCE(parent_id, id), id"
+    rows = [dict(r) for r in con.execute(q).fetchall()]
+    con.close()
+    return rows
+
+
+def get_entity(entity_id: int):
+    con = _con()
+    r = con.execute("SELECT * FROM business_entities WHERE id = ?",
+                    (int(entity_id),)).fetchone()
+    con.close()
+    return dict(r) if r else None
+
+
+def create_entity(code: str, name: str, kind: str = "cost_center",
+                  parent_id=None, currency: str = "TTD") -> int:
+    code = (code or "").strip().upper()
+    name = (name or "").strip()
+    if not code or not name:
+        raise ValueError("code and name are required")
+    if kind not in ("legal_entity", "cost_center"):
+        raise ValueError("kind must be legal_entity or cost_center")
+    con = _con()
+    if parent_id is not None:
+        if not con.execute("SELECT 1 FROM business_entities WHERE id = ?",
+                           (int(parent_id),)).fetchone():
+            con.close()
+            raise ValueError("parent entity not found")
+    try:
+        cur = con.execute(
+            "INSERT INTO business_entities "
+            "(code, name, kind, parent_id, currency, active, created_at) "
+            "VALUES (?,?,?,?,?,1,?)",
+            (code, name, kind, parent_id, (currency or "TTD").upper(),
+             datetime.now(timezone.utc).isoformat()))
+        eid = cur.lastrowid
+        con.commit()
+    except sqlite3.IntegrityError:
+        con.close()
+        raise ValueError("entity code already exists")
+    con.close()
+    return eid
+
+
+def update_entity(entity_id: int, **fields) -> bool:
+    allowed = ("name", "kind", "parent_id", "currency", "active")
+    sets, vals = [], []
+    for k in allowed:
+        if k in fields and fields[k] is not None:
+            v = fields[k]
+            if k == "kind" and v not in ("legal_entity", "cost_center"):
+                raise ValueError("kind must be legal_entity or cost_center")
+            if k == "currency":
+                v = str(v).upper()
+            if k == "active":
+                v = 1 if v else 0
+            if k == "parent_id" and int(v) == int(entity_id):
+                raise ValueError("entity cannot be its own parent")
+            sets.append(f"{k} = ?")
+            vals.append(v)
+    if not sets:
+        return False
+    sets.append("updated_at = ?")
+    vals.append(datetime.now(timezone.utc).isoformat())
+    vals.append(int(entity_id))
+    con = _con()
+    cur = con.execute(
+        f"UPDATE business_entities SET {', '.join(sets)} WHERE id = ?", vals)
+    con.commit()
+    ok = cur.rowcount > 0
+    con.close()
+    return ok
+
+
+def get_admin_entity_scope(admin_id: int):
+    """Entity ids this admin is explicitly scoped to (may be empty)."""
+    con = _con()
+    rows = [r["entity_id"] for r in con.execute(
+        "SELECT entity_id FROM admin_entity_scope WHERE admin_id = ? "
+        "ORDER BY entity_id", (int(admin_id),)).fetchall()]
+    con.close()
+    return rows
+
+
+def set_admin_entity_scope(admin_id: int, entity_ids) -> list:
+    """Replace an admin's entity scope with the given id set. Empty list =
+    unrestricted (the admin sees all entities). Returns the stored ids."""
+    ids = sorted({int(e) for e in (entity_ids or [])})
+    con = _con()
+    con.execute("DELETE FROM admin_entity_scope WHERE admin_id = ?", (int(admin_id),))
+    now = datetime.now(timezone.utc).isoformat()
+    for eid in ids:
+        if con.execute("SELECT 1 FROM business_entities WHERE id = ?", (eid,)).fetchone():
+            con.execute(
+                "INSERT OR IGNORE INTO admin_entity_scope "
+                "(admin_id, entity_id, created_at) VALUES (?,?,?)",
+                (int(admin_id), eid, now))
+    con.commit()
+    stored = [r["entity_id"] for r in con.execute(
+        "SELECT entity_id FROM admin_entity_scope WHERE admin_id = ? "
+        "ORDER BY entity_id", (int(admin_id),)).fetchall()]
+    con.close()
+    return stored
+
+
+def admin_allowed_entity_ids(admin_id: int):
+    """None  → unrestricted (no scope rows); otherwise the allowed id set.
+    Use to filter entity reporting; intersect requested entities with this."""
+    scope = get_admin_entity_scope(admin_id)
+    return set(scope) if scope else None
+
+
+def entity_pnl(start: str, end: str, entity_ids=None, allowed_ids=None):
+    """Per-entity P&L over [start, end] (inclusive, by work-order scheduled
+    date). Revenue = invoice totals for the entity's visits; labour cost =
+    Σ(hours × cost_rate); parts cost = Σ(qty × unit_price). Untagged visits
+    roll up under entity 1 (the seeded default). `entity_ids` restricts the
+    report; `allowed_ids` (a set or None) applies the caller's auth scope."""
+    days = _wf_date_range(start, end)          # validates the date strings
+    lo, hi = days[0], days[-1]
+    con = _con()
+    ents = {e["id"]: e for e in (dict(r) for r in con.execute(
+        "SELECT * FROM business_entities").fetchall())}
+
+    def _eid(raw):
+        return raw if (raw in ents) else 1
+
+    buckets = {}
+
+    def _b(eid):
+        if eid not in buckets:
+            e = ents.get(eid, {})
+            buckets[eid] = {
+                "entity_id": eid,
+                "code": e.get("code"), "name": e.get("name"),
+                "kind": e.get("kind"), "currency": e.get("currency", "TTD"),
+                "revenue": 0.0, "labor_cost": 0.0, "parts_cost": 0.0,
+                "work_orders": 0,
+            }
+        return buckets[eid]
+
+    # Work-order count + the visit→entity map for the window.
+    visit_entity = {}
+    for r in con.execute(
+            "SELECT id, entity_id FROM maintenance_visits "
+            "WHERE scheduled_date >= ? AND scheduled_date <= ?", (lo, hi)):
+        eid = _eid(r["entity_id"])
+        visit_entity[r["id"]] = eid
+        _b(eid)["work_orders"] += 1
+
+    # Revenue: invoices joined to their visit's entity (by issue_date window).
+    for r in con.execute(
+            "SELECT i.total AS total, i.visit_id AS visit_id "
+            "FROM invoices i WHERE i.issue_date >= ? AND i.issue_date <= ?",
+            (lo, hi)):
+        eid = visit_entity.get(r["visit_id"])
+        if eid is None:
+            ev = con.execute("SELECT entity_id FROM maintenance_visits WHERE id = ?",
+                             (r["visit_id"],)).fetchone() if r["visit_id"] else None
+            eid = _eid(ev["entity_id"]) if ev else 1
+        _b(eid)["revenue"] += float(r["total"] or 0)
+
+    # Labour cost: hours × cost_rate, attributed via the entry's visit entity.
+    for r in con.execute(
+            "SELECT l.hours AS hours, l.cost_rate AS cost_rate, l.visit_id AS visit_id "
+            "FROM visit_labor_entries l JOIN maintenance_visits v ON v.id = l.visit_id "
+            "WHERE v.scheduled_date >= ? AND v.scheduled_date <= ?", (lo, hi)):
+        eid = visit_entity.get(r["visit_id"], 1)
+        _b(eid)["labor_cost"] += float(r["hours"] or 0) * float(r["cost_rate"] or 0)
+
+    # Parts cost: qty × unit_price.
+    for r in con.execute(
+            "SELECT p.quantity AS quantity, p.unit_price AS unit_price, p.visit_id AS visit_id "
+            "FROM visit_parts p JOIN maintenance_visits v ON v.id = p.visit_id "
+            "WHERE v.scheduled_date >= ? AND v.scheduled_date <= ?", (lo, hi)):
+        eid = visit_entity.get(r["visit_id"], 1)
+        _b(eid)["parts_cost"] += float(r["quantity"] or 0) * float(r["unit_price"] or 0)
+    con.close()
+
+    want = set(int(e) for e in entity_ids) if entity_ids else None
+    out = []
+    for eid, b in buckets.items():
+        if want is not None and eid not in want:
+            continue
+        if allowed_ids is not None and eid not in allowed_ids:
+            continue
+        b["revenue"] = round(b["revenue"], 2)
+        b["labor_cost"] = round(b["labor_cost"], 2)
+        b["parts_cost"] = round(b["parts_cost"], 2)
+        b["total_cost"] = round(b["labor_cost"] + b["parts_cost"], 2)
+        b["gross_profit"] = round(b["revenue"] - b["total_cost"], 2)
+        b["margin_pct"] = round(100.0 * b["gross_profit"] / b["revenue"], 1) \
+            if b["revenue"] else 0.0
+        out.append(b)
+    out.sort(key=lambda x: x["entity_id"])
+    totals = {
+        "revenue": round(sum(b["revenue"] for b in out), 2),
+        "labor_cost": round(sum(b["labor_cost"] for b in out), 2),
+        "parts_cost": round(sum(b["parts_cost"] for b in out), 2),
+        "work_orders": sum(b["work_orders"] for b in out),
+    }
+    totals["total_cost"] = round(totals["labor_cost"] + totals["parts_cost"], 2)
+    totals["gross_profit"] = round(totals["revenue"] - totals["total_cost"], 2)
+    totals["margin_pct"] = round(100.0 * totals["gross_profit"] / totals["revenue"], 1) \
+        if totals["revenue"] else 0.0
+    return {"start": lo, "end": hi, "entities": out, "totals": totals}
 
 
 def generate_due_pm_visits(now=None, lookahead_days: int = 30,
@@ -5886,6 +6767,94 @@ def transition_visit(visit_id: int, new_status: str, *,
     con.commit()
     con.close()
     return {"old": cur, "new": nxt, "noop": False}
+
+
+def visit_completion_cascade(visit_id: int, now=None) -> dict:
+    """CMMS #7 — data-model coherence. The DOWNSTREAM side-effects that must
+    fire when a work order reaches `completed`, so dependent state stays
+    coherent without a human remembering to poke each subsystem:
+
+      1. Next-PM materialisation — if the WO is a contract PM (pm_contract_id
+         set), generate the next due PM visit for that contract so the
+         preventive schedule self-perpetuates the moment one is serviced.
+      2. Cost coherence — recompute the WO's authoritative job-costing rollup
+         (labour + parts) from the one source of truth (labour entries / parts
+         used), returned so callers can surface / audit the settled cost.
+
+    This function does NOT change the visit's status (transition_visit owns that)
+    and does NOT log audit (the route owns that). Idempotent: PM generation is
+    itself idempotent per (contract, due-date), and job-costing is a pure read.
+    Returns {pm_contract_id, next_pm_created:[ids], job_costing:{...}}."""
+    con = _con()
+    row = con.execute(
+        "SELECT pm_contract_id, equipment_id FROM maintenance_visits WHERE id = ?",
+        (int(visit_id),),
+    ).fetchone()
+    con.close()
+    pm_contract_id = row["pm_contract_id"] if row else None
+    next_pm_created = []
+    if pm_contract_id:
+        try:
+            gen = generate_due_pm_visits(now=now, only_contract_id=int(pm_contract_id))
+            next_pm_created = gen.get("created", [])
+        except Exception:
+            # PM generation is best-effort; a failure here must not block the
+            # completion itself (the WO is already committed as completed).
+            next_pm_created = []
+    try:
+        job_costing = visit_job_costing(int(visit_id))
+    except Exception:
+        job_costing = None
+    return {
+        "pm_contract_id":  pm_contract_id,
+        "next_pm_created": next_pm_created,
+        "job_costing":     job_costing,
+    }
+
+
+def visit_coherence(visit_id: int) -> dict:
+    """CMMS #7 — the single authoritative dependent view of a work order:
+    its settled cost rollup, its place in the PM schedule (contract + sibling
+    PM visits), and its entity tag — assembled from the canonical tables so the
+    UI never has to stitch several endpoints together and risk drift.
+    Returns None if the visit doesn't exist."""
+    con = _con()
+    v = con.execute(
+        "SELECT id, status, visit_type, pm_contract_id, equipment_id, entity_id, "
+        "scheduled_date, completed_date FROM maintenance_visits WHERE id = ?",
+        (int(visit_id),),
+    ).fetchone()
+    if v is None:
+        con.close()
+        return None
+    v = dict(v)
+    pm_siblings = []
+    contract = None
+    if v.get("pm_contract_id"):
+        contract_row = con.execute(
+            "SELECT id, contract_code, title, frequency, status, start_date, "
+            "end_date, last_generated_date FROM pm_contracts WHERE id = ?",
+            (int(v["pm_contract_id"]),),
+        ).fetchone()
+        contract = dict(contract_row) if contract_row else None
+        for r in con.execute(
+            "SELECT id, scheduled_date, status, completed_date "
+            "FROM maintenance_visits WHERE pm_contract_id = ? "
+            "ORDER BY scheduled_date",
+            (int(v["pm_contract_id"]),),
+        ).fetchall():
+            pm_siblings.append(dict(r))
+    con.close()
+    return {
+        "visit_id":       v["id"],
+        "status":         v["status"],
+        "visit_type":     v["visit_type"],
+        "entity_id":      v.get("entity_id"),
+        "pm_contract_id": v.get("pm_contract_id"),
+        "pm_contract":    contract,
+        "pm_siblings":    pm_siblings,
+        "job_costing":    visit_job_costing(int(visit_id)),
+    }
 
 
 def assert_visit_edit_allowed(visit_id: int, data: dict):
@@ -7677,6 +8646,53 @@ def _redact_pii_for_audit(value):
     return value
 
 
+# Keys that are bookkeeping noise rather than substantive field changes — a
+# record's audit diff shouldn't be cluttered by "updated_at moved".
+_AUDIT_DIFF_IGNORE = {"updated_at", "created_at", "id"}
+
+
+def _audit_diff(before, after):
+    """Compute a field-level old→new diff between two record snapshots.
+    Returns a list of {"field", "old", "new"} for keys whose (PII-redacted)
+    values actually changed, or None when a diff isn't meaningful (either side
+    not a dict, or nothing changed). Values are redacted with the same rules as
+    the stored before/after blobs so the diff never leaks PII."""
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return None
+    b = _redact_pii_for_audit(before)
+    a = _redact_pii_for_audit(after)
+    changes = []
+    # Iterate over the AFTER keys only — `after` is the intended change set
+    # (an update DTO / model_dump). `before` is frequently the FULL record row
+    # with many more columns; a union diff would falsely report every column
+    # absent from the DTO as "changed to null". Comparing the touched fields to
+    # their prior values is the meaningful "what this edit changed" view.
+    for k in sorted(a.keys()):
+        if k in _AUDIT_DIFF_IGNORE:
+            continue
+        ov, nv = b.get(k), a.get(k)
+        # A None on the AFTER side means "not provided / leave as-is" for the
+        # Optional update DTOs used across this app (the update_* helpers skip
+        # None fields rather than null the column). It is never a real change,
+        # so it must not appear as "X → null". Explicit clears are sent as ""
+        # and still diff correctly below.
+        if nv is None:
+            continue
+        # NULL (None), empty string, empty list/dict all mean "no value". The
+        # DB stores NULL where an update DTO sends "" (model default) — those
+        # are NOT a substantive change and must not pollute the diff.
+        if _audit_is_empty(ov) and _audit_is_empty(nv):
+            continue
+        if ov != nv:
+            changes.append({"field": k, "old": ov, "new": nv})
+    return changes or None
+
+
+def _audit_is_empty(v):
+    """True for values that all mean 'no value': None, '', [], {}."""
+    return v is None or v == "" or v == [] or v == {}
+
+
 def log_audit(
     actor_type: str,
     actor_id: int = None,
@@ -7690,6 +8706,7 @@ def log_audit(
     before_value=None,
     after_value=None,
     ip_address: str = None,
+    reason: str = None,
 ):
     row = {
         "actor_type":   actor_type,
@@ -7709,6 +8726,11 @@ def log_audit(
         "created_at":   datetime.now(timezone.utc).isoformat(),
     }
     retention_class = _classify_retention(action)
+    # CMMS #4 — precompute the field-level diff (off the hashed chain; derived
+    # from the already-hashed before/after) and normalise the reason string.
+    _diff = _audit_diff(before_value, after_value)
+    changed_fields = _json.dumps(_diff) if _diff else None
+    reason = (reason or "").strip() or None
 
     # Serialize prev-read + insert so concurrent writers can't break the chain
     with _audit_lock:
@@ -7724,8 +8746,8 @@ def log_audit(
                 (actor_type, actor_id, actor_prid, actor_label, actor_role,
                  action, target_type, target_id, target_label,
                  before_value, after_value, ip_address, created_at, chain_hash,
-                 retention_class)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 retention_class, reason, changed_fields)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 row["actor_type"],   row["actor_id"],   row["actor_prid"],
@@ -7733,6 +8755,7 @@ def log_audit(
                 row["target_type"],  row["target_id"],  row["target_label"],
                 row["before_value"], row["after_value"],row["ip_address"],
                 row["created_at"],   chain_hash,        retention_class,
+                reason,              changed_fields,
             ),
         )
         con.commit()
@@ -8321,6 +9344,145 @@ def stock_by_location(location_id: int = None) -> list:
     rows = con.execute(sql, args).fetchall()
     con.close()
     return [dict(r) for r in rows]
+
+
+# ── Work-order labor entries + job costing (CMMS area #3) ────────────────────
+
+def list_visit_labor(visit_id: int):
+    """All labor entries booked against a work order, tech-joined, oldest-first."""
+    con = _con()
+    rows = con.execute(
+        """SELECT le.*, t.name AS tech_name, t.tech_code AS tech_code
+             FROM visit_labor_entries le
+        LEFT JOIN technicians t ON le.tech_id = t.id
+            WHERE le.visit_id = ?
+            ORDER BY le.work_date, le.id""",
+        (visit_id,),
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def add_visit_labor(visit_id: int, hours: float, tech_id: int = None,
+                    work_date: str = None, billable: bool = True,
+                    cost_rate: float = None, bill_rate: float = None,
+                    notes: str = "", created_by_kind: str = None,
+                    created_by_id: int = None) -> int:
+    """Book labor against a work order. When cost_rate is not supplied it is
+    snapshotted from the technician's current hourly_rate, so a later raise
+    never restates historical job cost. Returns the new entry id."""
+    hours = float(hours or 0)
+    if hours < 0:
+        raise ValueError("Hours cannot be negative")
+    con = _con()
+    if cost_rate is None:
+        cost_rate = 0.0
+        if tech_id:
+            tr = con.execute("SELECT hourly_rate FROM technicians WHERE id = ?",
+                             (tech_id,)).fetchone()
+            if tr and tr["hourly_rate"] is not None:
+                cost_rate = float(tr["hourly_rate"])
+    cur = con.execute(
+        """INSERT INTO visit_labor_entries
+             (visit_id, tech_id, work_date, hours, billable, cost_rate,
+              bill_rate, notes, created_by_kind, created_by_id, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (visit_id, tech_id, work_date, hours, 1 if billable else 0,
+         float(cost_rate or 0),
+         (float(bill_rate) if bill_rate is not None else None),
+         notes or "", created_by_kind, created_by_id,
+         datetime.now(timezone.utc).isoformat()),
+    )
+    new_id = cur.lastrowid
+    con.commit()
+    con.close()
+    return new_id
+
+
+def delete_visit_labor(entry_id: int, visit_id: int = None) -> bool:
+    """Remove a labor entry. When visit_id is given it scopes the delete so a
+    caller can't remove an entry from a different WO. Returns True if a row went."""
+    con = _con()
+    if visit_id is not None:
+        cur = con.execute(
+            "DELETE FROM visit_labor_entries WHERE id = ? AND visit_id = ?",
+            (entry_id, visit_id))
+    else:
+        cur = con.execute(
+            "DELETE FROM visit_labor_entries WHERE id = ?", (entry_id,))
+    con.commit()
+    deleted = cur.rowcount > 0
+    con.close()
+    return deleted
+
+
+def visit_job_costing(visit_id: int) -> dict:
+    """Job-costing rollup for one work order, from explicit labor entries when
+    present, else falling back to the legacy single start/end × tech-rate block
+    so older WOs without entries still report a labor cost (coherence).
+
+    Returns: labor_hours, billable_hours, nonbillable_hours, labor_cost,
+    billable_amount, parts_cost, total_cost, entry_count, source.
+    """
+    con = _con()
+    rows = con.execute(
+        "SELECT hours, billable, cost_rate, bill_rate "
+        "FROM visit_labor_entries WHERE visit_id = ?", (visit_id,)
+    ).fetchall()
+
+    labor_hours = billable_hours = nonbillable_hours = 0.0
+    labor_cost = billable_amount = 0.0
+    source = "entries"
+    if rows:
+        for r in rows:
+            h = float(r["hours"] or 0)
+            labor_hours += h
+            labor_cost  += h * float(r["cost_rate"] or 0)
+            if r["billable"]:
+                billable_hours += h
+                if r["bill_rate"] is not None:
+                    billable_amount += h * float(r["bill_rate"])
+            else:
+                nonbillable_hours += h
+    else:
+        # Legacy fallback: single tracked block on the visit row.
+        source = "tracked_block"
+        v = con.execute(
+            "SELECT v.start_time, v.end_time, t.hourly_rate "
+            "FROM maintenance_visits v "
+            "LEFT JOIN technicians t ON v.assigned_tech_id = t.id "
+            "WHERE v.id = ?", (visit_id,)
+        ).fetchone()
+        if v and v["start_time"] and v["end_time"]:
+            try:
+                s = datetime.fromisoformat(v["start_time"].replace("Z", "+00:00"))
+                e = datetime.fromisoformat(v["end_time"].replace("Z", "+00:00"))
+                h = max(0.0, (e - s).total_seconds() / 3600.0)
+                labor_hours = billable_hours = round(h, 2)
+                labor_cost = round(h * float(v["hourly_rate"] or 0), 2)
+            except Exception:
+                pass
+
+    parts_cost = con.execute(
+        "SELECT COALESCE(SUM(vp.quantity * p.unit_cost), 0) AS pc "
+        "FROM visit_parts vp JOIN parts p ON vp.part_id = p.id "
+        "WHERE vp.visit_id = ?", (visit_id,)
+    ).fetchone()["pc"] or 0.0
+    con.close()
+
+    labor_cost = round(labor_cost, 2)
+    parts_cost = round(float(parts_cost), 2)
+    return {
+        "labor_hours":       round(labor_hours, 2),
+        "billable_hours":    round(billable_hours, 2),
+        "nonbillable_hours": round(nonbillable_hours, 2),
+        "labor_cost":        labor_cost,
+        "billable_amount":   round(billable_amount, 2),
+        "parts_cost":        parts_cost,
+        "total_cost":        round(labor_cost + parts_cost, 2),
+        "entry_count":       len(rows),
+        "source":            source,
+    }
 
 
 # ── Visit Parts (parts used by a tech on a specific visit) ───────────────────
@@ -9618,7 +10780,7 @@ def get_entity_history(target_type: str, target_id: int, limit: int = 500):
         f"""SELECT id, actor_type, actor_id, actor_prid, actor_label, actor_role,
                   action, target_type, target_id, target_label,
                   before_value, after_value, ip_address, created_at, chain_hash,
-                  retention_class
+                  retention_class, reason, changed_fields
              FROM audit_log
             WHERE {where_pairs}
             ORDER BY created_at DESC LIMIT ?""",
@@ -9654,7 +10816,19 @@ def get_entity_history(target_type: str, target_id: int, limit: int = 500):
     # Merge into a uniform shape.
     out = []
     for r in audits:
-        d = dict(r); d["event_kind"] = "mutation"; out.append(d)
+        d = dict(r); d["event_kind"] = "mutation"
+        # changed_fields is stored as a JSON string ([{field,old,new}, ...]);
+        # surface it as a parsed list so the history/diff viewer can render it
+        # without re-parsing on the client. Tolerate NULL / malformed rows.
+        cf = d.get("changed_fields")
+        if cf:
+            try:
+                d["changed_fields"] = _json.loads(cf)
+            except Exception:
+                d["changed_fields"] = None
+        else:
+            d["changed_fields"] = None
+        out.append(d)
     for r in reads:
         d = dict(r)
         d["event_kind"]  = "read"
@@ -9662,6 +10836,8 @@ def get_entity_history(target_type: str, target_id: int, limit: int = 500):
         d["target_type"] = target_type
         d["target_id"]   = int(target_id)
         d["target_label"] = d.get("path")
+        d["reason"]        = None
+        d["changed_fields"] = None
         out.append(d)
     out.sort(key=lambda e: e["created_at"], reverse=True)
     return out[:limit]

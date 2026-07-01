@@ -436,7 +436,277 @@ to end (API → UI → tests), additive-only, live DB pristine.
   KPIs present as ints, capped lists; freshly-inserted visits reflected in the
   gauge + `todays_jobs`). **3/3 pass.**
 
-### 🎯 Build status — Gaps #1, #3, #4, #2, #5 + Phase 6 + HR-1 + UX-1 all delivered.
+## Phase CMMS-1 — Work-order classification (order_type / priority / SLA) — BUILT
+
+Integrated-CMMS spec area #1 (Work Order Tracking) classification layer, built
+end to end (DB → API → UI → tests), additive-only, live DB pristine.
+
+- **DB** — `maintenance_visits` gains four additive columns: `order_type` TEXT
+  (reactive/preventive/predictive), `priority` TEXT NOT NULL DEFAULT `'normal'`
+  (low/normal/high/urgent), `sla_deadline` TEXT (ISO), `sla_basis` TEXT NOT NULL
+  DEFAULT `'start'` (start/resolve). Two indexes (`idx_visits_sla`,
+  `idx_visits_priority`). One-time backfill sets `order_type` =
+  preventive when `pm_contract_id` is set, else reactive. `create_visit`/
+  `update_visit` carry the new columns (update only when a non-None value is
+  sent, so the legacy edit modal never wipes them).
+- **API** — `VisitCreate`/`VisitUpdate` accept the four fields;
+  `_validate_wo_class()` rejects bad enums with HTTP 422. `_wo_sla_status()`
+  computes a per-record badge value (`none`/`met`/`breached`/`due_soon`/
+  `on_track`) from `sla_deadline` + lifecycle status. Both the visit-detail
+  endpoint and the list endpoint surface `sla_status` per row.
+- **UI** — visit add/edit modal gains a "Classification & SLA" fieldset
+  (order-type, priority, SLA deadline `datetime-local`, SLA basis); populate +
+  submit + clear wired with `_isoToLocalInput`/`_localInputToIso`. Visit list
+  gains a "Priority / SLA" column rendering a priority pill + SLA badge from the
+  server-computed `sla_status`.
+- **Tests** — `tests/test_cmms_wo_class_api.py` (9 HTTP: create round-trip,
+  reactive default, three 422 validation cases, breached/due_soon badges, patch
+  preserves-then-updates, list surfaces sla_status). **9/9 pass.**
+
+## Phase CMMS-3 — Work-order labor entries + job costing (time → WO) — BUILT
+
+Integrated-CMMS spec area #3 (Time Tracking → job-costing). The immutable,
+shift-level `tech_clock_events` (hash-chained) stays the timekeeping
+source-of-truth; this adds the *job-costing grain* — labor booked against a
+specific work order — without touching that chain. Built end to end
+(DB → API → UI → tests), additive-only, live DB pristine.
+
+- **DB** — new `visit_labor_entries` table (`visit_id` FK CASCADE, `tech_id`,
+  `work_date`, `hours` ≥0, `billable`, `cost_rate`, `bill_rate`, `notes`,
+  created-by, `created_at`) + two indexes. Helpers `list_visit_labor`,
+  `add_visit_labor` (snapshots `technicians.hourly_rate` into `cost_rate` when
+  not supplied so later raises don't restate history), `delete_visit_labor`
+  (visit-scoped), and `visit_job_costing` — rolls up labor_hours /
+  billable_hours / nonbillable_hours / labor_cost / billable_amount /
+  parts_cost / total_cost, falling back to the legacy single start/end ×
+  tech-rate block when a WO has no entries (`source` field flags which).
+- **API** — `GET /api/admin/visits/{id}/labor` (entries + job_costing,
+  record-read gated), `POST .../labor` (`VisitLaborCreate`; record-write +
+  `visit:update`; 422 on negative hours; audited `visit.labor_add`),
+  `DELETE .../labor/{entry_id}` (visit-scoped → 404 cross-WO; audited
+  `visit.labor_delete`). Visit-detail endpoint now embeds `job_costing` +
+  `labor_entries`.
+- **UI** — "Labor & Job Costing" panel in the visit-detail view: add-labor form
+  (tech / hours / date / cost-rate / bill-rate / billable), entry table with
+  per-row Remove, and a totals footer (hours, billable split, labor cost,
+  billable amount, total job cost). Add/Remove gated by `can('visit:update')`.
+- **Tests** — `tests/test_cmms_wo_labor_api.py` (8 HTTP: add+costing round-trip,
+  cost-rate snapshot from tech rate, billable/non-billable split, negative-hours
+  422, delete, cross-WO scope 404, detail embeds job_costing, 404 for missing
+  visit). **8/8 pass.**
+
+## Phase CMMS-2 — Usage/condition meter PM triggers (runtime-based PM) — BUILT
+
+Integrated-CMMS spec area #2 (PM creation), extended beyond calendar PM to the
+two runtime-driven trigger families SAP-PM models: **usage** (every N units of a
+counter — run-hours, cycles, km) and **condition** (a reading crosses a
+threshold — discharge PSI, vibration, temperature). Built end to end
+(DB → API → UI → tests), additive-only, live DB pristine. Generated work
+orders are `order_type='predictive'`, `visit_type='PM'`.
+
+- **DB** — new `equipment_meter_readings` (append-only log: `equipment_id`,
+  `meter_name`, `reading_value`, `unit`, `reading_at`, `notes`, recorded-by) +
+  index, and `pm_meter_triggers` (`equipment_id`, `customer_id`, `hub_id`,
+  `meter_name`, `mode` CHECK usage/condition, `interval_value`,
+  `last_triggered_value`, `comparator` CHECK >=/<=/>/<, `threshold_value`,
+  `armed`, `title`, `active`, `last_generated_at`, audit cols) + index. Helpers:
+  `add_meter_reading` (appends, then auto-evaluates), `list_meter_readings`,
+  `create_meter_trigger` (seeds usage baseline from the latest reading),
+  `list_meter_triggers`, `set_meter_trigger_active`, and `evaluate_meter_triggers`
+  — usage advances the baseline by whole intervals (no double-fire within one
+  interval); condition fires once when armed + over the line, disarms, then
+  re-arms when the reading drops back across, creating the predictive PM visit
+  (priority `high` for condition, `normal` for usage).
+- **API** — `GET /api/admin/equipment/{id}/meters` (readings + triggers,
+  `customer:view`; 404 for missing equipment), `POST .../meters`
+  (`MeterReadingCreate`; `customer:update`; evaluates triggers and returns
+  `generated_visits`), `POST .../meter-triggers` (`MeterTriggerCreate`;
+  `customer:update`; validates mode / positive interval / threshold → 422),
+  `POST /api/admin/meter-triggers/{id}/toggle?active=` (enable/disable). The
+  daily `_pm_contract_gen_loop` cron now also sweeps meter triggers so
+  condition/usage PM fire even with no manual reading submitted.
+- **UI** — "Meters & runtime PM" panel in the equipment-detail view: triggers
+  table (mode, rule, armed/active state, per-row enable/disable toggle), readings
+  table, an add-reading form, and an add-trigger form whose fields switch between
+  usage (interval) and condition (comparator + threshold). Add/toggle gated by
+  `can('customer:update')`.
+- **Tests** — `tests/test_cmms_meter_pm_api.py` (9 HTTP: usage fires at interval,
+  usage no double-fire same interval, condition fires + debounces + re-arms,
+  usage positive-interval 422, condition threshold 422, bad mode 422, meters 404
+  missing equipment, toggle disables firing, meters endpoint lists readings +
+  triggers). **9/9 pass.**
+
+## Phase CMMS-5 — Workforce planning (demand/capacity, allocation, skills) — BUILT
+
+Integrated-CMMS spec area #5. Three planning lenses over the existing
+work-order + technician data, plus a dispatch-skills registry and a per-tech
+capacity setter. Built end to end (DB → API → UI → tests), additive-only, live
+DB pristine. Demand = estimated labour hours on active WOs bucketed by their
+scheduled day (a WO with no `estimated_duration_min` counts as 2h); capacity =
+sum of active field techs' daily capacity.
+
+- **DB** — new `tech_skills` table (`tech_id` FK CASCADE, `skill`,
+  `proficiency` CHECK trainee/qualified/expert, UNIQUE(tech_id, skill)) +
+  index; new columns `technicians.daily_capacity_hours` (REAL, default 8) and
+  `maintenance_visits.required_skill` (TEXT, NULL = any tech) added idempotently.
+  Helpers: `list_tech_skills`, `add_tech_skill` (upsert), `remove_tech_skill`,
+  `set_tech_capacity` (clamps ≥0), `workforce_forecast` (per-day demand vs
+  capacity + over-capacity alerts), `workforce_allocation` (per-tech assigned
+  hours vs window capacity + per-day over-allocation alerts), and
+  `visit_skill_match` (ranks dispatchable techs for a WO by skill fit then free
+  capacity on its scheduled day). `required_skill` is threaded through
+  `create_visit`/`update_visit`'s additive-column loops.
+- **API** — `GET /api/admin/workforce/forecast?start=&end=&hub_id=` and
+  `GET /api/admin/workforce/allocation?...` (both `tech:view`; 422 on bad
+  dates), `GET /api/admin/visits/{id}/skill-match` (`visit:view`; 404 missing
+  visit), `GET/POST /api/admin/technicians/{id}/skills` +
+  `DELETE .../skills/{skill}` (`tech:view`/`tech:update`; 422 bad proficiency,
+  404 missing tech/skill; audited), `POST .../capacity` (`tech:update`; 422 on
+  negative; audited). `VisitCreate`/`VisitUpdate` now carry `required_skill`.
+- **UI** — new **Workforce** sidebar panel (gated by `tech:view`): date-range
+  picker with This/Next-week shortcuts, a capacity-alerts banner, a Demand-vs-
+  Capacity table (per-day utilisation bar + over badge) and a Technician-
+  Allocation table (assigned vs window capacity + over-day badge). The
+  technician detail page gains a **Dispatch Skills & Capacity** card — skill
+  chips with add/remove and a daily-capacity editor, all gated by `tech:update`.
+- **Tests** — `tests/test_cmms_workforce_api.py` (11 HTTP, each on a fresh
+  hub_id for isolation: forecast demand/capacity + over-capacity alert, default
+  2h when no estimate, allocation over-allocation flag, skill-match ranks
+  skilled first, skill-match prefers freer capacity, skill-match 404,
+  skills add/list/remove, bad-proficiency 422, skills 404 missing tech,
+  capacity set reflected in forecast, negative-capacity 422). **11/11 pass.**
+
+## Phase CMMS-6 — Multi-entity / cost centres (per-entity P&L, scoped reporting) — BUILT
+
+Integrated-CMMS spec area #6. Models the organisation as a tree of **business
+entities** (legal entities + cost centres); a work order books to exactly one
+entity, and its revenue, labour cost and parts cost roll up there for a
+per-entity P&L. Built end to end (DB → API → UI → tests), additive-only, live
+DB pristine. Entity-scoped reporting is a **data filter, never a feature gate**:
+the same screens stay available to all, but an admin with a scope only sees the
+entities in it.
+
+- **DB** — new `business_entities` table (`code` UNIQUE, `name`, `kind` CHECK
+  legal_entity/cost_center, self-FK `parent_id`, `currency`, `active`) seeded
+  with a default id=1 `PRIMECOOL` legal entity (legacy/untagged WOs roll up
+  here); new `admin_entity_scope` (`admin_id` FK CASCADE, `entity_id` FK
+  CASCADE, UNIQUE) — empty scope = unrestricted; new column
+  `maintenance_visits.entity_id` (FK, NULL = default) added idempotently and
+  threaded through `create_visit`/`update_visit`'s additive-column loops.
+  Helpers: `list_entities`, `get_entity`, `create_entity` (validates kind +
+  unique code + parent exists), `update_entity` (rejects self-parent),
+  `get_admin_entity_scope`/`set_admin_entity_scope`/`admin_allowed_entity_ids`,
+  and `entity_pnl(start, end, entity_ids, allowed_ids)` — revenue from invoices
+  (joined to the WO's entity), labour = Σ(hours×cost_rate), parts = Σ(qty×price),
+  with gross_profit + margin per entity and a totals roll-up; intersects with
+  the caller's auth scope.
+- **API** — `GET/POST /api/admin/entities`, `PUT /api/admin/entities/{id}`
+  (`entity:view` / `entity:manage`; 422 bad kind / dup code / self-parent, 404
+  missing; audited), `GET/PUT /api/admin/admins/{admin_id}/entity-scope`
+  (`entity:manage`; audited), `GET /api/admin/entities/pnl?start=&end=&entity_ids=`
+  (`entity:view`; 422 bad dates; results intersected with the caller's scope).
+  Two new permissions `entity:view`/`entity:manage` added to `super_admin`;
+  `entity:view` also granted to `accountant`. `VisitCreate`/`VisitUpdate` carry
+  `entity_id`.
+- **UI** — new **Entities & P&L** sidebar panel (gated by `entity:view`): a
+  business-entities table (code/name/kind/parent/currency, Edit gated by
+  `entity:manage`), a create/edit modal (code immutable on edit, parent picker,
+  active toggle), and a Per-Entity P&L report with This-Month/This-Year range
+  shortcuts (revenue / labour / parts / gross-profit / margin per entity + a
+  totals row). A scope note shows when the view is entity-scoped. The work-order
+  modal gains a **Business entity / cost centre** picker (shown only to
+  `entity:view` admins; defaults to the seeded entity).
+- **Tests** — `tests/test_cmms_entity_api.py` (11 HTTP, each on a fresh entity
+  code + unique far-future date window for isolation: create/list entities,
+  bad-kind 422, duplicate-code 422, update + 404, self-parent 422, WO carries
+  entity on create & re-tag on update, P&L revenue/labour/parts/profit/margin
+  roll-up, P&L bad-dates 422, P&L entity_ids filter, scoped-admin only sees its
+  entities in P&L + list, empty-scope is unrestricted). **11/11 pass.**
+
+## Phase CMMS-4 — Audit-trail depth (field-level old→new diffs + the "why") — BUILT
+
+Integrated-CMMS spec area #4. The audit log already recorded *who / when* and a
+before/after JSON snapshot; this phase adds the two things the spec calls out —
+a **field-level old→new diff** (so you see exactly what changed, not just two
+blobs) and the **reason ("why")** behind a change — end to end (DB → API → UI →
+tests), additive-only, live DB pristine, and **without rebuilding the existing
+tamper-evident hash chain**.
+
+- **DB** — two idempotent new `audit_log` columns: `changed_fields` (JSON list
+  of `{field, old, new}`) and `reason` (free text). Both are stored **off the
+  hashed canonical payload** — the chain hash covers the fixed original field
+  set, so every existing row still verifies (`verify_audit_chain` unchanged) and
+  the diff is deterministically derived from the already-hashed before/after.
+  New helper `_audit_diff(before, after)` computes the diff over the **after
+  keys only** (the intended change set), redacts PII with the same rules as the
+  stored snapshots, ignores bookkeeping keys (`updated_at`/`created_at`/`id`),
+  and — crucially — treats a `None` on the after side as *"not provided / leave
+  as-is"* (matching the update helpers' semantics) and `None`/`""`/`[]`/`{}` as
+  interchangeable "no value", so NULL-vs-empty-string churn never pollutes the
+  diff. `log_audit` gained a `reason` param and now writes both columns;
+  `get_entity_history` surfaces `reason` and the parsed `changed_fields` list on
+  every mutation row (reads carry them as null for a uniform shape).
+- **API** — `_audit_from` gained a `reason` param that, when not passed
+  explicitly, is read uniformly from an **`X-Change-Reason` request header**
+  (length-capped) — so every mutating admin endpoint captures justification with
+  zero per-model plumbing. The existing `GET /api/admin/history/{type}/{id}`
+  timeline now returns the diffs + reasons (same role gating: super_admin all,
+  supervisor team-scoped, others self).
+- **UI** — the `api()` helper takes optional `extraHeaders` (used to send
+  `X-Change-Reason`). A generic **History / lifecycle viewer** modal
+  (`openAuditHistory(type, id, label)`) renders the merged mutation+read
+  timeline: each change shows actor + role + timestamp, a colour-coded
+  old→new diff table, and the captured reason in quotes. Wired into the
+  **work-order edit modal** (🕑 History, edit-only) and the **entity edit
+  modal**, both gated by `audit:view_self`/`audit:view_all`.
+- **Tests** — `tests/test_cmms_audit_diff_api.py` (6 HTTP, self-isolating on a
+  copied DB): a WO edit records only the touched field (not the whole row);
+  a no-op edit produces a null diff (no NULL-vs-"" churn); a reason supplied via
+  `X-Change-Reason` is captured and surfaced; absent header ⇒ no reason; a PII
+  field (notes) is `[redacted]` inside the diff and the raw value never leaks;
+  and `verify_audit_chain()` still returns `ok` after the new columns + edits.
+  **6/6 pass**; the audit/history-adjacent suites (access-destination,
+  shared-gate, delegation-retrofit, entity) stay green (**32 passed / 9 skipped**).
+
+## Phase CMMS-7 — Data-model coherence (cascading updates, one source of truth) — BUILT
+
+Integrated-CMMS spec area #7. The subsystems (work orders, PM contracts, labour
+entries, parts) already share canonical tables; this phase makes the **cascade
+on completion** explicit and adds a **single authoritative dependent view** so
+the UI never stitches several endpoints and risks drift. Built end to end
+(DB → API → UI → tests), additive-only, live DB pristine.
+
+- **DB** — `visit_completion_cascade(visit_id)` runs the downstream effects that
+  must fire when a WO reaches `completed`: (1) **next-PM materialisation** — if
+  the WO is a contract PM (`pm_contract_id` set), generate the next due PM visit
+  for that contract (idempotent per contract+due-date) so the preventive
+  schedule self-perpetuates the moment one is serviced; (2) **cost coherence** —
+  recompute the WO's authoritative job-costing rollup (labour + parts) from the
+  one source of truth (labour entries / parts used). It does NOT change status
+  (`transition_visit` owns that) nor log audit (the route owns that), and PM
+  generation is best-effort so it can never block an already-committed
+  completion. `visit_coherence(visit_id)` assembles the single dependent view:
+  settled cost rollup + PM schedule position (contract + sibling PM visits) +
+  entity tag.
+- **API** — the lifecycle endpoint `POST /api/admin/visits/{id}/transition`
+  fires the cascade **only on a real move into `completed`** (not a no-op
+  re-complete), returns it under `cascade`, and audits a
+  `visit.pm_next_generated` row when a next PM was auto-scheduled. New read
+  `GET /api/admin/visits/{id}/coherence` (record-scoped access) returns the
+  authoritative dependent view; 404 for a missing visit.
+- **UI** — the Visit-detail modal gains a **Coherence — cost & PM chain** card
+  (settled labour/parts/total/billable + the contract PM schedule with the
+  current WO marked). Completing a WO now toasts the coherence outcome: the next
+  PM auto-scheduled and the settled cost (labour + parts = total).
+- **Tests** — `tests/test_cmms_coherence_api.py` (6 HTTP, self-isolating):
+  completing a contract PM auto-generates the next PM(s) (verified as real PM
+  visits on the contract); completing a non-contract WO settles job cost
+  (labour $100 ⇒ total $100) with no PM generation; a non-completion transition
+  (scheduled→in_progress) fires **no** cascade; the coherence view returns the
+  contract + sibling chain for a PM and null-contract + cost for a plain WO;
+  404 for a missing visit. **6/6 pass.**
+
+### 🎯 Build status — Gaps #1, #3, #4, #2, #5 + Phase 6 + HR-1 + UX-1 + CMMS-1 + CMMS-3 + CMMS-2 + CMMS-5 + CMMS-6 + CMMS-4 + CMMS-7 all delivered — the full integrated-CMMS spec (#1–#7) is now complete.
 
 The committed sequence (Gap #1 → #3 → #4 → #2) plus **Gap #5**, **Phase 6
 (asset registry depth + BOM/where-used)** and **Phase HR-1 (unified employee
