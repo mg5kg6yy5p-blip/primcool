@@ -346,6 +346,10 @@
         });
       }
     }
+    // Manage Time Off — PTO review/approve is a supervisor/HR function.
+    // Mirrors the server gate (_admin_can(role, 'hr:view')) on the
+    // /api/admin/pto-requests list + approve/deny endpoints.
+    if (can('hr:view')) { const _np = document.getElementById('nav-pto'); if (_np) _np.style.display = 'flex'; }
     if (can('timesheet:view_all')) document.getElementById('nav-timesheets').style.display = 'flex';
     if (can('schedule:view')) document.getElementById('nav-schedule').style.display = 'flex';
     if (can('tech:view')) { const _nw = document.getElementById('nav-workforce'); if (_nw) _nw.style.display = 'flex'; }

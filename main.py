@@ -6790,6 +6790,8 @@ def admin_list_pto_requests(request: Request, status: str = "pending"):
     """Supervisor / admin review queue. Defaults to pending; pass
     ?status=approved|denied|cancelled|all to filter otherwise."""
     admin = _require_admin(request)
+    if not _admin_can(admin["role"], "hr:view"):
+        raise HTTPException(403, "Forbidden")
     from database import list_pto_requests
     s = None if status == "all" else status
     return {"requests": list_pto_requests(status=s)}
@@ -6798,6 +6800,8 @@ def admin_list_pto_requests(request: Request, status: str = "pending"):
 @app.post("/api/admin/pto-requests/{request_id}/approve")
 def admin_approve_pto_request(request: Request, request_id: int, body: PtoDecisionBody):
     admin = _require_admin(request)
+    if not _admin_can(admin["role"], "hr:view"):
+        raise HTTPException(403, "Forbidden")
     from database import decide_pto_request
     try:
         out = decide_pto_request(request_id, "approved",
@@ -6816,6 +6820,8 @@ def admin_approve_pto_request(request: Request, request_id: int, body: PtoDecisi
 @app.post("/api/admin/pto-requests/{request_id}/deny")
 def admin_deny_pto_request(request: Request, request_id: int, body: PtoDecisionBody):
     admin = _require_admin(request)
+    if not _admin_can(admin["role"], "hr:view"):
+        raise HTTPException(403, "Forbidden")
     from database import decide_pto_request
     try:
         out = decide_pto_request(request_id, "denied",
