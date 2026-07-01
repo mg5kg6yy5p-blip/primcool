@@ -4789,11 +4789,6 @@ def _validate_pin_or_400(pin: str, phone_on_file: str,
         raise HTTPException(422, msg)
 
 
-def _tech_self_actor(tech_id: int) -> dict:
-    return {"id": tech_id, "kind": "tech", "name": f"tech#{tech_id}",
-            "prid": None, "role": None}
-
-
 def _tp1_tech_audit(tech_id: int, action: str, request: Request,
                     target_type: str = None, target_id: int = None,
                     target_label: str = None, after=None):
@@ -8645,16 +8640,6 @@ def _settle_payment_link(link: dict, *, provider_ref: str = None,
     }
 
 
-def _redact_pii_for_audit_safe(payload):
-    """Wrapper that uses the existing _redact_pii_for_audit helper if it
-    exists, else falls back to identity. Keeps invoicing audit calls aligned
-    with the established admin/customer/visit audit patterns."""
-    try:
-        return _redact_pii_for_audit(payload)  # noqa: F821 — defined elsewhere
-    except Exception:
-        return payload
-
-
 # ── Full detail (super_admin Edit View loader) ─────────────────────────────
 @app.get("/api/admin/invoices/{invoice_id}/full", response_model=Dict[str, Any])
 def admin_invoice_full(request: Request, invoice_id: int):
@@ -12305,7 +12290,7 @@ def admin_kpi_custom_create(request: Request, body: CustomKpiCreateBody):
             in_composite=body.in_composite,
             composite_weight_pct=body.composite_weight_pct,
             safety_critical=body.safety_critical,
-            thresholds=[t.dict() for t in body.thresholds],
+            thresholds=[t.model_dump() for t in body.thresholds],
             creator_id=admin["id"],
         )
     except ValueError as ve:
@@ -13077,7 +13062,7 @@ def admin_create_employee(request: Request, body: EmployeeProfileCreate):
     admin = _require_perm(request, "hr:edit")
     try:
         emp_id = create_employee_profile(
-            body.dict(exclude_unset=True), by_kind="admin", by_id=admin["id"])
+            body.model_dump(exclude_unset=True), by_kind="admin", by_id=admin["id"])
     except ValueError as e:
         raise HTTPException(422, str(e))
     emp = get_employee_profile(emp_id)
@@ -13109,7 +13094,7 @@ def admin_update_employee(request: Request, employee_id: int,
     admin = _require_perm(request, "hr:edit")
     if not get_employee_profile(employee_id):
         raise HTTPException(404, "Employee not found")
-    updates = body.dict(exclude_unset=True)
+    updates = body.model_dump(exclude_unset=True)
     updates = {k: v for k, v in updates.items() if v is not None}
     try:
         update_employee_profile(employee_id, updates,
@@ -15706,15 +15691,6 @@ _FS_EXC_PHOTO_MAGIC = {
 _FS_EXC_PHOTO_MIMES = {"image/jpeg", "image/jpg", "image/png"}
 
 
-def _fs_exc_photo_ext_from_mime(mime: str) -> Optional[str]:
-    m = (mime or "").lower().strip()
-    if m in ("image/jpeg", "image/jpg"):
-        return ".jpg"
-    if m == "image/png":
-        return ".png"
-    return None
-
-
 @app.post("/api/tech/5s/exceptions/{exception_id}/photo")
 async def tech_fs_exception_upload_photo(
     request: Request,
@@ -15941,7 +15917,7 @@ def admin_fs_update_asset(request: Request, asset_id: int, body: AdminFSAssetUpd
     before = fs_get_asset_by_id(asset_id)
     if not before:
         raise HTTPException(404, "Asset not found")
-    fields = {k: v for k, v in body.dict().items() if v is not None}
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
     if not fields:
         return {"ok": True, "noop": True}
     fs_update_asset(asset_id, **fields)

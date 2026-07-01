@@ -19,7 +19,7 @@ defaults **only if the repo hasn't already established a stack**. It has:
 | SQLAlchemy ORM | **No ORM** — raw `sqlite3`, hand-written SQL in `database.py` |
 | Alembic | **Idempotent additive migrations** inside `init_db()` |
 | Pydantic v2 as source of truth | FastAPI's bundled pydantic, used lightly |
-| React/Vite | **Vanilla-JS HTML SPAs** (`admin.html` ≈ 1 MB, no `package.json`) |
+| React/Vite | **Vanilla-JS HTML SPAs**, no `package.json`, no bundler/transpiler. Client logic is served as plain external files via the `/static` mount. *(2026-07-01: `admin.html`'s two inline `<script>` blocks were extracted verbatim into `static/admin_app.js` + `static/admin_kpi_addons.js`, loaded with `<script src>`; the shell dropped from ~20.7k to ~5.6k lines. Byte-identical code, same load order and global scope — behaviour-preserving.)* |
 
 **Decision:** build in SQLite / raw-SQL / vanilla-JS. Postgres-specific spec items
 (partial unique indexes, native PG enums, PG triggers, JSONB) are re-expressed in
