@@ -275,8 +275,7 @@ def _con():
     return con
 
 
-def init_db():
-    con = sqlite3.connect(DB_PATH)
+def _init_schema_core(con):
     con.execute("""
         CREATE TABLE IF NOT EXISTS submissions (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -421,6 +420,9 @@ def init_db():
             created_at  TEXT NOT NULL
         )
     """)
+
+
+def _init_schema_assets_workforce(con):
     con.execute("""
         CREATE TABLE IF NOT EXISTS equipment (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -611,6 +613,8 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+
+def _init_schema_admin_billing(con):
     con.execute("""
         CREATE TABLE IF NOT EXISTS admin_users (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1005,6 +1009,8 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+
+def _init_schema_docs_security(con):
     # FX rates cache + manual-override history.
     con.execute("""
         CREATE TABLE IF NOT EXISTS fx_rates (
@@ -1267,6 +1273,9 @@ def init_db():
             created_at  TEXT NOT NULL
         )
     """)
+
+
+def _init_schema_cmms(con):
     # Self-service onboarding invites. HR/super_admin create the staff
     # account first (so role/asset provisioning is theirs), then mint a
     # token here and send the link to the new hire. The new hire fills the
@@ -1632,6 +1641,8 @@ def init_db():
         except sqlite3.OperationalError:
             pass
 
+
+def _init_schema_entities_payroll(con):
     # ── Multi-entity / cost centres (CMMS area #6) ───────────────────────────
     # The organisation as a tree of *business entities*: legal entities (book
     # revenue, file taxes) and cost centres (internal P&L buckets). A work order
@@ -1996,6 +2007,8 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_fs_audits_auditor ON fs_audits(auditor_id, auditor_kind)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_fs_audits_ts ON fs_audits(audit_ts)")
 
+
+def _init_schema_fs_kpi(con):
     # Per-line checklist results.
     con.execute("""
         CREATE TABLE IF NOT EXISTS fs_audit_items (
@@ -2394,8 +2407,12 @@ def init_db():
         )
     """)
 
-    # has_delegation_power on admin_users — idempotent ALTER.
-    if "has_delegation_power" not in admin_cols:
+    # has_delegation_power on admin_users — idempotent ALTER. Recompute the
+    # column set locally so this migration is self-contained (decoupled from the
+    # admin_users block far above); the ALTER is try/except-guarded regardless,
+    # so which snapshot we test against cannot change the outcome.
+    _admin_cols_now = {row[1] for row in con.execute("PRAGMA table_info(admin_users)")}
+    if "has_delegation_power" not in _admin_cols_now:
         try:
             con.execute("ALTER TABLE admin_users ADD COLUMN has_delegation_power INTEGER NOT NULL DEFAULT 0")
         except sqlite3.OperationalError:
@@ -2681,6 +2698,8 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+
+def _init_schema_scheduling_hr(con):
     # ── TP-1a: Tech-portal remodel schema ──────────────────────────────────
     con.execute("""
         CREATE TABLE IF NOT EXISTS tech_schedules (
@@ -3405,6 +3424,17 @@ def init_db():
     con.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_employee_id_type "
                 "ON employee_ids(employee_id, id_type)")
 
+
+def init_db():
+    con = sqlite3.connect(DB_PATH)
+    _init_schema_core(con)
+    _init_schema_assets_workforce(con)
+    _init_schema_admin_billing(con)
+    _init_schema_docs_security(con)
+    _init_schema_cmms(con)
+    _init_schema_entities_payroll(con)
+    _init_schema_fs_kpi(con)
+    _init_schema_scheduling_hr(con)
     con.commit()
     con.close()
     _backfill_prids()

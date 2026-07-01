@@ -40,7 +40,6 @@ memory and a single corrupted chunk is detectable.
 """
 from __future__ import annotations
 
-import base64
 import gzip
 import hashlib
 import json
