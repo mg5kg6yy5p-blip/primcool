@@ -628,7 +628,7 @@
           ${sessionsHtml}`;
       }
     } catch(e) {
-      wrap.innerHTML = `<div style="color:var(--danger);">Error: ${e.message}</div>`;
+      wrap.innerHTML = `<div style="color:var(--danger);">Error: ${escHtml(e.message)}</div>`;
     }
   }
 
@@ -720,7 +720,7 @@
         </div>`;
       setTimeout(() => document.getElementById('mfa-confirm-code')?.focus(), 50);
     } catch(e) {
-      wrap.innerHTML = `<div style="color:var(--danger);">Error: ${e.message}</div>`;
+      wrap.innerHTML = `<div style="color:var(--danger);">Error: ${escHtml(e.message)}</div>`;
     }
   }
 
@@ -9122,7 +9122,7 @@
     document.getElementById('partImageField').style.display = '';
     const prev = document.getElementById('partImagePreview');
     if (p.image_filename) {
-      prev.innerHTML = `<img src="/photos/${p.image_filename}" alt="${p.name}" style="width:100%;height:100%;object-fit:cover;border-radius:6px;" onerror="this.parentElement.innerHTML='📦';">`;
+      prev.innerHTML = `<img src="/photos/${escHtml(p.image_filename)}" alt="${escHtml(p.name)}" style="width:100%;height:100%;object-fit:cover;border-radius:6px;" onerror="this.parentElement.innerHTML='📦';">`;
     } else {
       prev.innerHTML = '📦';
     }
